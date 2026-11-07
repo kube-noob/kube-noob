@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -217,3 +220,70 @@ def test_no_bundle_of_flags_is_passed_to_a_command_as_a_single_argument() -> Non
             for hit in quoted.finditer(line):
                 bad.append(f"{path.name}: {hit.group(0)} in {line.strip()[:110]}")
     assert not bad, "a flag bundle quoted into one argument:\n" + "\n".join(bad)
+
+
+# The pinned PyPI publish action runs `twine check dist/*` and then `exec twine upload dist/*` over the WHOLE
+# directory. twine 7.0.0 rejects anything that is not a Python distribution -- sbom.spdx.json with "Unknown
+# distribution format", the krew archive with "No PKG-INFO in archive" -- and aborts before opening a
+# connection. From cf08981 to v0.9.0 both sat in dist/, so publish-pypi would have failed on the first run that
+# reached it. Nothing caught it: check_publishable.sh is the twin of that check but ran BEFORE those two steps,
+# and ci.yml's publishable job builds the dists without ever running them (G265).
+_WRITES_INTO_DIST = re.compile(
+    r"(?:\b(?:cp|mv|install|tar|cat|touch)\b[^\n]*?\bdist/)|(?:>\s*\"?dist/)|(?:--archive\s+\"?dist/)"
+)
+# `python -m build` is what creates dist/ in the first place; it is the only writer allowed.
+_BUILDS = "python -m build"
+
+
+def _build_dist_steps() -> list[dict[str, Any]]:
+    spec: dict[str, Any] = yaml.safe_load((WORKFLOWS / "release.yml").read_text())
+    return list(spec["jobs"]["build-dist"]["steps"])
+
+
+def test_nothing_but_a_python_distribution_is_written_into_dist() -> None:
+    """A release asset that is not a distribution goes in assets/. In dist/ it aborts the upload."""
+    offenders: list[str] = []
+    for step in _build_dist_steps():
+        run = step.get("run") or ""
+        if _BUILDS in run:
+            continue
+        for line in run.splitlines():
+            if _WRITES_INTO_DIST.search(line):
+                offenders.append(f"{step.get('name') or step.get('id') or 'step'}: {line.strip()[:100]}")
+    assert not offenders, (
+        "these put a non-distribution file into dist/, which makes `twine upload dist/*` abort:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_the_publishable_check_runs_after_everything_that_touches_dist() -> None:
+    """It is the twin of the publish action's own check, so it has to see the directory the action will see."""
+    steps = _build_dist_steps()
+    check_at = [i for i, s in enumerate(steps) if "check_publishable.sh" in (s.get("run") or "") and not s.get("id")]
+    assert check_at, "build-dist no longer runs check_publishable.sh over the dists"
+    touches = [
+        i
+        for i, s in enumerate(steps)
+        if "dist/" in (s.get("run") or "") and "check_publishable.sh" not in (s.get("run") or "")
+    ]
+    assert max(touches) < max(check_at), (
+        f"check_publishable.sh runs at step {max(check_at)} but step {max(touches)} still touches dist/ "
+        f"({steps[max(touches)].get('name') or 'unnamed'}) -- it would be checking a directory that changes after it"
+    )
+
+
+def test_provenance_is_attempted_twice_and_still_decides_the_job() -> None:
+    """v0.9.0 died on Rekor's read-after-write 404 with every artefact already correct. One retry, and the job
+    still fails if both attempts do -- `continue-on-error` on the retry would make the attestation optional."""
+    steps = _build_dist_steps()
+    attests = [s for s in steps if "attest-build-provenance" in str(s.get("uses", ""))]
+    assert len(attests) == 2, f"expected a first attempt and one retry, found {len(attests)}"
+    first, second = attests
+    assert first.get("continue-on-error") is True, "the first attempt must not fail the job on its own"
+    assert second.get("continue-on-error") is not True, (
+        "the retry must decide the job; otherwise nothing published is guaranteed to be attested"
+    )
+    assert "steps.attest.outcome == 'failure'" in str(second.get("if")), "the retry must be gated on the first failing"
+    for a in attests:
+        subjects = str((a.get("with") or {}).get("subject-path"))
+        assert "dist/*" in subjects and "assets/*" in subjects, "both directories are released, so both are attested"
