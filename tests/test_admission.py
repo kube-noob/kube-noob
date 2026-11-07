@@ -361,12 +361,30 @@ def test_a_padded_object_does_not_outrun_the_webhooks_timeout() -> None:
             },
         }
 
-    start = time.perf_counter()
-    out = adm.review(_review(padded(4000)), cfg)["response"]
-    elapsed = time.perf_counter() - start
-    # 4,000 containers took about 24 s before; the bound here is loose enough for a slow runner and still
-    # an order of magnitude under the quadratic cost.
-    assert elapsed < 5.0, f"{elapsed:.1f}s for 4,000 containers"
+    def took(n: int) -> tuple[float, dict[str, Any]]:
+        start = time.perf_counter()
+        out = adm.review(_review(padded(n)), cfg)["response"]
+        return time.perf_counter() - start, out
+
+    # The first call pays for imports and cold caches -- measured here, 500 containers cost 1.33 s cold and
+    # 0.2 s warm -- so warm up before timing anything, or the small sample carries the startup and the ratio
+    # reads as sub-linear.
+    took(200)
+    # The property this test is named for is the SHAPE of the curve, not a number of seconds: quadratic in
+    # four times the input is about sixteen times the time, linear is about four. A wall-clock budget is a
+    # proxy for that, and it is the proxy that depends on the runner -- 5.0 s held for months and then failed
+    # at 5.44 s on one shared 3.11 runner, on a release commit, while 3.12, 3.13 and 3.14 passed the same
+    # code (G263). Both halves of a ratio run back to back on the same machine, so a slow runner slows both
+    # and the verdict stays about the code.
+    small, _ = took(1000)
+    elapsed, out = took(4000)
+    assert elapsed < small * 8, (
+        f"{elapsed:.2f}s for 4,000 against {small:.2f}s for 1,000 -- growing faster than linear "
+        f"(quadratic would be about 16x, linear about 4x)"
+    )
+    # A ceiling far enough above any plausible runner that only a catastrophe trips it. This is not a
+    # performance budget; the ratio above is.
+    assert elapsed < 60.0, f"{elapsed:.1f}s for 4,000 containers"
     assert out["allowed"] is False, "and it still decides: the denial is the point of being fast enough"
     # The sibling memo must not change what a locator says: a shared name is still ambiguous, a unique one
     # still identifies its item.
