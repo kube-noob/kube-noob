@@ -10,9 +10,22 @@ an agent gets wrong.
 bash scripts/check.sh
 ```
 
-It runs every gate CI runs: the plugin copy, the Agent Skill build, the safety contract, ruff (lint and format),
-mypy and the full test suite, then kube-noob's own self-test. Read its **exit status**, not its last lines. Piping it
-through `tail` or `head` replaces the exit status with the pipe's, so a failing gate looks green:
+It runs the gates CI runs on code: the plugin copy, the Agent Skill build, the safety contract, the compliance
+document, the numbers the documents quote, the KSI crosswalk, ruff (lint and format), mypy, the full test suite
+**with CI's coverage floor**, kube-noob's own self-test, both `pip-audit` runs, `uv lock --check`, the wheel built
+and installed and driven, the MCP and plugin end-to-end runs, `check_publishable.sh`, the Homebrew formula against
+PyPI, and the OSCAL document against the pinned NIST schema. It takes about twenty minutes.
+
+Where this machine lacks a tool, the step is **named at the end under NOT RUN** rather than passed over — read that
+list, because "it did not run" is not "it passed", and CI still runs it. `helm` is the usual entry, which leaves
+`ci/helm-and-dogfood` as the one job no local run covers.
+
+This used to claim it ran every gate and ran eleven fewer, and it passed four times running while CI failed
+(G260, G261, G263, G264). `tests/test_check_sh.py` now fails if a gate a CI code job runs is neither in check.sh
+nor named with a reason, so the claim above stays true as ci.yml changes.
+
+Read its **exit status**, not its last lines. Piping it through `tail` or `head` replaces the exit status with the
+pipe's, so a failing gate looks green — and a step killed by SIGPIPE reports 141, which is a failure too:
 
 ```bash
 bash scripts/check.sh > /tmp/gate.log 2>&1; echo "exit: $?"
