@@ -1,6 +1,6 @@
 {
   "name": "kube-noob",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS expertise as tools for Claude: audit YAML, diagnose read-only first, cite docs, learn with graded exercises. No AI inside: Claude does the thinking. kube-noob runs locally and makes no network calls of its own; uv installs its hash-pinned dependencies once.",
   "author": {
     "name": "kube-noob maintainers",

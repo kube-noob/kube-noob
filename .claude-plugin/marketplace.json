@@ -12,7 +12,7 @@
       "name": "kube-noob",
       "source": "./plugin/kube-noob",
       "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and learning as tools for Claude. No AI inside; runs locally.",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "license": "Apache-2.0",
       "keywords": ["kubernetes", "openshift", "rosa", "helm", "stackrox", "mcp"]
     }

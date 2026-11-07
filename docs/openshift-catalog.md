@@ -47,13 +47,13 @@ After the OWNERS pull request merges:
 cd ~/openshift-helm-charts
 git switch main
 git pull --ff-only https://github.com/openshift-helm-charts/charts main
-git switch -c kube-noob-0.9.0
-mkdir -p charts/community/kube-noob/kube-noob/0.9.0
-gh release download v0.9.0 --repo aashishmahajan/kube-noob --pattern "kube-noob-0.9.0.tgz" --dir charts/community/kube-noob/kube-noob/0.9.0
-git add charts/community/kube-noob/kube-noob/0.9.0
-git commit -s -m "Add kube-noob 0.9.0 community chart"
-git push -u origin kube-noob-0.9.0
-gh pr create --repo openshift-helm-charts/charts --head aashishmahajan:kube-noob-0.9.0 --title "Add kube-noob 0.9.0 community chart" --body "kube-noob 0.9.0: audit, debugging and learning tools for Kubernetes and OpenShift as an MCP server. Runs under restricted-v2 with NetworkPolicies; signed OCI copy at oci://ghcr.io/aashishmahajan/charts/kube-noob."
+git switch -c kube-noob-0.9.1
+mkdir -p charts/community/kube-noob/kube-noob/0.9.1
+gh release download v0.9.1 --repo aashishmahajan/kube-noob --pattern "kube-noob-0.9.1.tgz" --dir charts/community/kube-noob/kube-noob/0.9.1
+git add charts/community/kube-noob/kube-noob/0.9.1
+git commit -s -m "Add kube-noob 0.9.1 community chart"
+git push -u origin kube-noob-0.9.1
+gh pr create --repo openshift-helm-charts/charts --head aashishmahajan:kube-noob-0.9.1 --title "Add kube-noob 0.9.1 community chart" --body "kube-noob 0.9.1: audit, debugging and learning tools for Kubernetes and OpenShift as an MCP server. Runs under restricted-v2 with NetworkPolicies; signed OCI copy at oci://ghcr.io/aashishmahajan/charts/kube-noob."
 ```
 
 To check locally before submitting, run chart-verifier with the community profile on the packaged chart (command in

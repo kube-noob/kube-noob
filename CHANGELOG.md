@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 - 2026-11-07
 
 - **0.9.0 could not have published even with a green attestation (G265).** The pinned PyPI publish action runs `twine check dist/*` and `exec twine upload dist/*` over the whole directory, and twine 7.0.0 rejects `sbom.spdx.json` ("Unknown distribution format") and the krew archive ("No PKG-INFO in archive"), aborting before it opens a connection. Both had been copied into `dist/` since 2026-11-05, only so the GitHub release would attach them. v0.7.1 shipped before that change, v0.8.0 died on a missing PyYAML and v0.9.0 on a Rekor read-after-write 404 -- so `publish-pypi` had never once run with those files there. Reproduced with the action's exact twine before changing anything: check and upload both exit 1.
 

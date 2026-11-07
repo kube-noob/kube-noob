@@ -3,7 +3,7 @@
   "name": "io.github.aashishmahajan/kube-noob",
   "title": "kube-noob",
   "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and cited docs. No AI inside.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "websiteUrl": "https://github.com/aashishmahajan/kube-noob",
   "repository": {
     "url": "https://github.com/aashishmahajan/kube-noob",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "kube-noob",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
