@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`scripts/check.sh` ran eleven fewer gates than it claimed (G264).** It is what AGENTS.md tells you to run after any change to `src/`, and its header said it ran "every gate CI runs on code". It ran `pytest -q` where CI runs `pytest --cov --cov-fail-under=80`, so the coverage floor was never enforced locally, and it never built the wheel, installed and drove it, ran `e2e_mcp_offline.py`, `check_publishable.sh`, `uv lock --check`, either `pip-audit`, `e2e_plugin.py`, `brew_formula.py --check`, or the OSCAL schema validation and its did-it-skip guard. It passed four times running while CI failed.
+
+  All of those run now, and a tool this machine lacks is printed at the end under NOT RUN with the words "this is not a pass" instead of being passed over -- `helm` is the only entry here, because the chart guards have no helm-free path. `tests/test_check_sh.py` reads ci.yml and fails if a gate a code job runs is neither in check.sh nor named with a reason, which caught two holes in check.sh and one in its own first version. Running check.sh now takes about three times as long, which is the point.
+
+
 ## 0.9.0 - 2026-11-07
 
 - **Two timing assertions measured the runner instead of the code (G263).** `test_a_padded_object_does_not_outrun_the_webhooks_timeout` asserted `elapsed < 5.0` for 4,000 containers; it measured 5.44 s on one shared 3.11 runner and held the 0.9.0 release, while 3.12, 3.13 and 3.14 passed the same code. That object costs 0.86 s here, so the budget had no headroom on a slow machine. The test is named for a shape and its docstring says the fix makes the cost linear, so it now times 1,000 and 4,000 back to back and asserts the growth stays under 8x -- quadratic in 4x the input is about 16x, linear about 4x, and a slow runner slows both halves alike. With G252's memo disabled the ratio is 15.7x and the assertion fires, so it still catches what the budget caught. A warm-up call comes first, because the cold call pays for imports. `test_the_memory_demo_runs_offline_under_a_second` had the same shape and keeps only a ceiling a hang would cross, with its real contract in the assertions on what the demo printed.
