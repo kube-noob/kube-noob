@@ -2,15 +2,15 @@
 class KubeNoob < Formula
   desc "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and learning tools"
   homepage "https://github.com/aashishmahajan/kube-noob"
-  url "https://files.pythonhosted.org/packages/47/3a/13f1369eb37fba467fb6f2b560082d01fc03d16fb53be64a28e53f3f68fa/kube_noob-0.7.1.tar.gz"
-  sha256 "8c427ad6d79eeb0356a52e515a1af05d0f6375ac1c0bd69c923bc9c48ecb3929"
+  url "https://files.pythonhosted.org/packages/03/92/baf9877f9798ce57c0a35f60c3e4fb9d558ef282cbac475b2dd03f98500a/kube_noob-0.9.1.tar.gz"
+  sha256 "ae8435744e6c2a579309a4a196bfcae0b71ea77ae9a9ae75b65c1cf4fc37ee6a"
   license "Apache-2.0"
 
   depends_on "python@3.13"
 
   resource "kube-noob" do
-    url "https://files.pythonhosted.org/packages/b4/ef/8ec04d5f3aa6fccdd8946841f1b5e3bfedf054c446192431aced180fa204/kube_noob-0.7.1-py3-none-any.whl"
-    sha256 "d804700b6f6b600adb6820f14ed9b234a267891b8bebd03b6599961858175d10"
+    url "https://files.pythonhosted.org/packages/1f/77/0c4556690d1b96d7f88ac03fdd9d0789945e4a29d32d6263d9d69dae7003/kube_noob-0.9.1-py3-none-any.whl"
+    sha256 "e768defbabc81cca12f725cf16e7fdb056e786e46ca0465c5b9a166c1300e10c"
   end
 
   resource "annotated-types" do
@@ -99,8 +99,8 @@ class KubeNoob < Formula
   end
 
   resource "pydantic" do
-    url "https://files.pythonhosted.org/packages/35/ea/a56b9fe5066f3537b7882f77e9c5dfb26d8c2eefdaed9b5fc73d57b4dc22/pydantic-2.14.1-py3-none-any.whl"
-    sha256 "9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454"
+    url "https://files.pythonhosted.org/packages/97/01/c71a71258b58659c72504e5fd65b451f6e36e34dc931d0b237ded213c814/pydantic-2.14.2-py3-none-any.whl"
+    sha256 "7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118"
   end
 
   resource "pyjwt" do
@@ -160,8 +160,8 @@ class KubeNoob < Formula
       sha256 "fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb"
     end
     resource "pydantic-core" do
-      url "https://files.pythonhosted.org/packages/f7/b9/c720e56858d4e1539503297ed37063e0c08e0f3541c41b777f6a800f75fa/pydantic_core-2.50.1-cp313-cp313-macosx_11_0_arm64.whl"
-      sha256 "0c003c3b7f49debb893d2d85ae099ac5959c9839e2f330fadb1fcdf7a6594482"
+      url "https://files.pythonhosted.org/packages/f7/0b/7605223654ed4e777d05668e914d32b476b1fa2bb756bff9820fe270456b/pydantic_core-2.50.2-cp313-cp313-macosx_11_0_arm64.whl"
+      sha256 "7c539d452cba22f250103c7d1c00cbe9038eb705e657476e701c43374efd9f2e"
     end
     resource "pyyaml" do
       url "https://files.pythonhosted.org/packages/b1/16/95309993f1d3748cd644e02e38b75d50cbc0d9561d21f390a76242ce073f/pyyaml-6.0.3-cp313-cp313-macosx_11_0_arm64.whl"
@@ -184,8 +184,8 @@ class KubeNoob < Formula
         sha256 "87e9ce85beb6b328ba370cc6e6aea483c92617b4c95b1d33a49297eb662bfb04"
       end
       resource "pydantic-core" do
-        url "https://files.pythonhosted.org/packages/4d/b8/fbfc25875219cc060e613170ff10e850c6d8924beb4910da57c2ee3ba1d2/pydantic_core-2.50.1-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-        sha256 "409e0ea40ec30d9158f33574fd758e689f6045a0f2596701828c27816ca9687d"
+        url "https://files.pythonhosted.org/packages/6c/f5/03ce5ed01c98b60272cdee8ac1abb819b64ef347717c11d96215e32d9952/pydantic_core-2.50.2-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl"
+        sha256 "f142cd663d1148ed32993ed9a58e5c67ea312f446a01a6c13a956945aafc9f23"
       end
       resource "pyyaml" do
         url "https://files.pythonhosted.org/packages/50/31/b20f376d3f810b9b2371e72ef5adb33879b25edb7a6d072cb7ca0c486398/pyyaml-6.0.3-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl"
@@ -206,8 +206,8 @@ class KubeNoob < Formula
         sha256 "9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079"
       end
       resource "pydantic-core" do
-        url "https://files.pythonhosted.org/packages/1c/bc/d79d000e5203ebef39af839f2ce77a777fcad6e08ad26af9a2fcd114ffc8/pydantic_core-2.50.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-        sha256 "17e722e156d0444ecaefbe640bdb60928752bf2013e2b7a11cdb099aaae19bec"
+        url "https://files.pythonhosted.org/packages/79/be/b559a1ceaff8b1d4581733d47d2ffa785635ac05716eae4c964466aac6e8/pydantic_core-2.50.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+        sha256 "31a1fb3ffbd1195b24490f671d12623dd4c9bfa56d6af0a299fa43b516134f5b"
       end
       resource "pyyaml" do
         url "https://files.pythonhosted.org/packages/74/27/e5b8f34d02d9995b80abcef563ea1f8b56d20134d8f4e5e81733b1feceb2/pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
