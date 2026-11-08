@@ -17,7 +17,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade "pip>=24.3" "build>=1.2" \
  && /opt/kube-noob/bin/kube-noob --version
 
 FROM ${BASE_IMAGE}
-ARG VERSION=0.9.1
+ARG VERSION=0.9.2
 # Red Hat container certification (preflight HasRequiredLabel) needs name, vendor, version, release, summary,
 # description and maintainer; the MCP Registry verifies ownership of OCI images through io.modelcontextprotocol.*.
 LABEL name="kube-noob" \

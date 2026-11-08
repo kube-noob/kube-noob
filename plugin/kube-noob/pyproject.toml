@@ -3,7 +3,7 @@
 # in uv.lock. It never installs kube-noob from a package index and never installs an LLM SDK.
 [project]
 name = "kube-noob-plugin"
-version = "0.9.1"
+version = "0.9.2"
 description = "Runtime for the kube-noob Claude plugin: the bundled MCP server and its locked dependencies."
 requires-python = ">=3.11.4"
 license = "Apache-2.0"

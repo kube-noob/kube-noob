@@ -54,7 +54,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
         - name: kube-noob
-          image: ghcr.io/kube-noob/kube-noob:0.9.1
+          image: ghcr.io/kube-noob/kube-noob:0.9.2
           args: ["serve", "--host", "127.0.0.1", "--port", "8080"]
           env:
             - {name: KUBE_NOOB_WEB_ENABLED, value: "false"}

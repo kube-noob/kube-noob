@@ -3,7 +3,7 @@ kind: Plugin
 metadata:
   name: noob
 spec:
-  version: v0.9.1
+  version: v0.9.2
   homepage: https://github.com/kube-noob/kube-noob
   shortDescription: Audit, debug and learn Kubernetes offline. No AI inside.
   description: |
@@ -26,8 +26,8 @@ spec:
     network or your cluster unless you enable it explicitly.
   platforms:
     - bin: kubectl-noob
-      uri: https://github.com/kube-noob/kube-noob/releases/download/v0.9.1/kubectl-noob-v0.9.1.tar.gz
-      sha256: 6a252afedc1905efcb252f4c564dff0f78d3a6b8a3b8e7a5802ac0628a83b68e
+      uri: https://github.com/kube-noob/kube-noob/releases/download/v0.9.2/kubectl-noob-v0.9.2.tar.gz
+      sha256: 5c7219b515da3257ec6924b2930cd07dcf954c8a73c94250c445f7347715a004
       selector:
         matchExpressions:
           - key: os

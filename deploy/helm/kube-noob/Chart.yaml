@@ -2,8 +2,8 @@ apiVersion: v2
 name: kube-noob
 description: Kubernetes, OpenShift and ROSA audit, debugging and learning tools as an MCP server. No AI inside; offline by default.
 type: application
-version: 0.9.1
-appVersion: "0.9.1"
+version: 0.9.2
+appVersion: "0.9.2"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/aashishmahajan/kube-noob
 sources:

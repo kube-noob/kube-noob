@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.2 - 2026-11-08
+
+- **The chart installed an image that does not exist, and four other things the repository move broke (G266).** kube-noob moved from a personal account into the `kube-noob` organisation. GitHub redirects the old repository URLs, so most references kept working and the breakage stayed invisible until each step ran. The ones that do not redirect: GHCR namespaces, the MCP registry namespace, cosign certificate identities, `gh attestation --repo`, and the site repositories.
+
+  Chart 0.9.1 is published and signed and defaults `image.repository` to the old namespace, while the release pushes to the new one -- so `helm install` with defaults ends in ImagePullBackOff. The Tekton Task, the GitLab template and the sidecar manifest hard-coded the same image. `SECURITY.md` told users to verify the supply chain with `gh attestation verify --repo` and a cosign identity that name a repository which no longer owns the attestations, so our own verification instructions could not succeed. CI could never have caught the chart defect: `gate-ci` built the image locally and tagged it with the **old** name before loading it into kind, so the test passed by minting the very thing it should have been checking for.
+
+  `server.json` and the `mcp-name` marker in `README.md` now both read `io.github.kube-noob/kube-noob`. That pair could only take effect in a new release: the registry reads the marker from the published PyPI description, and 0.9.1's is immutable, which is why `publish-mcp-registry` could not be fixed by a re-run.
+
+  Outside the repository and fixed by hand: the GHCR image and chart were private under the new organisation and are now public, and organisation policy had disabled deploy keys, which is what stopped the website publishing for twelve consecutive runs.
+
 ## 0.9.1 - 2026-11-07
 
 - **0.9.0 could not have published even with a green attestation (G265).** The pinned PyPI publish action runs `twine check dist/*` and `exec twine upload dist/*` over the whole directory, and twine 7.0.0 rejects `sbom.spdx.json` ("Unknown distribution format") and the krew archive ("No PKG-INFO in archive"), aborting before it opens a connection. Both had been copied into `dist/` since 2026-11-05, only so the GitHub release would attach them. v0.7.1 shipped before that change, v0.8.0 died on a missing PyYAML and v0.9.0 on a Rekor read-after-write 404 -- so `publish-pypi` had never once run with those files there. Reproduced with the action's exact twine before changing anything: check and upload both exit 1.
