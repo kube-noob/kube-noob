@@ -6,11 +6,11 @@ pipx installed with Homebrew uses Homebrew's.
 
 | Method | Commands | Upgrade |
 |---|---|---|
-| Homebrew (Apple silicon macOS, Linux) | `brew tap aashishmahajan/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula aashishmahajan/kube-noob/kube-noob`, then `brew install kube-noob` | `brew update && brew upgrade kube-noob` |
+| Homebrew (Apple silicon macOS, Linux) | `brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` | `brew update && brew upgrade kube-noob` |
 | uv (downloads a Python if yours is too old) | `uv tool install kube-noob` | `uv tool upgrade kube-noob` |
 | pipx | `pipx install kube-noob` | `pipx upgrade kube-noob` |
 | pip, in a virtual environment | `python3.13 -m venv ~/.venvs/kube-noob`, then `~/.venvs/kube-noob/bin/pip install kube-noob` | `~/.venvs/kube-noob/bin/pip install -U kube-noob` |
-| Container | `podman run --rm ghcr.io/aashishmahajan/kube-noob:0.9 --version` | pull the new tag |
+| Container | `podman run --rm ghcr.io/kube-noob/kube-noob:0.9 --version` | pull the new tag |
 | Claude Code plugin | `/plugin marketplace add aashishmahajan/kube-noob`, then `/plugin install kube-noob@kube-noob` | `/plugin marketplace update kube-noob` |
 
 The tap is needed because kube-noob is not in Homebrew's main catalogue; after `brew tap`, `brew install kube-noob`
@@ -59,8 +59,8 @@ python3 -I -B skill/kube-noob/scripts/kn.py audit_manifests --text-file manifest
 
 | You see | Why | Fix |
 |---|---|---|
-| `No available formula with the name "kube-noob"` | The tap is not added | `brew tap aashishmahajan/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula aashishmahajan/kube-noob/kube-noob`, then `brew install kube-noob` |
-| `Refusing to load formula aashishmahajan/kube-noob/kube-noob from untrusted tap` | Homebrew 6 requires trust for third-party taps | `brew trust --formula aashishmahajan/kube-noob/kube-noob`, then `brew install kube-noob` |
+| `No available formula with the name "kube-noob"` | The tap is not added | `brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
+| `Refusing to load formula aashishmahajan/kube-noob/kube-noob from untrusted tap` | Homebrew 6 requires trust for third-party taps | `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
 | `Requires-Python >=3.11.4` and `No matching distribution found for kube-noob` | Your `python3` is older than 3.11.4 (3.11.0 through 3.11.3 are not enough) | Use Homebrew, uv or pipx above, or a virtual environment made with Python 3.11.4+ |
 | `error: externally-managed-environment` | Homebrew's or the system's Python refuses packages installed into it (PEP 668) | Use pipx, uv or a virtual environment; do not add `--break-system-packages` |
 | `zsh: command not found: pip` | macOS has no `pip` command, only `pip3` | Use pipx or uv, or `python3 -m pip` inside a virtual environment |

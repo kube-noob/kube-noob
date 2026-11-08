@@ -1161,7 +1161,7 @@ jobs:
       - name: Build the image the Tekton Task and the GitLab template run
         run: |
           docker build -f Containerfile -t kube-noob:ci .
-          docker tag kube-noob:ci "ghcr.io/aashishmahajan/kube-noob:$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"", open("src/kube_noob/__init__.py").read()).group(1))')"
+          docker tag kube-noob:ci "ghcr.io/kube-noob/kube-noob:$(python -c 'import re;print(re.search(r"__version__ = \"([^\"]+)\"", open("src/kube_noob/__init__.py").read()).group(1))')"
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: kn

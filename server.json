@@ -1,12 +1,12 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.aashishmahajan/kube-noob",
+  "name": "io.github.kube-noob/kube-noob",
   "title": "kube-noob",
   "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and cited docs. No AI inside.",
   "version": "0.9.1",
-  "websiteUrl": "https://github.com/aashishmahajan/kube-noob",
+  "websiteUrl": "https://github.com/kube-noob/kube-noob",
   "repository": {
-    "url": "https://github.com/aashishmahajan/kube-noob",
+    "url": "https://github.com/kube-noob/kube-noob",
     "source": "github"
   },
   "packages": [

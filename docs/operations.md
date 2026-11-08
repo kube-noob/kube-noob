@@ -58,7 +58,7 @@ A finding whose shape is neither of those is a real leak: fix the anonymiser, do
 | Vector | Signal | Release? |
 |---|---|---|
 | Python dependency CVE with a fix | `pip-audit` on `requirements.lock` | yes, patch |
-| Fixable HIGH/CRITICAL CVE in the released image | Trivy on `ghcr.io/aashishmahajan/kube-noob:<latest>` | yes, patch (rebuild) |
+| Fixable HIGH/CRITICAL CVE in the released image | Trivy on `ghcr.io/kube-noob/kube-noob:<latest>` | yes, patch (rebuild) |
 | Upstream release newer than verified knowledge | Kubernetes, OpenShift, Helm, StackRox vs `scripts/risk_baseline.json` | yes, after re-verifying facts |
 | New `mcp` or `anthropic` SDK | PyPI vs lock pins | review; release only if behaviour changes |
 | Unfixed CVE (no fix yet) | pip-audit / Trivy | review, document, no release |

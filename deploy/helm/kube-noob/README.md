@@ -7,7 +7,7 @@ learning), and it calls no model itself.
 ## Install
 
 ```bash
-helm install kube-noob oci://ghcr.io/aashishmahajan/charts/kube-noob -n kube-noob --create-namespace
+helm install kube-noob oci://ghcr.io/kube-noob/charts/kube-noob -n kube-noob --create-namespace
 ```
 
 The chart generates a random bearer token in the Secret `<release>-kube-noob-token` and keeps it across

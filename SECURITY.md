@@ -88,8 +88,8 @@ mode. How to deploy kube-noob inside a FedRAMP High boundary, and what is not co
 ## Verifying releases
 
 ```bash
-gh attestation verify dist/kube_noob-*.whl --repo aashishmahajan/kube-noob
-cosign verify ghcr.io/aashishmahajan/kube-noob:<version> \
-  --certificate-identity-regexp 'https://github.com/aashishmahajan/kube-noob/.github/workflows/release.yml@.*' \
+gh attestation verify dist/kube_noob-*.whl --repo kube-noob/kube-noob
+cosign verify ghcr.io/kube-noob/kube-noob:<version> \
+  --certificate-identity-regexp 'https://github.com/kube-noob/kube-noob/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```

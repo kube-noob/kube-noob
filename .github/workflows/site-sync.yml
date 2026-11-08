@@ -1,7 +1,7 @@
 name: site-sync
 
-# kube-noob.com is built from this repository's latest release by the private aashishmahajan/kube-noob-site
-# repository, which pushes the result to aashishmahajan/kube-noob-www. Nothing used to tell the site when a release
+# kube-noob.com is built from this repository's latest release by the private kube-noob/kube-noob-site
+# repository, which pushes the result to kube-noob/kube-noob-www. Nothing used to tell the site when a release
 # happened: it only looked on its own daily schedule, so the website could sit a day behind the code -- and did,
 # serving 0.6.0 for a day after 0.7.0 was released, because the deploy that would have published 0.7.0 failed and
 # nothing was watching.
@@ -16,7 +16,7 @@ name: site-sync
 #           whose dispatch failed. It is never triggered by an event: GitHub starts no workflow for a release created
 #           with GITHUB_TOKEN, which is how release.yml creates it.
 #
-# SITE_DISPATCH_TOKEN is a fine-grained personal access token scoped to aashishmahajan/kube-noob-site with
+# SITE_DISPATCH_TOKEN is a fine-grained personal access token scoped to kube-noob/kube-noob-site with
 # Contents: write (sending a repository_dispatch is a write), and nothing else. Without it the notify job fails and
 # says so: a run reporting success would mean the site had been asked to publish when it had not. The site still
 # publishes on its own six-hourly schedule, but nobody should have to know that to read a check.
@@ -39,8 +39,8 @@ permissions:
   contents: read
 
 env:
-  SITE_REPO: aashishmahajan/kube-noob-site
-  WWW_REPO: aashishmahajan/kube-noob-www
+  SITE_REPO: kube-noob/kube-noob-site
+  WWW_REPO: kube-noob/kube-noob-www
   # Must exceed the worst case for the fallback path: a release published just after a deploy slot waits up to six
   # hours for the next one, plus up to an hour to build. Below that, a release with no dispatch would make this job
   # red before the site had its own chance to publish it.

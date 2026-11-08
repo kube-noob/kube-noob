@@ -4,7 +4,7 @@
 
 # kube-noob
 
-<!-- mcp-name: io.github.aashishmahajan/kube-noob -->
+<!-- mcp-name: io.github.kube-noob/kube-noob -->
 
 [![ci](https://github.com/aashishmahajan/kube-noob/actions/workflows/ci.yml/badge.svg)](https://github.com/aashishmahajan/kube-noob/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/aashishmahajan/kube-noob/badge)](https://securityscorecards.dev/viewer/?uri=github.com/aashishmahajan/kube-noob)
@@ -46,8 +46,8 @@ Generate, Red Team). Answers cite local knowledge as `[kn:<doc>#<n>]`. All of it
 ## Quick start
 
 ```bash
-brew tap aashishmahajan/kube-noob https://github.com/aashishmahajan/kube-noob
-brew trust --formula aashishmahajan/kube-noob/kube-noob
+brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob
+brew trust --formula kube-noob/kube-noob/kube-noob
 brew install kube-noob
 kube-noob demo --list
 kube-noob audit -f your-manifests/ --platform openshift --version 4.22
