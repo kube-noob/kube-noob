@@ -80,7 +80,7 @@ spec:
     - name: image
       type: string
       description: The kube-noob image (pin it by digest).
-      default: ghcr.io/aashishmahajan/kube-noob:0.9.1
+      default: ghcr.io/kube-noob/kube-noob:0.9.1
   results:
     - name: result
       description: passed or failed.

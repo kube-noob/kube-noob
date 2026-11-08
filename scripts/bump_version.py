@@ -31,14 +31,14 @@ TARGETS: dict[str, tuple[str, ...]] = {
     # tests/test_bump_version.py. A stale pin there would install the previous release.
     "README.md": (r"kube-noob==(?P<v>\d+\.\d+\.\d+)",),
     "deploy/helm/kube-noob/Chart.yaml": (r"^version: (?P<v>\S+)$", r'^appVersion: "(?P<v>[^"]+)"$'),
-    "deploy/sidecar/app-with-kube-noob-sidecar.yaml": (r"ghcr\.io/aashishmahajan/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
+    "deploy/sidecar/app-with-kube-noob-sidecar.yaml": (r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
     "Containerfile": (r"^ARG VERSION=(?P<v>\S+)$",),
     "deploy/tekton/kube-noob-gate.yaml": (
         r'app\.kubernetes\.io/version: "(?P<v>[^"]+)"',
-        r"ghcr\.io/aashishmahajan/kube-noob:(?P<v>\d+\.\d+\.\d+)",
+        r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",
     ),
-    "deploy/gitlab/kube-noob-gate.gitlab-ci.yml": (r"ghcr\.io/aashishmahajan/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
-    "docs/install.md": (r"ghcr\.io/aashishmahajan/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",),
+    "deploy/gitlab/kube-noob-gate.gitlab-ci.yml": (r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
+    "docs/install.md": (r"ghcr\.io/kube-noob/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",),
     # the owner's commands for the OpenShift Helm catalog pull request: every version in it is the release's
     "docs/openshift-catalog.md": (r"(?<![\d.])(?P<v>\d+\.\d+\.\d+)(?!\.?\d)",),
 }

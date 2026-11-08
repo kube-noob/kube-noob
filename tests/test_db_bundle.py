@@ -301,7 +301,7 @@ def test_the_chart_pins_the_image_by_digest() -> None:
     validator.validate(values)
     assert values["db"] == {
         "enabled": False,
-        "image": {"repository": "ghcr.io/aashishmahajan/kube-noob-db", "digest": ""},
+        "image": {"repository": "ghcr.io/kube-noob/kube-noob-db", "digest": ""},
         "path": "/kube-noob-db/kube-noob-db.tgz",
         "sizeLimit": "2Gi",
     }

@@ -39,7 +39,7 @@ def check(case: str, docs: list[Any]) -> None:
         names = [c["name"] for c in pod["initContainers"]]
         expect(names == ["kube-noob-db", "jira-seed"], names)
         init = pod["initContainers"][0]
-        expect(init["image"] == "ghcr.io/aashishmahajan/kube-noob-db@" + DIGEST, init["image"])
+        expect(init["image"] == "ghcr.io/kube-noob/kube-noob-db@" + DIGEST, init["image"])
         expect(
             init["command"]
             == [

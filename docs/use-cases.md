@@ -350,7 +350,7 @@ OpenShift, put the snapshot in a private image and set `jira.seed` so every new 
 copies it; the image needs `cp` and must run as non-root):
 
 ```bash
-gh run download "$(gh run list --repo aashishmahajan/kube-noob --workflow corpus-refresh.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')" --repo aashishmahajan/kube-noob -n jira-main-copy-encrypted -D seed
+gh run download "$(gh run list --repo kube-noob/kube-noob --workflow corpus-refresh.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')" --repo kube-noob/kube-noob -n jira-main-copy-encrypted -D seed
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in seed/jira-snapshot.tgz.enc -out seed/jira-snapshot.tgz -pass env:CORPUS_PASSPHRASE
 printf 'FROM registry.access.redhat.com/ubi9/ubi-micro:latest\nCOPY --chmod=0444 jira-snapshot.tgz /seed/jira-snapshot.tgz\nUSER 1001\n' > seed/Containerfile
 podman build -t registry.example.com/platform/kube-noob-jira-seed:2026-10-28 seed
@@ -1132,9 +1132,9 @@ image -- `MyRegistry`, or a host with no dot, port or `localhost` -- is refused 
 when the configuration loads.
 
 ```bash
-helm upgrade --install kube-noob oci://ghcr.io/aashishmahajan/charts/kube-noob -n kube-noob --create-namespace \
+helm upgrade --install kube-noob oci://ghcr.io/kube-noob/charts/kube-noob -n kube-noob --create-namespace \
   --set admission.enabled=true --set "audit.allowedRegistries={quay.io/my-org}"
-helm upgrade kube-noob oci://ghcr.io/aashishmahajan/charts/kube-noob -n kube-noob --reuse-values \
+helm upgrade kube-noob oci://ghcr.io/kube-noob/charts/kube-noob -n kube-noob --reuse-values \
   --set "admission.enforce={KN-S001,KN-S009}"
 kube-noob admission review -f review.json --enforce KN-S001
 ```

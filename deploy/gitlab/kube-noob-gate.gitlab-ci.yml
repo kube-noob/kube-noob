@@ -9,7 +9,7 @@
 .kube-noob-gate:
   stage: test
   image:
-    name: ghcr.io/aashishmahajan/kube-noob:0.9.1
+    name: ghcr.io/kube-noob/kube-noob:0.9.1
     entrypoint: [""]
   variables:
     KUBE_NOOB_PATHS: "."

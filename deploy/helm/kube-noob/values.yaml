@@ -1,6 +1,6 @@
 # kube-noob Helm values. Defaults are secure: no web access, no cluster access, authenticated HTTP, NetworkPolicies on.
 image:
-  repository: ghcr.io/aashishmahajan/kube-noob
+  repository: ghcr.io/kube-noob/kube-noob
   tag: ""            # defaults to .Chart.AppVersion
   digest: ""         # sha256:... - takes precedence over tag when set
   pullPolicy: IfNotPresent
@@ -175,7 +175,7 @@ db:
   # 'https://github.com/aashishmahajan/kube-noob/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
   enabled: false
   image:
-    repository: ghcr.io/aashishmahajan/kube-noob-db
+    repository: ghcr.io/kube-noob/kube-noob-db
     digest: ""               # sha256:... (required when enabled)
   path: /kube-noob-db/kube-noob-db.tgz   # the archive inside the image
   sizeLimit: 2Gi             # the scratch volume the archive is copied to

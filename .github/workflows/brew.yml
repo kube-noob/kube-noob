@@ -89,10 +89,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
-          brew tap aashishmahajan/kube-noob https://github.com/aashishmahajan/kube-noob
-          brew trust --formula aashishmahajan/kube-noob/kube-noob
+          brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob
+          brew trust --formula kube-noob/kube-noob/kube-noob
           brew install kube-noob
-          formula="$(brew --repository aashishmahajan/kube-noob)/Formula/kube-noob.rb"
+          formula="$(brew --repository kube-noob/kube-noob)/Formula/kube-noob.rb"
           want="$(sed -n 's#^  url ".*/kube_noob-\([0-9][0-9.]*\)\.tar\.gz"#\1#p' "$formula")"
           got="$(kube-noob --version)"
           if [ "$got" != "kube-noob $want" ]; then echo "::error title=brew::installed '$got', formula says $want"; exit 1; fi
