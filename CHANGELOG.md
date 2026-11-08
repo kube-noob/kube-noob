@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **`docs/open-questions.md`: the decisions this project has not made, written for an external reviewer.** [ideation-review.md](docs/ideation-review.md) records what three external reviews proposed and what was refused; this is its forward-facing twin. It carries what the thing is in ten lines, the non-negotiables (so a reviewer does not spend effort on proposals that will be refused), the plan as it stands with the moat reconciliation (21 shipped, 7 partial, 29 not started), every open proposal with what already exists for it, and five numbered questions.
+
+  The questions are the point, because the last round produced about 250 proposals and five survivors, which suggests coverage is not the constraint: whether `cryptography` is worth it for R2, whether caller identity (N13) should outrank the whole moat queue, whether I1 or M6 is the right thing to prove first, where the line is on an unknown never reading as a pass before it becomes noise a reader ignores, and what is missing from every list. Every number in it was read off the code at v0.9.2 rather than recalled.
+
 ## 0.9.2 - 2026-11-08
 
 - **The chart installed an image that does not exist, and four other things the repository move broke (G266).** kube-noob moved from a personal account into the `kube-noob` organisation. GitHub redirects the old repository URLs, so most references kept working and the breakage stayed invisible until each step ran. The ones that do not redirect: GHCR namespaces, the MCP registry namespace, cosign certificate identities, `gh attestation --repo`, and the site repositories.

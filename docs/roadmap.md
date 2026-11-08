@@ -107,7 +107,8 @@ before reach, reach before breadth.** A verdict that can be wrong costs more tha
 ### From the external reviews, 2026-11-06
 
 Three external AI reviews proposed about 250 checks. Five survived, and
-[ideation-review.md](ideation-review.md) records all of them with the verdict and the reason, so the refusals
+[open-questions.md](open-questions.md) carries the decisions still open, written to be handed to an external
+reviewer whole. [ideation-review.md](ideation-review.md) records all of them with the verdict and the reason, so the refusals
 are findable instead of remembered. The test each had to pass: a real gap, decidable from evidence this tool can
 already reach, and not a new engine, integration or credential.
 
