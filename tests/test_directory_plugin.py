@@ -184,6 +184,28 @@ def test_the_plugin_stays_inside_the_directory_file_limits() -> None:
     assert not big, "over 256 KiB:\n" + "\n".join(big)
 
 
+def test_nothing_the_directory_shows_names_the_account_the_project_moved_out_of() -> None:
+    """The listing renders plugin.json's fields and the plugin folder's README, and both named the old account for
+    three releases after the move, because the test that should have caught it pinned the old owner as a literal.
+
+    The generated server copy under plugin/kube-noob/server is excluded: those URLs come from src/ and redirect, and
+    G266 left redirecting forms alone on purpose. The directory does not render them.
+    """
+    shown: list[Path] = []
+    for plugin in (FULL, LITE):
+        shown += [plugin / "README.md", plugin / ".claude-plugin" / "plugin.json"]
+        shown += sorted(plugin.glob("skills/*/SKILL.md"))
+    shown.append(ROOT / ".claude-plugin" / "marketplace.json")
+    bad: list[str] = []
+    for path in shown:
+        if not path.is_file():
+            continue
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if "aashishmahajan" in line:
+                bad.append(f"{path.relative_to(ROOT).as_posix()}:{n}: {line.strip()[:80]}")
+    assert not bad, "the directory shows these, and they name the previous owner:\n" + "\n".join(bad)
+
+
 # --- the commands the skills hand to the user have to be commands the CLI accepts --------------------------------
 
 

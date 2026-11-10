@@ -10,12 +10,12 @@ Research, Audit, Calibrate, Generate, Red Team.
 In Claude Code:
 
 ```
-/plugin marketplace add aashishmahajan/kube-noob
+/plugin marketplace add kube-noob/kube-noob
 /plugin install kube-noob@kube-noob
 ```
 
 In claude.ai or the Claude desktop app: **Customize > Plugins > Add > Add marketplace**, enter
-`aashishmahajan/kube-noob`, then add **kube-noob** from the list. It is saved to your account and also reaches
+`kube-noob/kube-noob`, then add **kube-noob** from the list. It is saved to your account and also reaches
 Claude Code.
 
 The tools run on your computer, so they work in Claude Code and in Cowork sessions on your computer; in a chat
@@ -59,7 +59,7 @@ runs, and that is the right way round for a tool people point at production clus
 ### What the vendored copy is
 
 The server source in `server/` is the modules of the
-[kube-noob repository](https://github.com/aashishmahajan/kube-noob)'s `src/kube_noob` that the stdio MCP server
+[kube-noob repository](https://github.com/kube-noob/kube-noob)'s `src/kube_noob` that the stdio MCP server
 imports, copied unchanged. The CLI, the optional model agent, the HTTP service and REST routes, the web client, Helm
 rendering and the cluster backends are not included, so nothing in that copy reads a credential, opens a connection or
 starts another program. Beside it is a `uv.lock` pinning every dependency to an exact version and SHA-256 hash.
@@ -88,10 +88,10 @@ a plain file with no resolver at all, does not fit the directory's file-count an
 - Asks you for nothing and reads nothing out of your environment. The plugin never asks for a token, a key or a
   password: it starts the server with the web, the cluster and the model off, so the settings that would read one
   are unreachable, and the one tool that reads your own files (must-gather analysis) is not in the plugin at all.
-- No telemetry and no accounts. Details: [PRIVACY.md](https://github.com/aashishmahajan/kube-noob/blob/main/PRIVACY.md).
+- No telemetry and no accounts. Details: [PRIVACY.md](https://github.com/kube-noob/kube-noob/blob/main/PRIVACY.md).
 
 ## Skills
 
 kube-master-controller, kubernetes-core, openshift-platform, rosa-hcp, helm-charts, rhacs-stackrox, kube-debugging.
 
-Docs: https://github.com/aashishmahajan/kube-noob
+Docs: https://github.com/kube-noob/kube-noob
