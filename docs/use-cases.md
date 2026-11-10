@@ -15,6 +15,9 @@ every time, and they run where you put them.
    ([openshift.md](openshift.md)). That client's model does the talking.
 3. **With no AI at all**: the CLI below. Audits, diagnoses, cited search, lessons and evidence bundles need no model
    and no network, which suits CI gates and air-gapped clusters.
+4. **With Claude, knowledge only** (the `kube-noob-skills` plugin): the same seven skills with no MCP server and no
+   code at all, for somewhere a plugin may not run anything. Claude gets the platform facts and the review protocol;
+   it gets no audit, no validator and no diagnosis, and each skill says so rather than implying otherwise.
 
 `kube-noob ask` is the one optional command that uses a model: one you configure, and only a local one under the
 offline lock.

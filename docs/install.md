@@ -11,7 +11,13 @@ pipx installed with Homebrew uses Homebrew's.
 | pipx | `pipx install kube-noob` | `pipx upgrade kube-noob` |
 | pip, in a virtual environment | `python3.13 -m venv ~/.venvs/kube-noob`, then `~/.venvs/kube-noob/bin/pip install kube-noob` | `~/.venvs/kube-noob/bin/pip install -U kube-noob` |
 | Container | `podman run --rm ghcr.io/kube-noob/kube-noob:0.9 --version` | pull the new tag |
-| Claude Code plugin | `/plugin marketplace add aashishmahajan/kube-noob`, then `/plugin install kube-noob@kube-noob` | `/plugin marketplace update kube-noob` |
+| Claude Code plugin | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob@kube-noob` | `/plugin marketplace update kube-noob` |
+| Claude Code plugin, knowledge only | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob-skills@kube-noob` | `/plugin marketplace update kube-noob` |
+
+`kube-noob-skills` is the same seven skills with **no MCP server and no code in the plugin at all**: the knowledge,
+without the audit, validation and diagnosis tools. Install `kube-noob@kube-noob` instead unless you specifically want
+a plugin that runs nothing. It exists because the Claude plugin directory accepts a plugin carrying a local MCP server
+only from a Verified organization, and there is no way to apply to become one.
 
 The tap is needed because kube-noob is not in Homebrew's main catalogue; after `brew tap`, `brew install kube-noob`
 finds it. Homebrew 6 and later also refuse formulae from third-party taps until you trust them; `brew trust

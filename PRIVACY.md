@@ -76,6 +76,12 @@ plugin ships only the modules of the stdio server: no CLI, model agent, HTTP ser
 so it reads no credentials and makes no network calls of its own. Personal data is never requested. If text you paste contains some, it is processed in memory
 and not stored, except words you choose to put in a confirmed note or a learner id.
 
+## The knowledge-only plugin
+
+`kube-noob-skills` contains Markdown and one image. There is no server in it, no Python and nothing to run, so it
+starts no process, installs no dependency, reads no file of yours and makes no network connection. What you type
+goes to Claude as it always does; this plugin adds nothing to that and receives nothing from it.
+
 ## The Agent Skill
 
 The skill runs where Claude runs code: your computer in Claude Code, a sandbox for chat on claude.ai. It reads only

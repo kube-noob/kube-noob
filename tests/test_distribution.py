@@ -30,7 +30,9 @@ def test_plugin_pins_the_release() -> None:
 
     plugin = json.loads((ROOT / "plugin/kube-noob/.claude-plugin/plugin.json").read_text())
     market = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text())
-    assert plugin["version"] == __version__ == market["plugins"][0]["version"]
+    assert plugin["version"] == __version__
+    assert {p["version"] for p in market["plugins"]} == {__version__}, "every marketplace entry is this release"
+    assert {p["name"] for p in market["plugins"]} == {"kube-noob", "kube-noob-skills"}
     assert tomllib.loads((ROOT / "plugin/kube-noob/pyproject.toml").read_text())["project"]["version"] == __version__
     lock = tomllib.loads((ROOT / "plugin/kube-noob/uv.lock").read_text())
     assert next(p for p in lock["package"] if p["name"] == "kube-noob-plugin")["version"] == __version__

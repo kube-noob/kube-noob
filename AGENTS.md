@@ -160,4 +160,13 @@ rewrite history on a shared branch.
   (403, including a workflow whose `GITHUB_TOKEN` has `pages: write`). An owner sets Custom domain to
   `kube-noob.com` in the repository's Pages settings. `www` still CNAMEs to `aashishmahajan.github.io`, so that
   name does not match the certificate. The package version is still 0.7.1.
-
+- The Claude plugin directory refuses `plugin/kube-noob` and always will while this organisation is not Verified:
+  "Local MCP servers accepted only from Verified organizations" and "Files outside the allowed types accepted only
+  from Verified organizations" (2026-11-10). 99 of its 218 files are a refused type and `.mcp.json` declares a local
+  stdio server, so no edit keeps the server and passes. There is no way to apply for Verified status: Anthropic's own
+  docs say the label is decided during review and the portal has no step for it. Do not strip the server out of
+  `plugin/kube-noob` -- it is what installs from this repository's own marketplace, and its seven skills call 46
+  `kubenoob_*` tools, so a server-less copy of them would name tools that do not exist. `plugin/kube-noob-skills` is
+  the directory's plugin: knowledge only, rewritten rather than copied, held by `tests/test_directory_plugin.py`
+  (G267). A remote MCP server pointing at the user's own `kube-noob serve` endpoint through a `userConfig` value
+  would be admissible and has not been decided; it would put a bearer token in the plugin.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The plugin directory refuses the plugin, and stripping the server out of it would have shipped a lie (G267).** The Claude plugin directory held `plugin/kube-noob` with two findings, both gated on a Verified-organization label with no application path: local MCP servers and files outside a short allow-list are accepted only from Verified organizations. The plugin is 218 files, 99 of them a refused type, and it declares a local stdio server, so there is no edit that keeps the server and passes.
+
+  `plugin/kube-noob` is unchanged and still installs from this repository's own marketplace with every tool. A second plugin, `plugin/kube-noob-skills`, carries the same knowledge as skills alone for the directory. Its seven skills were rewritten rather than copied: the originals call 46 `kubenoob_*` MCP tools, and a plugin with no server that still names them would be an absence reading as a pass. Each one now says which step is reasoning rather than verification, and ends with what it cannot do and the CLI command that can. A test fails the build if `kubenoob_` appears in that folder, if a file is of a type the directory refuses, if a skill is added to one plugin and not the other, or if a `kube-noob` command line in a skill names a subcommand or flag the CLI does not define -- which five of the first drafts did.
+
+  Both plugin manifests also still named the previous owner after the organisation move; the directory listing reads those fields.
+
 - **`docs/open-questions.md`: the decisions this project has not made, written for an external reviewer.** [ideation-review.md](docs/ideation-review.md) records what three external reviews proposed and what was refused; this is its forward-facing twin. It carries what the thing is in ten lines, the non-negotiables (so a reviewer does not spend effort on proposals that will be refused), the plan as it stands with the moat reconciliation (21 shipped, 7 partial, 29 not started), every open proposal with what already exists for it, and five numbered questions.
 
   The questions are the point, because the last round produced about 250 proposals and five survivors, which suggests coverage is not the constraint: whether `cryptography` is worth it for R2, whether caller identity (N13) should outrank the whole moat queue, whether I1 or M6 is the right thing to prove first, where the line is on an unknown never reading as a pass before it becomes noise a reader ignores, and what is missing from every list. Every number in it was read off the code at v0.9.2 rather than recalled.

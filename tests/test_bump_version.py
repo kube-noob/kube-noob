@@ -20,6 +20,7 @@ FILES = [
     "server.json",
     ".claude-plugin/marketplace.json",
     "plugin/kube-noob/.claude-plugin/plugin.json",
+    "plugin/kube-noob-skills/.claude-plugin/plugin.json",
     "plugin/kube-noob/pyproject.toml",
     "plugin/kube-noob/uv.lock",
     "plugin/kube-noob/server/kube_noob/__init__.py",

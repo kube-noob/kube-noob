@@ -2,7 +2,7 @@
   "name": "kube-noob",
   "owner": {
     "name": "kube-noob maintainers",
-    "url": "https://github.com/aashishmahajan/kube-noob"
+    "url": "https://github.com/kube-noob/kube-noob"
   },
   "metadata": {
     "description": "kube-noob plugin marketplace"
@@ -14,7 +14,28 @@
       "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and learning as tools for Claude. No AI inside; runs locally.",
       "version": "0.9.2",
       "license": "Apache-2.0",
-      "keywords": ["kubernetes", "openshift", "rosa", "helm", "stackrox", "mcp"]
+      "keywords": [
+        "kubernetes",
+        "openshift",
+        "rosa",
+        "helm",
+        "stackrox",
+        "mcp"
+      ]
+    },
+    {
+      "name": "kube-noob-skills",
+      "source": "./plugin/kube-noob-skills",
+      "description": "The same Kubernetes, OpenShift, ROSA, Helm and RHACS knowledge as skills alone. No MCP server and no code: install kube-noob@kube-noob instead if you want the tools.",
+      "version": "0.9.2",
+      "license": "Apache-2.0",
+      "keywords": [
+        "kubernetes",
+        "openshift",
+        "rosa",
+        "helm",
+        "stackrox"
+      ]
     }
   ]
 }
