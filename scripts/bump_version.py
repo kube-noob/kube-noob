@@ -23,6 +23,7 @@ TARGETS: dict[str, tuple[str, ...]] = {
     "server.json": (r'"version": "(?P<v>[^"]+)"',),
     ".claude-plugin/marketplace.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
+    "plugin/kube-noob-skills/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob/pyproject.toml": (r'^version = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/uv.lock": (r'^name = "kube-noob-plugin"\nversion = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/server/kube_noob/__init__.py": (r'__version__ = "(?P<v>[^"]+)"',),

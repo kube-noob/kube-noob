@@ -169,7 +169,13 @@ def test_manifest_uses_only_fields_the_plugin_reference_defines() -> None:
     assert all(manifest[k].startswith("https://") for k in listing & set(manifest))
     assert manifest["privacyPolicyUrl"].endswith("/PRIVACY.md")
     assert (PLUGIN / manifest["icon"]).is_file()
-    assert manifest["homepage"].startswith("https://github.com/aashishmahajan/kube-noob")
+    # The owner is `kube-noob` since the organisation move. This assertion named the personal account until the
+    # directory listing turned out to be reading these fields (G267); pinning it to a literal is what let both
+    # plugin manifests keep the old owner for three releases after the move.
+    assert manifest["homepage"] == manifest["repository"], "homepage and repository disagree"
+    assert manifest["repository"] == "https://github.com/kube-noob/kube-noob"
+    for url in (manifest[k] for k in listing & set(manifest)):
+        assert "/aashishmahajan/" not in url, f"{url} still names the account the project moved out of"
     assert (ROOT / "PRIVACY.md").is_file()
     assert "No AI inside" in manifest["description"]
     # userConfig: the plugin manifest reference's own option keys, and nothing kube-noob would have to be trusted

@@ -4,13 +4,13 @@
   "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS expertise as tools for Claude: audit YAML, diagnose read-only first, cite docs, learn with graded exercises. No AI inside: Claude does the thinking. kube-noob runs locally and makes no network calls of its own; uv installs its hash-pinned dependencies once.",
   "author": {
     "name": "kube-noob maintainers",
-    "url": "https://github.com/aashishmahajan/kube-noob"
+    "url": "https://github.com/kube-noob/kube-noob"
   },
-  "homepage": "https://github.com/aashishmahajan/kube-noob",
-  "repository": "https://github.com/aashishmahajan/kube-noob",
-  "documentationUrl": "https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md",
-  "supportUrl": "https://github.com/aashishmahajan/kube-noob/issues",
-  "privacyPolicyUrl": "https://github.com/aashishmahajan/kube-noob/blob/main/PRIVACY.md",
+  "homepage": "https://github.com/kube-noob/kube-noob",
+  "repository": "https://github.com/kube-noob/kube-noob",
+  "documentationUrl": "https://github.com/kube-noob/kube-noob/blob/main/docs/install.md",
+  "supportUrl": "https://github.com/kube-noob/kube-noob/issues",
+  "privacyPolicyUrl": "https://github.com/kube-noob/kube-noob/blob/main/PRIVACY.md",
   "license": "Apache-2.0",
   "keywords": [
     "kubernetes",
