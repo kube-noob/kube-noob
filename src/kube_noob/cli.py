@@ -1008,7 +1008,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Override cluster.enabled: true (read-only)",
     )
-    common.add_argument("--format", choices=["text", "json", "yaml"], default=argparse.SUPPRESS)
+    common.add_argument(
+        "--format",
+        choices=["text", "json", "yaml", "sarif"],
+        default=argparse.SUPPRESS,
+        help="output format. `sarif` (SARIF 2.1.0) is for `audit` only: it is a format for findings, and a command "
+        "with none to put in it refuses rather than print something else under that name",
+    )
     p = argparse.ArgumentParser(
         prog="kube-noob",
         description="Kubernetes/OpenShift/ROSA/Helm/RHACS audit, debugging and learning tools. No AI inside.",
@@ -2114,6 +2120,18 @@ def main(argv: list[str] | None = None) -> int:
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
+    if a.format == "sarif" and a.cmd != "audit":
+        # `--format` is shared by every command, so argparse accepts this. Printing YAML under the name would hand
+        # a caller a file called .sarif that is not SARIF; the gate writes its own with `gate --sarif PATH`.
+        print(
+            f"error: --format sarif is for `kube-noob audit`; `{a.cmd}` has no findings to put in a SARIF document "
+            "(the gate writes one with `kube-noob gate --sarif PATH`)",
+            file=sys.stderr,
+        )
+        return 2
+    if a.format == "sarif" and getattr(a, "oscal", False):
+        print("error: --oscal and --format sarif each replace the report; ask for one document", file=sys.stderr)
+        return 2
     try:
         s = _settings(a)
         return _dispatch(a, s)
@@ -2186,6 +2204,14 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 _emit(assessment_results(rep, import_ap=a.oscal_import_ap), "json" if a.format == "text" else fmt)
                 # The document names the skipped files in its remarks, and the operator still gets the notice
                 # on stderr: a partial audit must not look clean on either channel.
+                for b in unreadable:
+                    print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
+            elif a.format == "sarif":
+                from kube_noob.gate import sarif_of_audit
+
+                # The document carries what was not read and not evaluated as notifications, and the operator
+                # still gets the notice on stderr: a partial audit must not look clean on either channel.
+                print(json.dumps(sarif_of_audit(rep), indent=2))
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":

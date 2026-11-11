@@ -42,18 +42,20 @@ refused, and the reasons are in [ideation-review.md](ideation-review.md).
 correctness, four adversarial passes, 49 defects, and eight guidance rows (G259-G266). The roadmap's own principle
 says that is the right order, but it means the differentiating work has not started.
 
-The queue, reconciled against the code on 2026-11-05: **21 shipped, 7 partial, 29 not started.**
+The queue, reconciled against the code on 2026-11-11: **22 shipped, 7 partial, 28 not started.**
 
 Sequence, with what each already has:
 
 1. **E2** installed-operator inventory. The must-gather analyser already parses ClusterServiceVersions. Unblocks
    E1, R5 and the upgrade pre-mortem.
-2. **I2** CI surfaces, three criteria missing: `audit --format sarif`, NIST controls as SARIF rule properties, a
-   vendored SARIF schema with a validation test. The OSCAL work is the pattern to copy.
-3. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
-4. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
-5. **I1** Alertmanager receiver. The only item that makes the north-star claim measurable: *alert to evidence pack
-   in a minute*. Every analyser it needs already works.
+2. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
+3. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
+4. **I1** Alertmanager receiver, the rest of it. The only item that makes the north-star claim measurable: *alert
+   to evidence pack in a minute*. The receiver route already ships and returns the signals in a payload; the
+   per-alert report, its storage and the receipt-to-report clock do not exist.
+
+I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF
+outputs validated against the vendored OASIS schema.
 
 ## The proposals, with what exists today
 
@@ -89,7 +91,7 @@ per-request audit record at all. The counter-argument is that the moat items are
 deploy in a regulated environment, or a deployable tool with no moat?
 
 **3. Is I1 the right north-star proof, or a distraction?** The claim is *alert to evidence pack in a minute*, and
-I1 (Alertmanager receiver) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
+I1 (Alertmanager receiver, already half built) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
 says allowed, packets say dropped) "the insurance on the policy wedge", and M6 is the harder, more defensible
 thing. Which should be built first, and does proving the north-star claim matter if the wedge is unproven?
 

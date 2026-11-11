@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`audit --format sarif`, with the controls on the rules and the run's blind spots in the file (G269).** SARIF is a list of results, so a partial audit and a clean one differ only in length. The audit's `assumptions` (what it did not evaluate, for example because it was given part of a namespace) and its unreadable files now travel in the document as `toolExecutionNotifications`, where the JSON report already carried them and a format that replaces the report would have dropped them.
+
+  Every rule in the audit's SARIF and the gate's carries its NIST SP 800-53 controls, as `NIST-800-53/<id>` tags and as a `nist-800-53` list; a rule mapped to none has no such property. `--format sarif` on any command but `audit` exits 2 rather than printing YAML under the name, and `--oscal` with `--format sarif` exits 2 rather than choosing for you. The audit's exit code is unchanged by the flag. The SARIF `informationUri` names the project's current home. This completes I2.
+
 - **The SARIF the gate hands to code scanning named a schema nothing had ever read (G268).** Every file `gate --sarif` writes carries `"$schema": "https://json.schemastore.org/sarif-2.1.0.json"`, and no test or CI step had ever validated a document against it, in a tool whose argument is that it needs no network. It was valid; it was valid by luck.
 
   The OASIS schema is now vendored under `tests/fixtures/sarif/` with its upstream sha256, refetched by `python scripts/vendor_schemas.py --sarif`, and both `scripts/check.sh` and CI validate the gate's own output against it. SARIF 2.1.0 declares draft-04 and uses the `id` keyword that ajv 8 refuses, so the validator now picks its compiler from the dialect the schema declares instead of rewriting the schema; a test asserts that dialect so a re-vendor cannot fall through to the wrong one, and another requires the validator to reject a document with a `level` the schema does not allow, since a validator that waves everything through passes as quietly as one that works. `scripts/oscal_validate.mjs` is now `scripts/json_schema_validate.mjs`: one validator, two dialects.
