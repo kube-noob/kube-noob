@@ -54,9 +54,21 @@ class MustGatherError(ValueError):
     """Not a must-gather we can open, or one that is unsafe or over the caps."""
 
 
+# An OLM object file as oc adm inspect writes it. Its name is an operator's or a namespace's, never a Secret's, so a
+# CSV named `secrets-store-csi-driver-operator.v4.14.0` or a namespace called `secrets` is read rather than
+# dropped as "Secret data" -- which made the operator inventory answer without a real operator (G270).
+_OLM_OBJECT = re.compile(
+    r"(?:^|/)namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/operators\.coreos\.com/"
+    r"(?:clusterserviceversions|subscriptions|installplans|operatorgroups)(?:\.(?:ya?ml|json)|/[^/]+\.(?:ya?ml|json))\Z"
+)
+MAX_SKIPPED_PATHS = 20_000
+
+
 def secret_like(path: str) -> bool:
     """A file kube-noob never reads: ``secrets.yaml``, a file under a ``secrets`` directory, or a file named for one
-    Secret (``secret-<name>.yaml``)."""
+    Secret (``secret-<name>.yaml``). An OLM object file in the layout oc adm inspect writes is not one."""
+    if _OLM_OBJECT.search(path):
+        return False
     parts = path.lower().split("/")
     name = parts[-1]
     return (
@@ -116,9 +128,17 @@ class Bundle:
     skipped: Counter[str] = field(default_factory=Counter)
     examples: dict[str, list[str]] = field(default_factory=dict)
     truncated: list[str] = field(default_factory=list)  # logs cut to their tail
+    #: Every skipped path with its reason (up to MAX_SKIPPED_PATHS; past that only counted), so a reader that needs
+    #: a kind of file can tell "not in the must-gather" from "in it, and not read".
+    skipped_paths: list[tuple[str, str]] = field(default_factory=list)
+    skipped_unlisted: int = 0
 
     def skip(self, reason: str, path: str) -> None:
         self.skipped[reason] += 1
+        if len(self.skipped_paths) < MAX_SKIPPED_PATHS:
+            self.skipped_paths.append((path, reason))
+        else:
+            self.skipped_unlisted += 1
         ex = self.examples.setdefault(reason, [])
         if len(ex) < 5:
             ex.append(_CONTROL.sub("?", path)[:300])
