@@ -69,6 +69,7 @@ outputs validated against the vendored OASIS schema.
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |
 | **R5** | Operator and add-on vulnerability surface | Gated on E2: match installed CSV versions against the known-issue corpus, which ships |
 | **R6** | Admission sees pod specs inside operator CRDs -- policies half | The webhook runs the audit and finds them; the generated policies do not. Needs a kind job |
+| **R8** | A permissive SCC whose own `users`/`groups` name everyone | `KN-S019` reports the SCC, `KN-S028` RBAC bindings to everyone, attack paths one ServiceAccount at a time; no single audit finding for the SCC's own subject list |
 | **P10** | Host-networked pods selected by policies the spec says cannot select them | Found red-teaming P4. Changes shared v1alpha1 primitives, so deliberately not folded in |
 | **M6** | `net verify`: policy says allowed, packets say dropped | The roadmap calls this "the insurance on the policy wedge". Needs an OVN cluster to validate |
 

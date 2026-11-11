@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 145 957 to
-74 544 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 173 to
+74 760 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -881,7 +881,7 @@ object and the path, and `posture scan` records the same in `notRead`. You get a
 clean report you cannot trust, and a kind worth reading properly can be added with its published schema.
 
 ```bash
-kube-noob audit -f serving/            # the same 93 rules, now reaching the components
+kube-noob audit -f serving/            # the same 98 rules, now reaching the components
 kube-noob posture scan -f serving/     # per-component attack paths
 kube-noob --cluster-enabled posture scan --live -n model-serving
 ```
@@ -1070,6 +1070,35 @@ than a family of checks about a SIEM kube-noob has no credentials for.
 oc get apiserver cluster -o yaml > apiserver.yaml
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20 --format json | jq .detectionCoverage
+```
+
+### Does the control plane check who it talks to?
+
+Five rules read the settings that decide whether the cluster's own components verify, authenticate and encrypt.
+`KN-S037` reports an APIService that sends its API group to an extension API server with `insecureSkipTLSVerify`
+(an absent `caBundle` is not a finding: the API server then uses its system trust roots, and OpenShift's service CA
+fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the AlwaysAllow authorizer and anonymous
+authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
+certificates switched off. Both recognise the component by the binary the container runs, never by its name or
+a label, and an absent flag is the upstream default, named in the finding with the releases it was checked at:
+anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
+`--authorization-mode` nor `--authorization-config` authorizes everything. On OpenShift, `KN-S040` reports
+encryption at rest switched off on the same `APIServer` object `KN-S035` reads, and `KN-S041` an LDAP identity
+provider with `insecure: true` and an `ldap://` URL.
+
+Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
+`--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
+`envFrom` can set any `ETCD_*` variable; a shell script that runs the binary is not executed; a value passed as
+`$(VAR)` is not expanded; an encryption type or identity provider type openshift/api does not define is not
+guessed at. On ROSA with HCP the API server, etcd and the OAuth server are configured from the `HostedCluster` on
+the management cluster, and on the rest of the OpenShift family the API server is operator-managed. In each case
+the rule is left out of the evaluated list, its controls count it as not evaluated, and the report states why in
+one line -- in the text view, the JSON, the SARIF notifications and the MCP result alike.
+
+```bash
+kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33
+oc get apiserver cluster -o yaml > cp.yaml; echo --- >> cp.yaml; oc get oauth cluster -o yaml >> cp.yaml
+kube-noob audit -f cp.yaml --platform openshift --version 4.20
 ```
 
 ### Enforce the audit rules at admission

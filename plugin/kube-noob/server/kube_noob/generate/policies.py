@@ -117,6 +117,7 @@ TARGETS: dict[str, Target] = {
         Target("PodDisruptionBudget", "policy", "v1", "poddisruptionbudgets"),
         Target("MachineConfig", "machineconfiguration.openshift.io", "v1", "machineconfigs", namespaced=False),
         Target("MachineConfigPool", "machineconfiguration.openshift.io", "v1", "machineconfigpools", namespaced=False),
+        Target("APIService", "apiregistration.k8s.io", "v1", "apiservices", namespaced=False),
     )
 }
 OPENSHIFT_GROUPS = frozenset(
@@ -395,6 +396,19 @@ NOT_GENERATED: dict[str, str] = {
     "KN-S035": "admission cannot help: the finding is the state of one cluster-scoped singleton that "
     "already exists, not an object anybody is about to create, and a policy that blocked edits to it "
     "would stop an administrator turning auditing back ON as readily as off",
+    "KN-S038": "the kubelet runs a static Pod from a file on the node and the API server holds only its mirror, "
+    "which cannot stop it (deleting the mirror leaves the static Pod running), so refusing the mirror at admission "
+    "would not stop the container; `kube-noob audit` reads the manifest",
+    "KN-S039": "the kubelet runs a static Pod from a file on the node and the API server holds only its mirror, "
+    "which cannot stop it, so refusing the mirror at admission would not stop etcd; `kube-noob audit` reads the "
+    "manifest",
+    "KN-S040": "the finding is the state of the APIServer singleton every OpenShift cluster already has, unset by "
+    "default, so a policy would see only later edits and would refuse every one of them -- an audit-profile change "
+    "included -- until encryption is turned on; `kube-noob audit` checks it",
+    "KN-S041": "the finding is the state of the OAuth singleton every OpenShift cluster already has, so a policy "
+    "would see only later edits, and where an insecure provider is already configured it would refuse every edit "
+    "of the object -- adding a provider or changing a CA reference included -- until that one is fixed; "
+    "`kube-noob audit` checks it",
     "KN-S034": "the webhook and the generated policies exempt openshift-* namespaces, where operator "
     "Subscriptions normally live, so a policy would not see the objects this rule is about",
     "KN-C015": "needs the namespace's ResourceClaims and templates (other objects); `kube-noob audit` checks "
@@ -766,6 +780,14 @@ def _checks(
         ),
         Check("KN-N005", ("Service",), ("!(has(object.spec.type) && object.spec.type == 'NodePort')",)),
         Check("KN-N008", ("Service",), ("!has(object.spec.externalIPs) || object.spec.externalIPs.size() == 0",)),
+        Check(
+            "KN-S037",
+            ("APIService",),
+            (
+                "!(has(object.spec.service) && has(object.spec.insecureSkipTLSVerify) && "
+                "object.spec.insecureSkipTLSVerify == true)",
+            ),
+        ),
         Check("KN-N009", ("Ingress",), (f"!has(object.metadata.annotations) || !({_NGINX_RISKY})",)),
         Check("KN-N010", ("ConfigMap",), (f"!has(object.data) || !({_NGINX_CONFIGMAP})",)),
         Check(

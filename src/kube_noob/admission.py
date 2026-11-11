@@ -75,6 +75,11 @@ SKIPPED_RULES = frozenset(
         # on every correct DRA Pod. Fetching them would need get and list on resourceclaims, a privilege the
         # chart does not grant and should not need for a warning `kube-noob audit` already gives on a directory.
         "KN-C015",
+        # The kubelet runs a static Pod from a file on the node and the API server holds only its mirror, which
+        # cannot stop it: denying the mirror would leave kube-apiserver or etcd running and the request retried.
+        # `kube-noob audit` reads the manifest itself (G272).
+        "KN-S038",
+        "KN-S039",
     }
 )
 CROSS_OBJECT = frozenset(

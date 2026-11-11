@@ -18,7 +18,7 @@ What kube-noob answers, what it leaves unanswered and where it is weak, measured
 | Held-out triage questions that name the labelled cause | 80 of 114 | `python scripts/eval_triage.py` |
 | Training triage questions that name the labelled cause | 136 of 171 | `python scripts/eval_triage.py --dir tests/fixtures/triage-train` |
 | Self-test cases passed | 63 of 63 | `kube-noob selftest` |
-| Audit rules | 93 | `python -c "from kube_noob.audit.engine import RULES; print(len(RULES))"` |
+| Audit rules | 98 | `python -c "from kube_noob.audit.engine import RULES; print(len(RULES))"` |
 | Diagnosis playbooks | 67 | `python -c "from kube_noob.debug.playbooks import PLAYBOOKS; print(len(PLAYBOOKS))"` |
 | Knowledge documents | 65 | `python -c "from kube_noob.knowledge.store import builtin_chunks; print(len({c.doc_id for c in builtin_chunks()}))"` |
 | Knowledge sections | 288 | `python -c "from kube_noob.knowledge.store import builtin_chunks; print(len(builtin_chunks()))"` |
@@ -38,7 +38,7 @@ The community-question numbers are quoted in the last section; their command nee
 
 ## What it carries
 
-- 93 audit rules (56 audit, 13 calibrate, 24 validate).
+- 98 audit rules (61 audit, 13 calibrate, 24 validate).
 - 67 diagnosis playbooks with 170 root causes.
 - 288 knowledge sections in 65 documents.
 - 921 reported issues from the bundled OpenShift release notes.

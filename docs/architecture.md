@@ -109,6 +109,13 @@ flowchart LR
   shipped in an image the chart pins by digest. The init container copies the archive into a scratch volume that the
   server mounts read-only; `serve` validates the whole archive and imports it only when it is newer than the copy
   it has. Trust boundary: the image registry and its signature, checked by the operator with `cosign verify`.
+- The control-plane rules (`KN-S037`..`KN-S041`, G272) read only what the manifest states: a static pod's
+  `command`, `args` and literal `env` values, an APIService, and the OpenShift `APIServer` and `OAuth`
+  singletons, whose identity-provider entries name Secrets and ConfigMaps by reference only. They never open a
+  file a flag names (`--authorization-config`, `--authentication-config`, etcd's `--config-file`), never follow
+  `valueFrom` or `envFrom`, never expand `$(VAR)` and never run a shell script; each of those makes the rule
+  decline with the reason, so what was not read is part of the answer rather than a pass. Nothing new is read
+  from a cluster: these kinds reach the audit only when the user passes them.
 - The attack-path scan (`posture scan`, tools `posture_scan` and `cluster_posture_scan`) reads RBAC objects (who may do what, no credentials) and the objects that expose and run pods; Secret objects in a bundle are dropped before analysis, and the live allowlist refuses Secrets. It reports paths and fixes and changes nothing.
 - Build analytics (`kube_noob.build.analytics`) reads run folders on disk; JUnit XML with a DOCTYPE or entities is refused before parsing, and every file is size-bounded. `kube_noob.build.github_history` is the only code that reads the GitHub token: through `net.Purpose.CI` (on only with `ci.githubEnabled`, GET only, https to the configured API host and port only, no redirects), with a random pause between requests; the Claude plugin does not ship it.
 - The CI gate (`kube_noob.gate`) is offline: it reads the files it is given (and runs `helm template` for `--chart`, with a throwaway Helm home), audits them together so rules that need other objects still work, maps each finding back to its file and line (or chart template), and writes SARIF, Markdown and code quality JSON. The GitHub Action installs kube-noob from its own source with hash-pinned dependencies and a hash-pinned build backend and passes every input through the environment; the Tekton Task mounts the source read-only and passes params through the environment.

@@ -843,6 +843,7 @@ BY_CONTROL: dict[str, tuple[str, ...]] = {
     "IA-5(7)": ("KSI-PIY-RSD",),
     "SA-22": ("KSI-SCR-MIT",),
     "SC-28": ("KSI-SVC-SIN",),
+    "SC-28(1)": ("KSI-SVC-SIN",),
     "SC-36": (),
     "SC-39": ("KSI-IAM-ELP", "KSI-IAM-JIT", "KSI-SVC-EIS"),
     "SC-4": ("KSI-CNA-ULN", "KSI-IAM-ELP", "KSI-PIY-RSD", "KSI-SVC-PRR", "KSI-SVC-SIN"),

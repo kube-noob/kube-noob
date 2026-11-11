@@ -636,6 +636,29 @@ def machine_config(rng: random.Random, i: int) -> dict[str, Any]:
     }
 
 
+def apiservice(rng: random.Random, i: int) -> dict[str, Any]:
+    """KN-S037: local and remote APIServices, with and without the flag, with and without a caBundle."""
+    spec: dict[str, Any] = {
+        "group": f"g{i}.example.com",
+        "version": "v1",
+        "groupPriorityMinimum": 100,
+        "versionPriority": 10,
+    }
+    if rng.random() < 0.75:
+        spec["service"] = {"name": f"ext{i}", "namespace": "ext", "port": rng.choice((443, 8443))}
+    flag = rng.choice((None, None, True, False))
+    if flag is not None:
+        spec["insecureSkipTLSVerify"] = flag
+    if rng.random() < 0.3 and flag is not True:
+        spec["caBundle"] = "LS0tLS1CRUdJTg=="
+    return {
+        "apiVersion": "apiregistration.k8s.io/v1",
+        "kind": "APIService",
+        "metadata": {"name": f"v1.g{i}"},
+        "spec": spec,
+    }
+
+
 def corpus(seed: int, n: int, openshift: bool) -> list[dict[str, Any]]:
     rng = random.Random(seed)
     makers = [rbac, binding, service, ingress, netpol, storage_class, pdb, configmap, secret, persistent_volume]
@@ -648,4 +671,8 @@ def corpus(seed: int, n: int, openshift: bool) -> list[dict[str, Any]]:
             out.append(workload(rng, i, kinds))
         else:
             out.append(rng.choice(makers)(rng, i))
+    # Kinds added after the corpus was first seeded draw from their own generator, so every object above is the
+    # same one it always was and no existing rule's cross-check moved.
+    extra = random.Random(seed + 37)
+    out.extend(apiservice(extra, n + i) for i in range(max(n // 20, 8)))
     return out

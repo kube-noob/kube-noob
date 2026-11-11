@@ -197,6 +197,10 @@ def privilege_escalation(ctx: AuditContext, findings: list[Finding]) -> RedTeamS
         "KN-ST006",
         "KN-S002",
         "KN-S003",
+        # The control plane itself: an API server that authorizes everything, and an etcd anyone can reach, are
+        # the cluster takeover this scenario is about, one step shorter (G272).
+        "KN-S038",
+        "KN-S039",
     )
     fs = [f for f in fs if f.severity >= Severity.MEDIUM]
     if not ctx.docs:

@@ -1,0 +1,16 @@
+rule: KN-S040
+# The APIServer config resource only exists on OpenShift; on kubernetes this rule has nothing to read.
+platform: openshift
+version: '4.20'
+good: |
+  apiVersion: config.openshift.io/v1
+  kind: APIServer
+  metadata: {name: cluster}
+  spec:
+    encryption: {type: aesgcm}
+bad: |
+  apiVersion: config.openshift.io/v1
+  kind: APIServer
+  metadata: {name: cluster}
+  spec:
+    encryption: {type: identity}

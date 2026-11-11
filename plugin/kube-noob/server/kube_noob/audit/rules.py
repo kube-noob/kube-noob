@@ -77,9 +77,18 @@ class AuditContext:
     # registries an organisation approved, so KN-S036 declines without it rather than passing every image.
     allowed_registries: tuple[str, ...] = ()
     undecided: set[str] = field(default_factory=set)
+    # Why, for the rules that can say. A declined rule already shows up as `notEvaluated` in the control summary;
+    # without the reason a reader sees a count and has to guess whether the input was incomplete, the platform
+    # was wrong, or the object was in a shape kube-noob does not read. `analyze` turns these into assumptions,
+    # so the reason reaches the text view, the JSON and the MCP result alike (G272).
+    declined: dict[str, list[str]] = field(default_factory=dict)
 
-    def cannot_decide(self, rule_id: str) -> None:
+    def cannot_decide(self, rule_id: str, reason: str | None = None) -> None:
         self.undecided.add(rule_id)
+        if reason:
+            seen = self.declined.setdefault(rule_id, [])
+            if reason not in seen:
+                seen.append(reason)
 
     @property
     def is_openshift(self) -> bool:
@@ -4008,6 +4017,34 @@ AUDIT_PROFILE_NONE = "None"
 #: different resource that happens to share a name.
 APISERVER_GROUP = "config.openshift.io"
 
+#: The platforms whose control plane HyperShift runs outside the cluster. Their kube-apiserver, etcd and OAuth
+#: server are configured from the `HostedCluster` on the management cluster, so an object in the hosted cluster
+#: is not where those settings are decided (openshift/hypershift api/hypershift/v1beta1/hostedcluster_types.go at
+#: f4540b4168b8: `spec.secretEncryption`, `spec.configuration.oauth`).
+HOSTED_CONTROL_PLANE_PLATFORMS = frozenset({"rosa-hcp"})
+
+
+def cluster_apiservers(ctx: AuditContext) -> list[Document]:
+    """Every `config.openshift.io` APIServer in the bundle: the one reader KN-S035 and KN-S040 share."""
+    # Exact group, not a prefix. `apiVersion` is a Kubernetes group/version, and comparing the group
+    # itself says what is meant -- any served version of config.openshift.io, and nothing whose group
+    # merely begins with those characters. CodeQL reads a dotted literal in `startswith` as URL
+    # validation and flags it; it was not exploitable here (the trailing slash makes it a true prefix),
+    # but a split on the separator is what the data model actually is.
+    return [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
+
+
+def _singleton(docs: list[Document]) -> Document | None:
+    """The cluster-scoped config object the platform reads: the one named `cluster`, or the only one there is.
+
+    Several objects of which none is named `cluster` is a bundle that does not say which configuration the cluster
+    has; the caller declines rather than picking one (the same stance `kube_noob.audit.detection` takes).
+    """
+    if len(docs) == 1:
+        return docs[0]
+    named = [d for d in docs if d.name == "cluster"]
+    return named[0] if len(named) == 1 else None
+
 
 @rule(
     "KN-S035",
@@ -4040,12 +4077,7 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     """
     if not ctx.is_openshift:
         return  # the resource does not exist off OpenShift; see N15 on telling that apart from a pass
-    # Exact group, not a prefix. `apiVersion` is a Kubernetes group/version, and comparing the group
-    # itself says what is meant -- any served version of config.openshift.io, and nothing whose group
-    # merely begins with those characters. CodeQL reads a dotted literal in `startswith` as URL
-    # validation and flags it; it was not exploitable here (the trailing slash makes it a true prefix),
-    # but a split on the separator is what the data model actually is.
-    docs = [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
+    docs = cluster_apiservers(ctx)
     if not docs:
         ctx.cannot_decide(r.rule_id)
         return
@@ -4076,6 +4108,670 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 f"({str(audit.get('profile') or 'Default')!r}), so this cluster looks audited and is not, for "
                 f"everyone in that group.",
             )
+
+
+# =====================================================================================================
+# AUDIT - the control plane and its trust boundaries (G272)
+# =====================================================================================================
+# Every fact below was read on 2026-11-11 from the upstream source at the commit named, and the defaults were
+# checked at the release tags named, rather than recalled:
+#   kubernetes/kubernetes fba15ecefa95 (master, 1.38 development): kube-aggregator apiregistration/v1 types.go,
+#     pkg/kubeapiserver/options/authentication.go and authorization.go; the same defaults at v1.6.0 ... v1.37.0.
+#   etcd-io/etcd d11eca9a9c16 (main): server/embed/config.go, server/etcdmain/config.go, pkg/flags/flag.go; the
+#     same defaults at v3.4.0, v3.5.0 and v3.6.0.
+#   openshift/api 61403fc4e89f (master): config/v1/types_apiserver.go and types_oauth.go.
+
+#: The group an APIService lives in. A kind of that name in any other group is a different resource.
+APISERVICE_GROUP = "apiregistration.k8s.io"
+
+
+@rule(
+    "KN-S037",
+    "APIService does not verify the extension API server it forwards to",
+    Stage.AUDIT,
+    "security",
+    Severity.MEDIUM,
+    "Remove spec.insecureSkipTLSVerify and set spec.caBundle to the CA that signed the extension API server's "
+    "serving certificate (on OpenShift, annotate the APIService with service.beta.openshift.io/inject-cabundle: "
+    '"true" and let the service CA fill it).',
+    "With insecureSkipTLSVerify the aggregation layer sends every request for that API group to whatever answers on "
+    "the named Service without checking its certificate. Upstream's own field comment calls this strongly "
+    "discouraged. An absent caBundle is not the same thing: the API server then verifies against its system trust "
+    "roots.",
+    ("k8s-apiservice-types",),
+)
+def _s037(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    """An APIService whose aggregator does not verify the far end.
+
+    `spec.service` nil means the group is served by the API server itself and there is no remote end, so a local
+    APIService is out of scope whatever it says. `insecureSkipTLSVerify` is a plain bool in the API type; any
+    other value is an object the API server refuses to decode, which this rule declines rather than guesses.
+    """
+    for d in ctx.by_kind("APIService"):
+        if d.api_version.split("/", 1)[0] != APISERVICE_GROUP:
+            continue
+        spec = d.data.get("spec") if isinstance(d.data, dict) else None
+        if not isinstance(spec, dict):
+            continue
+        service = spec.get("service")
+        if service is None:
+            continue  # served locally: nothing on the other end of a connection to verify
+        flag = spec.get("insecureSkipTLSVerify")
+        if flag is None or flag is False:
+            continue
+        if flag is not True or not isinstance(service, dict):
+            what = (
+                "spec.service is not a mapping"
+                if not isinstance(service, dict)
+                else (f"spec.insecureSkipTLSVerify is {flag!r}, not a boolean")
+            )
+            ctx.cannot_decide(r.rule_id, f"{d.ref()}: {what}, which the API server does not accept")
+            continue
+        target = f"{service.get('namespace') or '<no namespace>'}/{service.get('name') or '<no name>'}"
+        group = f"{spec.get('group') or '<no group>'}/{spec.get('version') or '<no version>'}"
+        yield r.finding(
+            d,
+            ("spec", "insecureSkipTLSVerify"),
+            f"{d.ref()} sets insecureSkipTLSVerify: true, so the API server sends every request for {group} -- "
+            f"with the identity of the user who made it -- to whatever answers on Service {target}, without checking "
+            "its certificate. Anyone who can take over that Service's endpoints can answer for the whole API group.",
+        )
+
+
+#: Shells whose `-c` script may start a control-plane binary. Such a container is RECOGNISED and then declined:
+#: the flags are in a script kube-noob does not execute, so neither a finding nor a pass can be read from it.
+_SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh"})
+
+
+def _basename(token: str) -> str:
+    return token.rsplit("/", 1)[-1]
+
+
+def _control_plane_argv(c: dict[str, Any], binary: str) -> tuple[str, list[str], int] | None:
+    """How a container runs ``binary``: ``("direct", flags, skip)``, ``("shell" | "unreadable", [], 0)`` or None.
+
+    ``skip`` is how many argv tokens come before the flags (the binary, or ``hyperkube`` and the binary).
+
+    Recognition is by the program the container executes and nothing else -- not its name, its image or a label,
+    any of which a different program can carry. ``command[0]`` must be the binary (any directory), or
+    ``hyperkube`` followed by it. A container with no ``command`` runs its image's entrypoint, which no manifest
+    states, so it is not recognised. A shell whose script runs the binary with flags is recognised as a shell
+    wrapper, and the binary with an ``args`` that is not a list of strings as unreadable; the caller declines both.
+    """
+    command, args = c.get("command"), c.get("args")
+    if not isinstance(command, list) or not command or not all(isinstance(t, str) for t in command):
+        return None
+    readable = args is None or (isinstance(args, list) and all(isinstance(t, str) for t in args))
+    argv: list[str] = [*command, *(args if readable and args else [])]
+    head = _basename(argv[0])
+    runs = head == binary or (head == "hyperkube" and len(argv) > 1 and argv[1] == binary)
+    if runs and not readable:
+        return "unreadable", [], 0
+    if head == binary:
+        return "direct", argv[1:], 1
+    if head == "hyperkube" and len(argv) > 1 and argv[1] == binary:
+        return "direct", argv[2:], 2
+    if head in _SHELLS:
+        started = re.compile(rf"(?:^|[\s;&|(/]){re.escape(binary)}\s+-")
+        if any(started.search(t) for t in argv[1:]):
+            return "shell", [], 0
+    return None
+
+
+def _flag_values(
+    tokens: list[str], names: frozenset[str], bools: frozenset[str], single_dash: bool
+) -> dict[str, list[tuple[str, int]]]:
+    """Every value given for each flag in ``names``, in order, with the index of the token that carried it.
+
+    pflag (kube-apiserver) reads only ``--name``; Go's ``flag`` package (etcd) reads ``-name`` too. A boolean
+    given bare is true and never consumes the next token; any other flag given without ``=`` takes the next
+    token whatever it looks like, as both parsers do. ``--`` ends the flags. A value flag that is the last token
+    has no value; both parsers refuse to start then, so it is recorded as ``DANGLING`` for the caller to decline.
+    """
+    out: dict[str, list[tuple[str, int]]] = {}
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "--":
+            break
+        body = t[2:] if t.startswith("--") else (t[1:] if single_dash and t.startswith("-") else None)
+        if body is None or not body:
+            i += 1
+            continue
+        name, eq, value = body.partition("=")
+        if name in names:
+            if eq:
+                out.setdefault(name, []).append((value, i))
+            elif name in bools:
+                out.setdefault(name, []).append(("true", i))
+            elif i + 1 < len(tokens):
+                out.setdefault(name, []).append((tokens[i + 1], i + 1))
+                i += 1
+            else:
+                out.setdefault(name, []).append((DANGLING, i))
+        i += 1
+    return out
+
+
+#: Why a recognised control-plane container's flags were not read, by the kind `_control_plane_argv` returned.
+_UNREAD = {
+    "shell": "from a shell script, whose flags are not read",
+    "unreadable": "with an args list that is not all strings, which the API server would not accept",
+}
+
+#: The value `_flag_values` records for a value flag given as the last token, with nothing after it.
+DANGLING = "\x00"
+
+
+#: strconv.ParseBool, which both pflag and Go's flag package use for a boolean flag's value.
+_GO_TRUE = frozenset({"1", "t", "T", "TRUE", "true", "True"})
+_GO_FALSE = frozenset({"0", "f", "F", "FALSE", "false", "False"})
+
+
+def _go_bool(value: str) -> bool | None:
+    return True if value in _GO_TRUE else False if value in _GO_FALSE else None
+
+
+def _argv_path(c: ContainerRef, skip: int, index: int) -> PathT:
+    """Where flag token ``index`` sits in the manifest: argv is command + args, and the flags start ``skip`` in."""
+    command = c.container["command"]
+    absolute = index + skip
+    if absolute < len(command):
+        return (*c.path, "command", absolute)
+    return (*c.path, "args", absolute - len(command))
+
+
+#: The upstream default of `--anonymous-auth` and of an empty `--authorization-mode`, and the releases they were
+#: checked at. Both are the same at every tag from v1.6.0 to v1.37.0 and on master (1.38 development).
+ANONYMOUS_AUTH_DEFAULT = "true"
+APISERVER_DEFAULTS_CHECKED = "every Kubernetes release from v1.6.0 to v1.37.0 and master at fba15ecefa95"
+_APISERVER_DEFAULTS_THROUGH = (1, 38)
+_APISERVER_FLAGS = frozenset({"anonymous-auth", "authorization-mode", "authorization-config", "authentication-config"})
+
+
+@rule(
+    "KN-S038",
+    "kube-apiserver allows anonymous requests or authorizes every request",
+    Stage.AUDIT,
+    "security",
+    Severity.CRITICAL,
+    "Set --authorization-mode=Node,RBAC (or an AuthorizationConfiguration file without AlwaysAllow), and set "
+    "--anonymous-auth=false unless something genuinely needs unauthenticated access; if it does, scope it with "
+    "an AuthenticationConfiguration anonymous block limited to the health endpoints.",
+    "AlwaysAllow authorizes every request any authenticated client makes, and it is what kube-apiserver uses when "
+    "--authorization-mode is not given and no --authorization-config is. Anonymous authentication is on unless "
+    "--anonymous-auth=false: unauthenticated requests then become system:anonymous, and RBAC bindings to that "
+    "user or to system:unauthenticated (KN-S028) decide what they can do.",
+    ("k8s-apiserver-authn-options", "k8s-apiserver-authz-options", "rosa-hcp-architecture"),
+)
+def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    """The two flags that open the API server to everyone, read where kubeadm writes them: the static pod.
+
+    Three things decide whether a flag says anything. An `--authorization-config` file replaces the
+    `--authorization-mode` chain entirely, and an `--authentication-config` file can configure the anonymous
+    authenticator itself; neither file is in the input, so the half it governs is declined, not passed. An
+    absent flag means the upstream default, which this rule names with the releases it was checked at. And
+    AlwaysAllow turns anonymous off (ApplyAuthorization resets it with a warning), so that pair is one finding.
+
+    On the OpenShift family the API server is operator-managed and on ROSA with HCP it is not in the cluster at
+    all, so a kube-apiserver container here is declined with that reason rather than read as if a person had
+    written its arguments.
+    """
+    minor = parse_minor(ctx.k8s_version)
+    beyond = (
+        f" (kube-noob checked the default through Kubernetes {_APISERVER_DEFAULTS_THROUGH[0]}."
+        f"{_APISERVER_DEFAULTS_THROUGH[1]}; the target is {ctx.k8s_version})"
+        if minor > _APISERVER_DEFAULTS_THROUGH
+        else ""
+    )
+    for d, _pt, c in _containers(ctx):
+        how = _control_plane_argv(c.container, "kube-apiserver")
+        if how is None:
+            continue
+        where = f"{d.ref()} container {c.name}"
+        if ctx.is_openshift:
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{where} runs kube-apiserver on {ctx.platform}, where the control plane is operator-managed and is "
+                "configured through the platform's own configuration rather than by these arguments (on ROSA with "
+                "HCP it runs outside the cluster altogether)",
+            )
+            continue
+        kind, tokens, skip = how
+        if kind != "direct":
+            ctx.cannot_decide(r.rule_id, f"{where} starts kube-apiserver {_UNREAD[kind]}")
+            continue
+        flags = _flag_values(tokens, _APISERVER_FLAGS, frozenset({"anonymous-auth"}), single_dash=False)
+        seen = [v for vs in flags.values() for v, _ in vs]
+        if any("$(" in v for v in seen):
+            ctx.cannot_decide(r.rule_id, f"{where} passes a flag through $(VAR) expansion, whose value is not read")
+            continue
+        if DANGLING in seen:
+            ctx.cannot_decide(r.rule_id, f"{where} ends with a flag that has no value, which kube-apiserver refuses")
+            continue
+        # --- authorization ---
+        always_allow = False
+        if flags.get("authorization-config"):
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{where} names --authorization-config, which replaces --authorization-mode and is a file on the "
+                "node that is not in the input",
+            )
+        else:
+            given = flags.get("authorization-mode", [])
+            modes = [m.strip() for v, _ in given for m in v.split(",") if m.strip()]
+            if not given:
+                always_allow = True
+                yield r.finding(
+                    d,
+                    (*c.path, "command", 0),
+                    f"{where} does not set --authorization-mode and names no --authorization-config, so it uses the "
+                    f"upstream default, AlwaysAllow ({APISERVER_DEFAULTS_CHECKED}){beyond}: every request any "
+                    "authenticated client makes is allowed.",
+                )
+            elif "AlwaysAllow" in modes:
+                always_allow = True
+                yield r.finding(
+                    d,
+                    _argv_path(c, skip, given[-1][1]),
+                    f"{where} has AlwaysAllow in --authorization-mode ({','.join(modes)}): any request no earlier "
+                    "authorizer denies is allowed, and RBAC and Node only allow or abstain, so an authenticated "
+                    "client can do anything.",
+                )
+        # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it) ---
+        if always_allow:
+            continue
+        given_anon = flags.get("anonymous-auth", [])
+        if given_anon:
+            value, idx = given_anon[-1]
+            parsed = _go_bool(value)
+            if parsed is None:
+                ctx.cannot_decide(r.rule_id, f"{where} sets --anonymous-auth={value!r}, which is not a boolean")
+            elif parsed:
+                yield r.finding(
+                    d,
+                    _argv_path(c, skip, idx),
+                    f"{where} sets --anonymous-auth=true: a request with no credentials is served as "
+                    "system:anonymous in group system:unauthenticated, and what it may do is whatever RBAC grants "
+                    "those names.",
+                    severity=Severity.MEDIUM,
+                )
+        elif flags.get("authentication-config"):
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{where} names --authentication-config without --anonymous-auth: the file, which is not in the "
+                "input, may configure the anonymous authenticator",
+            )
+        else:
+            yield r.finding(
+                d,
+                (*c.path, "command", 0),
+                f"{where} does not set --anonymous-auth, so the upstream default applies: {ANONYMOUS_AUTH_DEFAULT} "
+                f"({APISERVER_DEFAULTS_CHECKED}){beyond}. A request with no credentials is served as "
+                "system:anonymous in group system:unauthenticated.",
+                severity=Severity.MEDIUM,
+            )
+
+
+#: etcd's URL flags, which are listeners or the addresses etcd tells others to use; and its two boolean switches.
+_ETCD_CLIENT_URLS = ("listen-client-urls", "listen-client-http-urls", "advertise-client-urls")
+_ETCD_PEER_URLS = ("listen-peer-urls",)
+_ETCD_URL_DEFAULTS = {
+    "listen-client-urls": "http://localhost:2379",
+    "listen-client-http-urls": "",
+    "advertise-client-urls": "http://localhost:2379",
+    "listen-peer-urls": "http://localhost:2380",
+}
+_ETCD_BOOLS = frozenset({"client-cert-auth", "peer-client-cert-auth"})
+_ETCD_FLAGS = frozenset({*_ETCD_URL_DEFAULTS, *_ETCD_BOOLS, "config-file"})
+
+
+def _etcd_env(name: str) -> str:
+    return "ETCD_" + name.upper().replace("-", "_")
+
+
+class _Undecidable(Exception):
+    """A setting the manifest does not state, with the reason."""
+
+
+def _is_loopback(host: str) -> bool:
+    import ipaddress
+
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _network_urls(value: str, flag: str) -> tuple[list[str], list[str]]:
+    """(plaintext URLs on a network address, TLS URLs on a network address) in one URL-list value."""
+    from urllib.parse import urlsplit
+
+    plain: list[str] = []
+    tls: list[str] = []
+    for raw in (u.strip() for u in value.split(",")):
+        if not raw:
+            continue
+        try:
+            parts = urlsplit(raw)
+            host = parts.hostname or ""
+        except ValueError as exc:
+            raise _Undecidable(f"--{flag} value {raw!r} is not a URL") from exc
+        scheme = parts.scheme.lower()
+        if scheme in {"unix", "unixs"}:
+            continue  # a socket on the node, not a network listener
+        if scheme not in {"http", "https"}:
+            raise _Undecidable(f"--{flag} value {raw!r} has a scheme etcd's TLS settings do not describe")
+        if _is_loopback(host):
+            continue
+        (plain if scheme == "http" else tls).append(raw)
+    return plain, tls
+
+
+@rule(
+    "KN-S039",
+    "etcd serves clients or peers in plaintext, or without client certificates",
+    Stage.AUDIT,
+    "security",
+    Severity.CRITICAL,
+    "Serve etcd only on https:// URLs (loopback http is acceptable), with --client-cert-auth=true, "
+    "--peer-client-cert-auth=true and --trusted-ca-file / --peer-trusted-ca-file, as kubeadm writes it.",
+    "etcd holds every object in the cluster, every Secret included. A plaintext listener on a network address, or a "
+    "TLS listener that accepts any client because client certificates are off (etcd's default), lets anyone who "
+    "can reach the port read and write the cluster's state.",
+    ("etcd-embed-config", "etcd-flags-env"),
+)
+def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    """etcd's listeners and client-certificate switches, read from its argv and its ETCD_* environment.
+
+    etcd takes each flag from the command line, else from the matching ETCD_* variable, else its default (a flag
+    on the command line shadows the variable: pkg/flags SetFlagsFromEnv). A `--config-file` (or ETCD_CONFIG_FILE)
+    replaces all of that, and `envFrom` can set any ETCD_* variable this manifest does not show, so both decline.
+    Loopback and unix-socket listeners are not findings; the defaults are loopback.
+    """
+    for d, _pt, c in _containers(ctx):
+        how = _control_plane_argv(c.container, "etcd")
+        if how is None:
+            continue
+        where = f"{d.ref()} container {c.name}"
+        kind, tokens, skip = how
+        if kind != "direct":
+            ctx.cannot_decide(r.rule_id, f"{where} starts etcd {_UNREAD[kind]}")
+            continue
+        try:
+            findings = _etcd_findings(r, d, c, where, tokens, skip)
+        except _Undecidable as why:
+            ctx.cannot_decide(r.rule_id, f"{where}: {why}")
+            continue
+        yield from findings
+
+
+def _etcd_findings(r: Rule, d: Document, c: ContainerRef, where: str, tokens: list[str], skip: int) -> list[Finding]:
+    """Findings for one etcd container, or _Undecidable. Built as a list so a late refusal discards early ones."""
+    if c.container.get("envFrom"):
+        raise _Undecidable("envFrom can set any ETCD_* variable, ETCD_CONFIG_FILE included, and is not read")
+    flags = _flag_values(tokens, _ETCD_FLAGS, _ETCD_BOOLS, single_dash=True)
+    env: dict[str, tuple[Any, int]] = {}
+    for i, e in enumerate(c.container.get("env") or []):
+        if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].startswith("ETCD_"):
+            env[e["name"]] = (e, i)  # the last entry of a name is the one the container gets
+
+    def setting(name: str) -> tuple[str | None, PathT | None]:
+        """(value, where it was set) -- (None, None) for etcd's default."""
+        if flags.get(name):
+            value, idx = flags[name][-1]
+            if "$(" in value:
+                raise _Undecidable(f"--{name} is passed through $(VAR) expansion")
+            if value == DANGLING:
+                raise _Undecidable(f"--{name} is the last argument and has no value, which etcd refuses")
+            return value, _argv_path(c, skip, idx)
+        entry = env.get(_etcd_env(name))
+        if entry is None:
+            return None, None
+        e, i = entry
+        if "valueFrom" in e or not isinstance(e.get("value", ""), str) or "$(" in str(e.get("value", "")):
+            raise _Undecidable(f"{_etcd_env(name)} comes from a reference or an expansion, whose value is not read")
+        value = str(e.get("value", ""))
+        return (value, (*c.path, "env", i, "value")) if value else (None, None)  # etcd ignores an empty variable
+
+    config, _ = setting("config-file")
+    if config:
+        raise _Undecidable("it is configured from a --config-file, which replaces its flags and is not in the input")
+    out: list[Finding] = []
+    exposed: dict[str, bool] = {"client": False, "peer": False}
+    for side, names, sev in (
+        ("client", _ETCD_CLIENT_URLS, Severity.CRITICAL),
+        ("peer", _ETCD_PEER_URLS, Severity.HIGH),
+    ):
+        for name in names:
+            value, path = setting(name)
+            plain, tls = _network_urls(value if value is not None else _ETCD_URL_DEFAULTS[name], name)
+            if tls and name.startswith("listen"):
+                exposed[side] = True
+            if plain and path is not None:
+                if not name.startswith("listen"):
+                    said = (
+                        "tells its clients to connect in plaintext, so what they read and write, Secrets included, "
+                        "crosses the network unencrypted"
+                    )
+                elif side == "client":
+                    said = (
+                        "accepts plaintext client connections on a network address, where no client certificate "
+                        "can be required: anyone who can reach the port reads and writes the cluster's state, "
+                        "Secrets included"
+                    )
+                else:
+                    said = (
+                        "replicates with its peers in plaintext on a network address, where no peer certificate can "
+                        "be required: anyone who can reach the port sees the cluster's state, Secrets included"
+                    )
+                out.append(
+                    r.finding(d, path, f"{where} --{name} includes {', '.join(plain)}: etcd {said}.", severity=sev)
+                )
+    for side, switch, sev in (
+        ("client", "client-cert-auth", Severity.CRITICAL),
+        ("peer", "peer-client-cert-auth", Severity.HIGH),
+    ):
+        if not exposed[side]:
+            continue  # only loopback, a socket or plaintext (already reported) listens on that side
+        value, path = setting(switch)
+        parsed = False if value is None else _go_bool(value)
+        if parsed is None:
+            raise _Undecidable(f"--{switch} is {value!r}, which is not a boolean")
+        if parsed:
+            continue
+        said = (
+            f"sets --{switch}=false" if value is not None else f"does not set --{switch}, and etcd's default is false"
+        )
+        out.append(
+            r.finding(
+                d,
+                path if path is not None else (*c.path, "command", 0),
+                f"{where} {said}, while its {side} side listens with TLS on a network address: any {side} that "
+                "can reach the port is accepted without a certificate.",
+                severity=sev,
+            )
+        )
+    return out
+
+
+#: The values of `spec.encryption.type` openshift/api defines. `KMS` is behind the KMSEncryption feature gate,
+#: and the API server refuses it where the gate is off, so an object that carries it was admitted with the gate on.
+ENCRYPTION_ON = frozenset({"aescbc", "aesgcm", "KMS"})
+ENCRYPTION_OFF = frozenset({"", "identity"})
+#: What openshift/api lists as encrypted once encryption is on: "the current authoritative list".
+ENCRYPTED_RESOURCES = "Secrets, ConfigMaps, Routes, OAuth access tokens and OAuth authorize tokens"
+
+
+@rule(
+    "KN-S040",
+    "OpenShift API server does not encrypt resources at rest",
+    Stage.AUDIT,
+    "security",
+    Severity.MEDIUM,
+    "Set spec.encryption.type to aescbc or aesgcm (or KMS where the KMSEncryption feature gate is on) on the "
+    "APIServer named 'cluster'. Encryption starts with the next write of each object; the operators migrate the "
+    "rest.",
+    "spec.encryption.type unset means identity: etcd stores Secrets, ConfigMaps, Routes and OAuth tokens as written, "
+    "so anyone with a copy of etcd's data or of an etcd backup reads them directly.",
+    ("openshift-api-apiserver-types", "hypershift-hostedcluster-types"),
+)
+def _s040(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    """Encryption at rest, from the same `APIServer` singleton KN-S035 reads.
+
+    Declines rather than passes in four shapes: the singleton is not in the bundle (on OpenShift it always exists,
+    so its absence means it was not collected; declined without a sentence, as KN-S035 is), several are and none
+    is named `cluster`, the type is a value openshift/api does not define, and a hosted control plane, whose etcd
+    encryption is the `HostedCluster`'s `spec.secretEncryption` on the management cluster rather than anything in
+    this object.
+    """
+    if not ctx.is_openshift:
+        return  # the resource does not exist off OpenShift
+    docs = cluster_apiservers(ctx)
+    if not docs:
+        # Not collected: declined without a sentence, exactly as KN-S035 declines, so an audit of an application's
+        # manifests on OpenShift is not padded with a note about an object nobody passed. `notEvaluatedRules`
+        # still names it.
+        ctx.cannot_decide(r.rule_id)
+        return
+    if ctx.platform in HOSTED_CONTROL_PLANE_PLATFORMS:
+        ctx.cannot_decide(
+            r.rule_id,
+            f"on {ctx.platform} the hosted control plane's etcd encryption is set by the HostedCluster's "
+            "spec.secretEncryption on the management cluster, not by the APIServer object in this cluster",
+        )
+        return
+    doc = _singleton(docs)
+    if doc is None:
+        ctx.cannot_decide(
+            r.rule_id,
+            "the bundle carries several config.openshift.io APIServer objects and none is the singleton named "
+            "'cluster', so which configuration the cluster has cannot be read from it",
+        )
+        return
+    spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
+    enc = spec.get("encryption") if isinstance(spec, dict) else None
+    if (spec is not None and not isinstance(spec, dict)) or (enc is not None and not isinstance(enc, dict)):
+        ctx.cannot_decide(r.rule_id, f"{doc.ref()} has a spec or spec.encryption that is not a mapping")
+        return
+    raw = enc.get("type") if isinstance(enc, dict) else None
+    kind = "" if raw is None else raw
+    if not isinstance(kind, str) or (kind not in ENCRYPTION_ON and kind not in ENCRYPTION_OFF):
+        ctx.cannot_decide(
+            r.rule_id,
+            f"{doc.ref()} sets spec.encryption.type to {raw!r}, which openshift/api does not define "
+            f"({', '.join(sorted(ENCRYPTION_ON | {'identity'}))})",
+        )
+        return
+    if kind in ENCRYPTION_ON:
+        return
+    said = "is identity" if kind == "identity" else "is not set, which openshift/api defines as identity"
+    yield r.finding(
+        doc,
+        ("spec", "encryption", "type") if raw is not None else ("spec",) if isinstance(spec, dict) else ("kind",),
+        f"spec.encryption.type {said}: etcd stores {ENCRYPTED_RESOURCES} unencrypted, so a copy of etcd's data or "
+        "of an etcd backup is a copy of every Secret in the cluster.",
+    )
+
+
+#: The identity provider types openshift/api defines. Of these only LDAP has a switch that turns transport security
+#: off (`insecure`); a missing `ca` everywhere else means the system trust roots, which is verification.
+IDENTITY_PROVIDER_TYPES = frozenset(
+    {"BasicAuth", "GitHub", "GitLab", "Google", "HTPasswd", "Keystone", "LDAP", "OpenID", "RequestHeader"}
+)
+OAUTH_GROUP = "config.openshift.io"
+
+
+@rule(
+    "KN-S041",
+    "OpenShift LDAP identity provider connects without TLS",
+    Stage.AUDIT,
+    "security",
+    Severity.HIGH,
+    "Use an ldaps:// URL, or keep ldap:// with insecure: false so the connection is upgraded with StartTLS, and "
+    "name the directory's CA in ca.",
+    "An LDAP identity provider with insecure: true and an ldap:// URL talks to the directory in plaintext: the bind "
+    "password and every user's password at login cross the network unencrypted, and the directory's identity is "
+    "never checked.",
+    ("openshift-api-oauth-types", "hypershift-hostedcluster-types"),
+)
+def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    """The one identity-provider switch openshift/api defines for turning TLS off.
+
+    `insecure` on an LDAP provider: true with ldap:// is plaintext; ldaps:// always uses TLS whatever `insecure`
+    says; false with ldap:// is upgraded with StartTLS. Every other type has no such switch, and a missing `ca`
+    means the system roots. A type this list does not know is declined by name, not assumed safe. On a hosted
+    control plane the OAuth server is configured from `HostedCluster.spec.configuration.oauth`, so this declines.
+    """
+    if not ctx.is_openshift:
+        return
+    docs = [d for d in ctx.by_kind("OAuth") if d.api_version.split("/", 1)[0] == OAUTH_GROUP]
+    if not docs:
+        ctx.cannot_decide(r.rule_id)  # not collected: the singleton exists on every OpenShift cluster (as KN-S040)
+        return
+    if ctx.platform in HOSTED_CONTROL_PLANE_PLATFORMS:
+        ctx.cannot_decide(
+            r.rule_id,
+            f"on {ctx.platform} the hosted control plane's OAuth server is configured from the HostedCluster's "
+            "spec.configuration.oauth on the management cluster, not from the OAuth object in this cluster",
+        )
+        return
+    doc = _singleton(docs)
+    if doc is None:
+        ctx.cannot_decide(
+            r.rule_id,
+            "the bundle carries several config.openshift.io OAuth objects and none is the singleton named "
+            "'cluster', so which configuration the cluster has cannot be read from it",
+        )
+        return
+    spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
+    providers = spec.get("identityProviders") if isinstance(spec, dict) else None
+    if providers is None:
+        return  # no identity provider, so no connection to secure
+    if not isinstance(providers, list):
+        ctx.cannot_decide(r.rule_id, f"{doc.ref()} spec.identityProviders is not a list")
+        return
+    for i, p in enumerate(providers):
+        if not isinstance(p, dict):
+            ctx.cannot_decide(r.rule_id, f"{doc.ref()} spec.identityProviders[{i}] is not a mapping")
+            continue
+        name = str(p.get("name") or f"identityProviders[{i}]")
+        kind = p.get("type")
+        if not isinstance(kind, str) or kind not in IDENTITY_PROVIDER_TYPES:
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{doc.ref()} identity provider {name!r} has type {kind!r}, which openshift/api does not define",
+            )
+            continue
+        if kind != "LDAP":
+            continue
+        ldap = p.get("ldap")
+        insecure = ldap.get("insecure", False) if isinstance(ldap, dict) else None
+        url = ldap.get("url") if isinstance(ldap, dict) else None
+        if not isinstance(ldap, dict) or not isinstance(insecure, bool) or not isinstance(url, str):
+            ctx.cannot_decide(
+                r.rule_id, f"{doc.ref()} LDAP identity provider {name!r} has no readable ldap.url and ldap.insecure"
+            )
+            continue
+        if not insecure:
+            continue
+        scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+        if scheme == "ldaps":
+            continue  # ldaps:// always uses TLS, whatever insecure says
+        if scheme != "ldap":
+            ctx.cannot_decide(
+                r.rule_id, f"{doc.ref()} LDAP identity provider {name!r} has a URL that is not ldap:// or ldaps://"
+            )
+            continue
+        yield r.finding(
+            doc,
+            ("spec", "identityProviders", i, "ldap", "insecure"),
+            f"Identity provider {name!r} is LDAP with insecure: true and an ldap:// URL, so the OAuth server talks to "
+            "the directory in plaintext: the bind password and the password of every user who logs in cross the "
+            "network unencrypted, and the directory's identity is never checked.",
+        )
 
 
 def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: list[str] | None = None) -> list[Finding]:

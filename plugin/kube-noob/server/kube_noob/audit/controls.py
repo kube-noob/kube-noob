@@ -43,6 +43,7 @@ TITLES: dict[str, str] = {
     "SC-8": "Transmission Confidentiality and Integrity",
     "SC-8(1)": "Transmission Confidentiality and Integrity | Cryptographic Protection",
     "SC-28": "Protection of Information at Rest",
+    "SC-28(1)": "Protection of Information at Rest | Cryptographic Protection",
     "SC-36": "Distributed Processing and Storage",
     "SC-39": "Process Isolation",
     "SI-2": "Flaw Remediation",
@@ -151,6 +152,12 @@ RULE_CONTROLS: dict[str, tuple[str, ...]] = {
     "KN-S034": ("CM-3(2)",),  # an operator upgrade nobody reviewed
     "KN-S035": ("AU-2", "AU-12"),  # audit turned off, for everyone or for one group
     "KN-C016": ("SC-5", "SC-6"),  # one namespace can take the cluster's capacity
+    # The control plane and its trust boundaries (G272)
+    "KN-S037": ("SC-8", "SC-8(1)", "CM-6"),  # the aggregator does not authenticate the server it forwards to
+    "KN-S038": ("AC-3", "AC-14", "CM-6"),  # every request authorized, or requests with no identity accepted
+    "KN-S039": ("SC-8", "SC-8(1)", "AC-3"),  # the store of every Secret, reachable in plaintext or by anyone
+    "KN-S040": ("SC-28", "SC-28(1)"),  # Secrets written to etcd as they are
+    "KN-S041": ("SC-8", "SC-8(1)", "IA-5"),  # passwords sent to the directory in plaintext
 }
 
 
