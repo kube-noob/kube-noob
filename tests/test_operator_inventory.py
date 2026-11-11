@@ -432,6 +432,24 @@ def test_the_package_name_comes_from_the_subscription_or_the_csv_properties() ->
     assert _one(inv, "bare.v1.0.0").get("package") is None
 
 
+def test_a_nesting_bomb_in_the_properties_annotation_is_refused_by_depth_not_by_the_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kube_noob import sanitize
+
+    calls: list[int] = []
+    real = sanitize.loads_bounded
+
+    def spy(data: str | bytes, limit: int = sanitize.MAX_JSON_DEPTH) -> Any:
+        calls.append(len(data))
+        return real(data, limit)
+
+    monkeypatch.setattr(sanitize, "loads_bounded", spy)
+    bomb = "[" * 20_000 + "]" * 20_000
+    op = _one(_inv(_csv("deep.v1.0.0", "a", annotations={"operatorframework.io/properties": bomb})), "deep.v1.0.0")
+    assert calls and op.get("package") is None and op["version"] == "1.2.3"
+
+
 # -- safety ---------------------------------------------------------------------------------------------------------
 
 

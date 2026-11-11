@@ -281,6 +281,7 @@ Where it is applied (found in the code):
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`
 - `kube_noob/memory/importers.py` `parse` calls `sanitize.loads_bounded`
+- `kube_noob/operators.py` `_package_property` calls `sanitize.loads_bounded`
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
 - `kube_noob/server/mcp_app.py` `build_server.knowledge_doc` calls `sanitize.clean`

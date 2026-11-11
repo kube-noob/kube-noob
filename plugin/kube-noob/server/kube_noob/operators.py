@@ -49,7 +49,6 @@ input gives the same bytes.
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from collections.abc import Iterable
@@ -263,8 +262,10 @@ def _package_property(doc: dict[str, Any]) -> dict[str, Any]:
     raw = _d(_d(doc.get("metadata")).get("annotations")).get(PROPERTIES)
     if not isinstance(raw, str) or len(raw) > MAX_PROPERTIES_BYTES:
         return {}
+    from kube_noob import sanitize
+
     try:
-        parsed = json.loads(raw)
+        parsed = sanitize.loads_bounded(raw)  # depth counted first: a nesting bomb is refused the same everywhere
     except ValueError:
         return {}
     for prop in _l(_d(parsed).get("properties"))[:500]:
