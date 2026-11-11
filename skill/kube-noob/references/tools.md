@@ -268,6 +268,15 @@ Check legacy Kyverno policies for their CEL form. Kyverno 1.20 removes the kyver
 - `drafts` (boolean): Include a draft CEL policy for each rule whose fields all map directly, and a kyverno test fixture skeleton per policy (good and bad resources run against the legacy rule and the draft).
 - `policies`* (string): One or more legacy Kyverno policies (YAML): kyverno.io ClusterPolicy, Policy, ClusterCleanupPolicy, CleanupPolicy or PolicyException. Other documents are listed and skipped; Secrets are not read.
 
+## posture_reach
+
+Blast radius of one workload in manifests. If this workload is compromised, what can it reach? Its ServiceAccount, the bindings that name it (directly or through the system:serviceaccounts and system:authenticated groups), what they allow, the Secrets it may read by RBAC (names and scopes only; Secret contents are never read), the node when the pod spec can escape to it, and the namespaces or cluster that covers -- as a bounded graph whose every edge names the object and field that prove it, with the paths posture_scan ranks through it. A ServiceAccount, Role or binding the manifests do not carry is a 'not determined' leg, never an empty one; a reference that matches nothing is an error. Optionally a Mermaid flowchart of the same graph.
+
+- `manifests`* (string): The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.
+- `mermaid` (boolean): Also return the graph as a Mermaid flowchart (text).
+- `namespace` (null/string): Default: default.
+- `workload`* (string): The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as posture_scan prints it (Deployment/shop/web). A Pod is resolved to the owner the scan scores.
+
 ## posture_report
 
 Latest drift and policy report. The newest daily report in this install's data folder: objects added, removed and changed since the previous snapshot (with the fields that changed), findings new and fixed, and open findings by namespace, owner and rule. Local data only.

@@ -95,6 +95,7 @@ _POD_PATHS: dict[str, tuple[str, ...]] = {
 _WORKLOAD_KINDS = frozenset(
     {"Pod", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "DeploymentConfig"}
 ) | frozenset(EMBEDDED_POD_SPEC_PATHS)
+WORKLOAD_KINDS = _WORKLOAD_KINDS  # the kinds whose pods the scan scores
 _NODE_CAPS = frozenset({"SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE", "DAC_READ_SEARCH", "BPF", "NET_ADMIN", "ALL"})
 _SYSTEM_PATHS = frozenset({"/", "/etc", "/var/lib/kubelet", "/proc", "/root", "/var/run", "/run"})
 PRIVILEGED_SCCS = frozenset(
@@ -151,6 +152,12 @@ class Capability:
     weight: int
     evidence: str
     fix: str
+    #: The field that proves it, from the object's root (`spec.template.spec.containers[0].securityContext
+    #: .privileged`), for a node capability. The blast-radius graph carries it as an edge's evidence (G273).
+    at: str = ""
+    #: The RBAC grants an API capability came from, so the blast-radius graph can name the binding as well as
+    #: print the evidence line. Not part of equality: two routes to one capability are one capability.
+    grants: tuple[Grant, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -212,6 +219,10 @@ def _name(obj: dict[str, Any]) -> str:
     return str((obj.get("metadata") or {}).get("name") or "")
 
 
+object_namespace = _ns  # "default" when the object names none, as kubectl would apply it
+object_name = _name
+
+
 def _get(obj: Any, *path: str) -> Any:
     for key in path:
         if not isinstance(obj, dict):
@@ -226,6 +237,9 @@ def _list(value: Any) -> list[Any]:
 
 def _strs(value: Any) -> set[str]:
     return {str(x) for x in _list(value)}
+
+
+strs = _strs
 
 
 @dataclass
@@ -354,16 +368,18 @@ def _owned(obj: dict[str, Any], present: frozenset[tuple[str, str]] | None = Non
     Deployments would drop every one of them and report nothing, which is the same silent miss in a new place.
     At worst this scores one duplicate; the alternative is losing an internet-facing privileged pod.
     """
-    owners = [o for o in _list(_get(obj, "metadata", "ownerReferences")) if isinstance(o, dict)]
-    for o in owners:
-        if o.get("controller") is not True:
-            continue
-        kind = str(o.get("kind"))
-        if kind not in POD_SPEC_PATHS:
-            continue  # a CRD controller: its pods are these pods, and nothing else in this input scores them
-        if present is None or (kind, str(o.get("name"))) in present:
-            return True
-    return False
+    return any(present is None or (str(o.get("kind")), str(o.get("name"))) in present for o in controller_refs(obj))
+
+
+def controller_refs(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """The controller ownerReferences that `_owned` follows: an ordinary workload kind, never a CRD -- a CRD
+    controller's pods are these pods, and nothing else in the input scores them. The blast radius resolves a Pod
+    to its owner through the same filter, so it anchors on what the scan scores (G273)."""
+    return [
+        o
+        for o in _list(_get(obj, "metadata", "ownerReferences"))
+        if isinstance(o, dict) and o.get("controller") is True and str(o.get("kind")) in POD_SPEC_PATHS
+    ]
 
 
 def _containers(spec: dict[str, Any], site: _Site | None = None) -> Iterator[dict[str, Any]]:
@@ -373,22 +389,33 @@ def _containers(spec: dict[str, Any], site: _Site | None = None) -> Iterator[dic
     (a KServe predictor) or an ordinary mapping. Without it only the three list keys are read, which is how a
     privileged `model:` container scored no node capability at all while the audit reported it (G231).
     """
+    for _at, c in _located_containers(spec, site):
+        yield c
+
+
+def _dotted(path: PathT) -> str:
+    return ".".join(str(k) for k in path)
+
+
+def _located_containers(spec: dict[str, Any], site: _Site | None = None) -> Iterator[tuple[str, dict[str, Any]]]:
+    """`_containers`, with where each one is from the object's root, so a capability can name its field (G273)."""
+    base = _dotted(site.path) + "." if site is not None and site.path else ""
     for key in ("initContainers", "containers", "ephemeralContainers"):
-        for c in _list(spec.get(key)):
+        for i, c in enumerate(_list(spec.get(key))):
             if isinstance(c, dict):
-                yield c
+                yield f"{base}{key}[{i}]", c
     if site is None:
         return
     for key in EMBEDDED_CONTAINER_KEYS.get(site.path, ()):
         c = spec.get(key)
         if isinstance(c, dict):
-            yield c
+            yield f"{base}{key}", c
     for where, joins in INJECTED_CONTAINERS.get(str(site.obj.get("kind")), ()):
         if joins != site.path:
             continue
         c = _get(site.obj, *(str(k) for k in where))
         if isinstance(c, dict) and ("image" in c or "securityContext" in c):
-            yield c
+            yield _dotted(where), c
 
 
 # --- exposure ----------------------------------------------------------------------------------------------------
@@ -581,7 +608,8 @@ def _declared_entries(inv: Inventory) -> list[Entry]:
 
 def _node_capabilities(w: dict[str, Any], spec: dict[str, Any], site: _Site | None = None) -> list[Capability]:
     out: list[Capability] = []
-    for c in _containers(spec, site):
+    base = _dotted(site.path) + "." if site is not None and site.path else ""
+    for at, c in _located_containers(spec, site):
         name = c.get("name")
         raw_sc = c.get("securityContext")
         sc: dict[str, Any] = raw_sc if isinstance(raw_sc, dict) else {}
@@ -593,6 +621,7 @@ def _node_capabilities(w: dict[str, Any], spec: dict[str, Any], site: _Site | No
                     9,
                     f"container {name} securityContext.privileged=true",
                     "remove privileged; grant only the capability needed",
+                    at=f"{at}.securityContext.privileged",
                 )
             )
         caps = {str(x).upper().removeprefix("CAP_") for x in _list(_get(sc, "capabilities", "add"))}
@@ -604,9 +633,10 @@ def _node_capabilities(w: dict[str, Any], spec: dict[str, Any], site: _Site | No
                     7,
                     f"container {name} capabilities.add={sorted(caps)}",
                     "drop the added capabilities",
+                    at=f"{at}.securityContext.capabilities.add",
                 )
             )
-    for v in _list(spec.get("volumes")):
+    for vi, v in enumerate(_list(spec.get("volumes"))):
         path = _get(v, "hostPath", "path")
         if isinstance(path, str):
             norm = path.rstrip("/") or "/"
@@ -618,11 +648,16 @@ def _node_capabilities(w: dict[str, Any], spec: dict[str, Any], site: _Site | No
                     9 if worst else 7,
                     f"volume {v.get('name')} hostPath.path={path}",
                     "replace the hostPath volume with a PVC, emptyDir or ConfigMap",
+                    at=f"{base}volumes[{vi}].hostPath.path",
                 )
             )
     for fld, weight in (("hostPID", 8), ("hostNetwork", 6), ("hostIPC", 5)):
         if spec.get(fld) is True:
-            out.append(Capability(f"host namespace {fld}", "node", weight, f"spec.{fld}=true", f"remove {fld}"))
+            out.append(
+                Capability(
+                    f"host namespace {fld}", "node", weight, f"spec.{fld}=true", f"remove {fld}", at=f"{base}{fld}"
+                )
+            )
     return out
 
 
@@ -635,6 +670,29 @@ class Grant:
     namespace: str
     evidence: str
     role_ref: str
+    #: Where the grant came from, for the blast-radius graph (G273): the binding (or SCC) that names the account,
+    #: the subject that matched and its field, and the rule's field in the role.
+    binding: str = ""
+    subject: str = ""
+    subject_at: str = ""
+    rule_at: str = ""
+
+
+@dataclass(frozen=True)
+class Gap:
+    """A binding that names the account, whose rules this input cannot show in full (G273)."""
+
+    binding: str
+    subject: str
+    subject_at: str
+    role_ref: str
+    reason: str
+
+
+def _aggregated(inv: Inventory) -> set[str]:
+    """ClusterRoles in the input that aggregate by label. In a cluster the controller fills their rules from every
+    ClusterRole that matches, including ones an operator installs later, so a bundle never shows them in full."""
+    return {_name(r) for r in inv.of("ClusterRole") if _list(_get(r, "aggregationRule", "clusterRoleSelectors"))}
 
 
 def _role_rules(inv: Inventory) -> tuple[dict[tuple[str, str], list[Any]], dict[str, list[Any]]]:
@@ -680,21 +738,26 @@ def _subject_matches(subj: Any, sa_ns: str, sa: str, binding_ns: str | None) -> 
     return None
 
 
-def _grants(inv: Inventory, sa_ns: str, sa: str) -> list[Grant]:
+def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) -> list[Grant]:
+    """Every RBAC rule that applies to the ServiceAccount. ``gaps`` collects the bindings that name it whose rules
+    the input cannot show in full: a role that is not in it, or an aggregated ClusterRole (G273)."""
     roles, cluster_roles = _role_rules(inv)
+    aggregated = _aggregated(inv)
     out: list[Grant] = []
     for b in inv.of("RoleBinding", "ClusterRoleBinding"):
         cluster = b.get("kind") == "ClusterRoleBinding"
         bns = None if cluster else _ns(b)
-        if (
-            not cluster
-            and bns != sa_ns
-            and not any(isinstance(s, dict) and s.get("kind") == "ServiceAccount" for s in _list(b.get("subjects")))
-        ):
+        # No shortcut on the binding's namespace: a RoleBinding in another namespace grants this account rights
+        # there through a ServiceAccount subject, and just as much through the groups system:serviceaccounts,
+        # system:serviceaccounts:<its namespace> and system:authenticated, or the User system:serviceaccount:ns:name.
+        # Skipping all but the first dropped those grants from the scan without a word (G273).
+        matched = next(
+            ((j, m) for j, s in enumerate(_list(b.get("subjects"))) if (m := _subject_matches(s, sa_ns, sa, bns))),
+            None,
+        )
+        if matched is None:
             continue
-        who = next((m for s in _list(b.get("subjects")) if (m := _subject_matches(s, sa_ns, sa, bns))), None)
-        if who is None:
-            continue
+        j, who = matched
         ref = b.get("roleRef") or {}
         rname = str(ref.get("name") or "")
         if ref.get("kind") == "Role" and not cluster:
@@ -705,24 +768,73 @@ def _grants(inv: Inventory, sa_ns: str, sa: str) -> list[Grant]:
             role_ref = f"ClusterRole/{rname}"
         if rules is None:
             inv.not_read.append(f"{role_ref} (bound by {_ref(b)}) is not in the input")
+            if gaps is not None:
+                gaps.append(Gap(_ref(b), who, f"subjects[{j}]", role_ref, f"{role_ref} is not in the input"))
             continue
+        if role_ref.startswith("ClusterRole/") and rname in aggregated:
+            # Its rules are whatever the cluster's ClusterRoles with matching labels hold. An empty merge in a
+            # bundle said nothing at all, and read as "no rights" for "rights this input does not carry" (G273).
+            if not rules:
+                inv.not_read.append(
+                    f"{role_ref} (bound by {_ref(b)}) aggregates ClusterRoles by label and none in the input matches"
+                )
+            if gaps is not None:
+                gaps.append(
+                    Gap(
+                        _ref(b),
+                        who,
+                        f"subjects[{j}]",
+                        role_ref,
+                        f"{role_ref} aggregates the rules of ClusterRoles selected by label "
+                        "(aggregationRule.clusterRoleSelectors): "
+                        + ("none in the input matches" if not rules else "only the ones in the input are counted"),
+                    )
+                )
         for i, rule in enumerate(rules):
             if isinstance(rule, dict):
                 out.append(
-                    Grant(rule, cluster, str(bns or ""), f"{_ref(b)} ({who}) -> {role_ref} rules[{i}]", role_ref)
+                    Grant(
+                        rule,
+                        cluster,
+                        str(bns or ""),
+                        f"{_ref(b)} ({who}) -> {role_ref} rules[{i}]",
+                        role_ref,
+                        binding=_ref(b),
+                        subject=who,
+                        subject_at=f"subjects[{j}]",
+                        rule_at=f"rules[{i}]",
+                    )
                 )
     # OpenShift legacy: an SCC listing the ServiceAccount (or its groups) lets it use the SCC
     for scc in inv.of("SecurityContextConstraints"):
         users = _strs(scc.get("users"))
         groups = _strs(scc.get("groups"))
-        if f"system:serviceaccount:{sa_ns}:{sa}" in users or groups & _sa_groups(sa_ns):
+        user = f"system:serviceaccount:{sa_ns}:{sa}"
+        if user in users or groups & _sa_groups(sa_ns):
+            subject_at, subject = (
+                ("users", f"user {user}")
+                if user in users
+                else ("groups", f"group {sorted(groups & _sa_groups(sa_ns))[0]}")
+            )
             rule = {
                 "apiGroups": ["security.openshift.io"],
                 "resources": ["securitycontextconstraints"],
                 "verbs": ["use"],
                 "resourceNames": [_name(scc)],
             }
-            out.append(Grant(rule, True, "", f"{_ref(scc)} users/groups name the ServiceAccount", _ref(scc)))
+            out.append(
+                Grant(
+                    rule,
+                    True,
+                    "",
+                    f"{_ref(scc)} users/groups name the ServiceAccount",
+                    _ref(scc),
+                    binding=_ref(scc),
+                    subject=subject,
+                    subject_at=subject_at,
+                    rule_at=subject_at,
+                )
+            )
     return out
 
 
@@ -734,6 +846,13 @@ def _privileged_scc_names(inv: Inventory) -> set[str]:
     return names
 
 
+def reads_secrets(rule: dict[str, Any]) -> bool:
+    """True when an RBAC rule lets its holder read Secret objects (get, list or watch, or every verb)."""
+    verbs, res, groups = _strs(rule.get("verbs")), _strs(rule.get("resources")), _strs(rule.get("apiGroups"))
+    core = bool(groups & {"", "*"}) or not groups
+    return core and bool(res & {"*", "secrets"}) and bool(verbs & {"*", "get", "list", "watch"})
+
+
 def _api_capabilities(inv: Inventory, grants: list[Grant]) -> list[Capability]:
     found: dict[tuple[str, str], Capability] = {}
     workload_grant: Grant | None = None
@@ -743,7 +862,7 @@ def _api_capabilities(inv: Inventory, grants: list[Grant]) -> list[Capability]:
     def add(name: str, g: Grant, cluster_w: int, ns_w: int, fix: str, named: bool = False) -> None:
         scope = "cluster" if g.cluster else f"namespace {g.namespace}"
         weight = (cluster_w if g.cluster else ns_w) - (2 if named else 0)
-        cap = Capability(name + (" (named objects only)" if named else ""), scope, weight, g.evidence, fix)
+        cap = Capability(name + (" (named objects only)" if named else ""), scope, weight, g.evidence, fix, grants=(g,))
         key = (cap.name, scope)
         if key not in found or found[key].weight < weight:
             found[key] = cap
@@ -752,7 +871,6 @@ def _api_capabilities(inv: Inventory, grants: list[Grant]) -> list[Capability]:
         verbs, res = _strs(g.rule.get("verbs")), _strs(g.rule.get("resources"))
         groups, names = _strs(g.rule.get("apiGroups")), _strs(g.rule.get("resourceNames"))
         any_res, any_verb = "*" in res, "*" in verbs
-        core = bool(groups & {"", "*"}) or not groups
         builtin = g.role_ref.removeprefix("ClusterRole/") in BUILTIN_CLUSTER_ROLES or ":" in g.role_ref.split("/")[-1]
         narrow = (
             f"bind a narrower Role than the built-in {g.role_ref}"
@@ -761,7 +879,7 @@ def _api_capabilities(inv: Inventory, grants: list[Grant]) -> list[Capability]:
         )
         if any_res and any_verb and "*" in groups:
             add("full control", g, 10, 7, f"bind a narrower role than {g.role_ref}")
-        if core and (any_res or "secrets" in res) and (any_verb or verbs & {"get", "list", "watch"}):
+        if reads_secrets(g.rule):
             add(
                 "read Secrets (credentials, tokens of other ServiceAccounts)",
                 g,
@@ -797,6 +915,7 @@ def _api_capabilities(inv: Inventory, grants: list[Grant]) -> list[Capability]:
             9,
             f"{g.evidence}; and {workload_grant.evidence}",
             f"remove the 'use' grant on SCC {scc} or the right to create workloads",
+            grants=(g, workload_grant),
         )
     return list(found.values())
 
@@ -829,6 +948,9 @@ class Reach:
     node: list[Capability]
     api: list[tuple[Capability, list[Step]]]  # capability and the steps from the workload to it
     token: tuple[str, str] | None = None  # (ServiceAccount ref, evidence) when the pods mount its token
+    #: The evidence line of the "uses token of" step, "" when nothing is mounted: what the blast radius prints,
+    #: so the text it renders is read from a field named for what it is, an evidence line (G273).
+    mount_evidence: str = ""
     #: The carrying object's own `Kind/ns/name`. For an embedded component `ref` is `Kind/ns/name[component]`,
     #: so a consumer that looks an object up by the reach key finds nothing -- which is how `vuln threat` came
     #: to report zero applications for a Ray head the scan had just called internet-reachable. Carried as a
@@ -970,6 +1092,7 @@ def _reach(
         _node_capabilities(w, spec, site),
         api,
         token,
+        mount_evidence=tok[1] if tok else "",
         object=_ref(w),
         embedded=site.embedded,
     )
@@ -984,6 +1107,23 @@ def workload_reach(inv: Inventory) -> dict[str, Reach]:
     for site in sites:
         out[site.ref] = _reach(inv, site, index, sa_caps)
     return out
+
+
+def reach_of(inv: Inventory, obj: dict[str, Any]) -> list[tuple[_Site, Reach]]:
+    """The reach of one workload object's pod specs, through the same entries, index and RBAC reading the scan
+    uses, so the blast radius of a workload and the paths the scan ranks through it cannot disagree (G273)."""
+    sites = _sites(inv, owned=False)
+    mine = [s for s in sites if s.obj is obj] or _sites_of(obj)
+    index = _Index.build(inv, _entries(inv), sites if any(s.obj is obj for s in sites) else [*sites, *mine])
+    sa_caps: dict[tuple[str, str], list[Capability]] = {}
+    return [(site, _reach(inv, site, index, sa_caps)) for site in mine]
+
+
+def grants_of(inv: Inventory, namespace: str, service_account: str) -> tuple[list[Grant], list[Gap]]:
+    """Every RBAC rule that applies to a ServiceAccount, and the bindings naming it whose rules the input does
+    not show in full."""
+    gaps: list[Gap] = []
+    return _grants(inv, namespace, service_account, gaps), gaps
 
 
 def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:

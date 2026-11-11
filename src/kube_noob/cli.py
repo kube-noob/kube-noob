@@ -1010,10 +1010,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--format",
-        choices=["text", "json", "yaml", "sarif"],
+        choices=["text", "json", "yaml", "sarif", "mermaid"],
         default=argparse.SUPPRESS,
         help="output format. `sarif` (SARIF 2.1.0) is for `audit` only: it is a format for findings, and a command "
-        "with none to put in it refuses rather than print something else under that name",
+        "with none to put in it refuses rather than print something else under that name. `mermaid` is for "
+        "`posture reach` only, for the same reason: it draws a graph",
     )
     p = argparse.ArgumentParser(
         prog="kube-noob",
@@ -1747,6 +1748,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
     )
 
+    prc = posub.add_parser(
+        "reach",
+        help="Blast radius: what one workload reaches if compromised, as text, a JSON graph or Mermaid",
+        description="Anchored on one workload: the ServiceAccount whose token its pods mount, the bindings that "
+        "name it, what they let it do, the Secrets it may read by RBAC (names and scopes; never their contents), "
+        "the node when the pod spec can escape to it, and which namespaces or the whole cluster that covers. What "
+        "the input cannot show (a ServiceAccount, Role or binding not in it) is reported as not determined. "
+        "--format json|yaml prints the graph (schema kube-noob/blast-radius v1), --format mermaid a flowchart of "
+        "it. Example: kube-noob posture reach deployment/web -n shop -f k8s/",
+    )
+    prc.add_argument(
+        "workload",
+        help="Kind/name with -n (deployment/web), or Kind/namespace/name as posture scan prints it; a Pod is "
+        "resolved to the owner the scan scores",
+    )
+    prc.add_argument("-n", "--namespace", default=None, help="the workload's namespace (default: default)")
+    prc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    prc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    prc.add_argument(
+        "--read-namespace",
+        dest="read_namespaces",
+        action="append",
+        default=[],
+        help="with --live: read only these namespaces (grants elsewhere are then reported as not determined)",
+    )
+    prc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 when a leg is not determined or the graph was truncated",
+    )
+
     def snap_source(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
         sp.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
@@ -2126,6 +2158,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"error: --format sarif is for `kube-noob audit`; `{a.cmd}` has no findings to put in a SARIF document "
             "(the gate writes one with `kube-noob gate --sarif PATH`)",
+            file=sys.stderr,
+        )
+        return 2
+    if a.format == "mermaid" and (a.cmd, getattr(a, "posture_cmd", None)) != ("posture", "reach"):
+        print(
+            f"error: --format mermaid is for `kube-noob posture reach`; `{a.cmd}` has no graph to draw",
             file=sys.stderr,
         )
         return 2
@@ -3215,11 +3253,46 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         raise ConfigError(str(exc)) from exc
 
 
+def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import attack_paths as ap
+    from kube_noob import blast_radius as br
+
+    try:
+        if a.live:
+            if a.file:
+                raise ConfigError("pass -f manifests or --live, not both")
+            if not s.cluster.enabled:
+                raise ConfigError(
+                    "--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled"
+                )
+            from kube_noob.debug.cluster import get_backend
+
+            inv = ap.collect_live(get_backend(s), a.read_namespaces)
+            out = br.reach(inv, a.workload, a.namespace, live=True, namespaces_read=a.read_namespaces)
+        else:
+            if not a.file:
+                raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
+            if a.read_namespaces:
+                raise ConfigError("--read-namespace works with --live; with -f every namespace in the files is read")
+            out = br.reach_manifests("\n---\n".join(_read(f) for f in a.file), a.workload, a.namespace)
+    except (ap.ScanError, br.ReachError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if a.format == "text":
+        _tprint(br.render_text(out))
+    elif a.format == "mermaid":
+        print(br.to_mermaid(out))
+    else:
+        _emit(out, fmt)
+    return 5 if a.require_complete and not out["complete"] else 0
+
+
 def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import attack_paths as ap
 
     if a.posture_cmd in {"snapshot", "diff", "report"}:
         return _posture_drift(a, s, fmt)
+    if a.posture_cmd == "reach":
+        return _posture_reach(a, s, fmt)
 
     if not 1 <= a.top <= ap.MAX_PATHS:
         raise ConfigError(f"--top must be 1-{ap.MAX_PATHS}")

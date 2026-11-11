@@ -587,6 +587,46 @@ class ClusterPostureIn(_In):
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
 
 
+# A Field pattern runs on pydantic's Rust regex engine, where `$` is the end of the text (no final-newline match).
+_WORKLOAD_REF = (
+    r"^[A-Za-z][A-Za-z0-9]{0,62}/(?:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[A-Za-z0-9][A-Za-z0-9._:-]{0,252}"
+    r"(?:\[[A-Za-z0-9/_.-]{1,128}\])?$"
+)
+
+
+class _ReachAnchor(_In):
+    workload: str = Field(
+        ...,
+        min_length=3,
+        max_length=512,
+        pattern=_WORKLOAD_REF,
+        description="The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as "
+        "posture_scan prints it (Deployment/shop/web). A Pod is resolved to the owner the scan scores.",
+    )
+    namespace: str | None = Field(
+        None, max_length=63, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", description="Default: default."
+    )
+    mermaid: bool = Field(False, description="Also return the graph as a Mermaid flowchart (text).")
+
+
+class PostureReachIn(_ReachAnchor):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.",
+    )
+
+
+class ClusterPostureReachIn(_ReachAnchor):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: all the account can list). Grants in namespaces not read are "
+        "reported as not determined.",
+    )
+
+
 class BuildDiagnoseIn(_In):
     log: str = Field(
         ...,
@@ -1477,6 +1517,26 @@ class Toolkit:
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
         return attack_paths.scan(inv, top=p.top)
 
+    @staticmethod
+    def _with_diagram(out: dict[str, Any], mermaid: bool) -> dict[str, Any]:
+        from kube_noob import blast_radius
+
+        return {**out, "mermaid": blast_radius.to_mermaid(out)} if mermaid else out
+
+    def posture_reach(self, p: PostureReachIn) -> dict[str, Any]:
+        from kube_noob import blast_radius
+
+        out = blast_radius.reach_manifests(p.manifests, p.workload, p.namespace)
+        self._observe([f"posture-reach:{len(out['notDetermined'])}"])
+        return self._with_diagram(out, p.mermaid)
+
+    def cluster_posture_reach(self, p: ClusterPostureReachIn) -> dict[str, Any]:
+        from kube_noob import attack_paths, blast_radius
+
+        inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
+        out = blast_radius.reach(inv, p.workload, p.namespace, live=True, namespaces_read=list(p.namespaces))
+        return self._with_diagram(out, p.mermaid)
+
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
         memory for the error lines."""
@@ -2192,6 +2252,20 @@ class Toolkit:
                 self.posture_scan,
             ),
             ToolSpec(
+                "posture_reach",
+                "Blast radius of one workload in manifests",
+                "If this workload is compromised, what can it reach? Its ServiceAccount, the bindings that name it "
+                "(directly or through the system:serviceaccounts and system:authenticated groups), what they allow, "
+                "the Secrets it may read by RBAC (names and scopes only; Secret contents are never read), the node "
+                "when the pod spec can escape to it, and the namespaces or cluster that covers -- as a bounded "
+                "graph whose every edge names the object and field that prove it, with the paths posture_scan "
+                "ranks through it. A ServiceAccount, Role or binding the manifests do not carry is a 'not "
+                "determined' leg, never an empty one; a reference that matches nothing is an error. Optionally a "
+                "Mermaid flowchart of the same graph.",
+                PostureReachIn,
+                self.posture_reach,
+            ),
+            ToolSpec(
                 "build_diagnose",
                 "Diagnose a failed build log",
                 "Read a failed GitHub Actions, Jenkins, Tekton or OpenShift build log: the failing step (and why it is "
@@ -2396,6 +2470,16 @@ class Toolkit:
                     "(never Secrets) and rank the attack paths like posture_scan.",
                     ClusterPostureIn,
                     self.cluster_posture_scan,
+                    open_world=True,
+                ),
+                ToolSpec(
+                    "cluster_posture_reach",
+                    "Blast radius of one workload in the cluster (live, read-only)",
+                    "Read workloads, ServiceAccounts and RBAC from the cluster (never Secrets) and return what one "
+                    "workload reaches if compromised, like posture_reach. A list the account may not read, or a "
+                    "namespace not read, makes its leg 'not determined'.",
+                    ClusterPostureReachIn,
+                    self.cluster_posture_reach,
                     open_world=True,
                 ),
                 ToolSpec(

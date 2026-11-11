@@ -838,6 +838,33 @@ kube-noob posture scan -f k8s/ --fail-above 17
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
 ```
 
+### What can this pod reach if it is compromised? Blast radius
+
+`posture scan` starts at what is exposed. `posture reach` starts at the other end: the one workload a scanner just
+flagged or an incident is about, exposed or not. Name it as `Kind/name` with `-n`, or as `Kind/namespace/name` the way
+the scan prints it; a Pod name is resolved to the owner the scan scores when that owner is in the input (and when it
+is not, the error names the object to ask for instead of guessing). It answers with the ServiceAccount whose token
+the pods mount, each binding that names that account -- directly or through `system:serviceaccounts`,
+`system:serviceaccounts:<namespace>` or `system:authenticated` -- what each binding allows, the Secrets it may read by
+RBAC (by name, or every Secret of a namespace or of the cluster; contents are never read), the node when the pod spec
+can escape to it (privileged, a hostPath, a host namespace, near-root capabilities), and which namespaces or the whole
+cluster that covers. Every step names the object and field that prove it, and the paths `posture scan` ranks through
+the workload come along.
+
+What the input does not show is reported, not skipped: a ServiceAccount, Role or aggregated ClusterRole that is not
+in the files, no RoleBinding or ClusterRoleBinding at all, or a live list the account may not read, each becomes a
+`not determined` leg with the reason. `--require-complete` exits 5 while one is open; a name that matches nothing
+exits 2. `--format json` prints the graph (schema `kube-noob/blast-radius` v1: nodes, edges with their evidence, the
+not-determined legs, and how much was withheld if it hit its cap), and `--format mermaid` draws the same graph as a
+flowchart to paste into a pull request or a wiki page, with the undetermined legs dashed.
+
+```bash
+kube-noob posture reach deployment/web -n shop -f k8s/
+kube-noob --format mermaid posture reach Deployment/shop/web -f k8s/ > web-reach.mmd
+kube-noob --format json posture reach pod/web-5d8f-x7k2q -n shop -f k8s/ --require-complete
+kube-noob --cluster-enabled posture reach deployment/web -n shop --live
+```
+
 ### AI and GPU workloads: the pods an operator runs for you
 
 A KServe `InferenceService` or a KubeRay `RayCluster`, `RayService` or `RayJob` does not keep its pod spec at
