@@ -282,7 +282,8 @@ def test_an_object_of_another_api_group_is_not_an_olm_object() -> None:
     assert inv["verdict"] == "partial"
     assert [o.get("csv") for o in inv["operators"]] == ["foo.v1.0.0"]
     assert inv["operators"][0]["state"] == "subscription-not-read"
-    assert any("apps.open-cluster-management.io" in c for c in inv["caveats"])
+    # The foreign group is named whole, as its own word, in the caveat that says the object was ignored.
+    assert any(acm["apiVersion"] in c.split() and "ignored" in c for c in inv["caveats"])
 
 
 # -- 7: list cap -------------------------------------------------------------------------------------------------------
@@ -431,7 +432,7 @@ def test_order_and_conflicting_duplicates_do_not_change_the_answer() -> None:
 # -- 17 ----------------------------------------------------------------------------------------------------------------
 
 
-def test_subscriptions_times_install_plans_in_one_namespace_is_linear() -> None:
+def test_subscriptions_times_install_plans_in_one_namespace_is_linear(monkeypatch: pytest.MonkeyPatch) -> None:
     def run(n: int) -> float:
         subs = [
             {
@@ -458,10 +459,21 @@ def test_subscriptions_times_install_plans_in_one_namespace_is_linear() -> None:
         ops.inventory(c)
         return time.perf_counter() - t
 
-    run(200)  # warm up
-    small, large = run(1000), run(4000)
-    assert large < 10.0  # a ceiling only a regression to quadratic could cross
-    assert large / max(small, 1e-3) < 8, (small, large)  # four times the input: about four times the time
+    # Counted, not timed: a ratio of two wall-clock readings failed on a shared CI runner (0.05 s against 1.0 s for
+    # four times the input) with the code linear. The index is built once per namespace, however many Subscriptions
+    # ask it; the quadratic version rebuilt it for every Subscription.
+    builds = 0
+    real = ops._plan_index
+
+    def counting(plans: list[Any]) -> Any:
+        nonlocal builds
+        builds += 1
+        return real(plans)
+
+    monkeypatch.setattr(ops, "_plan_index", counting)
+    large = run(4000)
+    assert builds == 1
+    assert large < 10.0  # a loose ceiling: 4,000 x 4,000 took 4.9 s quadratic on a quiet machine, 0.2 s indexed
 
 
 # -- 18 ----------------------------------------------------------------------------------------------------------------
