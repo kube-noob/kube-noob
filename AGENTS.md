@@ -14,7 +14,8 @@ It runs the gates CI runs on code: the plugin copy, the Agent Skill build, the s
 document, the numbers the documents quote, the KSI crosswalk, ruff (lint and format), mypy, the full test suite
 **with CI's coverage floor**, kube-noob's own self-test, both `pip-audit` runs, `uv lock --check`, the wheel built
 and installed and driven, the MCP and plugin end-to-end runs, `check_publishable.sh`, the Homebrew formula against
-PyPI, and the OSCAL document against the pinned NIST schema. It takes about twenty minutes.
+PyPI, the OSCAL document against the pinned NIST schema and the gate's SARIF against the vendored OASIS one. It
+takes about twenty minutes.
 
 Where this machine lacks a tool, the step is **named at the end under NOT RUN** rather than passed over — read that
 list, because "it did not run" is not "it passed", and CI still runs it. `helm` is the usual entry, which leaves

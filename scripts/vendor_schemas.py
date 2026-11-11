@@ -7,6 +7,9 @@
   as plain JSON in parts under PART_LIMIT bytes, one definition per line, so every file stays readable text (the Claude
   plugin directory reads files up to 256 KiB and holds compressed or larger ones for review).
 * CRDs (OpenShift, OVN-K, StackRox, Gateway API): JSON schemas listed in CRD_SOURCES.
+* SARIF 2.1.0 (``--sarif``): the OASIS schema, into tests/fixtures/sarif/, so kube-noob's own SARIF output can be
+  validated against the format it claims rather than against the URI it prints. Written on its own: ``--sarif``
+  fetches nothing else, and the wheel does not carry it.
 
 Every vendored file is recorded in PROVENANCE.json with source URL, upstream sha256 and license.
 
@@ -28,6 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src" / "kube_noob" / "schemas" / "data"
 YANNH = "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master"
 DATREE = "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main"
+# SARIF 2.1.0 from the OASIS technical committee that owns the format. json.schemastore.org serves the same
+# schema and is the URI kube-noob writes as `$schema`, but it is not reachable from a locked-down build and it is a
+# redistribution, not the source. The schema is a TEST fixture, not wheel data: nothing at runtime reads it.
+SARIF = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
+SARIF_OUT = ROOT / "tests" / "fixtures" / "sarif"
 
 PART_LIMIT = 200_000
 
@@ -178,10 +186,53 @@ def write_definition_parts(definitions: dict[str, Any], k8s: str, out: Path = OU
     return written
 
 
+def vendor_sarif(out: Path = SARIF_OUT) -> int:
+    """The OASIS SARIF 2.1.0 schema, with its provenance beside it.
+
+    It is pretty-printed rather than minified: it is read by people checking what the validator enforces, and the
+    plugin directory's 256 KiB per-file limit does not apply to tests.
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    raw = fetch(SARIF)
+    schema = json.loads(raw)
+    version = schema.get("$id") or schema.get("id") or ""
+    target = out / "sarif-schema-2.1.0.json"
+    target.write_text(json.dumps(schema, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    (out / "PROVENANCE.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "file": target.name,
+                        "source": SARIF,
+                        "sha256Upstream": hashlib.sha256(raw).hexdigest(),
+                        "schemaId": version,
+                        "license": "the SARIF 2.1.0 specification is published by OASIS; the schema is part of it",
+                        "transform": "re-serialised with sorted keys and one-space indent; no value changed",
+                    }
+                ]
+            },
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote {target} ({target.stat().st_size} bytes)")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--k8s", default="v1.35.0")
+    ap.add_argument(
+        "--sarif",
+        action="store_true",
+        help="vendor only the OASIS SARIF 2.1.0 schema into tests/fixtures/sarif and exit",
+    )
     args = ap.parse_args()
+    if args.sarif:
+        return vendor_sarif()
     OUT.mkdir(parents=True, exist_ok=True)
     provenance: dict[str, Any] = {"files": []}
 

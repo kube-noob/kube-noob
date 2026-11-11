@@ -201,16 +201,21 @@ jobs:
           node-version: "22"
       - name: OSCAL output validates against the pinned NIST schema (ajv, not jsonschema)
         run: |
-          npm install --no-save --no-audit --no-fund ajv@8.17.1 ajv-formats@3.0.1
+          npm install --no-save --no-audit --no-fund ajv@8.17.1 ajv-formats@3.0.1 ajv-draft-04@1.0.0
           python -m kube_noob audit -f examples/insecure-deployment.yaml --platform openshift --version 4.22 \
             --oscal > /tmp/assessment-results.json || true
-          node scripts/oscal_validate.mjs tests/fixtures/oscal/oscal_assessment-results_schema.json \
+          node scripts/json_schema_validate.mjs tests/fixtures/oscal/oscal_assessment-results_schema.json \
             /tmp/assessment-results.json
-      - name: The schema check ran rather than skipping for a missing ajv
+      - name: SARIF output validates against the OASIS schema it names
         run: |
-          out=$(python -m pytest tests/test_oscal.py -q -rs 2>&1)
+          python -m kube_noob gate -f examples/insecure-deployment.yaml --platform openshift --version 4.22 \
+            --sarif /tmp/gate.sarif.json --quiet || true
+          node scripts/json_schema_validate.mjs tests/fixtures/sarif/sarif-schema-2.1.0.json /tmp/gate.sarif.json
+      - name: The schema checks ran rather than skipping for a missing ajv
+        run: |
+          out=$(python -m pytest tests/test_oscal.py tests/test_gate_sarif.py -q -rs 2>&1)
           echo "$out" | tail -5
-          echo "$out" | grep -q "ajv is not installed" && { echo "the OSCAL schema test SKIPPED"; exit 1; }
+          echo "$out" | grep -q "ajv is not installed" && { echo "a schema test SKIPPED"; exit 1; }
           echo "$out" | grep -qE "[0-9]+ passed" || exit 1
 
   publishable:

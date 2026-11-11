@@ -237,11 +237,11 @@ def _ajv() -> str | None:
 def test_the_document_validates_against_nists_published_schema(tmp_path: Path) -> None:
     node = _ajv()
     if node is None:
-        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1")
+        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1 ajv-draft-04@1.0.0")
     out = tmp_path / "ar.json"
     out.write_text(json.dumps(oscal.assessment_results(_report(), timestamp=WHEN)), encoding="utf-8")
     done = subprocess.run(
-        [node, str(ROOT / "scripts" / "oscal_validate.mjs"), str(SCHEMA), str(out)],
+        [node, str(ROOT / "scripts" / "json_schema_validate.mjs"), str(SCHEMA), str(out)],
         capture_output=True,
         text=True,
         check=False,
@@ -283,11 +283,11 @@ def test_python_jsonschema_cannot_validate_this_schema_at_all() -> None:
 def _ajv_ok(tmp_path: Path, doc: dict[str, Any], name: str = "d.json") -> None:
     node = _ajv()
     if node is None:
-        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1")
+        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1 ajv-draft-04@1.0.0")
     out = tmp_path / name
     out.write_text(json.dumps(doc), encoding="utf-8")
     done = subprocess.run(
-        [node, str(ROOT / "scripts" / "oscal_validate.mjs"), str(SCHEMA), str(out)],
+        [node, str(ROOT / "scripts" / "json_schema_validate.mjs"), str(SCHEMA), str(out)],
         capture_output=True,
         text=True,
         check=False,
