@@ -4360,14 +4360,17 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         else:
             given = flags.get("authorization-mode", [])
             modes = [m.strip() for v, _ in given for m in v.split(",") if m.strip()]
-            if not given:
+            if not modes:
+                # Absent, or given empty (`--authorization-mode=`): either way the slice is empty, and upstream's
+                # Complete() fills an empty slice with AlwaysAllow when there is no --authorization-config.
                 always_allow = True
+                said = "sets --authorization-mode to nothing" if given else "does not set --authorization-mode"
                 yield r.finding(
                     d,
-                    (*c.path, "command", 0),
-                    f"{where} does not set --authorization-mode and names no --authorization-config, so it uses the "
-                    f"upstream default, AlwaysAllow ({APISERVER_DEFAULTS_CHECKED}){beyond}: every request any "
-                    "authenticated client makes is allowed.",
+                    _argv_path(c, skip, given[-1][1]) if given else (*c.path, "command", 0),
+                    f"{where} {said} and names no --authorization-config, so it uses the upstream default, "
+                    f"AlwaysAllow ({APISERVER_DEFAULTS_CHECKED}){beyond}: every request any authenticated client "
+                    "makes is allowed.",
                 )
             elif "AlwaysAllow" in modes:
                 always_allow = True

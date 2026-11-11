@@ -140,6 +140,12 @@ def test_an_absent_authorization_mode_is_always_allow_and_says_so() -> None:
     assert "not set" in hit[0].message and "AlwaysAllow" in hit[0].message
 
 
+def test_an_empty_authorization_mode_is_the_same_as_none() -> None:
+    hit = _hits(_report(_apiserver("--authorization-mode=", "--anonymous-auth=false")), "KN-S038")
+    assert len(hit) == 1 and hit[0].severity == Severity.CRITICAL
+    assert "to nothing" in hit[0].message and hit[0].path == "spec.containers[0].command[2]"
+
+
 def test_explicit_anonymous_auth_is_reported() -> None:
     report = _report(_apiserver("--authorization-mode=Node,RBAC", "--anonymous-auth=true"))
     hit = _hits(report, "KN-S038")

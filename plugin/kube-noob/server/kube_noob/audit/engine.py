@@ -126,12 +126,12 @@ def analyze(
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
     # A rule that declined and said why gets one line, sorted by id so the same input gives the same bytes. The
-    # count is capped per rule: one undecidable shape repeated across a hundred containers is one reason.
+    # count is capped per rule: a hundred declined containers are three reasons and a count, not a hundred lines.
     for rid in sorted(ctx.declined):
         reasons = ctx.declined[rid]
         more = f"; and {len(reasons) - MAX_DECLINE_REASONS} more" if len(reasons) > MAX_DECLINE_REASONS else ""
         report.assumptions.append(
-            f"{rid} was not evaluated, so it is neither clean nor a finding here: "
+            f"{rid} was not evaluated in full, so it is not counted as clean: "
             f"{'; '.join(reasons[:MAX_DECLINE_REASONS])}{more}."
         )
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
