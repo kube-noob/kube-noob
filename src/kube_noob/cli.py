@@ -19,7 +19,7 @@ import yaml
 
 from kube_noob import __version__, completion, sanitize
 from kube_noob.config import Settings, load_settings
-from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError
+from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
@@ -2563,6 +2563,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 written = mg_report.write(rep, Path(a.report), draft=a.case_draft)
             except (OSError, ValueError) as exc:
                 raise ConfigError(f"--report {a.report}: {exc}") from exc
+        from kube_noob import operators
+        from kube_noob.mustgather import operators as mg_operators
+
+        inventory = operators.inventory(mg_operators.collect(bundle))
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
@@ -2571,9 +2575,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
                 text += f"\nwrote {path}"
-            _tprint(text)
+            _tprint(text + "\n" + operators.render_text(inventory))
         else:
-            _emit({**bundle.as_dict(), **rep}, fmt)
+            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory}, fmt)
         if analyse.failing(analysis, a.fail_on):
             return 1
         # A gate that passes on evidence nobody could read is a false all-clear, and exit 0 cannot say which one it
@@ -3300,6 +3304,43 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     return 1 if a.fail_above is not None and top_score > a.fail_above else 0
 
 
+_OPERATOR_SUFFIXES = (".yaml", ".yml", ".json")
+
+
+def _operator_files(paths: list[str]) -> tuple[list[tuple[str, list[Any]]], list[dict[str, str]]]:
+    """Each file parsed on its own. A file named on the command line that cannot be read is refused (exit 2 or 4);
+    a file found in a directory that cannot be read is named in the answer and makes it partial, because dropping it
+    and answering from the rest is a shorter list that reads as a complete one (G270). In a directory every
+    ``.yaml``, ``.yml`` and ``.json`` file is read, whatever the case of its suffix; links are not followed."""
+    from kube_noob.yamlio import load_documents
+
+    sources: list[tuple[str, list[Any]]] = []
+    unreadable: list[dict[str, str]] = []
+    for given in paths:
+        d = Path(given)
+        if given == "-" or not d.is_dir():
+            sources.append((given, [doc.data for doc in load_documents(_read(given))]))
+            continue
+        for f in sorted(d.rglob("*")):
+            if not f.name.lower().endswith(_OPERATOR_SUFFIXES):
+                continue
+            rel = str(f.relative_to(d))
+            if f.is_symlink() or not f.is_file():
+                if f.is_symlink():
+                    unreadable.append({"path": rel, "reason": "a link (not followed)"})
+                continue
+            try:
+                docs = [doc.data for doc in load_documents(f.read_text(encoding="utf-8"))]
+            except (UnicodeDecodeError, OSError) as exc:
+                unreadable.append({"path": rel, "reason": f"not readable as UTF-8 text ({type(exc).__name__})"})
+                continue
+            except ManifestError as exc:
+                unreadable.append({"path": rel, "reason": " ".join(str(exc).split())[:300]})
+                continue
+            sources.append((rel, docs))
+    return sources, unreadable
+
+
 def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import operators
 
@@ -3327,7 +3368,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         except ingest.MustGatherError as exc:
             raise ConfigError(str(exc)) from exc
     else:
-        collected = operators.from_manifests("\n---\n".join(_read(f) for f in a.file))
+        sources, unreadable = _operator_files(a.file)
+        collected = operators.from_sources(sources, unreadable)
     out = operators.inventory(collected, top=a.top)
     if a.format == "text":
         _tprint(operators.render_text(out))

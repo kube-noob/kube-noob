@@ -17,10 +17,11 @@ The layout, read from openshift/oc (``pkg/cli/admin/mustgather``, ``pkg/cli/admi
 
 Rules: an archive member with an absolute path, a ``..`` segment or a NUL refuses the whole archive (a must-gather
 never has one, so it was tampered with); symbolic links, hard links, devices and FIFOs are never followed or read
-and are reported; files named like Secrets (``secrets.yaml``, anything under a ``secrets`` directory) are never read;
-nested archives are listed, not opened. Caps bound the member count, the bytes processed (header sizes, so a gzip
-bomb stops at the cap), each file, what is kept in memory, and the nesting depth. Resource YAML is kept whole up to
-``MAX_FILE_BYTES``; logs keep their last ``LOG_TAIL_BYTES``.
+and are reported; files named like Secrets (``secrets.yaml``, anything under a ``secrets`` directory) are never
+read, except OLM object files in the layout oc writes (``namespaces/<ns>/operators.coreos.com/...``), whose names
+are operators' and namespaces'; nested archives are listed, not opened. Caps bound the member count, the bytes
+processed (header sizes, so a gzip bomb stops at the cap), each file, what is kept in memory, and the nesting depth.
+Resource YAML is kept whole up to ``MAX_FILE_BYTES``; logs keep their last ``LOG_TAIL_BYTES``.
 """
 
 from __future__ import annotations

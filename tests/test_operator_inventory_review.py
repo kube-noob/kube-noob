@@ -26,7 +26,11 @@ API = "operators.coreos.com/v1alpha1"
 
 
 def csv(name: str, ns: str, version: Any = "1.0.0", phase: Any = "Succeeded", **meta: Any) -> dict[str, Any]:
-    d: dict[str, Any] = {"apiVersion": API, "kind": "ClusterServiceVersion", "metadata": {"name": name, "namespace": ns}}
+    d: dict[str, Any] = {
+        "apiVersion": API,
+        "kind": "ClusterServiceVersion",
+        "metadata": {"name": name, "namespace": ns},
+    }
     d["metadata"].update(meta)
     if version is not None:
         d["spec"] = {"version": version}
@@ -112,7 +116,7 @@ def _stub_kubectl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     kubectl = bin_dir / "kubectl"
-    kubectl.write_text("#!/bin/sh\nres=\"$2\"\n" + script)
+    kubectl.write_text('#!/bin/sh\nres="$2"\n' + script)
     kubectl.chmod(kubectl.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return KubectlBackend("kubectl", None, 5)
@@ -137,9 +141,11 @@ def test_a_failure_that_merely_says_not_found_is_not_a_cluster_without_olm(
     assert inv["verdict"] == "not-determined" and inv["complete"] is False
 
 
-def test_only_a_404_on_the_olm_group_reads_as_not_an_olm_cluster(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_a_404_on_the_olm_group_reads_as_not_an_olm_cluster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     absent = _stub_kubectl(
-        tmp_path, monkeypatch, "echo \"error: the server doesn't have a resource type \\\"${res%%.*}\\\"\" >&2; exit 1\n"
+        tmp_path, monkeypatch, 'echo "error: the server doesn\'t have a resource type \\"${res%%.*}\\"" >&2; exit 1\n'
     )
     inv = ops.inventory(ops.collect_live(absent, []))
     assert inv["verdict"] == "no-olm" and inv["complete"] is True
@@ -285,7 +291,10 @@ def test_an_object_of_another_api_group_is_not_an_olm_object() -> None:
 def test_a_list_longer_than_the_cap_is_partial_with_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ops, "MAX_ITEMS", 3)
     items = [csv(f"op{i}.v1.0.0", "a") for i in range(5)]
-    text = yaml.safe_dump({"kind": "ClusterServiceVersionList", "items": items}) + "---\nkind: SubscriptionList\nitems: []\n"
+    text = (
+        yaml.safe_dump({"kind": "ClusterServiceVersionList", "items": items})
+        + "---\nkind: SubscriptionList\nitems: []\n"
+    )
     inv = ops.inventory(ops.from_manifests(text))
     assert inv["verdict"] == "partial" and any("2 clusterserviceversions past the first 3" in c for c in inv["caveats"])
 
@@ -350,9 +359,7 @@ def test_the_join_follows_installed_csv_only_during_an_upgrade() -> None:
 
 
 def test_two_subscriptions_naming_one_csv_give_one_operator() -> None:
-    inv = inv_of(
-        csv("foo.v1.0.0", "a"), sub("foo", "a", "foo", "foo.v1.0.0"), sub("foo2", "a", "foo", "foo.v1.0.0")
-    )
+    inv = inv_of(csv("foo.v1.0.0", "a"), sub("foo", "a", "foo", "foo.v1.0.0"), sub("foo2", "a", "foo", "foo.v1.0.0"))
     assert inv["counts"]["operators"] == 1 and inv["counts"]["installed"] == 1
     assert any("foo2" in n for n in inv["operators"][0]["notes"])
 
@@ -427,13 +434,23 @@ def test_order_and_conflicting_duplicates_do_not_change_the_answer() -> None:
 def test_subscriptions_times_install_plans_in_one_namespace_is_linear() -> None:
     def run(n: int) -> float:
         subs = [
-            {"apiVersion": API, "kind": "Subscription", "metadata": {"name": f"s{i}", "namespace": "a"},
-             "spec": {"name": f"p{i}"}, "status": {"currentCSV": f"p{i}.v1.0.0"}}
+            {
+                "apiVersion": API,
+                "kind": "Subscription",
+                "metadata": {"name": f"s{i}", "namespace": "a"},
+                "spec": {"name": f"p{i}"},
+                "status": {"currentCSV": f"p{i}.v1.0.0"},
+            }
             for i in range(n)
         ]
         plans = [
-            {"apiVersion": API, "kind": "InstallPlan", "metadata": {"name": f"install-{i}", "namespace": "a"},
-             "spec": {"clusterServiceVersionNames": [f"x{i}.v1.0.0"]}, "status": {"phase": "Complete"}}
+            {
+                "apiVersion": API,
+                "kind": "InstallPlan",
+                "metadata": {"name": f"install-{i}", "namespace": "a"},
+                "spec": {"clusterServiceVersionNames": [f"x{i}.v1.0.0"]},
+                "status": {"phase": "Complete"},
+            }
             for i in range(n)
         ]
         c = ops.from_documents([*subs, *plans, csv("foo.v1.0.0", "a")])
@@ -465,8 +482,12 @@ def test_the_text_view_carries_what_the_json_carries() -> None:
     props = json.dumps({"properties": [{"type": "olm.package", "value": {"packageName": "loki", "version": "6.0.0"}}]})
     no_phase = csv("loki.v6.0.0", "a", version=None, phase=None, annotations={"operatorframework.io/properties": props})
     no_phase["status"] = {"reason": "InstallWaiting"}
-    group = {"apiVersion": "operators.coreos.com/v1", "kind": "OperatorGroup", "metadata": {"name": "g", "namespace": "a"},
-             "status": {"namespaces": ["a", "b"]}}
+    group = {
+        "apiVersion": "operators.coreos.com/v1",
+        "kind": "OperatorGroup",
+        "metadata": {"name": "g", "namespace": "a"},
+        "status": {"namespaces": ["a", "b"]},
+    }
     inv = inv_of(no_phase, group, sub("loki", "a", "loki", "loki.v6.0.0"))
     text = ops.render_text(inv)
     for needle in (
@@ -499,7 +520,7 @@ def test_invisible_format_characters_are_removed_everywhere() -> None:
     from kube_noob import sanitize
     from kube_noob.mustgather import analyse
 
-    hidden = "؜­\U000e0041 "
+    hidden = "\u061c\u00ad\U000e0041\ue000\u2028"
     msg = f"bad{hidden}thing"
     inv = inv_of(csv("foo.v1.0.0", "a", phase="Failed") | {"status": {"phase": "Failed", "message": msg}})
     blob = ops.render_text(inv) + json.dumps(inv, ensure_ascii=False)

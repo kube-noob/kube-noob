@@ -428,10 +428,13 @@ namespaces, never counted as more installs. A Subscription with nothing installe
 no Subscription (catalog and channel then say unknown), each get a state of their own.
 
 It reads manifests, a must-gather or the cluster (ClusterServiceVersions and Subscriptions only, read-only). What it
-could not read is part of the answer: no ClusterServiceVersions in the input is "not determined", a cluster that
-does not serve `operators.coreos.com` is "not an OLM cluster", and neither is reported as zero operators.
-`--require-complete` exits 5 unless everything the answer needs was read. Operators installed by Helm or plain
-manifests are outside it, and it says so.
+could not read is part of the answer, and the list is `listed` only when nothing it needs was skipped: no
+ClusterServiceVersions read is "not determined"; a file it could not parse, a file the must-gather reader skipped, an
+object it could not use, or a namespace with CSVs and no Subscription in the files you gave makes it `partial` and is
+named; a cluster that answers 404 for `operators.coreos.com` on both reads is "not an OLM cluster". None of them is
+reported as zero operators. A Subscription counts as installed only through the CSV its `installedCSV` names.
+`--require-complete` exits 5 on anything but a complete answer. With `-f DIR`, every `.yaml`, `.yml` and `.json` file
+is read on its own. Operators installed by Helm or plain manifests are outside it, and it says so.
 
 ```bash
 kube-noob operators inventory --must-gather must-gather.tar.gz
@@ -449,8 +452,8 @@ not read: subscriptions (not-read) not in this must-gather (namespaces/<ns>/oper
 ```
 
 From an MCP client, `kubenoob_operator_inventory` takes the objects as YAML, `kubenoob_cluster_operator_inventory`
-reads the cluster when cluster access is on, and `kubenoob_analyze_must_gather` returns the same inventory as
-`operatorInventory`.
+reads the cluster when cluster access is on, and `kubenoob_analyze_must_gather` and `kube-noob must-gather
+analyze` return the same inventory as `operatorInventory`.
 
 ### Why was this denied?
 

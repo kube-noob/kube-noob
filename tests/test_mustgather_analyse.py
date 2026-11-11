@@ -261,7 +261,7 @@ def test_untrusted_names_and_text(tmp_path: Path) -> None:
     blob = json.dumps(a.as_dict(), ensure_ascii=False) + analyse.render_text(a)
     assert "hunter2" not in blob and "\u202e" not in blob and "\nforged" not in blob and "\x1b" not in blob
     p0 = next(f for f in a.findings if f.object == "Pod/shop/p0")
-    assert p0.message == "boom [2Jforged line pass" + "word=***"
+    assert p0.message == "boom forged line pass" + "word=***"  # the whole escape sequence goes, not just ESC
     assert all(evil not in c for f in a.findings for c in f.next)
     evil_pod = next(f for f in a.findings if evil in f.object)
     assert evil_pod.next == []  # no command for a name that is not a Kubernetes name

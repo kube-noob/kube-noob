@@ -247,12 +247,12 @@ def test_a_forbidden_live_read_is_unknown_and_a_missing_api_group_says_not_an_ol
     )
     assert ops.inventory(ops.collect_live(kubectl_forbidden, []))["verdict"] == "not-determined"
 
-    for message in (
-        "Not found: GET /apis/operators.coreos.com/v1alpha1/clusterserviceversions",
-        "oc get clusterserviceversions.operators.coreos.com failed: error: the server doesn't have a resource type "
-        '"clusterserviceversions"',
+    for template in (
+        "Not found: GET /apis/operators.coreos.com/v1alpha1/{r}",
+        "oc get {r}.operators.coreos.com failed: error: the server doesn't have a resource type " + '"{r}"',
     ):
-        absent = FakeBackend({}, {"clusterserviceversions": message, "subscriptions": message})
+        message = template.format(r="clusterserviceversions")
+        absent = FakeBackend({}, {r: template.format(r=r) for r in ("clusterserviceversions", "subscriptions")})
         inv = ops.inventory(ops.collect_live(absent, []))
         assert inv["verdict"] == "no-olm", message
         assert inv["operators"] == [] and "not an OLM cluster" in inv["summary"]
@@ -375,8 +375,8 @@ def test_an_absent_approval_is_automatic_and_says_it_was_defaulted() -> None:
 def test_a_csv_without_a_subscription_has_unknown_channel_and_catalog() -> None:
     inv = _inv(
         _csv("packageserver", "openshift-operator-lifecycle-manager", version="0.0.1-snapshot"),
-        _csv("other.v1.0.0", "other"),
-        _sub("other", "other", "other", installed="other.v1.0.0"),
+        _csv("other.v1.0.0", "openshift-operator-lifecycle-manager"),
+        _sub("other", "openshift-operator-lifecycle-manager", "other", installed="other.v1.0.0"),
     )
     op = _one(inv, csv="packageserver")
     assert op["state"] == "no-subscription"
@@ -464,7 +464,7 @@ def test_secrets_in_the_input_are_never_read() -> None:
     inv = _inv(secret, _csv("a.v1.0.0", "a", phase="Failed", message=f"password={MARKER}"), sub)
     assert _one(inv, csv="a.v1.0.0")["message"] == "password=***"
     assert MARKER not in json.dumps(inv) and MARKER not in ops.render_text(inv)
-    assert inv["secretsIgnored"] == 1
+    assert inv["droppedUnread"] == 1
 
 
 def test_hostile_strings_are_flattened_and_redacted() -> None:
