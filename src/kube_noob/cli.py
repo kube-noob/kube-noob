@@ -1810,6 +1810,23 @@ def build_parser() -> argparse.ArgumentParser:
     icf.add_argument("--cause", required=True)
     icf.add_argument("--fix", required=True)
 
+    alr = sub.add_parser(
+        "alerts",
+        help="Alertmanager payloads: an evidence report per alert (offline), and the reports a server kept",
+        description="report: one evidence report per alert in an Alertmanager payload file, built offline from the "
+        "payload and local knowledge (signals, diagnosis, reported issues for the version its labels name, team "
+        "memory, read-only next steps), the same report POST /v1/alert-reports returns. list and show read the "
+        "reports `kube-noob serve` kept in <dataDir>/alert-reports. Example: kube-noob alerts report -f payload.json",
+    )
+    asub = alr.add_subparsers(dest="alerts_cmd", required=True)
+    _patch(asub, common)
+    arp = asub.add_parser("report", help="An evidence report per alert in a payload file (nothing is kept)")
+    arp.add_argument("-f", "--file", required=True, help="the payload as JSON: a file, or '-' for stdin")
+    alst = asub.add_parser("list", help="The newest reports the server kept")
+    alst.add_argument("-n", "--limit", type=int, default=20, help="how many (1-200, default 20)")
+    ashw = asub.add_parser("show", help="One kept report by its id")
+    ashw.add_argument("report_id")
+
     dbg = sub.add_parser("debug", help="Collect live read-only evidence for a workload and diagnose it")
     dbg.add_argument("target", help="kind/name, e.g. deployment/orders-api")
     dbg.add_argument("-n", "--namespace", required=True)
@@ -2567,6 +2584,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "incidents":
         return _incidents(a, kit, fmt)
 
+    if a.cmd == "alerts":
+        return _alerts(a, kit, fmt)
+
     if a.cmd == "bundle":
         from kube_noob.debug.diagnose import bundle_markdown
 
@@ -3306,6 +3326,57 @@ def _watch(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             stop.wait(s.watch.interval_seconds)
     except KeyboardInterrupt:
         return 0
+    return 0
+
+
+def _alerts(a: argparse.Namespace, kit: Any, fmt: str) -> int:
+    """`alerts report|list|show`. The report is the `alert_report` tool's answer; list and show read the server's
+    store and clean what they read, as the GET routes do."""
+    from pydantic import ValidationError
+
+    from kube_noob import sanitize
+    from kube_noob import toolkit as tk
+    from kube_noob.alert_report import render_text
+
+    if a.alerts_cmd == "report":
+        text = _read_text_or_file(a.file, "alerts report -f")
+        try:
+            req = tk.AlertReportIn(payload=text)
+        except ValidationError as exc:
+            raise ConfigError(
+                f"{a.file}: not a payload this command reads (JSON, 2 to {tk.MAX_ALERT_PAYLOAD} characters)"
+            ) from exc
+        out = kit.alert_report(req)
+        if a.format == "text":
+            _tprint(render_text(out["report"]))
+            _tprint(f"\nnot stored: {out['notStoredReason']}")
+        else:
+            _emit(out, fmt)
+        return 0
+    if a.alerts_cmd == "list":
+        if not 1 <= a.limit <= 200:
+            raise ConfigError("--limit must be 1-200")
+        out = sanitize.result(kit.alert_report_list(tk.AlertReportListIn(limit=a.limit)))
+        if a.format == "text":
+            for row in out["reports"]:
+                if row.get("unreadable"):
+                    _tprint(f"{row['id']}  unreadable: {row['unreadable']}")
+                    continue
+                names = ", ".join(row.get("alertnames") or [])
+                _tprint(f"{row['id']}  {row.get('receivedAt')}  {row.get('alerts')} alert(s)  {names}")
+            _tprint(f"{len(out['reports'])} of {out['total']} kept" + (f" ({out['note']})" if out.get("note") else ""))
+        else:
+            _emit(out, fmt)
+        return 0
+    try:
+        req_id = tk.AlertReportGetIn(id=a.report_id)
+    except ValidationError as exc:
+        raise ConfigError(f"{a.report_id[:80]!r} is not a report id") from exc
+    out = sanitize.result(kit.alert_report_get(req_id))
+    if a.format == "text":
+        _tprint(render_text(out["report"], out))
+    else:
+        _emit(out, fmt)
     return 0
 
 

@@ -194,6 +194,21 @@ class WatchSettings(_Base):
         return v
 
 
+class AlertReportSettings(_Base):
+    """Evidence reports the HTTP server keeps for the Alertmanager payloads posted to ``POST /v1/alert-reports``.
+
+    Written by ``kube-noob serve`` only (never by a tool, the CLI or the stdio server) into ``<dataDir>/alert-reports``,
+    owner-only and atomically, never through a symbolic link. Retention is bounded twice: the newest ``maxReports``
+    are kept and anything older than ``maxAgeDays`` goes, oldest first. A report larger than ``maxReportBytes`` keeps
+    every alert's name, state and verdict and drops detail from the last alerts first, and says so. ``store: false``
+    keeps nothing: the POST still answers with the report and ``stored: false``."""
+
+    store: bool = True
+    max_reports: int = Field(default=200, ge=1, le=5000)
+    max_age_days: int = Field(default=14, ge=1, le=365)
+    max_report_bytes: int = Field(default=1_048_576, ge=262_144, le=8_388_608)
+
+
 class PostureSettings(_Base):
     """Daily drift and policy report (``kube-noob serve`` with ``report_enabled``; ``kube-noob posture report``).
 
@@ -497,6 +512,7 @@ class Settings(_Base):
     server: ServerSettings = Field(default_factory=ServerSettings)
     watch: WatchSettings = Field(default_factory=WatchSettings)
     posture: PostureSettings = Field(default_factory=PostureSettings)
+    alert_reports: AlertReportSettings = Field(default_factory=AlertReportSettings)
     rhacs: RhacsSettings = Field(default_factory=RhacsSettings)
     ci: CiSettings = Field(default_factory=CiSettings)
     admission: AdmissionSettings = Field(default_factory=AdmissionSettings)

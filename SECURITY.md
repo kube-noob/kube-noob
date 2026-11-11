@@ -18,7 +18,7 @@ only performs HTTPS GETs to allowlisted documentation domains, refuses non-text 
 scripts), streams at most `web.maxBytes`, never writes the content to disk and never executes it. The admin lock
 (`offline: true` / `KUBE_NOOB_OFFLINE=1`) overrides `webEnabled`, blocks corpus downloads and allows only loopback or
 in-cluster model endpoints; no later configuration source can lift it. `kube-noob doctor` reports the effective
-posture. The local learning file stores only user-confirmed summaries and ids, never logs, manifests or credentials. The MCP server's only subprocesses are read-only `oc`/`kubectl` calls (argv, no shell)
+posture. The local learning file stores only user-confirmed summaries and ids, never logs, manifests or credentials. The HTTP server keeps an evidence report for each Alertmanager payload posted to `POST /v1/alert-reports` in its own data directory (owner-only, bounded by count, age and size, never written through a link), built from the payload and local knowledge alone: the receiver reads no cluster, fetches nothing and runs nothing a payload names. The MCP server's only subprocesses are read-only `oc`/`kubectl` calls (argv, no shell)
 when cluster access is enabled; the maintainer CLI commands `corpus build --online` and `helm-audit` run `git` and
 `helm template` locally.
 

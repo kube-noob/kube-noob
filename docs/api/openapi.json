@@ -2,11 +2,60 @@
  "openapi": "3.1.0",
  "info": {
   "title": "kube-noob REST API",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "The kube-noob tools as JSON over HTTP, beside MCP. Bearer token as for MCP."
  },
  "components": {
   "schemas": {
+   "AlertReportGetIn": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "description": "A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
+      "maxLength": 64,
+      "pattern": "^\\d{8}T\\d{6}\\.\\d{6}Z-[0-9a-f]{24}$",
+      "title": "Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "title": "AlertReportGetIn",
+    "type": "object"
+   },
+   "AlertReportIn": {
+    "additionalProperties": false,
+    "properties": {
+     "payload": {
+      "description": "An Alertmanager webhook body (version 4), the Alertmanager API's alert list or Prometheus's /api/v1/alerts, as JSON. Each alert is reported on its own; an openshift_version or version label holding an OpenShift release narrows the reported issues to it.",
+      "maxLength": 2000000,
+      "minLength": 2,
+      "title": "Payload",
+      "type": "string"
+     }
+    },
+    "required": [
+     "payload"
+    ],
+    "title": "AlertReportIn",
+    "type": "object"
+   },
+   "AlertReportListIn": {
+    "additionalProperties": false,
+    "properties": {
+     "limit": {
+      "default": 50,
+      "description": "How many of the newest reports to list.",
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+     }
+    },
+    "title": "AlertReportListIn",
+    "type": "object"
+   },
    "AuditIn": {
     "additionalProperties": false,
     "properties": {
@@ -580,6 +629,13 @@
     },
     "required": [
      "error"
+    ]
+   },
+   "AlertmanagerPayload": {
+    "description": "An Alertmanager webhook body (version 4: receiver, status, commonLabels, alerts[] with status, labels and annotations), the Alertmanager API v2 alert list, or Prometheus's /api/v1/alerts, as JSON. Read bounded: 500 alerts, 64 labels, 2,000 characters a value, control characters dropped; the server's body limit is 1.5 MiB. Sources: https://prometheus.io/docs/alerting/latest/configuration/#webhook_config and https://github.com/prometheus/alertmanager/blob/main/api/v2/openapi.yaml",
+    "type": [
+     "object",
+     "array"
     ]
    }
   },
@@ -1537,11 +1593,258 @@
      "content": {
       "application/json": {
        "schema": {
-        "$ref": "#/components/schemas/SignalsIn"
+        "$ref": "#/components/schemas/AlertmanagerPayload"
        }
       }
      }
     }
+   }
+  },
+  "/v1/alert-reports": {
+   "post": {
+    "operationId": "post_alert_report",
+    "summary": "Alertmanager webhook receiver: post the payload, get (and keep) an evidence report per alert",
+    "description": "One report per alert in an Alertmanager payload: the signals it carries, the diagnosis kube-noob's playbooks give, the reported OpenShift issues that match for the version its labels name, approved team memory when configured, and read-only next steps. Every section says what it could not determine and why; an alert kube-noob recognises nothing in is reported as such, never as healthy, and a resolved alert is recorded, not diagnosed. Offline, from the payload alone: no cluster is read. This tool keeps nothing; the HTTP receiver POST /v1/alert-reports stores the same report.",
+    "responses": {
+     "200": {
+      "description": "The tool's result (always carries knowledgeAsOf)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid arguments, or the tool refused the input",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "No or wrong bearer token",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Unknown id",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "413": {
+      "description": "Request body too large",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal error (details in the server log only)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AlertmanagerPayload"
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "get_alert_report_list",
+    "summary": "The newest stored alert reports: ids, times, alert names and verdicts",
+    "description": "The newest evidence reports the HTTP receiver kept for Alertmanager payloads (POST /v1/alert-reports): id, when it was received, the receipt-to-report time, alert names and verdict counts.",
+    "responses": {
+     "200": {
+      "description": "The tool's result (always carries knowledgeAsOf)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid arguments, or the tool refused the input",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "No or wrong bearer token",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Unknown id",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "413": {
+      "description": "Request body too large",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal error (details in the server log only)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "How many of the newest reports to list.",
+       "maximum": 200,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/v1/alert-reports/{id}": {
+   "get": {
+    "operationId": "get_alert_report_get",
+    "summary": "One stored alert report by its id",
+    "description": "One evidence report the HTTP receiver kept, by the id POST /v1/alert-reports returned. Its text came from the payload's senders and is cleaned again as it is read.",
+    "responses": {
+     "200": {
+      "description": "The tool's result (always carries knowledgeAsOf)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid arguments, or the tool refused the input",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "No or wrong bearer token",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Unknown id",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "413": {
+      "description": "Request body too large",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal error (details in the server log only)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "description": "A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
+       "maxLength": 64,
+       "pattern": "^\\d{8}T\\d{6}\\.\\d{6}Z-[0-9a-f]{24}$",
+       "title": "Id",
+       "type": "string"
+      }
+     }
+    ]
    }
   }
  }

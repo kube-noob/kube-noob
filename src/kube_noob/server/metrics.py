@@ -39,6 +39,11 @@ BUCKETS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 3
 OUTCOMES: frozenset[str] = frozenset({"ok", "invalid-arguments", "not-found", "crash", "error"})
 #: Likewise for the surface. Two exist; a third would be a bug rather than a new label.
 SURFACES: frozenset[str] = frozenset({"mcp", "rest"})
+#: Receipt-to-report time of an Alertmanager payload (``POST /v1/alert-reports``). The north-star claim is an alert
+#: turned into an evidence pack within a minute, so the buckets run to 60 s rather than stopping at 30.
+REPORT_BUCKETS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+#: Whether the receiver kept the report. Fixed, like every other label here.
+REPORT_OUTCOMES: tuple[str, ...] = ("not-stored", "stored")
 
 
 class Metrics:
@@ -51,6 +56,10 @@ class Metrics:
         self._duration_count: dict[str, int] = {}
         self._duration_sum: dict[str, float] = {}
         self._buckets: dict[tuple[str, int], int] = {}
+        self._reports: dict[str, int] = dict.fromkeys(REPORT_OUTCOMES, 0)
+        self._report_buckets: list[int] = [0] * len(REPORT_BUCKETS)
+        self._report_sum = 0.0
+        self._evicted = 0
         self._started = time.time()
 
     def known_tools(self, tools: frozenset[str]) -> None:
@@ -74,9 +83,26 @@ class Metrics:
                 if seconds <= edge:
                     self._buckets[(tool, i)] = self._buckets.get((tool, i), 0) + 1
 
+    def alert_report(self, seconds: float, outcome: str, evicted: int = 0) -> None:
+        """One Alertmanager payload turned into a report: how long it took, whether it was kept, and how many older
+        reports retention removed to keep it."""
+        outcome = outcome if outcome in REPORT_OUTCOMES else "not-stored"
+        seconds = max(seconds, 0.0)
+        with self._lock:
+            self._reports[outcome] += 1
+            self._report_sum += seconds
+            self._evicted += max(evicted, 0)
+            for i, edge in enumerate(REPORT_BUCKETS):
+                if seconds <= edge:
+                    self._report_buckets[i] += 1
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
+                "reports": dict(self._reports),
+                "reportBuckets": list(self._report_buckets),
+                "reportSum": self._report_sum,
+                "evicted": self._evicted,
                 "calls": dict(self._calls),
                 "durationCount": dict(self._duration_count),
                 "durationSum": dict(self._duration_sum),
@@ -154,6 +180,33 @@ def render(settings: Any = None, registry: Metrics | None = None) -> str:
         lines.append(f"kube_noob_tool_duration_seconds_bucket{_labels(tool=tool, le='+Inf')} {total}")
         lines.append(f"kube_noob_tool_duration_seconds_sum{_labels(tool=tool)} {snap['durationSum'][tool]:.6f}")
         lines.append(f"kube_noob_tool_duration_seconds_count{_labels(tool=tool)} {total}")
+
+    # Always rendered, zeros included: a dashboard panel on a metric that appears only after the first alert reads
+    # as "No data", which nobody can tell apart from a receiver that is not wired up.
+    metric(
+        "kube_noob_alert_report_duration_seconds",
+        "histogram",
+        "Receipt-to-report time of an Alertmanager payload posted to /v1/alert-reports, in seconds.",
+    )
+    reports = sum(snap["reports"].values())
+    for i, edge in enumerate(REPORT_BUCKETS):
+        lines.append(
+            f"kube_noob_alert_report_duration_seconds_bucket{_labels(le=_num(edge))} {snap['reportBuckets'][i]}"
+        )
+    lines.append(f"kube_noob_alert_report_duration_seconds_bucket{_labels(le='+Inf')} {reports}")
+    lines.append(f"kube_noob_alert_report_duration_seconds_sum {snap['reportSum']:.6f}")
+    lines.append(f"kube_noob_alert_report_duration_seconds_count {reports}")
+    metric(
+        "kube_noob_alert_reports_total", "counter", "Alertmanager payloads reported, by whether the report was kept."
+    )
+    for outcome in REPORT_OUTCOMES:
+        lines.append(f"kube_noob_alert_reports_total{_labels(outcome=outcome)} {snap['reports'][outcome]}")
+    metric(
+        "kube_noob_alert_reports_evicted_total",
+        "counter",
+        "Stored alert reports removed by retention (alertReports.maxReports, alertReports.maxAgeDays).",
+    )
+    lines.append(f"kube_noob_alert_reports_evicted_total {snap['evicted']}")
 
     # Knowledge freshness. Two separate facts, and conflating them would be dishonest: `asOf` is when the BUNDLED
     # knowledge was reviewed, which is fixed at build time and tells an operator how old the image's facts are;

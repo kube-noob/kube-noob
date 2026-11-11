@@ -61,6 +61,17 @@ LOCAL_STATE_WRITERS: dict[str, str] = {
     "read-only on a shared server",
 }
 
+# Settings that switch on a write to kube-noob's OWN data directory, never to a cluster or another system, and are on
+# by default. They are listed rather than inferred so that a new default-on write is a reviewed line here, not a row
+# that quietly reads "opt-in feature". learning.json is written by the tools named in LOCAL_STATE_WRITERS; the alert
+# reports are written by the HTTP server's receiver route, which no tool, CLI command or stdio server reaches.
+LOCAL_STATE_SWITCHES: dict[str, str] = {
+    "learningEnabled": "the learning file (`<dataDir>/learning.json`), written by the tools that are not read-only",
+    "alertReports.store": "the evidence reports `kube-noob serve` keeps for Alertmanager payloads posted to "
+    "`POST /v1/alert-reports` (`<dataDir>/alert-reports`, owner-only, the newest `alertReports.maxReports` for at "
+    "most `alertReports.maxAgeDays`)",
+}
+
 # Settings that switch one extra thing on, to find which tools each one adds. Each takes a scratch directory.
 SWITCHES: dict[str, Callable[[str], dict[str, Any]]] = {
     "cluster.enabled": lambda d: {"cluster": {"enabled": True}},
@@ -874,7 +885,7 @@ def _group(key: str, tier_switches: dict[str, str]) -> str:
         return "web"
     if key in {"offline", "webLocked"}:
         return "admin lock"
-    if key == "learningEnabled":
+    if key in LOCAL_STATE_SWITCHES:
         return "local state"
     if key == "cluster.enabled":
         return "cluster (tier R)"
@@ -1478,16 +1489,18 @@ def _defaults_section(rows: Sequence[Default]) -> list[str]:
     from kube_noob import tiers
     from kube_noob.config import Settings
 
-    on = [d.key for d in rows if d.state == "on"]
+    on = [f"`{d.key}` ({d.group})" for d in rows if d.state == "on"]
     host = Settings.model_validate({"dataDir": "/nonexistent"}).server.host
+    local = "; ".join(f"`{k}`: {why}" for k, why in LOCAL_STATE_SWITCHES.items())
     tier_rows = [(t.code, t.name, _list(t.switches), _yes(t.writes), _yes(t.external)) for t in tiers.TIERS]
     return [
         "## What is off by default",
         "",
         "Defaults of `kube_noob.config.Settings`, evaluated with no configuration file and no environment variable. "
-        f"Everything below is off except {_list(on)} (kube-noob's own local learning file, which the tools that are "
-        f"not read-only write). The server binds `{host}`. `offline` and `webLocked` describe an administrator's lock "
-        "on the web and on downloads: off here means not locked.",
+        f"Everything below is off except {', '.join(on) or 'none'}. Local state is kube-noob's own files in its "
+        f"data directory and reaches no cluster and no other system -- {local}. The server binds `{host}`. "
+        "`offline` and `webLocked` describe an administrator's lock on the web and on downloads: off here means not "
+        "locked.",
         "",
         *_table(
             ("Setting", "Default", "State", "Group"),

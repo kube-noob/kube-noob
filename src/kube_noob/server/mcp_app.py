@@ -386,7 +386,15 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) 
         from kube_noob.server import rest as rest_routes
 
         specs = toolkit.specs()
-        rest_routes.register(mcp, specs, lambda spec, args: run_tool(spec, args, knowledge, "rest"), rest)
+        from kube_noob.alert_store import Receiver
+
+        rest_routes.register(
+            mcp,
+            specs,
+            lambda spec, args: run_tool(spec, args, knowledge, "rest"),
+            rest,
+            receiver=Receiver.from_settings(settings),
+        )
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> Response:

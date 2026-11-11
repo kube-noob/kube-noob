@@ -35,6 +35,16 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+    {{- with .Values.alertReports }}
+    {{- if and .store (not $.Values.persistence.enabled) (gt (mul (int .maxReports) (int .maxReportBytes)) 536870912) }}
+    {{- fail "alertReports.maxReports x maxReportBytes is over 512 MiB on the pod's emptyDir: lower them or set persistence.enabled: true" }}
+    {{- end }}
+    alertReports:
+      store: {{ .store }}
+      maxReports: {{ int .maxReports }}
+      maxAgeDays: {{ int .maxAgeDays }}
+      maxReportBytes: {{ int .maxReportBytes }}
+    {{- end }}
     rhacs:
       enabled: {{ .Values.rhacs.enabled }}
       {{- if .Values.rhacs.enabled }}

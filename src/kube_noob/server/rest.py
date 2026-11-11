@@ -11,7 +11,10 @@ from the tools' models, and ``docs/api/openapi.json`` is kept equal to it by a t
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +27,7 @@ from starlette.responses import JSONResponse, Response
 from kube_noob import sanitize
 from kube_noob.toolkit import ToolSpec
 
-API_VERSION = "1.0.0"  # the contract's version, not the package's: it changes only when a route or a body changes
+API_VERSION = "1.1.0"  # the contract's version, not the package's: it changes only when a route or a body changes
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,15 @@ class Route:
     #: refused by the tool's `extra=forbid` model. The payload IS the text to analyse, so it is passed as one
     #: (N11): that is what makes this an Alertmanager receiver rather than a documented shape to reformat by hand.
     body_as: str | None = None
+    #: Query parameters a GET passes to the tool as arguments. Only these: an existing GET route ignores its query
+    #: string, and turning that into a 400 for callers that send one would be a contract change.
+    query: tuple[str, ...] = ()
+    #: The Alertmanager receiver: after the tool has built the report, the server stamps the receipt (id, times,
+    #: the receipt-to-report duration) and keeps the record (``kube_noob.alert_store.Receiver``).
+    receiver: bool = False
+
+
+_PATH_PARAM = re.compile(r"\{([a-z_]+)\}")
 
 
 ROUTES: tuple[Route, ...] = (
@@ -62,7 +74,32 @@ ROUTES: tuple[Route, ...] = (
         summary="Alertmanager webhook receiver: post the payload, get the signals it carries",
         body_as="text",
     ),
+    # A path of its own rather than /v1/reports/<id>: /v1/reports is the daily posture report (GET returns the newest
+    # one), and a list under it would make one public path answer two unrelated questions.
+    Route(
+        "/v1/alert-reports",
+        "alert_report",
+        summary="Alertmanager webhook receiver: post the payload, get (and keep) an evidence report per alert",
+        body_as="payload",
+        receiver=True,
+    ),
+    Route(
+        "/v1/alert-reports",
+        "alert_report_list",
+        ("GET",),
+        summary="The newest stored alert reports: ids, times, alert names and verdicts",
+        query=("limit",),
+    ),
+    Route("/v1/alert-reports/{id}", "alert_report_get", ("GET",), summary="One stored alert report by its id"),
 )
+PAYLOAD_SCHEMA = {
+    "description": "An Alertmanager webhook body (version 4: receiver, status, commonLabels, alerts[] with status, "
+    "labels and annotations), the Alertmanager API v2 alert list, or Prometheus's /api/v1/alerts, as JSON. Read "
+    "bounded: 500 alerts, 64 labels, 2,000 characters a value, control characters dropped; the server's body limit "
+    "is 1.5 MiB. Sources: https://prometheus.io/docs/alerting/latest/configuration/#webhook_config and "
+    "https://github.com/prometheus/alertmanager/blob/main/api/v2/openapi.yaml",
+    "type": ["object", "array"],
+}
 ERROR_SCHEMA = {
     "type": "object",
     "properties": {"error": {"type": "string"}, "outcome": {"type": "string"}},
@@ -150,10 +187,19 @@ def openapi(specs: list[ToolSpec]) -> dict[str, Any]:
                 "description": spec.description,
                 "responses": responses,
             }
-            if method == "POST":
+            if method == "POST" and route.body_as is not None:
+                # The body is Alertmanager's own payload, passed whole as one argument: describing it as the tool's
+                # argument map (`{"text": ...}`) told a client to send a shape the route does not take.
+                schemas["AlertmanagerPayload"] = PAYLOAD_SCHEMA
+                ref = {"$ref": "#/components/schemas/AlertmanagerPayload"}
+                op["requestBody"] = {"required": True, "content": {"application/json": {"schema": ref}}}
+            elif method == "POST":
                 op["requestBody"] = {"required": True, "content": {"application/json": {"schema": body}}}
+            elif _PATH_PARAM.search(route.path) or route.query:
+                op["parameters"] = _parameters(spec, route)
             ops[method.lower()] = op
-        paths[route.path] = ops
+        # Two routes can share a path with different methods (POST and GET /v1/alert-reports).
+        paths.setdefault(route.path, {}).update(ops)
     return {
         "openapi": "3.1.0",
         "info": {
@@ -170,14 +216,26 @@ def openapi(specs: list[ToolSpec]) -> dict[str, Any]:
     }
 
 
+def _parameters(spec: ToolSpec, route: Route) -> list[dict[str, Any]]:
+    props = spec.model.model_json_schema().get("properties", {})
+    out = [
+        {"name": name, "in": "path", "required": True, "schema": props[name]}
+        for name in _PATH_PARAM.findall(route.path)
+    ]
+    out += [{"name": name, "in": "query", "required": False, "schema": props[name]} for name in route.query]
+    return out
+
+
 def register(
     mcp: Any,
     specs: list[ToolSpec],
     call: Any,
     security: TransportSecuritySettings,
+    receiver: Any = None,
 ) -> list[str]:
     """Add the routes to an MCPServer (``mcp.custom_route``). ``call(spec, arguments)`` runs a tool synchronously and
-    returns its result or raises ``CallFailed``. Returns the paths added."""
+    returns its result or raises ``CallFailed``. ``receiver(result, started, received_at)`` finishes a receiver
+    route's answer (``kube_noob.alert_store.Receiver``). Returns the paths added."""
     from kube_noob.server.mcp_app import CallFailed
 
     guard = TransportSecurityMiddleware(security)
@@ -186,6 +244,9 @@ def register(
 
     def endpoint(spec: ToolSpec, route: Route) -> Any:
         async def handle(request: Request) -> Response:
+            # The receipt clock starts here, before the body is read: the duration a receiver reports is the time
+            # this process took from receiving the payload to having its report.
+            started, received_at = time.monotonic(), dt.datetime.now(dt.UTC)
             is_post = request.method == "POST"
             refused = await guard.validate_request(request, is_post=is_post)
             if refused is not None:
@@ -213,8 +274,14 @@ def register(
                         arguments = {route.body_as: text}
                     elif not isinstance(arguments, dict):
                         return JSONResponse({"error": "the body must be a JSON object"}, status_code=400)
+            else:
+                # Path parameters are the route's own ({id}); query parameters only those the route names.
+                arguments = {k: v for k, v in request.query_params.items() if k in route.query}
+                arguments.update(request.path_params)
             try:
                 result = await anyio.to_thread.run_sync(call, spec, arguments)
+                if route.receiver and is_post and receiver is not None:
+                    result = await anyio.to_thread.run_sync(receiver, result, started, received_at)
             except CallFailed as exc:
                 return JSONResponse({"error": exc.message, "outcome": exc.outcome}, status_code=exc.status)
             return JSONResponse(result)

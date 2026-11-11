@@ -116,6 +116,94 @@ def _load(text: str) -> tuple[Any, list[dict[str, Any]]] | None:
     return (doc, alerts) if alerts is not None else None
 
 
+_STARTS_AT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\Z")
+_FINGERPRINT = re.compile(r"^[0-9a-f]{1,32}\Z")
+#: The annotations a report reads. ``runbook_url`` and every other annotation are left out on purpose: a URL in a
+#: payload is somebody else's text, and nothing kube-noob writes should hand a reader a link it never checked.
+READ_ANNOTATIONS = ("summary", "description", "message")
+
+
+@dataclass(frozen=True)
+class Alert:
+    """One alert of a payload, cleaned: labels and the readable annotations as ``_labels`` keeps them (64 labels,
+    2,000 characters a value, control characters dropped), its state, and its start time and fingerprint only when
+    they have the shape Alertmanager writes."""
+
+    index: int  # position in the payload's alert list
+    name: str
+    state: str
+    labels: dict[str, str]
+    annotations: dict[str, str]
+    starts_at: str | None
+    fingerprint: str | None
+
+    def payload(self) -> str:
+        """This alert alone as a payload ``parse`` reads back to the same alert: what the per-alert diagnosis gets."""
+        alert: dict[str, Any] = {"labels": self.labels, "annotations": self.annotations}
+        if self.state in {"firing", "resolved"}:
+            alert["status"] = self.state
+        elif self.state in {"suppressed", "unprocessed"}:
+            alert["status"] = {"state": self.state}
+        elif self.state in {"pending", "inactive"}:
+            alert["state"] = self.state
+        # ensure_ascii=False: escaped, a 2,000-character value of non-ASCII text grows sixfold and one alert with 64
+        # such labels would pass the diagnose tool's input limit.
+        return json.dumps({"alerts": [alert]}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@dataclass(frozen=True)
+class Split:
+    payload: Payload
+    alerts: tuple[Alert, ...]
+    #: Items of the payload's alert list that are not alerts kube-noob can read, by reason, and alerts past MAX_ALERTS.
+    not_read: dict[str, int]
+
+
+def split(text: str) -> Split | None:
+    """The payload alert by alert, with what was not read counted rather than dropped. None when ``text`` is not an
+    Alertmanager payload (the same test ``parse`` applies)."""
+    payload = parse(text)
+    loaded = _load(text) if payload is not None else None
+    if payload is None or loaded is None:
+        return None
+    doc, _ = loaded
+    if isinstance(doc, dict) and isinstance(doc.get("alerts"), list):
+        items: list[Any] = doc["alerts"]
+    elif isinstance(doc, dict) and isinstance(doc.get("data"), dict):
+        items = doc["data"]["alerts"]
+    else:
+        items = doc
+    not_read: dict[str, int] = {}
+    if len(items) > MAX_ALERTS:
+        not_read["over the limit of 500 alerts"] = len(items) - MAX_ALERTS
+    out: list[Alert] = []
+    for i, item in enumerate(items[:MAX_ALERTS]):
+        if not isinstance(item, dict) or not isinstance(item.get("labels"), dict):
+            not_read["not an alert object with labels"] = not_read.get("not an alert object with labels", 0) + 1
+            continue
+        labels = _labels(item["labels"])
+        name = labels.get("alertname", "")
+        if not _NAME.match(name):
+            key = "no valid alertname label"
+            not_read[key] = not_read.get(key, 0) + 1
+            continue
+        notes = {k: v for k, v in _labels(item.get("annotations")).items() if k in READ_ANNOTATIONS and v}
+        starts = item.get("startsAt") if isinstance(item.get("startsAt"), str) else None
+        fingerprint = item.get("fingerprint") if isinstance(item.get("fingerprint"), str) else None
+        out.append(
+            Alert(
+                index=i,
+                name=name,
+                state=_state(item),
+                labels=labels,
+                annotations=notes,
+                starts_at=starts if starts and _STARTS_AT.match(starts) else None,
+                fingerprint=fingerprint if fingerprint and _FINGERPRINT.match(fingerprint) else None,
+            )
+        )
+    return Split(payload, tuple(out), not_read)
+
+
 def compact(text: str, limit: int = MAX_TEXT) -> str | None:
     """The same payload as smaller JSON (labels, the three readable annotations and the state of each alert, values
     cut to ``MAX_VALUE``), for payloads longer than the diagnose input limit. None when ``text`` is not a payload."""

@@ -150,6 +150,91 @@ gh workflow run videos.yml --repo <owner>/<repo> -f tag=v<version>
 If the artifacts have expired, build the wheel, chart, GIFs and skill ZIP from the tag and upload them with
 `gh release upload`; the release step is idempotent, so running the job again after that is safe.
 
+## Alert evidence reports (the Alertmanager receiver)
+
+`kube-noob serve` (the chart) answers `POST /v1/alert-reports` with one evidence report per alert in an Alertmanager
+payload and keeps it in `<dataDir>/alert-reports`: owner-only, the newest `alertReports.maxReports` (200), none older
+than `alertReports.maxAgeDays` (14), each at most `alertReports.maxReportBytes` (1 MiB). The report is built from the
+payload and kube-noob's local knowledge alone; it reads no cluster and sends nothing anywhere. Without
+`persistence.enabled` the data directory is the pod's emptyDir and the reports go with the pod.
+
+Field names below were checked against Alertmanager v0.28.1 (`docs/configuration.md`: `webhook_config` has `url`,
+`url_file`, `send_resolved`, `http_config`, `max_alerts`, `timeout`; `http_config.authorization` has `type`, default
+`Bearer`, and `credentials` or `credentials_file`; the webhook posts `Content-Type: application/json`,
+`notify/util.go` `PostJSON`) and prometheus-operator v0.80.0 (`pkg/apis/monitoring/v1beta1/alertmanager_config_types.go`:
+`webhookConfigs[].url`, `sendResolved`, `maxAlerts`, `httpConfig.authorization.credentials` as a Secret key selector).
+
+The platform Alertmanager sees every namespace's alerts. Add a receiver to its configuration (on OpenShift, the
+`alertmanager.yaml` key of the `alertmanager-main` Secret in `openshift-monitoring`) and route to it:
+
+```yaml
+receivers:
+  - name: kube-noob
+    webhook_configs:
+      - url: http://kube-noob.kube-noob.svc:8080/v1/alert-reports
+        send_resolved: true
+        max_alerts: 500
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: <the token from the Secret the chart's NOTES name>
+```
+
+A namespace's own alerts can go through an `AlertmanagerConfig` in that namespace instead. The operator adds a
+`namespace` matcher for the object's own namespace to its top route, so this one only ever sees alerts from the
+namespace it lives in; the token Secret has to be in that namespace too:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1beta1
+kind: AlertmanagerConfig
+metadata:
+  name: kube-noob
+  namespace: kube-noob
+spec:
+  route:
+    receiver: kube-noob
+    groupBy: [alertname]
+  receivers:
+    - name: kube-noob
+      webhookConfigs:
+        - url: http://kube-noob.kube-noob.svc:8080/v1/alert-reports
+          sendResolved: true
+          maxAlerts: 500
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                name: kube-noob-token
+                key: token
+```
+
+Two chart settings decide whether the post arrives: the Alertmanager's namespace must be allowed in by the chart's
+NetworkPolicy (`networkPolicy.allowIngressNamespace: openshift-monitoring`, or `openshift-user-workload-monitoring`
+for the user-workload Alertmanager), and the server's body limit is 1.5 MiB, which `max_alerts: 500` keeps a payload
+well under. A post above the limit gets 413 and Alertmanager retries it; nothing is half-read.
+
+Reading them back, with the same bearer token:
+
+```bash
+curl -sH "Authorization: Bearer $TOKEN" http://kube-noob.kube-noob.svc:8080/v1/alert-reports?limit=20
+curl -sH "Authorization: Bearer $TOKEN" http://kube-noob.kube-noob.svc:8080/v1/alert-reports/<id>
+kubectl -n kube-noob exec deploy/kube-noob -- kube-noob alerts list
+```
+
+What to watch:
+
+- `stored: false` on a POST is the answer, not an error: the report is in the response and `notStoredReason` says why
+  it was not kept (storing is off, the folder is a link or belongs to another user, the disk is full). The server
+  log line `alert report <id> not stored` carries the same reason; the dashboard's "Reports kept, not kept" panel
+  counts them.
+- `kube_noob_alert_report_duration_seconds` is the receipt-to-report time, from the request reaching the route to the
+  report being ready (before it is written). The north-star claim is under a minute. `kube-noob demo alerts` posts
+  the bundled payload to an in-process server and fails over 2 s; measured on a 2-core build machine on 2026-11-11 it
+  took 0.09 s cold, then p50 21 ms and p95 25 ms over 250 posts, and a 500-alert payload took 5.7 s.
+- `kube_noob_alert_reports_evicted_total` rising steadily means retention is doing its job; reports you need longer
+  belong in a ticket, not in a larger `maxReports`.
+- To keep nothing: `alertReports.store: false`. To delete what was kept: remove `<dataDir>/alert-reports`.
+
 ## Rollback
 
 - PyPI versions are immutable. Yank the bad version (`pypi.org/manage/project/kube-noob/releases/`), fix forward, and

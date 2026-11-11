@@ -115,6 +115,18 @@ posture:
     enabled: false
     keep: 14                 # snapshots (and their reports) kept, newest first
 
+alertReports:
+  # Evidence reports for Alertmanager payloads posted to POST /v1/alert-reports (point an Alertmanager webhook
+  # receiver at it; docs/operations.md has the AlertmanagerConfig). Each report is built from the payload and local
+  # knowledge only -- no cluster read -- and kept in <dataDir>/alert-reports, owner-only. Without persistence.enabled
+  # the data directory is an emptyDir, so reports last until the pod restarts. Worst-case disk is
+  # maxReports x maxReportBytes (200 MiB by default); without persistence the chart refuses more than 512 MiB, so a
+  # flood of reports cannot push the pod's emptyDir past its size limit.
+  store: true
+  maxReports: 200            # the newest kept; older ones are removed first
+  maxAgeDays: 14             # and none older than this
+  maxReportBytes: 1048576    # a larger report keeps every alert's heading and verdict and drops detail, saying so
+
 rhacs:
   # Read RHACS Central's policies (GET /v1/policies, read-only) for the MCP tool rhacs_compare_live: which of your
   # RHACS policies kube-noob's rules also check, which differ, and what kube-noob has no rule for. The token is sent

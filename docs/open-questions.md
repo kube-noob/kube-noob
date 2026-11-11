@@ -50,9 +50,10 @@ Sequence, with what each already has:
    E1, R5 and the upgrade pre-mortem.
 2. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
 3. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
-4. **I1** Alertmanager receiver, the rest of it. The only item that makes the north-star claim measurable: *alert
-   to evidence pack in a minute*. The receiver route already ships and returns the signals in a payload; the
-   per-alert report, its storage and the receipt-to-report clock do not exist.
+4. **I1** Alertmanager receiver, the forwarders. The per-alert report, its storage and the receipt-to-report clock
+   shipped on 2026-11-11 (G274), so *alert to evidence pack in a minute* is now a measured number (p95 25 ms for the
+   bundled payload here, 5.7 s for 500 alerts). Left: posting the report on to chat or ITSM (tier W), and whether a
+   report should ever read the cluster.
 
 I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF
 outputs validated against the vendored OASIS schema.
@@ -91,7 +92,7 @@ per-request audit record at all. The counter-argument is that the moat items are
 deploy in a regulated environment, or a deployable tool with no moat?
 
 **3. Is I1 the right north-star proof, or a distraction?** The claim is *alert to evidence pack in a minute*, and
-I1 (Alertmanager receiver, already half built) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
+I1 (Alertmanager receiver; its report and clock shipped 2026-11-11) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
 says allowed, packets say dropped) "the insurance on the policy wedge", and M6 is the harder, more defensible
 thing. Which should be built first, and does proving the north-star claim matter if the wedge is unproven?
 
