@@ -37,7 +37,7 @@ _KIND = re.compile(r"^kind:\s{0,5}([A-Z][A-Za-z0-9]{1,62})\s*$", re.M)
 # Kinds whose names are distinctive enough to search release notes for (Route, Service or Pod are everyday words).
 _DISTINCT_KIND = re.compile(r"^[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\Z")
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
-INFO_URI = "https://github.com/aashishmahajan/kube-noob"
+INFO_URI = "https://github.com/kube-noob/kube-noob"
 
 
 class GateError(ValueError):
@@ -649,7 +649,7 @@ def _fingerprint(r: dict[str, Any]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
-def sarif(report: dict[str, Any]) -> dict[str, Any]:
+def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
     rules: dict[str, dict[str, Any]] = {}
     results = []
     for r in report["findings"]:
@@ -662,7 +662,7 @@ def sarif(report: dict[str, Any]) -> dict[str, Any]:
                 "help": {"text": r["remediation"][:2000]},
                 "helpUri": r["helpUri"],
                 "defaultConfiguration": {"level": _LEVEL[r["severity"]]},
-                "properties": {"security-severity": _SCORE[r["severity"]], "tags": ["security", "kubernetes"]},
+                "properties": _rule_properties(r),
             }
         uri = str(r["uri"])
         artifact = {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
@@ -694,9 +694,66 @@ def sarif(report: dict[str, Any]) -> dict[str, Any]:
                 },
                 "results": results,
                 "columnKind": "unicodeCodePoints",
+                **({"invocations": [invocation]} if invocation else {}),
             }
         ],
     }
+
+
+def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
+    """Severity and tags, and the NIST SP 800-53 controls the catalogue maps this rule to.
+
+    The controls go in twice on purpose: `tags` is what a code-scanning UI shows and filters on, and the
+    `nist-800-53` list is what a program reads without parsing a tag's prefix. A rule the catalogue maps to no
+    control (and every finding that is not an audit rule: a CVE, a SAST result) has NO `nist-800-53` property --
+    an empty list would read as "checked, and it maps to nothing".
+    """
+    from kube_noob.audit.controls import RULE_CONTROLS
+
+    controls = list(RULE_CONTROLS.get(r["ruleId"], ()))
+    props: dict[str, Any] = {
+        "security-severity": _SCORE[r["severity"]],
+        "tags": ["security", "kubernetes", *(f"NIST-800-53/{c}" for c in controls)],
+    }
+    if controls:
+        props["nist-800-53"] = controls
+    return props
+
+
+def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
+    """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
+
+    A SARIF run is a list of results, and the only way a list says "nothing found" is by being empty. An audit that
+    declined its cross-object rules because it was given part of a namespace, or that skipped a file it could not
+    parse, produces a shorter list and nothing else -- an absence a consumer reads as a pass. So the report's
+    `assumptions` and `unreadable` entries become `toolExecutionNotifications` on the run's invocation: warnings for
+    what was not evaluated, errors for what was not read. `executionSuccessful` stays true, because the tool ran;
+    what it could not decide is a notification, not a crash.
+    """
+    findings = [
+        {
+            "ruleId": f["ruleId"],
+            "title": f["title"],
+            "severity": f["severity"],
+            "message": f["message"],
+            "resource": f.get("resource") or "",
+            "path": f.get("path") or "",
+            "uri": f.get("file") or "stdin",
+            "line": f.get("line"),
+            "remediation": f.get("remediation") or "",
+            "helpUri": next((c["url"] for c in f.get("citations") or [] if c.get("url")), INFO_URI),
+        }
+        for f in rep["findings"]
+    ]
+    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes += [
+        {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
+        for u in rep.get("unreadable") or []
+    ]
+    return sarif(
+        {"findings": findings, "tool": {"version": __version__}},
+        invocation={"executionSuccessful": True, "toolExecutionNotifications": notes},
+    )
 
 
 def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:

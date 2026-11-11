@@ -127,17 +127,23 @@ already reach, and not a new engine, integration or credential.
 ### The moat backlog, reconciled 2026-11-05
 
 The private build queue (M0-M13, 57 items) was last written on 2026-11-02 and its own tally said 21 done and 36
-todo. Re-reading it against the code gives **21 shipped, 7 partial, 29 not started** -- and the seven partials are
-the finding, because six of them were recorded as untouched and one as finished:
+todo. Re-reading it against the code on 2026-11-05 gave 21 shipped, 7 partial, 29 not started; as of 2026-11-11 it
+is **22 shipped, 7 partial, 28 not started** (I2 shipped, I1 found partly built). The partials are the finding,
+because most of them were recorded as untouched and one as finished:
 
 - **`I6` REST API was marked done and is not.** Twelve routes ship with a generated OpenAPI document and a
   contract test each, but the item's own route list includes `/v1/net/verify`, which cannot exist until the
   network verifier does. Re-opened.
 - **`I8` kubectl plugin was marked todo and is shipped** (P2 here) -- deliberately as `kubectl noob`, not
   `kubectl kube-noob`.
-- **`I2` CI surfaces**: SARIF, the action, the pre-commit hooks and the Tekton task ship; `audit --format sarif`,
-  the NIST controls as SARIF rule properties, and a vendored SARIF schema with a validation test do not. The OSCAL
-  work (P3) is the pattern to copy for that last one.
+- **`I2` CI surfaces: shipped 2026-11-11** (G268, G269), the first moat item to move since this tally was taken.
+  The OASIS schema is vendored with its provenance and the gate's and the audit's SARIF are both validated against
+  it; `audit --format sarif` exists; every rule carries its NIST SP 800-53 controls; and what a partial audit did
+  not evaluate travels in the document as notifications instead of staying behind in the report it replaced.
+- **`I1` Alertmanager receiver was recorded as not started and is partly built.** `POST /v1/alertmanager` ships
+  (N11) and returns the signals a payload carries. What the item asks for beyond that does not exist: the per-alert
+  diagnosis and known issues, stored reports with `GET /v1/reports/<id>`, the forwarders, the chart wiring, and the
+  receipt-to-report time that is the north-star number.
 - **`V3` blast radius**: the paths are computed and surfaced by `posture scan`; the pod-anchored entry point, the
   JSON graph and the Mermaid rendering are missing.
 - **`GOV1`**: OSCAL shipped; caller identity in audit records did not, and the HTTP server keeps no per-request
@@ -147,15 +153,15 @@ the finding, because six of them were recorded as untouched and one as finished:
 - **`A5`** and **`M13`**: the benchmark runs one mode per invocation, so there is no side-by-side table; the
   milestone demos (`demo network`, `demo upgrade`, `demo gate`) are absent.
 
-None of the work since 2026-11-02 moved a moat item from todo to shipped: it all belongs to the correctness track
-above. That is the right order by this file's own principle, and worth saying plainly rather than leaving the two
-tallies to imply progress neither of them made.
+Between 2026-11-02 and 2026-11-10 none of the work moved a moat item from todo to shipped: it all belonged to the
+correctness track above. That was the right order by this file's own principle, and worth saying plainly rather
+than leaving the two tallies to imply progress neither of them made. I2 is the first.
 
 Next from that queue, in order, with what each already has: **E2** installed-operator inventory (two allowlist
 entries; the must-gather analyser already parses ClusterServiceVersions, and E1 and the upgrade pre-mortem both
-need the inventory), **I2**'s three missing criteria, **GOV3**'s three, **V3**'s pod-anchored entry, then **I1**
-the Alertmanager receiver -- the only item that makes the north-star claim (alert to evidence pack in a minute)
-measurable, and every analyser it needs already works.
+need the inventory), **GOV3**'s three missing criteria, **V3**'s pod-anchored entry, and the rest of **I1** -- the
+only item that makes the north-star claim (alert to evidence pack in a minute) measurable. Its receiver route
+already ships and every analyser it needs already works, so what is left is the report and the clock.
 
 ### Later, unchanged in intent
 

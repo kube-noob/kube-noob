@@ -637,6 +637,19 @@ The action also prints the findings as annotations, so they appear on the pull r
 tenth says how many are not shown rather than letting the eleventh disappear: the SARIF file and the job summary
 carry every one.
 
+The audit writes SARIF too, for a pipeline that wants findings in code scanning without the gate's pass-or-fail:
+
+```bash
+kube-noob audit -f k8s/ --platform openshift --version 4.20 --format sarif > kube-noob.sarif
+```
+
+Every rule in either file carries the NIST SP 800-53 controls it is evidence about, as `NIST-800-53/AC-6` tags a
+code-scanning view can filter on and as a `nist-800-53` list a program can read. And because a SARIF file is only a
+list of results, the audit's own caveats go into it as notifications on the run: what it did not evaluate because
+it was given part of a namespace, and any file it could not read. A short list from a partial audit should not be
+mistaken for a clean one by whatever reads the file next. Both outputs are validated against the OASIS SARIF 2.1.0
+schema in this project's own CI.
+
 With the images' scanner output (`--scanner-report`, plus `--vex` and `--kev`), the gate also lists their
 vulnerabilities after Red Hat VEX, ranked against the manifests; a fixable or known-exploited one at `--fail-on`
 fails it, an unfixable one is reported without blocking.
