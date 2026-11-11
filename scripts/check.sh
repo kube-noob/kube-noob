@@ -75,16 +75,21 @@ fi
 # ---- ci/plugin: OSCAL against the pinned NIST schema, and the guard that it ran rather than skipping.
 if need npm "ci/plugin: OSCAL schema validation (ajv)"; then
   # The same pinned versions CI installs. Without this the validator is whatever ajv the tree happens to
-  # carry, or none -- and `node scripts/oscal_validate.mjs` would then fail on a missing module rather than
+  # carry, or none -- and `node scripts/json_schema_validate.mjs` would then fail on a missing module rather than
   # on the document, which is a gate failing for the wrong reason. node_modules/ is gitignored.
-  npm install --no-save --no-audit --no-fund ajv@8.17.1 ajv-formats@3.0.1 >/dev/null 2>&1
+  npm install --no-save --no-audit --no-fund ajv@8.17.1 ajv-formats@3.0.1 ajv-draft-04@1.0.0 >/dev/null 2>&1
   o="${TMPDIR:-/tmp}/kn-check-oscal.json"
   "$py" -m kube_noob audit -f examples/insecure-deployment.yaml --platform openshift --version 4.22 \
     --oscal > "$o" || true
-  node scripts/oscal_validate.mjs tests/fixtures/oscal/oscal_assessment-results_schema.json "$o" >/dev/null
-  out=$("$py" -m pytest tests/test_oscal.py -q -rs 2>&1)
+  node scripts/json_schema_validate.mjs tests/fixtures/oscal/oscal_assessment-results_schema.json "$o" >/dev/null
+  # ci/plugin: the SARIF the gate hands to code scanning, against the OASIS schema rather than the URI it prints.
+  g="${TMPDIR:-/tmp}/kn-check-gate.sarif.json"
+  "$py" -m kube_noob gate -f examples/insecure-deployment.yaml --platform openshift --version 4.22 \
+    --sarif "$g" --quiet >/dev/null 2>&1 || true
+  node scripts/json_schema_validate.mjs tests/fixtures/sarif/sarif-schema-2.1.0.json "$g" >/dev/null
+  out=$("$py" -m pytest tests/test_oscal.py tests/test_gate_sarif.py -q -rs 2>&1)
   if grep -q "ajv is not installed" <<<"$out"; then
-    echo "the OSCAL schema test SKIPPED" >&2
+    echo "a schema test SKIPPED" >&2
     exit 1
   fi
   grep -qE "[0-9]+ passed" <<<"$out"

@@ -122,12 +122,12 @@ def test_the_gate_document_validates_against_nists_schema(tmp_path: Path, capsys
         cwd=ROOT,
     )
     if probe.returncode != 0:
-        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1")
+        pytest.skip("ajv is not installed: npm install --no-save ajv@8.17.1 ajv-formats@3.0.1 ajv-draft-04@1.0.0")
     main(["gate", "-f", str(BUNDLE), "--platform", "openshift", "--version", "4.22", "--oscal"])
     out = tmp_path / "gate.json"
     out.write_text(capsys.readouterr().out, encoding="utf-8")
     done = subprocess.run(
-        [node, str(ROOT / "scripts" / "oscal_validate.mjs"), str(SCHEMA), str(out)],
+        [node, str(ROOT / "scripts" / "json_schema_validate.mjs"), str(SCHEMA), str(out)],
         capture_output=True,
         text=True,
         check=False,
