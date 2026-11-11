@@ -131,6 +131,15 @@ flowchart LR
   server runs as the user and reads any absolute path; a shared (HTTP) server offers the tool only with
   `mustGather.allowedDir` and refuses a path whose resolved form (links followed) leaves it. The modules are guarded
   out of the Claude plugin.
+- The operator inventory (`kube_noob.operators`; `operators inventory`, tools `operator_inventory` and
+  `cluster_operator_inventory`, and `operatorInventory` in `analyze_must_gather`) reads OLM objects and changes
+  nothing: manifests through `yamlio` (Secret objects dropped unread), a must-gather through the analysers' loader
+  (`kube_noob.mustgather.operators`, not in the Claude plugin), or the cluster through the read-only allowlist
+  (`clusterserviceversions` and `subscriptions` only; cluster-wide with the `!olm.copiedFrom` selector OLM itself
+  uses). Only named fields are read, never a Subscription's `spec.config`. Trust boundary: the input is untrusted;
+  shown strings are flattened and redacted, a name or version that is not valid is not shown as one, the output is
+  bounded (500 operators, 100 namespaces each) and sorted. What could not be read is part of the answer: no
+  ClusterServiceVersions is "not determined", a 404 is "not an OLM cluster", and neither is zero operators.
 - Code findings (`kube_noob.code`) read SARIF, Containerfiles, manifests, scanner reports and dependency files as bounded text and run nothing: no analysis engine, no package resolution, no network. The CLI reads the Containerfiles, `.dockerignore` and dependency files under `--repo` (no symlinks followed, at most 500 dependency files of 5 MB); the MCP tool takes everything inline and reads no files. Trust boundary: the SAST tools and scanners; kube-noob trusts their findings, never their paths (a path outside the source root, or one that decodes to control characters, is reported as unresolved, not opened, and its shipping counts as unknown, which gates like shipped code). Containerfile and context paths resolve inside `--repo` (the gate: the working directory) and become repository-relative; stage traversal is memoised and SARIF merging is indexed, so input inside the bounds costs linear work; dependency patterns never run on lines over 4 KB.
 - The RHACS comparison (`kube_noob.rhacs`) reads a policy export as data and changes nothing. Reading Central goes through `net.Purpose.RHACS`: on only with `rhacs.enabled`, GET only, https to the configured host and port only, no redirects, the token from `$ROX_API_TOKEN` (or the KUBE_NOOB_* variable `rhacs.tokenEnv` names) in the Authorization header and never in an error; `kube_noob.rhacs_central` is the only code that reads it, and the Claude plugin does not ship it, Central's CA from `rhacs.caFile`; under the offline lock only a loopback or `*.svc` Central with no proxy from the environment. Trust boundary: Central and the token's role.
 - Drift snapshots and reports (`kube_noob.drift`) are local files, owner-only, with hashes and names only: a snapshot cannot be turned back into configuration. The daily job reads through the same read-only allowlist.

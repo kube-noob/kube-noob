@@ -1747,6 +1747,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
     )
 
+    opr = sub.add_parser(
+        "operators",
+        help="Operators installed through OLM: which, at what version, from which catalog and channel (read-only)",
+        description="inventory lists the operators OLM installed: package, version, catalog, channel, approval mode, "
+        "namespace and the namespaces each serves, phase, a pending upgrade or a Manual approval waiting. It reads "
+        "manifests (-f), a must-gather (--must-gather) or the live cluster (--live: ClusterServiceVersions and "
+        "Subscriptions only, never Secrets). What it could not read is part of the answer: with no "
+        "ClusterServiceVersions it says not determined, never zero operators. Example: kube-noob operators inventory "
+        "--must-gather must-gather.tar.gz",
+    )
+    opsub = opr.add_subparsers(dest="operators_cmd", required=True)
+    _patch(opsub, common)
+    opi = opsub.add_parser(
+        "inventory",
+        help="List the OLM-installed operators in manifests (-f), a must-gather (--must-gather) or the cluster "
+        "(--live), and say what could not be read",
+    )
+    opi.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    opi.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
+    opi.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    opi.add_argument(
+        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+    )
+    opi.add_argument("--top", type=int, default=200, help="operators to show (1-500, default 200)")
+    opi.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless every OLM object the answer needs was read, so a gate never reads a blind or partial "
+        "inventory as a complete one",
+    )
+
     def snap_source(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
         sp.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
@@ -2502,6 +2533,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
     if a.cmd == "posture":
         return _posture(a, s, fmt)
+    if a.cmd == "operators":
+        return _operators_cmd(a, s, fmt)
     if a.cmd == "exceptions":
         return _exceptions_cmd(a, fmt)
     if a.cmd == "rhacs":
@@ -3265,6 +3298,45 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
     return 1 if a.fail_above is not None and top_score > a.fail_above else 0
+
+
+def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import operators
+
+    if not 1 <= a.top <= operators.MAX_OPERATORS:
+        raise ConfigError(f"--top must be 1-{operators.MAX_OPERATORS}")
+    given = [
+        name for name, on in (("-f", bool(a.file)), ("--must-gather", bool(a.must_gather)), ("--live", a.live)) if on
+    ]
+    if len(given) != 1:
+        raise ConfigError("pass exactly one of -f manifests, --must-gather PATH or --live (with --cluster-enabled)")
+    if a.namespaces and not a.live:
+        raise ConfigError("-n works with --live; files and must-gathers are read whole")
+    if a.live:
+        if not s.cluster.enabled:
+            raise ConfigError("--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled")
+        from kube_noob.debug.cluster import get_backend
+
+        collected = operators.collect_live(get_backend(s), a.namespaces)
+    elif a.must_gather:
+        from kube_noob.mustgather import ingest
+        from kube_noob.mustgather import operators as mg_operators
+
+        try:
+            collected = mg_operators.collect(ingest.open_bundle(Path(a.must_gather)))
+        except ingest.MustGatherError as exc:
+            raise ConfigError(str(exc)) from exc
+    else:
+        collected = operators.from_manifests("\n---\n".join(_read(f) for f in a.file))
+    out = operators.inventory(collected, top=a.top)
+    if a.format == "text":
+        _tprint(operators.render_text(out))
+    else:
+        _emit(out, fmt)
+    if a.require_complete and not out["complete"]:
+        print(f"refusing a complete verdict: the inventory is {out['verdict']} ({out['summary']})", file=sys.stderr)
+        return 5
+    return 0
 
 
 def _print_poll(result: dict[str, Any]) -> None:
