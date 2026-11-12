@@ -21,10 +21,10 @@ from typing import Any
 import anyio
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from pydantic.json_schema import models_json_schema
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import JSONResponse, Response
 
-from kube_noob import sanitize
+from kube_noob import alert_report, sanitize
 from kube_noob.toolkit import ToolSpec
 
 API_VERSION = "1.1.0"  # the contract's version, not the package's: it changes only when a route or a body changes
@@ -187,6 +187,12 @@ def openapi(specs: list[ToolSpec]) -> dict[str, Any]:
                 )
             },
         }
+        if route.receiver:
+            responses["503"] = {
+                "description": "Busy: two reports were already being built and no slot came free within the wait "
+                "(at most 5 s); the body was not read and nothing was kept. Retry after the Retry-After header",
+                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+            }
         ops: dict[str, Any] = {}
         for method in route.methods:
             op: dict[str, Any] = {
@@ -234,10 +240,15 @@ def _parameters(spec: ToolSpec, route: Route) -> list[dict[str, Any]]:
     return out
 
 
-#: Alert reports built at once. Each is CPU work for seconds on a large payload, and every Python thread shares one
-#: interpreter lock with the event loop, so eight at once slowed /healthz to half a second (G274). More posts wait
-#: their turn -- the wait counts in their receipt-to-report time -- rather than taking the loop's share.
-MAX_CONCURRENT_REPORTS = 2
+#: Alert reports built at once, by the receiver and the MCP tool together (``alert_report.Slots``, G274).
+MAX_CONCURRENT_REPORTS = alert_report.MAX_CONCURRENT_REPORTS
+#: Paths whose POST body the HTTP layer does not buffer up front (``kube_noob.server.http.BodyLimit``): the receiver
+#: reads it itself, only once it holds a report slot, so a post waiting for its turn holds no body in memory. Waiting
+#: posts each held their whole body before (up to 1.5 MiB), and 120 of them took the pod past its memory limit.
+STREAMED_PATHS = frozenset(r.path for r in ROUTES if r.receiver)
+#: How often a post waiting for a slot looks again. Polled, not awaited: the slots are shared with worker threads,
+#: and an event loop must never block on a thread's lock.
+SLOT_POLL_SECONDS = 0.05
 
 
 class _Refused(Exception):
@@ -275,6 +286,26 @@ def _arguments_from_body(raw: bytes, route: Route) -> Any:
     return arguments
 
 
+async def _read_body(request: Request, limit: int) -> bytes:
+    """The body of a streamed route, refused with 413 past ``limit`` bytes as ``BodyLimit`` refuses the others."""
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > limit:
+            raise _Refused("request body too large", 413)
+    return bytes(body)
+
+
+async def _take_slot(slots: Any, wait: float) -> bool:
+    """One of ``slots`` within ``wait`` seconds, or False. Nothing of the request has been read yet."""
+    deadline = time.monotonic() + wait
+    while not slots.try_acquire():
+        if time.monotonic() >= deadline:
+            return False
+        await anyio.sleep(SLOT_POLL_SECONDS)
+    return True
+
+
 def _render(result: Any) -> bytes:
     """What JSONResponse renders, made in a worker thread: a report is up to a megabyte of JSON."""
     return json.dumps(result, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode("utf-8")
@@ -286,14 +317,20 @@ def register(
     call: Any,
     security: TransportSecuritySettings,
     receiver: Any = None,
+    reports: Any = None,
 ) -> list[str]:
     """Add the routes to an MCPServer (``mcp.custom_route``). ``call(spec, arguments)`` runs a tool synchronously and
     returns its result or raises ``CallFailed``. ``receiver(result, started, received_at)`` finishes a receiver
-    route's answer (``kube_noob.alert_store.Receiver``). Returns the paths added.
+    route's answer (``kube_noob.alert_store.Receiver``). ``reports`` is the Toolkit whose ``report_slots`` the receiver
+    shares with the MCP tool: a post takes a slot before its body is read, is refused with 503 and ``Retry-After``
+    when none comes free within ``report_wait_seconds()``, and is dropped unbuilt and unstored if its client has gone
+    by the time it would start. Returns the paths added.
 
     Routes that share a path are served by one handler, so a method that is not served gets 405 with an ``Allow``
     header naming every method that is (two handlers each answered for their own method only). Everything that costs
     time -- reading the body, the tool, rendering the answer -- runs in worker threads, never on the event loop."""
+    from kube_noob.server import metrics
+    from kube_noob.server.http import MAX_BODY_BYTES
     from kube_noob.server.mcp_app import CallFailed
 
     guard = TransportSecurityMiddleware(security)
@@ -303,44 +340,93 @@ def register(
     for route, spec in pairs:
         for method in route.methods:
             by_path.setdefault(route.path, {})[method] = (route, spec)
-    limiter: list[anyio.CapacityLimiter] = []  # made on first use, inside the running event loop
 
     def endpoint(methods: dict[str, tuple[Route, ToolSpec]]) -> Any:
         async def handle(request: Request) -> Response:
-            # The receipt clock starts here, before the body is read: the duration a receiver reports is the time
-            # this process took from receiving the payload to having its report, including any wait for its turn.
+            # The receipt clocks start here, before the body is read and before any wait for a slot: the duration a
+            # receiver reports, and the time budget of the report, both count from receiving the payload.
             started, received_at = time.monotonic(), dt.datetime.now(dt.UTC)
+            received = alert_report._now()
             route, spec = methods["GET" if request.method == "HEAD" else request.method]
             is_post = request.method == "POST"
             refused = await guard.validate_request(request, is_post=is_post)
             if refused is not None:
-                return JSONResponse({"error": bytes(refused.body).decode()}, status_code=refused.status_code)
-            arguments: Any = {}
-            if is_post:
-                raw = await request.body()
-                try:
-                    arguments = await anyio.to_thread.run_sync(_arguments_from_body, raw, route)
-                except _Refused as exc:
-                    return JSONResponse({"error": exc.message}, status_code=exc.status)
-            else:
-                # Path parameters are the route's own ({id}); query parameters only those the route names.
-                arguments = {k: v for k, v in request.query_params.items() if k in route.query}
-                arguments.update(request.path_params)
-            bounded: anyio.CapacityLimiter | None = None
-            if route.receiver:
-                if not limiter:
-                    limiter.append(anyio.CapacityLimiter(MAX_CONCURRENT_REPORTS))
-                bounded = limiter[0]
+                return refused
+            slotted = route.receiver and is_post and reports is not None
+            if slotted:
+                wait = reports.report_wait_seconds()
+                if not await _take_slot(reports.report_slots, wait):
+                    metrics.REGISTRY.alert_report_dropped("busy")
+                    return JSONResponse(
+                        {"error": alert_report.busy_message(wait), "outcome": "busy"},
+                        status_code=503,
+                        headers={"Retry-After": str(alert_report.RETRY_AFTER_SECONDS)},
+                    )
             try:
-                result = await anyio.to_thread.run_sync(call, spec, arguments, limiter=bounded)
-                if route.receiver and is_post and receiver is not None:
-                    result = await anyio.to_thread.run_sync(receiver, result, started, received_at)
-            except CallFailed as exc:
-                return JSONResponse({"error": exc.message, "outcome": exc.outcome}, status_code=exc.status)
-            body = await anyio.to_thread.run_sync(_render, result)
-            return Response(content=body, media_type="application/json")
+                return await answer(request, route, spec, slotted, started, received_at, received)
+            finally:
+                if slotted:
+                    reports.report_slots.release()
 
         return handle
+
+    async def gone(request: Request) -> Response | None:
+        """The answer for a post whose sender has gone, or None. Alertmanager gives up on a slow receiver and
+        resends; building and storing the abandoned copy would spend a slot on nobody and keep a duplicate."""
+        if await request.is_disconnected():
+            metrics.REGISTRY.alert_report_dropped("client-gone")
+            return Response(status_code=499)
+        return None
+
+    async def answer(
+        request: Request,
+        route: Route,
+        spec: ToolSpec,
+        slotted: bool,
+        started: float,
+        received_at: dt.datetime,
+        received: float,
+    ) -> Response:
+        arguments: Any = {}
+        if request.method == "POST":
+            try:
+                if route.path in STREAMED_PATHS:
+                    raw = await _read_body(request, MAX_BODY_BYTES)
+                else:
+                    raw = await request.body()
+                arguments = await anyio.to_thread.run_sync(_arguments_from_body, raw, route)
+            except _Refused as exc:
+                extra = {"limitBytes": MAX_BODY_BYTES} if exc.status == 413 else {}
+                return JSONResponse({"error": exc.message, **extra}, status_code=exc.status)
+            except ClientDisconnect:
+                if route.receiver:
+                    metrics.REGISTRY.alert_report_dropped("client-gone")
+                return Response(status_code=499)
+            del raw
+        else:
+            # Path parameters are the route's own ({id}); query parameters only those the route names.
+            arguments = {k: v for k, v in request.query_params.items() if k in route.query}
+            arguments.update(request.path_params)
+        if slotted and (left := await gone(request)) is not None:
+            return left
+
+        def run() -> Any:
+            if not slotted:
+                return call(spec, arguments)
+            with reports.report_admission(received):
+                return call(spec, arguments)
+
+        try:
+            result = await anyio.to_thread.run_sync(run)
+            if route.receiver and request.method == "POST" and receiver is not None:
+                if slotted and (left := await gone(request)) is not None:
+                    return left
+                result = await anyio.to_thread.run_sync(receiver, result, started, received_at)
+        except CallFailed as exc:
+            headers = {"Retry-After": str(alert_report.RETRY_AFTER_SECONDS)} if exc.status == 503 else None
+            return JSONResponse({"error": exc.message, "outcome": exc.outcome}, status_code=exc.status, headers=headers)
+        body = await anyio.to_thread.run_sync(_render, result)
+        return Response(content=body, media_type="application/json")
 
     for path, methods in by_path.items():
         mcp.custom_route(path, methods=sorted(methods))(endpoint(methods))

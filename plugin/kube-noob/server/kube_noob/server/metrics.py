@@ -36,14 +36,19 @@ BUCKETS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 3
 #: The only outcome labels that can ever be emitted. `run_tool` writes an exception class name for an anticipated
 #: failure, so anything outside this set collapses to `error`: a label space a caller can grow is a defect in the
 #: monitoring system, not a richer metric.
-OUTCOMES: frozenset[str] = frozenset({"ok", "invalid-arguments", "not-found", "crash", "error"})
+OUTCOMES: frozenset[str] = frozenset({"ok", "invalid-arguments", "not-found", "crash", "error", "busy"})
 #: Likewise for the surface. Two exist; a third would be a bug rather than a new label.
 SURFACES: frozenset[str] = frozenset({"mcp", "rest"})
 #: Receipt-to-report time of an Alertmanager payload (``POST /v1/alert-reports``). The north-star claim is an alert
-#: turned into an evidence pack within a minute, so the buckets run to 60 s rather than stopping at 30.
-REPORT_BUCKETS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+#: turned into an evidence pack within a minute, but the longest possible answer is the wait for a slot plus
+#: ``alertReports.budgetSeconds`` (at most 300) plus the alert in progress, so the buckets run past it: with a top
+#: bucket of 60 s, every slow answer sat in +Inf and the histogram could not say how slow (G274).
+REPORT_BUCKETS: tuple[float, ...] = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
 #: Whether the receiver kept the report. Fixed, like every other label here.
 REPORT_OUTCOMES: tuple[str, ...] = ("not-stored", "stored")
+#: Payloads not reported at all: refused because every report slot stayed busy past the wait (503, or an MCP tool
+#: error), or dropped because the sender had gone before the report started or before it was kept.
+DROP_REASONS: tuple[str, ...] = ("busy", "client-gone")
 
 
 class Metrics:
@@ -60,6 +65,7 @@ class Metrics:
         self._report_buckets: list[int] = [0] * len(REPORT_BUCKETS)
         self._report_sum = 0.0
         self._evicted = 0
+        self._dropped: dict[str, int] = dict.fromkeys(DROP_REASONS, 0)
         self._started = time.time()
 
     def known_tools(self, tools: frozenset[str]) -> None:
@@ -96,9 +102,16 @@ class Metrics:
                 if seconds <= edge:
                     self._report_buckets[i] += 1
 
+    def alert_report_dropped(self, reason: str) -> None:
+        """One Alertmanager payload not reported: ``busy`` or ``client-gone``."""
+        reason = reason if reason in DROP_REASONS else "busy"
+        with self._lock:
+            self._dropped[reason] += 1
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
+                "dropped": dict(self._dropped),
                 "reports": dict(self._reports),
                 "reportBuckets": list(self._report_buckets),
                 "reportSum": self._report_sum,
@@ -207,6 +220,14 @@ def render(settings: Any = None, registry: Metrics | None = None) -> str:
         "Stored alert reports removed by retention (alertReports.maxReports, alertReports.maxAgeDays).",
     )
     lines.append(f"kube_noob_alert_reports_evicted_total {snap['evicted']}")
+    metric(
+        "kube_noob_alert_reports_dropped_total",
+        "counter",
+        "Alertmanager payloads not reported: busy (no report slot came free in time; answered 503) or client-gone "
+        "(the sender left before the report started or was kept).",
+    )
+    for reason in DROP_REASONS:
+        lines.append(f"kube_noob_alert_reports_dropped_total{_labels(outcome=reason)} {snap['dropped'][reason]}")
 
     # Knowledge freshness. Two separate facts, and conflating them would be dishonest: `asOf` is when the BUNDLED
     # knowledge was reviewed, which is fixed at build time and tells an operator how old the image's facts are;

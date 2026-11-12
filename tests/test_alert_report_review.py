@@ -483,9 +483,11 @@ def test_a_directory_with_a_reports_name_does_not_stop_retention(tmp_path: Path)
     root.mkdir(parents=True, mode=0o700)
     (root / "20200101T000000.000000Z-000000000000000000000000.json").mkdir()
     results = [store.save(_record(rid), NOW) for rid in _ids(5)]
-    assert all(r.not_removed == 1 for r in results[2:])
+    # Second review: the planted directory is no report, so retention neither counts it nor tries to remove it.
+    assert all(r.not_removed == 0 for r in results)
     reports = [n for n in os.listdir(root) if n.endswith(".summary.json")]
     assert len(reports) == 3
+    assert store.newest(10)["total"] == 3
 
 
 def test_a_temporary_file_left_by_a_killed_write_is_collected(tmp_path: Path) -> None:
@@ -699,7 +701,9 @@ def test_a_fifo_at_a_reports_name_is_refused_without_blocking(tmp_path: Path) ->
     worker.start()
     worker.join(5)
     assert not worker.is_alive(), "opening a FIFO for reading blocked until a writer came"
-    assert isinstance(done[0], alert_store.StoreUnavailable) and "unreadable" in done[1]["reports"][0]
+    # Second review: a FIFO is not a report, so the list counts it as ignored instead of showing it unreadable forever.
+    assert isinstance(done[0], alert_store.StoreUnavailable)
+    assert done[1]["reports"] == [] and done[1]["ignored"] == 2
 
 
 @pytest.mark.parametrize(

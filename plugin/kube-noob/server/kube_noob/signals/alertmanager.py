@@ -102,19 +102,60 @@ def _labels(value: Any, transform: Callable[[str], str] | None = None) -> dict[s
     return out
 
 
-def _release(labels: dict[str, str]) -> tuple[str, str] | None:
+def release(labels: dict[str, str], common: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """The OpenShift release an alert names, and where it came from. One order for every reader (``parse`` for
+    diagnose, ``split`` for the report), so the two never name different releases for the same alert (G274):
+
+    1. the alert's own ``openshift_version``, 2. the payload's common ``openshift_version``, 3. the alert's own
+    ``version``, 4. the payload's common ``version``.
+
+    ``openshift_version`` says what it is; ``version`` often names an application's release, so an explicit
+    ``openshift_version`` anywhere beats it. Between two of the same name the alert's own is the more specific claim.
+    Only an OpenShift 4 release (``4.21`` or ``4.21.3``) counts."""
+    common = common or {}
     for key in VERSION_LABELS:
-        value = labels.get(key, "")
-        if _OCP_RELEASE.match(value):
-            return value, f"label {key}"
+        for source, where in ((labels, "label"), (common, "commonLabels")):
+            value = source.get(key, "")
+            if _OCP_RELEASE.match(value):
+                return value, f"{where} {key}"
     return None
 
 
+#: Scrape targets whose ``service`` label names the exporter that reported a metric, not the service an alert is
+#: about: kube-state-metrics reports every pod's CrashLoopBackOff with service="kube-state-metrics" (G274).
+EXPORTER_SERVICES = frozenset(
+    {
+        "kube-state-metrics",
+        "node-exporter",
+        "prometheus-node-exporter",
+        "kubelet",
+        "cadvisor",
+        "openshift-state-metrics",
+        "telemeter-client",
+        "blackbox-exporter",
+        "prometheus-k8s",
+        "alertmanager-main",
+    }
+)
+
+
+def _service_is_the_alerts(labels: dict[str, str]) -> bool:
+    """Whether a ``service`` label names the service the alert is about rather than the scrape target that reported
+    it. Prometheus's Kubernetes service discovery stamps ``service``, ``job`` (the service's name by default) and
+    ``endpoint`` (the port) on every series a target exports, so any of these marks the label as the target's."""
+    service = labels.get("service", "")
+    return bool(service) and not (
+        service in EXPORTER_SERVICES or labels.get("job") == service or bool(labels.get("endpoint"))
+    )
+
+
 def label_context(labelsets: list[dict[str, str]]) -> dict[str, str]:
-    """The names the labels agree on, each of the shape a command may hold; a disagreement leaves the placeholder."""
+    """The names the labels agree on, each of the shape a command may hold; a disagreement leaves the placeholder.
+    A ``service`` label counts only when it is the alert's subject, not the exporter that scraped it."""
     out: dict[str, str] = {}
     for label, key, shape in CONTEXT_LABELS:
-        values = {ls[label] for ls in labelsets if ls.get(label)}
+        sets = [ls for ls in labelsets if label != "service" or _service_is_the_alerts(ls)]
+        values = {ls[label] for ls in sets if ls.get(label)}
         if len(values) == 1:
             (value,) = values
             if shape.match(value):
@@ -187,9 +228,9 @@ class Alert:
     annotations: dict[str, str]
     starts_at: str | None
     fingerprint: str | None
-    #: The OpenShift release this alert names: its own label first, then the payload's commonLabels. Alertmanager's
-    #: commonLabels are the labels every alert of the group shares, so the two agree on a real payload; a hand-made
-    #: one can disagree, and the alert's own label is the more specific claim.
+    #: The OpenShift release this alert names, by ``release``: an ``openshift_version`` (the alert's, then the
+    #: payload's commonLabels) before a ``version`` (likewise). Alertmanager's commonLabels are the labels every alert
+    #: of the group shares, so the two agree on a real payload; a hand-made one can disagree.
     version: str | None = None
     version_from: str | None = None
 
@@ -231,7 +272,6 @@ def split(text: str, transform: Callable[[str], str] | None = None) -> Split | N
     else:
         items = doc
     common = _labels(doc.get("commonLabels")) if isinstance(doc, dict) else {}
-    common_release = _release(common)
     not_read: dict[str, int] = {}
     if len(items) > MAX_ALERTS:
         not_read["over the limit of 500 alerts"] = len(items) - MAX_ALERTS
@@ -247,9 +287,7 @@ def split(text: str, transform: Callable[[str], str] | None = None) -> Split | N
             not_read[key] = not_read.get(key, 0) + 1
             continue
         notes = {k: v for k, v in _labels(item.get("annotations"), transform).items() if k in READ_ANNOTATIONS and v}
-        release = _release(labels) or (
-            (common_release[0], f"commonLabels {common_release[1].removeprefix('label ')}") if common_release else None
-        )
+        found = release(labels, common)
         starts = item.get("startsAt") if isinstance(item.get("startsAt"), str) else None
         fingerprint = item.get("fingerprint") if isinstance(item.get("fingerprint"), str) else None
         out.append(
@@ -261,8 +299,8 @@ def split(text: str, transform: Callable[[str], str] | None = None) -> Split | N
                 annotations=notes,
                 starts_at=starts if starts and _STARTS_AT.match(starts) else None,
                 fingerprint=fingerprint if fingerprint and _FINGERPRINT.match(fingerprint) else None,
-                version=release[0] if release else None,
-                version_from=release[1] if release else None,
+                version=found[0] if found else None,
+                version_from=found[1] if found else None,
             )
         )
     return Split(payload, tuple(out), not_read)
@@ -305,13 +343,10 @@ def parse(text: str) -> Payload | None:
     symptoms: list[str] = []
     names: set[str] = set()
     firing = 0
-    version: tuple[str, str] | None = None
-    for source in [common, *(_labels(a["labels"]) for a in alerts)]:
-        for key in VERSION_LABELS:
-            value = source.get(key, "")
-            if version is None and _OCP_RELEASE.match(value):
-                version = (value, f"label {key}")
     labelsets = [_labels(a["labels"]) for a in alerts]
+    # The first alert that names a release, by the one precedence `split` uses too; a payload whose alerts name
+    # different releases is reported per alert by the evidence report.
+    version = next((v for v in (release(ls, common) for ls in labelsets) if v), None)
     for alert, labels in zip(alerts, labelsets, strict=True):
         name = labels["alertname"]
         names.add(name)

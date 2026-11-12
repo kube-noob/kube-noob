@@ -41,6 +41,38 @@ never receive it.
 `kube-noob must-gather analyze --report DIR` writes `report.md`, `report.json` and, with `--case-draft`, `case-draft.md` to the folder you name; they hold redacted findings from the must-gather, never its Secrets, and nothing is sent anywhere. `kube-noob bundle` writes a redacted evidence pack to the folder you name (default `./kube-noob-bundle`). The MCP
 server's log line records each tool name, argument sizes and duration, never argument contents.
 
+## What the redactor removes
+
+One redactor (`kube_noob.debug.cluster.redact_text`) runs on what `diagnose`, `insight`, the must-gather report, build
+logs, the incident watch, the evidence bundle, cluster output and every alert report keep or show, and the learning-note
+filter refuses any text it would change. It replaces with `***` (or a marker such as `***JWT***`):
+
+- `Authorization: Bearer <value>`; a bare `Bearer <value>` of 16 characters or more with letters and digits;
+  `Authorization: Basic <value>` when the value can be base64 credentials (8 characters or more of the base64
+  alphabets, with a digit or both cases), the whole value;
+- `name=value`, `name: value` and `"name": "value"` for `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`
+  (`apikey`, `api-key`) and `access_key`, also with up to four words in front: `client_secret=`,
+  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`;
+- `apikey <value>` and `access_key <value>` when the value is 16 characters or more with letters and digits (so
+  "rotate the apikey whenever a teammate leaves" stays as written);
+- secrets passed as flags: `--password x`, `--db-password=x`, `--api-key x`, `--client-secret x`, `--token=x`, `--pwd x`;
+- JWTs; AWS access key ids; Stripe-style `sk_live_`/`rk_test_` keys of 24 characters or more; Vault, GitHub and Slack
+  tokens; the password in `scheme://user:password@host`;
+- a private key from its `-----BEGIN ... PRIVATE KEY-----` line to its END line; a key cut short (no END after it) loses
+  its base64 body, and a BEGIN line with no body after it, which holds no key material, is left as written; the
+  `"private_key": "..."` string of a service-account key file.
+
+What it does not catch, so treat any text you hand kube-noob as possibly still holding these:
+
+- `token <value>` or `password <value>` with neither `=` nor `:` nor a leading dash: in prose a value and the next word
+  look the same;
+- a password glued to a short flag, `-p<password>` (MySQL's form);
+- URL-encoded names, such as `password%3D` followed by the value;
+- a private key split across fields or lines that are not whitespace-separated base64 (two labels, a JSON string
+  outside a `private_key` field);
+- a bare random string with no name and no known prefix, a Basic value under 8 characters or of one case without a
+  digit, and a bare Bearer value under 16 characters or without a digit.
+
 ## What it sends, and where
 
 By default, nothing. Each destination below is off until you turn it on.

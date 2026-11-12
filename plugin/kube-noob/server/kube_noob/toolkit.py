@@ -14,7 +14,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +40,7 @@ from kube_noob.debug.cluster import cluster_info, get_backend, resolve_resource
 from kube_noob.debug.diagnose import debug_workload, diagnose
 from kube_noob.debug.netpol import Inventory, check_reachability, inventory_from_cluster
 from kube_noob.debug.policy import explain as explain_denials
-from kube_noob.errors import ClarificationNeeded, ConfigError, WebContentRejectedError
+from kube_noob.errors import ClarificationNeeded, ConfigError, ServerBusy, WebContentRejectedError
 from kube_noob.evals.reward import benchmark, grade
 from kube_noob.generate.blueprint import Blueprint, clarify
 from kube_noob.generate.helm import generate_chart
@@ -930,6 +930,12 @@ class Toolkit:
         # Per thread, because a shared server runs requests on several: set while an alert report diagnoses its
         # alerts one by one, so a 500-alert payload is counted once rather than rewriting learning.json per alert.
         self._quiet = threading.local()
+        from kube_noob.alert_report import Slots
+
+        # Alert reports built at once, shared by the REST receiver and the MCP tool of this server (G274), and the
+        # receipt time a caller that already holds a slot passes to the report on its own thread.
+        self.report_slots = Slots()
+        self._receipt = threading.local()
 
     # -- helpers ---------------------------------------------------------------------------------------------
     def store(self) -> Any:
@@ -1439,10 +1445,47 @@ class Toolkit:
 
         return self.diagnose(DiagnoseIn(text=text, version=version, limit=MAX_PLAYBOOKS))
 
+    def report_wait_seconds(self) -> float:
+        """How long a report waits for a slot before it is refused as busy."""
+        from kube_noob.alert_report import slot_wait
+
+        return slot_wait(self.settings.alert_reports.budget_seconds)
+
+    @contextlib.contextmanager
+    def report_admission(self, received: float) -> Iterator[None]:
+        """For a caller that already holds one of ``report_slots`` (the REST receiver, which takes it before it reads
+        the body): ``alert_report`` on this thread neither takes a second slot nor restarts the clock -- its time
+        budget counts from ``received``, an ``alert_report._now()`` value taken when the request arrived."""
+        self._receipt.at = received
+        try:
+            yield
+        finally:
+            self._receipt.at = None
+
     def alert_report(self, p: AlertReportIn) -> dict[str, Any]:
         """The evidence report for a payload, built offline from the payload and local knowledge. This tool keeps no
         report: the HTTP receiver (POST /v1/alert-reports) stores what it returns. Like diagnose, it counts the ids
-        it matched in the learning file, once per payload rather than once per alert."""
+        it matched in the learning file, once per payload rather than once per alert.
+
+        At most ``MAX_CONCURRENT_REPORTS`` are built at once by every surface together; a call that cannot get a slot
+        within ``report_wait_seconds`` raises ServerBusy. The time budget counts from the call (or from the receipt
+        the REST receiver passed), so the wait for a slot is part of it rather than added to it (G274)."""
+        from kube_noob import alert_report
+
+        received: float | None = getattr(self._receipt, "at", None)
+        held = received is not None
+        start = received if received is not None else alert_report._now()
+        if not held:
+            wait = self.report_wait_seconds()
+            if not self.report_slots.acquire(wait):
+                raise ServerBusy(alert_report.busy_message(wait))
+        try:
+            return self._alert_report(p, start + self.settings.alert_reports.budget_seconds)
+        finally:
+            if not held:
+                self.report_slots.release()
+
+    def _alert_report(self, p: AlertReportIn, deadline: float) -> dict[str, Any]:
         from kube_noob import alert_report
         from kube_noob.alert_store import body_sha256
         from kube_noob.known_issues import get_index
@@ -1454,7 +1497,6 @@ class Toolkit:
             newest = coverage.get(issue.minor)
             if newest is None or alert_report._vkey(issue.version) > alert_report._vkey(newest):
                 coverage[issue.minor] = issue.version
-        deadline = alert_report._now() + self.settings.alert_reports.budget_seconds
         self._quiet.on = True
         try:
             body = alert_report.build(

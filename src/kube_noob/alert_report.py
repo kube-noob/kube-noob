@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -51,6 +52,48 @@ DETAIL_KEYS = ("signals", "diagnosis", "knownIssues", "memory", "nextSteps")
 MINIMAL_KEYS = ("index", "alertname", "state", "severity", "verdict")
 URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
 URL_REMOVED = "[url removed]"
+
+#: Reports built at once by one server, whichever surface asked (the REST receiver, the MCP tool, the CLI). Each is CPU
+#: work for seconds on a large payload, and every Python thread shares one interpreter lock with the event loop, so
+#: eight at once slowed /healthz to half a second; twenty MCP calls, which used anyio's 40 worker threads rather than
+#: the receiver's limit, slowed it to seconds (G274).
+MAX_CONCURRENT_REPORTS = 2
+#: The longest a report waits for one of those slots before it is refused as busy (REST: 503 with Retry-After; MCP: a
+#: tool error). Never more than half the time budget, which is counted from receipt and so includes the wait: a post
+#: that waited its whole budget would get a report of nothing but not-evaluated rows.
+SLOT_WAIT_SECONDS = 5.0
+#: What a refusal tells the sender to wait before it retries.
+RETRY_AFTER_SECONDS = 5
+
+
+def slot_wait(budget_seconds: float) -> float:
+    return min(SLOT_WAIT_SECONDS, budget_seconds / 2)
+
+
+def busy_message(waited: float) -> str:
+    return (
+        f"busy: {MAX_CONCURRENT_REPORTS} alert reports are already being built and no slot came free within "
+        f"{waited:g}s; nothing was read or kept, retry later"
+    )
+
+
+class Slots:
+    """The report slots of one server, shared by every surface: a thread waits on ``acquire``; the event loop, which
+    must never block, polls ``try_acquire`` (``kube_noob.server.rest``)."""
+
+    def __init__(self, size: int = MAX_CONCURRENT_REPORTS) -> None:
+        self.size = size
+        self._sem = threading.BoundedSemaphore(size)
+
+    def acquire(self, timeout: float) -> bool:
+        return self._sem.acquire(timeout=max(timeout, 0.0))
+
+    def try_acquire(self) -> bool:
+        return self._sem.acquire(blocking=False)
+
+    def release(self) -> None:
+        self._sem.release()
+
 
 #: ``diagnose(text, version)`` -> the diagnose tool's result for one alert's payload.
 Diagnose = Callable[[str, str | None], dict[str, Any]]
@@ -299,14 +342,18 @@ _SEVERITY_RANK = {
 }
 
 
+#: The rank of a severity this table does not know, or of none: the same as critical (G274).
+_UNKNOWN_SEVERITY_RANK = _SEVERITY_RANK["critical"]
+
+
 def _keep_rank(row: dict[str, Any]) -> tuple[int, int]:
     """How much a row's detail is worth keeping: a resolved alert least, then by severity. An unrecognised or missing
     severity ranks with critical, because an unknown is not a reason to drop something first. Ties keep the earlier
     alert, so the order is deterministic and never position alone."""
     if row.get("state") in NOT_FIRING:
         return (0, -int(row.get("index", 0)))
-    severity = str((row.get("labels") or {}).get("severity", "")).lower()
-    return (_SEVERITY_RANK.get(severity, 3), -int(row.get("index", 0)))
+    severity = str((row.get("labels") or {}).get("severity", "")).strip().lower()
+    return (_SEVERITY_RANK.get(severity, _UNKNOWN_SEVERITY_RANK), -int(row.get("index", 0)))
 
 
 def _minimal(row: dict[str, Any]) -> dict[str, Any]:

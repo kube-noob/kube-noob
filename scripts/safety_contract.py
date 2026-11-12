@@ -29,6 +29,7 @@ import functools
 import re
 import sys
 import tempfile
+import types
 from bisect import bisect_right
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -88,6 +89,18 @@ DEFAULT_ON: dict[str, tuple[str, str]] = {
     ),
 }
 LOCAL_STATE_SWITCHES: dict[str, str] = {k: why for k, (group, why) in DEFAULT_ON.items() if group == "local state"}
+
+# Settings that are not booleans and still default to something that could switch a behaviour on or reach out: a
+# Literal whose default is not its off choice, a URL, a non-empty list. Reviewed by name like DEFAULT_ON; the check
+# used to read booleans only, so `Literal["off", "on"] = "on"`, a default URL or a default-on boolean inside a list of
+# models passed it silently (G274).
+REVIEWED_VALUES: dict[str, str] = {
+    "web.allowedDomains": "the documentation domains `fetch_docs` may read, consulted only with `webEnabled` (off)",
+    "ci.githubApiUrl": "the GitHub API `kube-noob build history` reads, reached only with `ci.githubEnabled` (off)",
+    "jira.baseUrl": "Red Hat's public Jira, read only by `kube-noob corpus jira` or `jira.syncEnabled` (off)",
+}
+#: The choice of a Literal setting that means "off". A Literal with one of these among its choices is a switch.
+OFF_CHOICES = frozenset({"off", "none", "disabled", "false", "never", "no"})
 
 # Settings that switch one extra thing on, to find which tools each one adds. Each takes a scratch directory.
 SWITCHES: dict[str, Callable[[str], dict[str, Any]]] = {
@@ -884,15 +897,66 @@ _EXTRA_OFF = {
 
 
 def _walk(model: Any, prefix: tuple[str, ...] = ()) -> Iterable[tuple[str, Any]]:
+    """Every leaf setting of ``model`` as ``(dotted key, value)``, into nested models and into lists of models: each
+    item as ``key[i]``, and the defaults of the item model itself as ``key[]`` -- an empty list of models with a
+    default-on boolean is still a default that turns on the moment one item is added."""
+    for key, value, _ in _walk_typed(model, prefix):
+        yield key, value
+
+
+def _model_class(annotation: Any) -> Any:
+    """The pydantic model a list, tuple or set annotation holds, or None."""
+    import typing
+
+    from pydantic import BaseModel
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Annotated:
+        return _model_class(typing.get_args(annotation)[0])
+    if origin in (list, tuple, set, frozenset):
+        for arg in typing.get_args(annotation):
+            inner = typing.get_args(arg)[0] if typing.get_origin(arg) is typing.Annotated else arg
+            if isinstance(inner, type) and issubclass(inner, BaseModel):
+                return inner
+    if origin in (typing.Union, types.UnionType):
+        for arg in typing.get_args(annotation):
+            found = _model_class(arg)
+            if found is not None:
+                return found
+    return None
+
+
+def _class_defaults(cls: Any, prefix: tuple[str, ...]) -> Iterable[tuple[str, Any, Any]]:
+    from pydantic import BaseModel
+
+    for fname, info in cls.model_fields.items():
+        if info.is_required():
+            continue
+        value = info.get_default(call_default_factory=True)
+        key = (*prefix, info.alias or fname)
+        if isinstance(value, BaseModel):
+            yield from _walk_typed(value, key)
+        else:
+            yield ".".join(key), value, info.annotation
+
+
+def _walk_typed(model: Any, prefix: tuple[str, ...] = ()) -> Iterable[tuple[str, Any, Any]]:
     from pydantic import BaseModel
 
     for fname, info in type(model).model_fields.items():
         value = getattr(model, fname)
         key = (*prefix, info.alias or fname)
         if isinstance(value, BaseModel):
-            yield from _walk(value, key)
-        else:
-            yield ".".join(key), value
+            yield from _walk_typed(value, key)
+            continue
+        item = _model_class(info.annotation)
+        if item is not None:
+            *head, last = key
+            yield from _class_defaults(item, (*head, f"{last}[]"))
+            for i, element in enumerate(value or []):
+                if isinstance(element, BaseModel):
+                    yield from _walk_typed(element, (*head, f"{last}[{i}]"))
+        yield ".".join(key), value, info.annotation
 
 
 def _group(key: str, tier_switches: dict[str, str]) -> str:
@@ -947,6 +1011,12 @@ def default_violations(settings: Any | None = None, reviewed: Mapping[str, Any] 
             problems.append(f"DEFAULT_ON lists {key}, which is not a boolean setting any more: remove the entry")
         elif not flags[key]:
             problems.append(f"DEFAULT_ON lists {key}, which is off by default now: remove the entry")
+    switched = _switched_values(s)
+    for key, why in sorted(switched.items()):
+        if key not in REVIEWED_VALUES:
+            problems.append(f"{key} defaults to {why} and is not reviewed in REVIEWED_VALUES")
+    for key in sorted(set(REVIEWED_VALUES) - set(switched)):
+        problems.append(f"REVIEWED_VALUES lists {key}, which no longer defaults to anything that switches: remove it")
     if s.web_enabled:
         problems.append("webEnabled is on by default")
     if s.cluster.enabled:
@@ -961,6 +1031,35 @@ def default_violations(settings: Any | None = None, reviewed: Mapping[str, Any] 
     if s.server.host not in {"127.0.0.1", "localhost", "::1"}:
         problems.append(f"server.host is {s.server.host} by default, not loopback")
     return problems
+
+
+def _switched_values(settings: Any) -> dict[str, str]:
+    """Non-boolean settings whose default could switch something on or reach out, with what the default is."""
+    out: dict[str, str] = {}
+    for key, value, annotation in _walk_typed(settings):
+        if isinstance(value, bool) or key == "dataDir":
+            continue
+        choices = _literal_choices(annotation)
+        if choices and {str(c).lower() for c in choices} & OFF_CHOICES and str(value).lower() not in OFF_CHOICES:
+            out[key] = f"the switch choice {value!r}"
+        elif isinstance(value, str) and "://" in value:
+            out[key] = f"the URL {value}"
+        elif isinstance(value, list | tuple | set | frozenset | dict) and value:
+            out[key] = f"a non-empty {type(value).__name__} ({len(value)} item(s))"
+    return out
+
+
+def _literal_choices(annotation: Any) -> tuple[Any, ...]:
+    import typing
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Literal:
+        return typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return _literal_choices(typing.get_args(annotation)[0])
+    if origin in (typing.Union, types.UnionType):
+        return tuple(c for arg in typing.get_args(annotation) for c in _literal_choices(arg))
+    return ()
 
 
 # -- subprocesses ----------------------------------------------------------------------------------------------------
@@ -1425,9 +1524,9 @@ def _tools_section(tool_rows: Sequence[Tool]) -> list[str]:
 
 
 def _cluster_section(access: ClusterAccess) -> list[str]:
-    from kube_noob.debug.cluster import _LOG_REDACTIONS, ALIASES, ALLOWED_RESOURCES
+    from kube_noob.debug.cluster import ALIASES, ALLOWED_RESOURCES, REDACTION_MARKERS, REDACTION_SHAPES
 
-    markers = sorted({repl for _, repl in _LOG_REDACTIONS if repl.startswith("***") and repl != "***"})
+    markers = list(REDACTION_MARKERS)
     groups: dict[tuple[str, bool], list[str]] = {}
     for d in ALLOWED_RESOURCES.values():
         groups.setdefault((d.group_version, d.namespaced), []).append(d.plural)
@@ -1455,7 +1554,7 @@ def _cluster_section(access: ClusterAccess) -> list[str]:
         "- `resolve_resource` refuses `secrets` by name and any resource outside the allowlist below "
         f"({len(ALLOWED_RESOURCES)} resources, {len(ALIASES)} short names); subresources such as `pods/exec` are not "
         "in it.",
-        f"- Output is redacted before it leaves the backend: {len(_LOG_REDACTIONS)} credential patterns for logs and "
+        f"- Output is redacted before it leaves the backend: {REDACTION_SHAPES} credential patterns for logs and "
         f"text (markers {_list(markers)} and `***` for values), ConfigMap `data` and `binaryData` replaced by byte "
         "counts, sensitive `env` values, `last-applied-configuration` and sensitive annotations masked, "
         "`managedFields` dropped.",
@@ -1520,6 +1619,7 @@ def _defaults_section(rows: Sequence[Default]) -> list[str]:
     on = [f"`{d.key}` ({d.group})" for d in rows if d.state == "on"]
     host = Settings.model_validate({"dataDir": "/nonexistent"}).server.host
     local = "; ".join(f"`{k}`: {why}" for k, (_, why) in DEFAULT_ON.items())
+    reviewed = "; ".join(f"`{k}`: {why}" for k, why in sorted(REVIEWED_VALUES.items()))
     tier_rows = [(t.code, t.name, _list(t.switches), _yes(t.writes), _yes(t.external)) for t in tiers.TIERS]
     return [
         "## What is off by default",
@@ -1527,8 +1627,9 @@ def _defaults_section(rows: Sequence[Default]) -> list[str]:
         "Defaults of `kube_noob.config.Settings`, evaluated with no configuration file and no environment variable. "
         f"Everything below is off except {', '.join(on) or 'none'}, each reviewed by name in the script (a boolean "
         "that defaults to on without a review fails the check). Local state is kube-noob's own files in its data "
-        f"directory and reaches no cluster and no other system. What each switches on -- {local}. The server binds "
-        f"`{host}`. "
+        f"directory and reaches no cluster and no other system. What each switches on -- {local}. Settings that are "
+        "not booleans are checked the same way: a choice other than its off value, a URL or a non-empty list as a "
+        f"default fails the check unless it is reviewed by name -- {reviewed}. The server binds `{host}`. "
         "`offline` and `webLocked` describe an administrator's lock on the web and on downloads: off here means not "
         "locked.",
         "",

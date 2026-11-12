@@ -72,3 +72,8 @@ class ApprovalError(KubeNoobError):
 class StoredStateError(KubeNoobError):
     """kube-noob's own stored state (a file in its data directory) is missing, damaged or unusable. Not the caller's
     input: the HTTP routes answer 500 with this message rather than 400."""
+
+
+class ServerBusy(KubeNoobError):
+    """The server is already doing as much of this work as it allows at once, and waiting for a turn took longer than
+    its bound. Nothing about the request is wrong: retry later. The REST routes answer 503 with ``Retry-After``."""

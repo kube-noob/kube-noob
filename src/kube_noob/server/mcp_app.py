@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from kube_noob import __version__, sanitize, tool_runner
 from kube_noob.audit.engine import list_rules
 from kube_noob.config import Settings
-from kube_noob.errors import KubeNoobError, StoredStateError
+from kube_noob.errors import KubeNoobError, ServerBusy, StoredStateError
 from kube_noob.knowledge.store import get_store
 from kube_noob.knowledge_status import line as knowledge_line
 from kube_noob.learn.tutor import curriculum
@@ -166,6 +166,13 @@ def run_tool(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str, via: str = 
     except ValidationError as exc:
         outcome = "invalid-arguments"
         raise CallFailed(400, outcome, f"invalid arguments: {str(exc)[:MAX_ERROR_CHARS]}") from None
+    except ServerBusy as exc:
+        # Nothing about the request is wrong and nothing was done: the REST route answers 503 with Retry-After, and
+        # an MCP client sees a tool error that says to retry later.
+        outcome = "busy"
+        if spec.name == "alert_report":
+            metrics.REGISTRY.alert_report_dropped("busy")
+        raise CallFailed(503, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
     except StoredStateError as exc:
         # The server's own files, not the caller's input: a 500 with the reason, which names no path.
         outcome = "error"
@@ -398,6 +405,7 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) 
             lambda spec, args: run_tool(spec, args, knowledge, "rest"),
             rest,
             receiver=Receiver.from_settings(settings),
+            reports=toolkit,
         )
 
     @mcp.custom_route("/healthz", methods=["GET"])

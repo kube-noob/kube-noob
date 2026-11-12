@@ -2056,6 +2056,16 @@
         }
        }
       }
+     },
+     "503": {
+      "description": "Busy: two reports were already being built and no slot came free within the wait (at most 5 s); the body was not read and nothing was kept. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {

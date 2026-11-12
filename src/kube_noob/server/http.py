@@ -28,6 +28,23 @@ DEFAULT_TOKEN_ENV = "KUBE_NOOB_HTTP_TOKEN"  # noqa: S105 - the variable's name, 
 MAX_BODY_BYTES = 1536 * 1024
 
 
+#: A body this large is counted while it is in flight. The MCP SDK parses a call's whole body before the tool runs, so
+#: an `alert_report` call waiting for one of the two report slots held its body, parsed, for up to the slot wait --
+#: about 10 MB for a 1.5 MiB payload, 311 MB for twenty at once, and past the chart's 512Mi at the concurrency limit
+#: of 64 (G274). Small calls, which are nearly all of them, are never counted.
+LARGE_BODY_BYTES = 256 * 1024
+#: Large bodies admitted at once; one more is answered 503 with Retry-After before it is read. Two report slots plus
+#: the posts waiting for them, with room for a large `diagnose` or `insight` text alongside.
+MAX_LARGE_BODIES = 8
+BUSY_RETRY_AFTER_SECONDS = 5
+
+
+def _streamed_paths() -> frozenset[str]:
+    from kube_noob.server.rest import STREAMED_PATHS
+
+    return STREAMED_PATHS
+
+
 class BodyLimit:
     """Reject request bodies above ``limit`` bytes with 413 before the MCP app sees them.
 
@@ -38,6 +55,14 @@ class BodyLimit:
     def __init__(self, app: ASGIApp, limit: int = MAX_BODY_BYTES) -> None:
         self.app = app
         self.limit = limit
+        self._large = 0  # large bodies in flight; one event loop, so no lock
+
+    async def _busy(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await JSONResponse(
+            {"error": "busy: too many large requests are in progress; nothing was read, retry later"},
+            status_code=503,
+            headers={"Retry-After": str(BUSY_RETRY_AFTER_SECONDS)},
+        )(scope, receive, send)
 
     async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
         await JSONResponse({"error": "request body too large", "limitBytes": self.limit}, status_code=413)(
@@ -59,27 +84,49 @@ class BodyLimit:
         if declared is not None and declared.isdigit() and int(declared) > self.limit:
             await self._reject(scope, receive, send)
             return
-        body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
+        if scope.get("path") in _streamed_paths():
+            # The Alertmanager receiver reads its own body, under the same limit, and only once it holds a report
+            # slot: buffered here, every post waiting for its turn held up to 1.5 MiB (G274).
+            await self.app(scope, receive, send)
+            return
+        counted = False
+        if declared is not None and declared.isdigit() and int(declared) > LARGE_BODY_BYTES:
+            if self._large >= MAX_LARGE_BODIES:
+                await self._busy(scope, receive, send)
                 return
-            body.extend(message.get("body", b""))
-            if len(body) > self.limit:
-                await self._reject(scope, receive, send)
-                return
-            if not message.get("more_body", False):
-                break
-        replayed = False
+            self._large += 1
+            counted = True
+        try:
+            body = bytearray()
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                body.extend(message.get("body", b""))
+                if len(body) > self.limit:
+                    await self._reject(scope, receive, send)
+                    return
+                if not counted and len(body) > LARGE_BODY_BYTES:  # a chunked upload that declared no length
+                    if self._large >= MAX_LARGE_BODIES:
+                        await self._busy(scope, receive, send)
+                        return
+                    self._large += 1
+                    counted = True
+                if not message.get("more_body", False):
+                    break
+            replayed = False
 
-        async def replay() -> Any:
-            nonlocal replayed
-            if not replayed:
-                replayed = True
-                return {"type": "http.request", "body": bytes(body), "more_body": False}
-            return await receive()
+            async def replay() -> Any:
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": bytes(body), "more_body": False}
+                return await receive()
 
-        await self.app(scope, replay, send)
+            await self.app(scope, replay, send)
+        finally:
+            if counted:
+                self._large -= 1
 
 
 class MetricsEndpoint:

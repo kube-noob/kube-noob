@@ -171,38 +171,177 @@ _SELECTOR = re.compile(r"^[A-Za-z0-9._/\-=!,() ]{1,512}\Z")
 _FIELD_SELECTOR = re.compile(r"^[A-Za-z0-9._/\-=!,]{1,512}\Z")
 _CONTAINER = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
 
-_LOG_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
+
+def _has_digit_and_letter(value: str) -> bool:
+    return any(c.isdigit() for c in value) and any(c.isalpha() for c in value)
+
+
+def _key_value(m: re.Match[str]) -> str:
+    """A key named by a word and a space ("apikey sk-live-..."): redacted only when what follows looks like a key --
+    16 characters or more, with letters and digits -- so "rotate the apikey whenever a teammate leaves" stays prose
+    (G274)."""
+    return m.group(1) + m.group(2) + "***" if _has_digit_and_letter(m.group(3)) else m.group(0)
+
+
+def _basic(m: re.Match[str]) -> str:
+    """``Authorization: Basic <base64 of user:password>``. The whole token goes or none of it ("s3cr3t-Value_9" was cut
+    at its dash), and only a value that can be one: eight characters or more of the base64 alphabets, with a digit or
+    both cases, so "Authorization: Basic realm missing" stays prose (G274)."""
+    value = m.group(2)
+    mixed = any(c.isupper() for c in value) and any(c.islower() for c in value)
+    return m.group(1) + "***" if mixed or any(c.isdigit() for c in value) else m.group(0)
+
+
+def _bearer(m: re.Match[str]) -> str:
+    """A bearer token without the ``Authorization:`` header name in front (a curl line, a client log)."""
+    return m.group(1) + "***" if _has_digit_and_letter(m.group(2)) else m.group(0)
+
+
+def _stripe(m: re.Match[str]) -> str:
+    return "***api-key***" if _has_digit_and_letter(m.group(1)) else m.group(0)
+
+
+#: Credential shapes, applied in this order by `redact_text` (with the private-key, token and flag scans between them).
+#: Every pattern here is anchored on a literal or a word boundary and has no nested quantifier, so its cost is linear
+#: in the text; the three shapes that a plain pattern made quadratic -- a private key, a JWT and a secret flag -- are
+#: scanned by functions below instead.
+_LOG_REDACTIONS: list[tuple[re.Pattern[str], Any]] = [
     (re.compile(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1***"),
-    # Basic credentials are base64 of user:password, so the value is the password (G274).
-    (re.compile(r"(?i)(authorization:\s*basic\s+)[A-Za-z0-9+/=]+"), r"\1***"),
-    # A key named by a word and a space rather than `=`: "apikey sk-live-..." (G274).
-    (re.compile(r"(?i)\b(api[_-]?key|access[_-]?key)(\s+)[^\s\"',;]{8,}"), r"\1\2***"),
-    (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "***JWT***"),
+    (re.compile(r"(?i)(authorization:\s*basic\s+)([A-Za-z0-9+/_-]{8,}={0,2})(?![^\s\"',;])"), _basic),
+    (re.compile(r"(?i)\b(api[_-]?key|access[_-]?key)(\s+)([^\s\"',;]{16,})"), _key_value),
+]
+_AFTER_JWT: list[tuple[re.Pattern[str], Any]] = [
     (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "***aws-key-id***"),
+    # A service-account key file's `"private_key": "-----BEGIN ...\n..."`: the key travels JSON-escaped, so the PEM scan
+    # (which reads whitespace between lines, not a backslash and an n) would leave its body.
+    (re.compile(r'(?i)("private[_-]?key"\s*:\s*")(?:[^"\\]|\\.)*"'), r'\1***"'),
+    # `password=x`, `"token": "x"`, and the same keys with a prefix: `client_secret=`, `aws_secret_access_key=`,
+    # `DB_PASSWORD=` (the prefix is at most four words, so a long `a-a-a-...` run costs a bounded amount per word).
     (
-        re.compile(r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)(\"?\s*[:=]\s*\"?)[^\s\"',;]+"),
+        re.compile(
+            r"(?i)\b((?:[a-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key))"
+            r"(\"?\s*[:=]\s*\"?)[^\s\"',;]+"
+        ),
         r"\1\2***",
     ),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), "***PRIVATE KEY***"),
-    # A key with no END line -- cut by a length limit or pasted in part -- is still a key: everything after BEGIN goes.
-    # Complete keys were replaced by the line above, so any BEGIN left here has no END after it.
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*"), "***PRIVATE KEY (cut)***"),
-    # Stripe-style live and test keys, which travel without a name in front of them.
-    (re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{10,}|\b[rs]k-(?:live|test)-[A-Za-z0-9]{10,}"), "***api-key***"),
+]
+_AFTER_KEYS: list[tuple[re.Pattern[str], Any]] = [
+    # Stripe-style live and test keys, which travel without a name in front of them: 24 characters or more with letters
+    # and digits, so "sk_test_examplevalue1" and "sk-live-1234567890 is a placeholder" are left alone.
+    (re.compile(r"\b[rs]k[_-](?:live|test)[_-]([A-Za-z0-9]{24,})"), _stripe),
     (re.compile(r"(?i)(://[^:/\s]+:)[^@/\s]+@"), r"\1***@"),
     (re.compile(r"\bhv[sbr]\.[A-Za-z0-9_-]{20,}"), "***vault-token***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), "***github-token***"),
     (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "***slack-token***"),
+    (re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{16,})"), _bearer),
 ]
 
-# A secret passed as a flag (`--db-password=x`, `--api-key x`). Run through `_sub_flags`, never as a plain `sub`: the
-# flag-name prefix is bounded (unbounded, a long "a-a-a-..." token made this quadratic, minutes per 200 KB), but even
-# bounded the engine tried it at every dash, about 400 steps each, so a run of 2,000 dashes cost 20 ms and an
+# -- private keys ------------------------------------------------------------------------------------------------------
+# `-----BEGIN ... PRIVATE KEY-----` up to the first END line after it is a key, as it always was. A BEGIN with no END
+# after it -- a key cut by a length limit or pasted in part -- loses its base64 body and nothing else: the first
+# version replaced everything after a lone BEGIN, so one log line quoting the header ("expected -----BEGIN RSA PRIVATE
+# KEY----- in key.pem") deleted the rest of the log from every tool that redacts (G274). A header with no body after
+# it is left as it is: it holds no key material.
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+#: The body of a cut key: optional RFC 1421 header lines, then whitespace-separated base64 lines of 16 characters or
+#: more, then one shorter last line when it ends its line. Each line is a token with no whitespace in it, so the engine
+#: never has two ways to split the text and the match costs what it consumes.
+_PEM_BODY = re.compile(
+    r"(?:[ \t]*\r?\n(?:Proc-Type|DEK-Info):[^\n]{0,200})*"
+    r"(?P<lines>(?:\s+[A-Za-z0-9+/]{16,}={0,2})+)"
+    r"(?:[ \t]*\r?\n[ \t]*[A-Za-z0-9+/]{1,15}={0,2}[ \t]*(?=\r?\n|\Z))?"
+)
+
+
+def _looks_like_base64(token: str) -> bool:
+    """A line of key material, not a long word: it has a digit, a + or /, or both cases."""
+    return any(c.isdigit() or c in "+/" for c in token) or (
+        any(c.isupper() for c in token) and any(c.islower() for c in token)
+    )
+
+
+def _sub_private_keys(text: str) -> str:
+    """Private keys replaced, in time linear in the text: each BEGIN is matched once where it starts, the END lines
+    are found by a pointer that only moves forward, and a cut key's body is matched once where its header ends."""
+    if "-----BEGIN " not in text:
+        return text
+    out: list[str] = []
+    cursor = pos = 0
+    end_from = 0  # END lines starting before this were looked at already
+    end: re.Match[str] | None = None
+    ends_left = True
+    while (start := text.find("-----BEGIN ", pos)) >= 0:
+        head = _PEM_BEGIN.match(text, start)
+        if head is None:
+            pos = start + 1
+            continue
+        # The first END starting at or after this header's end -- what the lazy `[\s\S]*?` of the old pattern found.
+        while ends_left and (end is None or end.start() < head.end()):
+            found = text.find("-----END ", max(end_from, head.end()))
+            if found < 0:
+                ends_left, end = False, None
+                break
+            end_from = found + 1
+            end = _PEM_END.match(text, found)
+        if ends_left and end is not None:
+            out += [text[cursor:start], "***PRIVATE KEY***"]
+            cursor = pos = end.end()
+            end = None
+            continue
+        body = _PEM_BODY.match(text, head.end())
+        if body is not None and _looks_like_base64(body.group("lines").split()[0]):
+            out += [text[cursor:start], "***PRIVATE KEY (cut)***"]
+            cursor = pos = body.end()
+        else:
+            pos = head.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+# -- JWTs --------------------------------------------------------------------------------------------------------------
+# `eyJ<8+>.<8+>.<8+>` over [A-Za-z0-9_-]. As a plain pattern the engine tried it at every `eyJ` and ran each attempt
+# to the end of the run, so 8,000 characters of "eyJeyJ..." took 31 ms and 64,000 took 1.5 s, before any time budget
+# (G274). The match is decided by whole runs, so it is found by looking at each run once.
+_JWT_RUN = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _sub_jwts(text: str) -> str:
+    """``re.sub(r"eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}", "***JWT***", text)`` in linear time.
+    The first segment runs greedily to the end of its run, so a match starts at the first ``eyJ`` of a run with at
+    least eight characters after it, and the next two segments are the whole of the next two runs, each joined by
+    exactly one dot and each eight characters or more."""
+    if "eyJ" not in text:
+        return text
+    out: list[str] = []
+    cursor = pos = 0
+    while (start := text.find("eyJ", pos)) >= 0:
+        run = _JWT_RUN.match(text, start)
+        run_end = run.end() if run else start + 3
+        if run_end - start - 3 >= 8 and text[run_end : run_end + 1] == ".":
+            second = _JWT_RUN.match(text, run_end + 1)
+            if second and second.end() - second.start() >= 8 and text[second.end() : second.end() + 1] == ".":
+                third = _JWT_RUN.match(text, second.end() + 1)
+                if third and third.end() - third.start() >= 8:
+                    out += [text[cursor:start], "***JWT***"]
+                    cursor = pos = third.end()
+                    continue
+        # No match starts anywhere in this run: every later `eyJ` in it has the same run end and less before it.
+        pos = run_end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+# A secret passed as a flag (`--db-password=x`, `--api-key x`, `--pwd x`). Run through `_sub_flags`, never as a plain
+# `sub`: the flag-name prefix is bounded (unbounded, a long "a-a-a-..." token made this quadratic, minutes per 200 KB),
+# but even bounded the engine tried it at every dash, about 400 steps each, so a run of 2,000 dashes cost 20 ms and an
 # in-bounds Alertmanager payload of them a minute (G274). The text it rewrites is exactly what `sub` rewrote.
-_FLAG_SECRET = re.compile(r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|secret|token|api[-_]?key)[=\s]+)[^\s\"',;]+")
+_FLAG_SECRET = re.compile(
+    r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|pwd|secret|token|api[-_]?key)[=\s]+)[^\s\"',;]+"
+)
 #: A keyword followed by what `_FLAG_SECRET` needs after it. Every match of `_FLAG_SECRET` contains one, starting at
 #: most 66 characters after the match does (`--` plus the 64-character prefix), so only those windows are tried.
-_FLAG_KEYWORD = re.compile(r"(?i)(?:password|passwd|secret|token|api[-_]?key)[=\s]+[^\s\"',;]")
+_FLAG_KEYWORD = re.compile(r"(?i)(?:password|passwd|pwd|secret|token|api[-_]?key)[=\s]+[^\s\"',;]")
 _FLAG_REACH = 66
 
 
@@ -234,9 +373,28 @@ _BARE_SECRET_FLAG = re.compile(r"(?i)^--?[a-z0-9_.-]*(?:password|passwd|secret|t
 
 
 def redact_text(text: str) -> str:
+    """Credential shapes replaced by ``***`` markers; ``PRIVACY.md`` lists them and the shapes this does not catch."""
     for pat, repl in _LOG_REDACTIONS:
         text = pat.sub(repl, text)
+    text = _sub_jwts(text)
+    for pat, repl in _AFTER_JWT:
+        text = pat.sub(repl, text)
+    text = _sub_private_keys(text)
+    for pat, repl in _AFTER_KEYS:
+        text = pat.sub(repl, text)
     return _sub_flags(text)
+
+
+#: What `redact_text` applies, for the safety contract: how many credential shapes (the patterns plus the JWT, private
+#: key and flag scans) and the markers a redaction leaves in place of a value.
+REDACTION_SHAPES = len(_LOG_REDACTIONS) + len(_AFTER_JWT) + len(_AFTER_KEYS) + 3
+REDACTION_MARKERS: tuple[str, ...] = tuple(
+    sorted(
+        {r for _, r in (*_LOG_REDACTIONS, *_AFTER_JWT, *_AFTER_KEYS) if isinstance(r, str) and r.startswith("***")}
+        - {"***"}
+        | {"***JWT***", "***PRIVATE KEY***", "***PRIVATE KEY (cut)***", "***api-key***"}
+    )
+)
 
 
 def _element_kind(kind: Any) -> str | None:

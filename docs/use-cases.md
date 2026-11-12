@@ -550,7 +550,8 @@ kube-noob demo alerts
 ```
 
 The receipt-to-report time is in every answer and on `/metrics`; a post gets 30 s of work (`alertReports.budgetSeconds`)
-and names the alerts it did not reach; `kube-noob demo alerts` posts the bundled payload and fails if it takes more
+from receipt and names the alerts it did not reach, and when two reports are already being built a post is answered 503
+with `Retry-After` within 5 s, which Alertmanager retries; `kube-noob demo alerts` posts the bundled payload and fails if it takes more
 than 2 s. The receiver configuration is in [operations.md](operations.md).
 
 ### What does this Ceph health code mean? Rook-Ceph and OpenShift Data Foundation

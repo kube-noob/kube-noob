@@ -138,16 +138,22 @@ flowchart LR
   bearer token, and through it whoever can put text in an alert's labels and annotations. The payload is read with the
   bounds above; each label and annotation value is redacted before it is clipped and its `scheme://` URLs are
   replaced; each alert is handed alone to the `diagnose` tool (no cluster read, no fetch), with the names its steps may
-  use taken only from the alert's own labels and only when they are valid Kubernetes names, never from annotation
-  prose. A post gets `alertReports.budgetSeconds` of work, then the alerts not reached keep `not-evaluated` rows; the
-  body is read, the report built and the answer rendered in worker threads, at most two reports at a time, so a large
-  post cannot stall `/healthz` or another route. Only the HTTP server writes reports, into `<dataDir>/alert-reports`:
+  use taken for the namespace and pod only from the alert's own labels (other names, such as a forbidden message's
+  verb and user, still from its text) and only when they are valid Kubernetes names; a `service` label that names the
+  scrape target (kube-state-metrics, `job` equal to it, an `endpoint` label) is not the alert's service. A post gets
+  `alertReports.budgetSeconds` of work counted from receipt, then the alerts not reached keep `not-evaluated` rows. At
+  most two reports are built at once by the receiver and the `alert_report` MCP tool together (one set of slots in the
+  Toolkit); the receiver takes a slot before it reads the body, answers 503 with `Retry-After` when none comes free
+  within 5 s (an MCP call gets a busy tool error), and drops a post whose sender has gone without building or keeping
+  it. The body is read, the report built and the answer rendered in worker threads, so a large post cannot stall
+  `/healthz` or another route. Only the HTTP server writes reports, into `<dataDir>/alert-reports`:
   the folder is opened with `O_NOFOLLOW` and must be the process's own (made 0700 by the writer only), files are
   created `O_EXCL | O_NOFOLLOW` at 0600 relative to it and renamed into place, and retention
   (`alertReports.maxReports`, `maxAgeDays`) runs after every write, never removes the report just written, and
   counts what it could not remove instead of stopping. Ids are `<UTC time>-<96 random bits>`, checked against
-  `[0-9]` and `\Z` with no separator before they name a file. Reports read back are untrusted: `O_NOFOLLOW`, regular
-  files under the size cap, depth-bounded JSON, every field type-checked, cleaned again on the tool path; a damaged
+  `[0-9]` and `\Z` with no separator before they name a file. An entry named like a report that is not a regular
+  file is ignored, counted in the list and never counted toward the cap. Reports read back are untrusted:
+  `O_NOFOLLOW`, regular files with one link owned by the process, under the size cap, depth-bounded JSON, every field type-checked, cleaned again on the tool path; a damaged
   one is a 500 naming no path. Writing one is kube-noob's own local state, like drift snapshots: no tier, nothing in
   a cluster or anywhere else. The chart keeps none by default, because each of its two replicas has its own volume.
 - Drift snapshots and reports (`kube_noob.drift`) are local files, owner-only, with hashes and names only: a snapshot cannot be turned back into configuration. The daily job reads through the same read-only allowlist.

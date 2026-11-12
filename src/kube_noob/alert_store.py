@@ -108,6 +108,7 @@ def _supported() -> bool:
     return (
         {os.open, os.rename, os.unlink, os.stat} <= os.supports_dir_fd
         and os.listdir in os.supports_fd
+        and os.scandir in os.supports_fd
         and hasattr(os, "O_NOFOLLOW")
         and hasattr(os, "O_DIRECTORY")
     )
@@ -196,17 +197,14 @@ class AlertReportStore:
                 os.close(dfd)
 
     def _retain(self, dfd: int, now: dt.datetime, keep: str) -> Retention:
-        ids: set[str] = set()
-        for name in os.listdir(dfd):
-            m = _REPORT.match(name) or _SUMMARY.match(name)
-            if m:
-                ids.add(m.group(1))
-            elif _TEMP.match(name):
-                # A temporary file older than an hour is what a killed write leaves behind.
-                with contextlib.suppress(OSError):
-                    st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
-                    if time.time() - st.st_mtime > STALE_TEMP_SECONDS:
-                        os.unlink(name, dir_fd=dfd)
+        found = _scan(dfd)
+        ids = found.reports | found.summaries
+        for name in found.temps:
+            # A temporary file older than an hour is what a killed write leaves behind.
+            with contextlib.suppress(OSError):
+                st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+                if time.time() - st.st_mtime > STALE_TEMP_SECONDS:
+                    os.unlink(name, dir_fd=dfd)
         oldest_kept = now - dt.timedelta(days=self.settings.max_age_days)
         # The id starts with its UTC time, so name order is age order. The report just written is never a candidate:
         # ids dated in the future (a clock that stepped back) once made it the oldest, so the POST said stored and
@@ -240,8 +238,13 @@ class AlertReportStore:
             raise StoreUnavailable(f"a stored report could not be opened ({_why(exc)})") from None
         with os.fdopen(fd, "rb") as fh:
             st = os.fstat(fh.fileno())
-            if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
-                raise StoreUnavailable("a stored file is not a regular file under the size limit; it was not read")
+            # One link, this process's own: a hard link planted at a report's name is a second name for a file
+            # elsewhere (anything the volume holds that this user can read), and it was served with 200 (G274).
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.geteuid() or st.st_size > cap:
+                raise StoreUnavailable(
+                    "a stored file is not a regular file of this server's own, with one link, under the size limit; "
+                    "it was not read"
+                )
             raw = fh.read(cap + 1)
         try:
             return loads_bounded(raw.decode("utf-8"), MAX_JSON_DEPTH_FILE)
@@ -269,26 +272,93 @@ class AlertReportStore:
 
     def newest(self, limit: int) -> dict[str, Any]:
         """The newest ``limit`` reports, newest first, from their small summary files. A report whose summary cannot
-        be read is listed with ``unreadable`` rather than left out."""
+        be read is listed with ``unreadable`` rather than left out; one that retention removed while the list was
+        being read is gone, not unreadable. Entries named like a report that are not regular files (a directory, a
+        FIFO, a link someone planted) are no report: they are counted under ``ignored``, never listed and never
+        counted toward ``alertReports.maxReports``, so the list holds at most what retention keeps (G274)."""
         limit = max(1, min(limit, MAX_LIST))
         try:
             dfd = self._open_dir(create=False)
         except StoreUnavailable as exc:
             return {"reports": [], "total": 0, "note": str(exc)}
+        gone = 0
         try:
-            ids = sorted({m.group(1) for n in os.listdir(dfd) if (m := _REPORT.match(n))}, reverse=True)
+            found = _scan(dfd)
+            ids = sorted(found.reports, reverse=True)
             rows: list[dict[str, Any]] = []
-            for report_id in ids[:limit]:
+            for report_id in ids:
+                if len(rows) >= limit:
+                    break
                 try:
                     row = self._read(dfd, f"{report_id}.summary.json", MAX_SUMMARY_BYTES)
                     if not _is_summary(row, report_id):
                         raise StoreUnavailable("not a summary")
                     rows.append(row)
-                except (KeyError, StoreUnavailable):
+                except KeyError:
+                    if not _exists(dfd, f"{report_id}.json"):
+                        gone += 1  # removed by retention since the directory was read: not a report any more
+                        continue
+                    rows.append({"id": report_id, "unreadable": "its summary file is missing or not readable"})
+                except StoreUnavailable:
                     rows.append({"id": report_id, "unreadable": "its summary file is missing or not readable"})
         finally:
             os.close(dfd)
-        return {"reports": rows, "total": len(ids)}
+        out: dict[str, Any] = {"reports": rows, "total": len(ids) - gone}
+        if found.ignored:
+            one = found.ignored == 1
+            out["ignored"] = found.ignored
+            out["note"] = (
+                f"{found.ignored} entr{'y' if one else 'ies'} in {DIRNAME} named like a report "
+                f"{'is' if one else 'are'} not a regular file and {'was' if one else 'were'} ignored: not listed, "
+                "not read and not counted"
+            )
+        return out
+
+
+@dataclass(frozen=True)
+class _Found:
+    reports: set[str]
+    summaries: set[str]
+    temps: list[str]
+    ignored: int
+
+
+def _scan(dfd: int) -> _Found:
+    """The directory's entries by kind. Only regular files count as reports or summaries, judged without following a
+    link; anything else with such a name is counted as ignored."""
+    reports: set[str] = set()
+    summaries: set[str] = set()
+    temps: list[str] = []
+    ignored = 0
+    with os.scandir(dfd) as entries:
+        for entry in entries:
+            name = entry.name
+            m = _REPORT.match(name)
+            n = None if m else _SUMMARY.match(name)
+            if m or n:
+                try:
+                    regular = entry.is_file(follow_symlinks=False)
+                except OSError:
+                    regular = False
+                if not regular:
+                    ignored += 1
+                elif m:
+                    reports.add(m.group(1))
+                elif n:
+                    summaries.add(n.group(1))
+            elif _TEMP.match(name):
+                temps.append(name)
+    return _Found(reports, summaries, temps, ignored)
+
+
+def _exists(dfd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _is_count(value: Any) -> bool:
