@@ -298,12 +298,16 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
+# The empty case is refused, not passed: `all([])` is True, and every report has at least one alert, so an empty
+# list of names, caveats or verdict counts is a damaged file, not a valid one.
 def _str_list(value: Any) -> bool:
-    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+    return isinstance(value, list) and bool(value) and all(isinstance(x, str) for x in value)
 
 
 def _counts(value: Any) -> bool:
-    return isinstance(value, dict) and all(isinstance(k, str) and _is_count(v) for k, v in value.items())
+    return (
+        isinstance(value, dict) and bool(value) and all(isinstance(k, str) and _is_count(v) for k, v in value.items())
+    )
 
 
 def _is_record(data: Any, report_id: str) -> bool:
@@ -327,8 +331,12 @@ def _is_record(data: Any, report_id: str) -> bool:
     if not (_str_list(summary.get("alertnames")) and _str_list(report.get("caveats"))):
         return False
     alerts, missing = report.get("alerts"), report.get("notIncluded")
-    if not (isinstance(alerts, list) and all(isinstance(a, dict) for a in alerts)):
+    # One row per alert, and the verdict counts add up to them: a record whose rows went missing is not a report.
+    if not (isinstance(alerts, list) and alerts and all(isinstance(a, dict) for a in alerts)):
         return False
+    if len(alerts) != summary["alerts"] or sum(summary["byVerdict"].values()) != summary["alerts"]:
+        return False
+    # notIncluded is legitimately empty: nothing was withheld.
     return isinstance(missing, list) and all(isinstance(m, dict) for m in missing)
 
 

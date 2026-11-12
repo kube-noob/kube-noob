@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "deploy" / "helm" / "kube-noob"
 SAMPLE = (ROOT / "examples" / "alertmanager-etcd.json").read_text(encoding="utf-8")
 TOKEN = "review-" + "tok-" + "q" * 10
+ROW = {"index": 0, "alertname": "A", "state": "firing", "verdict": "no-recognised-signal"}
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 DASHES = "-" * 2000
 
@@ -460,10 +461,10 @@ def _record(report_id: str, report: Any = None, **extra: Any) -> dict[str, Any]:
         "report": report
         if report is not None
         else {
-            "summary": {"alerts": 1, "alertnames": ["A"], "byVerdict": {}},
-            "alerts": [],
+            "summary": {"alerts": 1, "alertnames": ["A"], "byVerdict": {"no-recognised-signal": 1}},
+            "alerts": [ROW],
             "notIncluded": [],
-            "caveats": [],
+            "caveats": ["c"],
         },
         **extra,
     }
@@ -516,6 +517,14 @@ def test_the_report_just_written_is_never_the_one_retention_removes(tmp_path: Pa
         {"report": {"alerts": ["str", 5], "summary": [1], "caveats": 7, "notIncluded": "zz"}},
         {"receivedAt": 5},
         {"stored": "yes"},
+        {
+            "report": {
+                "summary": {"alerts": 1, "alertnames": ["A"], "byVerdict": {"diagnosed": 1}},
+                "alerts": [],
+                "notIncluded": [],
+                "caveats": ["c"],
+            }
+        },
     ],
 )
 def test_a_stored_record_of_the_wrong_shape_is_refused_not_passed_through(
