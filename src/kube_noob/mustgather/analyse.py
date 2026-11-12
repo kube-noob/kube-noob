@@ -476,7 +476,15 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
     """Findings for the ClusterVersion; True while an update is in progress."""
     if not objs:
         return False
-    obj = objs.get(("", "version")) or next(iter(objs.values()))
+    obj = objs.get(("", "version"))
+    if obj is None:
+        # The cluster's ClusterVersion is the singleton named "version"; any other is not it, and picking the first
+        # of several by file order would make the version an accident of naming.
+        cluster["version"] = ""
+        cluster["clusterVersionNote"] = (
+            f"{len(objs)} ClusterVersion object(s) and none named version: the cluster version is not determined"
+        )
+        return False
     doc, path = obj.doc, obj.path
     status, spec = _d(doc.get("status")), _d(doc.get("spec"))
     desired = _text(_d(status.get("desired")).get("version"), 64)
@@ -484,6 +492,10 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
     current = next((_text(h.get("version"), 64) for h in history if h.get("state") == "Completed"), "")
     cluster["version"] = current if _VERSION.match(current) else desired if _VERSION.match(desired) else ""
     cluster["desiredVersion"] = desired
+    # the newest Completed entry as written (it may not be a version), None when no update completed: for readers
+    # that must not fall back to status.desired when a completed entry is unreadable
+    completed = next((h for h in history if h.get("state") == "Completed"), None)
+    cluster["completedVersion"] = None if completed is None else _text(completed.get("version"), 64)
     cluster["channel"] = _text(spec.get("channel"), 64)
     cluster["history"] = [
         {k: _text(h.get(k), 64) for k in ("version", "state", "startedTime", "completionTime")} for h in history[:5]

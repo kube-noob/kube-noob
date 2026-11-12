@@ -1,39 +1,42 @@
 """Which installed OLM operators the OpenShift release notes name in a reported issue (R5).
 
-What the bundled corpus can support decides what this is. ``kube_noob/data/known_issues`` holds the known and fixed
-issues of the OpenShift 4.20-4.22 release notes, one record per issue and release: an issue id, ``kind``, the
+This is a lookup in the release notes, not a vulnerability check, and not a gate on "do my operators have known
+issues". What the bundled corpus can support decides what it is. ``kube_noob/data/known_issues`` holds the known and
+fixed issues of the OpenShift 4.20-4.22 release notes, one record per issue and release: an issue id, ``kind``, the
 OpenShift ``minor`` and ``version``, the release-note text and its source file, and for five records an OpenShift
 ``fixedIn``. No record carries a component, a package or an operator version (``tests/test_operator_known_issues.py``
-measures that, so a corpus that grows such a field fails a test instead of being ignored). On 2026-11-12, 957 records
-(921 issue ids); 186 name some "<Name> Operator", most of them platform operators the cluster version operator runs
-(Machine Config, Ingress, Cluster Version), which OLM does not install; one issue names an operator version, in prose
-(multicluster engine 2.11.0, as the version that broke, not the one that fixed it).
+and ``scripts/vendor_known_issues.py --check`` both fail if one appears, so the join gets upgraded rather than
+ignoring it). On 2026-11-12, 957 records (921 issue ids).
 
 So the join is the one the data can populate, and it says so:
 
-- **Package to name, through an explicit table.** ``ALIASES`` maps an OLM package name to the product names the
-  release notes use for it, each matched as a whole phrase, case-sensitively, at word boundaries -- never a fuzzy
-  substring of the text. A package with no entry is "not matched (no alias)": listed and counted, never clean. A
-  package that is not known (no Subscription, no ``olm.package`` property) is not guessed from the CSV's name.
-- **Narrowed by the cluster's OpenShift release** (a flag, the must-gather's ClusterVersion, or the live one): only
-  that release's notes are searched. A release outside the indexed ones is "not determined" for every operator, as
-  ``upgrade_risks`` and ``known_issues`` treat a version they hold nothing for; an unknown version searches every
-  indexed release and the answer says it was not narrowed.
-- **A fix is an OpenShift release, never an operator version.** The notes say "fixed in 4.22.3"; an OpenShift-shipped
-  operator's own version is ``4.y.0-<build>`` (openshift-docs a28e76ff671df01eb6d75f305153dc6a01039c60
-  ``modules/nw-dpu-operator-uninstall.adoc``: ``dpu-operator.v4.20.0-202503130333``, VERSION
-  ``4.20.0-202503130333``; ``modules/update-updating-the-olm-operators.adoc``: ``metallb-operator.v4.16.0-
-  202409202304``), and OLM updates it from its catalog, not with the cluster. Comparing the two would put every
-  such build "before the fix". So whether the installed operator carries a fix is always ``not-determined``, with
-  the reason; a known issue with no fix says ``no-fix-listed``.
+- **Package to name, through an explicit table, in two tiers.** ``ALIASES`` maps an OLM package to the product names
+  the release notes use for it (``names``, the strong tier, shown as ``named``) and to component names and
+  abbreviations that only that operator's stack uses (``mentions``, the weak tier, shown as ``mentioned``, never
+  merged into ``named``). Both are whole phrases, case-sensitive, at word boundaries; a name followed by an API group
+  suffix, a path or the word namespace is not the product. A named issue that also names another package, or a
+  platform component (``PLATFORM_TERMS``), is demoted to ``mentioned`` with that reason: it is about where the two
+  meet, and its fix may be in the platform. "Named" means the notes name the product, not that it is affected.
+- **A package with no entry is ``no-alias``; one the inventory could not read is ``package-unknown``.** Neither is
+  clean; neither is guessed from the CSV's name. Both count as not matched (``--require-matched``).
+- **Only Red Hat's build is what the notes describe.** The default catalogs are ``redhat-operators`` (Red Hat
+  products, built by Red Hat), ``certified-operators`` (ISV builds), ``community-operators`` and the retired
+  ``redhat-marketplace`` (openshift-docs a28e76ff ``modules/olm-rh-catalogs.adoc``). An operator from one of the last
+  three is ``not-determined``. One from any other catalog -- a mirror, a custom one, or none named -- keeps its
+  matches but is ``catalogKind: unknown`` and is not counted as matched, because kube-noob cannot tell its build.
+- **Narrowed by the cluster's OpenShift release.** The release is given (``--openshift-version``), or read from the
+  ClusterVersion named ``version`` (the newest Completed history entry; if none completed, ``status.desired``, said
+  so). Both are read when both exist, and a disagreement is a caveat; the given one wins. An update in progress
+  searches both releases and the answer is incomplete. A known issue with no fix listed in an earlier indexed
+  release still applies (``known_issues.Index._applies``, the rule ``known-issues`` uses) and is labelled as listed
+  for that release. A cluster whose API does not serve ClusterVersion is not OpenShift: the notes do not apply.
+- **A fix is an OpenShift release, never an operator version.** The notes list "fixed in 4.22.3"; they do not say
+  whether the fix ships in the payload or in the operator's bundle, so ``installedHasFix`` is ``not-determined``.
+  ``fixReleaseVsCluster`` says only whether the listed release is at or before the cluster's version.
 
-"Named" means the release notes name this operator's product in that issue: the issue may be in the operator, or in
-the platform where the operator meets it (the console installing it, the ingress operator managing its Subscription).
-Each row carries the issue's summary, link, release-notes source and the corpus date, so the reader judges which.
-
-Every package name below was read in a Subscription, a mirror config or the code that creates one (the commit is the
-citation): openshift/openshift-docs a28e76ff671df01eb6d75f305153dc6a01039c60 (the 4.20 commit the corpus itself cites)
-``modules/<file>``, and openshift/cluster-ingress-operator 8e4c40f161d8341d640659ca2779a4294960c183 (release-4.20).
+Package names were read where a Subscription, a mirror config or the code that subscribes to them names them (the
+commit is the citation): openshift/openshift-docs a28e76ff671df01eb6d75f305153dc6a01039c60 ``modules/<file>``, and
+openshift/cluster-ingress-operator 8e4c40f161d8341d640659ca2779a4294960c183 (release-4.20).
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ import re
 import threading
 import weakref
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -55,24 +58,32 @@ DOCS = "openshift/openshift-docs a28e76ff671df01eb6d75f305153dc6a01039c60 module
 
 @dataclass(frozen=True)
 class Alias:
-    """The product names the release notes use for one package, and where the package name was read."""
+    """The names the release notes use for one package, and where the package name was read. ``names`` are the
+    product's names (strong); ``mentions`` are component names and abbreviations only its stack uses (weak);
+    ``not_followed_by`` is a pattern after a name that means another product (OpenShift Service Mesh 2.x is not
+    ``servicemeshoperator3``)."""
 
     names: tuple[str, ...]
     source: str
+    mentions: tuple[str, ...] = ()
+    not_followed_by: str = ""
 
 
-#: package -> the names the release notes use for it. Every name must occur in the bundled corpus and no name may
-#: match another package's (tests/test_operator_known_issues.py, scripts/vendor_known_issues.py --check). Operators
-#: the notes name only in passing words ("SR-IOV virtual functions", "managed by NMState") have no entry: those words
-#: are about the platform feature, not the OLM operator, and a name that does not mean the operator would be a
-#: false match.
+_OSSM2 = r"(?:\s*\(OSSM\))?\s+(?:version\s+)?2(?![0-9])"
+
+#: package -> the names the release notes use for it. Every name and mention must occur in the bundled corpus and no
+#: name may match another package's (tests/test_operator_known_issues.py, scripts/vendor_known_issues.py --check).
+#: Words the notes use for the platform feature rather than the OLM operator ("SR-IOV virtual functions", "managed by
+#: NMState", "Tekton Pipelines") have no entry. Each mention was checked against every record it hits (2026-11-12).
 ALIASES: dict[str, Alias] = {
     "clusterresourceoverride": Alias(
         ("Cluster Resource Override Operator",), DOCS + "nodes-cluster-resource-override-deploy-cli.adoc"
     ),
     "cluster-logging": Alias(("Cluster Logging Operator",), DOCS + "cluster-logging-deploy-cli.adoc"),
     "dpu-operator": Alias(("DPU Operator",), DOCS + "nw-dpu-installing-operator-cli.adoc"),
-    "ingress-node-firewall": Alias(("Ingress Node Firewall",), DOCS + "nw-infw-operator-installing-cli.adoc"),
+    "ingress-node-firewall": Alias(
+        ("Ingress Node Firewall",), DOCS + "nw-infw-operator-installing-cli.adoc", mentions=("IngressNodeFirewall",)
+    ),
     "metallb-operator": Alias(("MetalLB Operator",), DOCS + "nw-metalLB-basic-upgrade-operator.adoc"),
     "multicluster-engine": Alias(
         ("multicluster engine (MCE) for Kubernetes", "multicluster engine for Kubernetes"),
@@ -90,66 +101,137 @@ ALIASES: dict[str, Alias] = {
         ("External Secrets Operator",), DOCS + "external-secrets-operator-install-cli.adoc"
     ),
     "ptp-operator": Alias(
-        ("Precision Time Protocol (PTP) Operator", "PTP Operator"), DOCS + "nw-ptp-installing-operator-cli.adoc"
+        ("Precision Time Protocol (PTP) Operator", "PTP Operator"),
+        DOCS + "nw-ptp-installing-operator-cli.adoc",
+        mentions=("linuxptp-daemon", "cloud-event-proxy", "ts2phc", "phc2sys", "ptp4l", "PTP"),
     ),
     "servicemeshoperator3": Alias(
         ("OpenShift Container Platform Service Mesh", "OpenShift Service Mesh"),
         "openshift/cluster-ingress-operator 8e4c40f161d8341d640659ca2779a4294960c183 "
         "pkg/operator/controller/gatewayclass/subscription.go (Package servicemeshoperator3)",
+        mentions=("OSSM", "Istio"),
+        not_followed_by=_OSSM2,
     ),
     "vertical-pod-autoscaler": Alias(
         ("Vertical Pod Autoscaler",), DOCS + "nodes-pods-vertical-autoscaler-moving-vpa.adoc"
     ),
 }
 
-MAX_ISSUES_PER_OPERATOR = 20
-_OCP = re.compile(r"^(\d{1,3})\.(\d{1,3})(?:\.(\d{1,5}))?(?:[-+][0-9A-Za-z.-]{1,64})?\Z")
-NOT_INSTALLED = frozenset({"not-installed", "csv-missing"})
+#: Platform components the release notes name. An issue matched by a product name that also names one of these is
+#: shown as a mention: it is where the operator meets the platform (the console installing it, the Cluster Ingress
+#: Operator managing its Subscription, Hub RDS creating its resources, FRR-K8s under MetalLB), and the fix may be
+#: in the platform. A list of components, not of records.
+PLATFORM_TERMS = (
+    "Cluster Ingress Operator",
+    "Ingress Operator",
+    "web console",
+    "OperatorHub",
+    "Operator Lifecycle Manager",
+    "Control Plane Operator",
+    "Machine Config Operator",
+    "Cluster Version Operator",
+    "Hub RDS",
+    "FRR-K8s",
+    "kubelet",
+    "CRI-O",
+)
 
-OpVerdict = Literal["named", "none-named", "no-alias", "package-unknown", "not-determined", "not-installed"]
+#: openshift-docs a28e76ff modules/olm-rh-catalogs.adoc: the catalogs installed by default in openshift-marketplace.
+#: Only redhat-operators holds Red Hat's own builds, which are what the release notes describe.
+MARKETPLACE_NAMESPACE = "openshift-marketplace"
+RED_HAT_CATALOG = "redhat-operators"
+OTHER_DEFAULT_CATALOGS = frozenset({"certified-operators", "community-operators", "redhat-marketplace"})
+
+MAX_ISSUES_PER_PACKAGE = 200
+DEFAULT_ISSUES_PER_PACKAGE = 50
+MUST_GATHER_ISSUES_PER_PACKAGE = 5
+_NUM = r"(?:0|[1-9][0-9]{0,2})"
+_OCP = re.compile(rf"^({_NUM})\.({_NUM})(?:\.(0|[1-9][0-9]{{0,4}}))?([-+][0-9A-Za-z.-]{{1,64}})?\Z")
+#: what the tools accept, in the form pydantic's validator takes (no lookarounds; $ is end of text there)
+VERSION_FIELD_PATTERN = r"^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z.-]{1,64})?$"
+
+OpVerdict = Literal[
+    "named", "mentioned", "none-named", "no-alias", "package-unknown", "not-determined", "not-installed"
+]
 VERDICTS: tuple[OpVerdict, ...] = (
     "named",
+    "mentioned",
     "none-named",
+    "not-determined",
     "no-alias",
     "package-unknown",
-    "not-determined",
     "not-installed",
+)
+MATCHED = frozenset({"named", "mentioned", "none-named"})
+Surface = Literal["cli", "must-gather", "mcp"]
+
+FIX_NOTE = (
+    "A fix is listed for an OpenShift release. The release notes do not say whether it ships in the OpenShift "
+    "payload or in the operator's own bundle, which OLM updates from its catalog on its own schedule, so whether this "
+    "operator has it is not determined. fixReleaseVsCluster compares only the listed release with the cluster's "
+    "version: at-or-before, after, or unknown when either has no update number."
 )
 
 
 def method_note() -> str:
     return (
-        "Matched by name: each operator's package is looked up in a table of the product names the OpenShift release "
-        "notes use for it, and the issues whose text names that product are listed. The notes key issues by "
-        "OpenShift release and text, not by operator or operator version, so an issue that does not use the "
-        "product's name is not found, and whether an installed operator carries a fix is not determined."
+        "A release-note lookup, not a vulnerability check: each operator's package is looked up in a table of the "
+        "names the OpenShift release notes use for it, and the issues whose text uses them are listed -- 'named' for "
+        "the product's name, 'mentioned' for a component name or an issue that also names another product or the "
+        "platform. The notes key issues by OpenShift release and text, not by operator or operator version, so an "
+        "issue that uses none of those names is not found, 'named' says the notes name it, not that it is affected, "
+        "and whether an installed operator carries a fix is not determined."
     )
 
 
+# ------------------------------------------------------------------------------------------------- names ----
+
+
 @functools.cache
-def name_pattern(name: str) -> re.Pattern[str]:
-    """A product name as a whole phrase: case-sensitive, not inside a longer word or hyphenated name."""
-    return re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])")
+def name_pattern(name: str, not_followed_by: str = "") -> re.Pattern[str]:
+    """A name as a whole phrase: case-sensitive; not inside a longer word, a hyphenated or dotted name or a path
+    (``cert-manager.io/v1``, ``jetstack/cert-manager``); not the name of a namespace; a trailing full stop, a
+    possessive and backticks are fine."""
+    tail = rf"(?!{not_followed_by})" if not_followed_by else ""
+    return re.compile(
+        rf"(?<![A-Za-z0-9_./-])(?<!namespace )(?<!namespace `){re.escape(name)}"
+        rf"(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])(?!`? namespace){tail}"
+    )
+
+
+def _terms(alias: Alias) -> list[tuple[str, str]]:
+    return [(n, "name") for n in alias.names] + [(m, "mention") for m in alias.mentions]
+
+
+def _hit(alias: Alias, text: str) -> tuple[str, str] | None:
+    for term, kind in _terms(alias):
+        if name_pattern(term, alias.not_followed_by).search(text):
+            return term, kind
+    return None
 
 
 def alias_problems(issues: list[Issue], aliases: dict[str, Alias] | None = None) -> list[str]:
-    """What is wrong with the table against a corpus: a name no record uses (the corpus was regenerated and the name
-    went away), and a name that matches another package's name. Empty when the table is sound."""
+    """What is wrong with the table against a corpus: a name or mention no record uses (the corpus was regenerated
+    and it went away), and a name that matches another package's name. Empty when the table is sound."""
     table = ALIASES if aliases is None else aliases
     problems: list[str] = []
     if not issues:  # an empty corpus is a problem in itself, not a table every name of which went unchecked
         problems.append("the corpus holds no release-note issues, so no alias name could be checked")
     used = {
-        name for alias in table.values() for name in alias.names for i in issues if name_pattern(name).search(i.text)
+        term
+        for alias in table.values()
+        for term, _ in _terms(alias)
+        for i in issues
+        if name_pattern(term, alias.not_followed_by).search(i.text)
     }
     owner: dict[str, str] = {}
     for package, alias in sorted(table.items()):
-        for name in alias.names:
-            if name in owner:
-                problems.append(f"{name!r} is listed for two packages, {owner[name]} and {package}")
-            owner.setdefault(name, package)
-            if name not in used:
-                problems.append(f"{package}: no release-note issue uses the name {name!r}")
+        for term, kind in _terms(alias):
+            if term in owner and owner[term] != package:
+                problems.append(f"{term!r} is listed for two packages, {owner[term]} and {package}")
+            owner.setdefault(term, package)
+            if term not in used:
+                problems.append(f"{package}: no release-note issue uses the {kind} {term!r}")
     for a, pa in sorted(owner.items()):
         for b, pb in sorted(owner.items()):
             if pa != pb and name_pattern(a).search(b):
@@ -157,176 +239,525 @@ def alias_problems(issues: list[Issue], aliases: dict[str, Alias] | None = None)
     return problems
 
 
-_named_lock = threading.Lock()
-_named_cache: weakref.WeakKeyDictionary[Index, dict[str, list[tuple[Issue, str]]]] = weakref.WeakKeyDictionary()
+def alias_report(issues: list[Issue]) -> list[str]:
+    """Per package: how many records each term hits, and in the newest release; and records two packages share
+    (an issue about where two products meet). For ``scripts/vendor_known_issues.py --check``, so a regeneration that
+    drops coverage is visible."""
+    corpus = _Corpus(issues)
+    newest = max((i.minor for i in issues), key=vkey, default="")
+    lines = []
+    for package, alias in sorted(ALIASES.items()):
+        for term, kind in _terms(alias):
+            recs = [i for i in issues if name_pattern(term, alias.not_followed_by).search(i.text)]
+            lines.append(
+                f"{package}: {kind} {term!r} -- {len(recs)} record(s), {sum(i.minor == newest for i in recs)} "
+                f"in {newest}"
+            )
+    for key, packages in sorted(corpus.shared.items()):
+        lines.append(f"shared: {key} is matched for {', '.join(sorted(packages))}")
+    return lines
 
 
-def _named(index: Index) -> dict[str, list[tuple[Issue, str]]]:
-    """package -> (issue, the name it used), for every issue in the index; computed once per index."""
-    with _named_lock:
-        if index not in _named_cache:
-            out: dict[str, list[tuple[Issue, str]]] = {}
-            for package, alias in ALIASES.items():
-                for issue in index.issues:
-                    hit = next((n for n in alias.names if name_pattern(n).search(issue.text)), None)
-                    if hit:
-                        out.setdefault(package, []).append((issue, hit))
-            _named_cache[index] = out
-        return _named_cache[index]
+# ------------------------------------------------------------------------------------------------- corpus ----
+
+
+@dataclass(frozen=True)
+class _Hit:
+    issue: Issue
+    term: str
+    tier: Literal["named", "mentioned"]
+    why: str
+
+
+class _Corpus:
+    """What one loaded index says about every aliased package: the hits with their tier, the terms that hit
+    nothing in THIS index (a refreshed local copy can drop a name), and the newest update listed per release."""
+
+    def __init__(self, issues: list[Issue]) -> None:
+        raw: dict[str, list[tuple[Issue, str, str]]] = {}
+        by_record: dict[tuple[str, str, str], set[str]] = {}
+        used: set[tuple[str, str]] = set()
+        for package, alias in ALIASES.items():
+            terms = _terms(alias)
+            patterns = [(t, k, name_pattern(t, alias.not_followed_by)) for t, k in terms]
+            for issue in issues:
+                matched = [(t, k) for t, k, rx in patterns if rx.search(issue.text)]  # in table order: names first
+                if matched:
+                    used.update((package, t) for t, _ in matched)
+                    raw.setdefault(package, []).append((issue, matched[0][0], matched[0][1]))
+                    by_record.setdefault((issue.id, issue.minor, issue.version), set()).add(package)
+        self.shared = {f"{k[0]} ({k[1]})": v for k, v in by_record.items() if len(v) > 1}
+        self.hits: dict[str, list[_Hit]] = {}
+        for package, found in raw.items():
+            out = []
+            for issue, term, kind in found:
+                others = sorted(by_record[(issue.id, issue.minor, issue.version)] - {package})
+                platform = next((p for p in PLATFORM_TERMS if name_pattern(p).search(issue.text)), None)
+                if kind == "mention":
+                    out.append(
+                        _Hit(
+                            issue,
+                            term,
+                            "mentioned",
+                            f"uses {term!r}, a component name or abbreviation, not the product's name",
+                        )
+                    )
+                elif others:
+                    out.append(
+                        _Hit(
+                            issue, term, "mentioned", f"also names {', '.join(others)}: it may be about where they meet"
+                        )
+                    )
+                elif platform:
+                    out.append(
+                        _Hit(issue, term, "mentioned", f"also names the platform's {platform}: the fix may be there")
+                    )
+                else:
+                    out.append(_Hit(issue, term, "named", "names the product"))
+            self.hits[package] = out
+        self.dead = {
+            package: [t for t, _ in _terms(alias) if (package, t) not in used] for package, alias in ALIASES.items()
+        }
+        self.newest: dict[str, str] = {}
+        for i in issues:
+            if i.kind == "fixed" and (i.minor not in self.newest or vkey(i.version) > vkey(self.newest[i.minor])):
+                self.newest[i.minor] = i.version
+
+
+_corpus_lock = threading.Lock()
+_corpus_cache: weakref.WeakKeyDictionary[Index, _Corpus] = weakref.WeakKeyDictionary()
+
+
+def _corpus(index: Index) -> _Corpus:
+    with _corpus_lock:
+        if index not in _corpus_cache:
+            _corpus_cache[index] = _Corpus(index.issues)
+        return _corpus_cache[index]
+
+
+# ------------------------------------------------------------------------------------------------ versions ----
 
 
 def parse_version(value: Any) -> str | None:
-    """An OpenShift version as given (4.21 or 4.21.9, a pre-release suffix allowed), or None."""
+    """An OpenShift version as given (4.21, 4.21.9 or 4.21.0-rc.1): ASCII digits, no leading zeros. Else None."""
     return value if isinstance(value, str) and _OCP.match(value) else None
 
 
 def _release(version: str) -> str:
     m = _OCP.match(version)
-    if m is None:  # parse_version accepted it, so this cannot happen
+    if m is None:  # callers pass parse_version output only
         raise ValueError(version)
-    return f"{int(m.group(1))}.{int(m.group(2))}"
+    return f"{m.group(1)}.{m.group(2)}"
 
 
-def live_openshift_version(backend: Any) -> tuple[str | None, str]:
-    """The version the cluster runs: the newest Completed entry of ClusterVersion ``status.history`` (the rule the
-    must-gather analyser uses), else ``status.desired.version``. Returns (None, why) when it could not be read."""
+def _exact(version: str | None) -> tuple[int, int, int] | None:
+    """major, minor, update -- only for a version that has all three and no pre-release suffix."""
+    m = _OCP.match(version or "")
+    if m is None or m.group(3) is None or m.group(4):
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+@dataclass
+class Release:
+    """What is known about the cluster's OpenShift version. ``given`` is what the caller said; ``detected`` what a
+    ClusterVersion said (``detected_from`` must-gather or live); ``from_desired`` when no update had completed and
+    the version is the one the cluster is moving to; ``updating_to`` when an update is in progress."""
+
+    given: str | None = None
+    detected: str | None = None
+    detected_from: str | None = None
+    from_desired: bool = False
+    updating_to: str | None = None
+    not_openshift: bool = False
+    notes: list[str] = field(default_factory=list)
+
+
+def _from_history(first: Any, completed: Any, desired: Any, source: str) -> Release:
+    """``first`` is the newest history entry, ``completed`` the newest Completed entry's version as written (or
+    None), ``desired`` status.desired.version as written."""
+    rel = Release(detected_from=source)
+    want = parse_version(desired)
+    if completed is not None:
+        rel.detected = parse_version(completed)
+        if rel.detected is None:
+            rel.notes.append(
+                "the newest completed entry in the ClusterVersion history is not a version this reads, so the "
+                "cluster's version is not determined (an older entry or status.desired would be a guess)"
+            )
+            return rel
+    elif want:
+        rel.detected, rel.from_desired = want, True
+        rel.notes.append(
+            f"no update has completed in the ClusterVersion history: {want} is status.desired, the version the "
+            "cluster is moving to"
+        )
+        return rel
+    else:
+        rel.notes.append("the ClusterVersion holds no version in the form this reads")
+        return rel
+    head = first if isinstance(first, dict) else {}
+    moving = parse_version(head.get("version")) if head.get("state") != "Completed" else None
+    target = moving or want
+    if target and target != rel.detected:
+        rel.updating_to = target
+    return rel
+
+
+def live_release(backend: Any) -> Release:
+    """The ClusterVersion named ``version``, read live. A 404 in the backends' words for a missing resource type
+    (``operators._not_served``) means the cluster is not OpenShift; anything else that fails leaves it unknown."""
     from kube_noob.errors import KubeNoobError
 
     try:
         cv = backend.get("clusterversions", name="version")
     except KubeNoobError as exc:
-        return None, f"the ClusterVersion could not be read ({ops._text(str(exc), 200)})"
+        message = str(exc)
+        if ops._not_served("clusterversions", message, group="config.openshift.io", version="v1"):
+            return Release(
+                detected_from="live",
+                not_openshift=True,
+                notes=[
+                    "the cluster does not serve ClusterVersion (404): it is not OpenShift, so the OpenShift "
+                    "release notes do not apply to it"
+                ],
+            )
+        return Release(
+            detected_from="live", notes=[f"the ClusterVersion could not be read ({ops._text(message, 200)})"]
+        )
     status = ops._d(ops._d(cv).get("status"))
     history = [h for h in ops._l(status.get("history"))[:200] if isinstance(h, dict)]
-    current = next((h.get("version") for h in history if h.get("state") == "Completed"), None)
-    version = parse_version(current) or parse_version(ops._d(status.get("desired")).get("version"))
-    if version is None:
-        return None, "the ClusterVersion held no version in the form this reads"
-    return version, ""
+    completed = next((h.get("version") for h in history if h.get("state") == "Completed"), None)
+    return _from_history(
+        history[0] if history else None, completed, ops._d(status.get("desired")).get("version"), "live"
+    )
 
 
-# ------------------------------------------------------------------------------------------------- the join ----
+def must_gather_release(cluster: dict[str, Any]) -> Release:
+    """From ``must-gather analyze``'s cluster block (the analyser reads the ClusterVersion named ``version`` only)."""
+    if cluster.get("clusterVersionNote"):
+        return Release(detected_from="must-gather", notes=[str(cluster["clusterVersionNote"])])
+    if "desiredVersion" not in cluster:
+        return Release(detected_from="must-gather", notes=["the must-gather holds no ClusterVersion"])
+    history = cluster.get("history") or []
+    completed = cluster.get("completedVersion")
+    return _from_history(history[0] if history else None, completed, cluster.get("desiredVersion"), "must-gather")
 
 
-def _row(issue: Issue, name: str, package: str, as_of: Any) -> dict[str, Any]:
-    """One issue as shown. Every field from the corpus passes ``ops._text``: a local copy written by ``corpus
-    known-issues`` is data from outside, like the objects it is joined with."""
-    raw_fix = issue.fixed_in if issue.kind == "known" else issue.version
-    fix = ops._text(raw_fix, 40) or None
-    minor = ops._text(issue.minor, 20)
-    if issue.kind == "known":
-        status = f"known issue in OpenShift {minor}" + (
-            f"; the release notes list a fix in OpenShift {fix}" if fix else "; the release notes list no fix"
+# ------------------------------------------------------------------------------------------------ the join ----
+
+
+def catalog_kind(catalog: Any, namespace: Any) -> Literal["red-hat", "not-red-hat-build", "unknown"]:
+    if namespace == MARKETPLACE_NAMESPACE and catalog == RED_HAT_CATALOG:
+        return "red-hat"
+    if namespace == MARKETPLACE_NAMESPACE and catalog in OTHER_DEFAULT_CATALOGS:
+        return "not-red-hat-build"
+    return "unknown"
+
+
+def _issue_number(issue_id: str) -> tuple[str, int]:
+    prefix, _, num = issue_id.rpartition("-")
+    return prefix, int(num) if num.isdigit() else 0
+
+
+def _neg(v: str | None) -> tuple[int, ...]:
+    return tuple(-x for x in vkey(v or "0"))
+
+
+@dataclass
+class _Ctx:
+    versions: list[str]  # the versions searched (one, or two during an update); empty when not known
+    releases: list[str]
+    running: str | None
+    as_of: Any
+
+
+def _rows(hits: list[_Hit], ctx: _Ctx) -> list[dict[str, Any]]:
+    """One row per issue id, from the records that apply to the cluster: open issues first, named before
+    mentioned, newest release, newest fix, then the issue number (numerically)."""
+    groups: dict[str, list[_Hit]] = {}
+    for h in hits:
+        i = h.issue
+        open_issue = i.kind == "known" and not i.fixed_in
+        if not ctx.versions:
+            applies = True
+        elif open_issue:
+            applies = any(Index._applies(i, v) for v in ctx.versions)
+        else:
+            applies = i.minor in ctx.releases
+        if applies:
+            groups.setdefault(i.id, []).append(h)
+    rows = []
+    for issue_id, group in groups.items():
+        group.sort(key=lambda h: (_neg(h.issue.minor), _neg(h.issue.version)))
+        rep = group[0].issue
+        listed_fixes = {h.issue.version if h.issue.kind == "fixed" else h.issue.fixed_in for h in group}
+        fixes = sorted((f for f in listed_fixes if f), key=vkey)
+        in_release = [f for f in fixes if ctx.running and _release(ctx.running) == ".".join(f.split(".")[:2])]
+        fix: str | None = (in_release or fixes)[0] if (in_release or fixes) else None
+        releases = sorted({h.issue.minor for h in group}, key=vkey)
+        named = [h for h in group if h.tier == "named"]
+        best = (named or group)[0]
+        running = _exact(ctx.running)
+        listed = None
+        if not fix and ctx.running and all(vkey(r) < vkey(_release(ctx.running)) for r in releases):
+            listed = f"listed for OpenShift {', '.join(releases)}; no fix listed since"
+        row: dict[str, Any] = {
+            "id": issue_id,
+            "url": rep.url,
+            "class": "fixed" if fix else "open",
+            "tier": best.tier,
+            "via": best.term,
+            "tierWhy": best.why,
+            "releases": releases,
+            "fixedInOpenShift": fix,
+            "fixReleaseVsCluster": (
+                "unknown"
+                if not fix or running is None or _exact(fix) is None
+                else "at-or-before"
+                if _exact(fix) <= running  # type: ignore[operator]
+                else "after"
+            ),
+            "installedHasFix": "not-determined" if fix else "no-fix-listed",
+            "summary": ops._text(rep.summary, 300),
+            "workaround": ops._text(rep.workaround, 300) or None,
+            "source": rep.source,
+            "knownIssuesAsOf": ctx.as_of,
+        }
+        if len(rep.ids) > 1:
+            row["ids"] = list(rep.ids)
+        if listed:
+            row["listed"] = listed
+        rows.append(row)
+    rows.sort(
+        key=lambda r: (
+            r["class"] != "open",
+            r["tier"] != "named",
+            _neg(r["releases"][-1]),
+            _neg(r["fixedInOpenShift"]),
+            _issue_number(r["id"]),
         )
-    else:
-        status = f"listed as fixed in OpenShift {fix}"
-    if fix:
-        has_fix, why = (
-            "not-determined",
-            f"the release notes state the fix as an OpenShift release ({fix}), not a version of {package}: the "
-            "installed operator's version cannot be compared with it, and OLM updates the operator from its catalog, "
-            "not with the cluster",
-        )
-    else:
-        has_fix, why = "no-fix-listed", "the release notes list no fix for this issue"
+    )
+    return rows
+
+
+def _hints(surface: Surface) -> dict[str, str]:
+    """What a reader can do next, worded for where they read it (one renderer for every surface)."""
+    if surface == "must-gather":
+        run = "run kube-noob operators issues --must-gather <path>"
+        return {
+            "version": f"{run} --openshift-version <x.y.z> to give it",
+            "issues": f"{run} to see all of them",
+            "operators": f"{run} --top 500 to see more",
+        }
+    if surface == "mcp":
+        return {
+            "version": "pass openshift_version to give it",
+            "issues": "pass a larger issues_per_package to see more",
+            "operators": "pass a larger top to see more",
+        }
     return {
-        "id": ops._text(issue.id, 40),
-        "url": ops._text(issue.url, 200),
-        "kind": issue.kind if issue.kind in ("known", "fixed") else ops._text(issue.kind, 20),
-        "release": minor,
-        "fixedInOpenShift": fix,
-        "status": status,
-        "summary": ops._text(issue.summary, 300),
-        "workaround": ops._text(issue.workaround, 300) or None,
-        "matchedName": name,
-        "installedHasFix": has_fix,
-        "why": why,
-        "source": ops._text(issue.source, 300),
-        "knownIssuesAsOf": as_of,
+        "version": "pass --openshift-version to give it",
+        "issues": f"pass --issues (up to {MAX_ISSUES_PER_PACKAGE}) to see more",
+        "operators": "pass --top (up to 500) to see more",
     }
-
-
-def _issue_key(row: dict[str, Any]) -> tuple[Any, ...]:
-    return (vkey(row["release"]), row["kind"], row["id"], vkey(row["fixedInOpenShift"] or "0"), row["source"])
 
 
 def assess(
     collected: ops.Collected,
     *,
-    openshift_version: str | None,
-    version_from: str | None,
-    version_note: str = "",
+    release: Release | None = None,
+    surface: Surface = "cli",
     top: int = ops.MAX_OPERATORS,
-    issues_per_operator: int = MAX_ISSUES_PER_OPERATOR,
+    issues_per_package: int = DEFAULT_ISSUES_PER_PACKAGE,
     data_dir: Path | None = None,
     index: Index | None = None,
 ) -> dict[str, Any]:
-    """The installed operators of ``collected`` (the same collection the inventory uses), each matched against the
-    release notes of the cluster's OpenShift release. Deterministic: sorted, and built from the sorted inventory."""
+    """The installed operators of ``collected`` (the inventory's own collection), each looked up in the release
+    notes of the cluster's OpenShift release. Deterministic: built from the sorted inventory and sorted again."""
+    rel = release or Release()
+    hints = _hints(surface)
     inv = ops.inventory(collected, top=ops.MAX_OPERATORS)  # every operator the inventory holds, up to its cap
     idx = index if index is not None else get_index(data_dir)
     knowledge = idx.knowledge()
-    as_of = ops._text(knowledge.get("knownIssuesAsOf"), 40) or None
-    releases: list[str] = [ops._text(r, 20) for r in knowledge.get("openshiftReleases") or []]
-    version = parse_version(openshift_version)
-    release = _release(version) if version else None
-    indexed = None if release is None else release in releases
-    named = _named(idx)
+    corpus = _corpus(idx)
+    as_of = knowledge.get("knownIssuesAsOf")
+    releases_indexed: list[str] = list(knowledge.get("openshiftReleases") or [])
+    caveats: list[str] = []
+    incomplete: list[str] = []
 
+    # -- which release(s) to search
+    given = parse_version(rel.given)
+    version = given or rel.detected
+    detected = rel.detected
+    for note in rel.notes:
+        caveats.append(note)
+    if (
+        given
+        and detected
+        and (given != detected if _exact(given) and _exact(detected) else _release(given) != _release(detected))
+    ):
+        caveats.append(
+            f"the given version {given} disagrees with the ClusterVersion's {detected} ({rel.detected_from}); the "
+            "given one is used"
+        )
+    versions = [version] if version else []
+    if rel.updating_to and not given:
+        caveats.append(f"an update to {rel.updating_to} is in progress: both releases are searched, labelled")
+        incomplete.append(f"the cluster is updating to {rel.updating_to}")
+        if _release(rel.updating_to) != _release(version or rel.updating_to):
+            versions.append(rel.updating_to)
+    if rel.from_desired and not given:
+        incomplete.append("the version is status.desired: no update has completed")
+    searched = sorted({_release(v) for v in versions}, key=vkey)
+    outside = [r for r in searched if r not in releases_indexed]
+    running = versions[0] if versions else None
+    run_release = _release(running) if running else None
+    not_indexed = bool(run_release and run_release in outside)
+    if outside and not not_indexed:
+        caveats.append(
+            f"OpenShift {', '.join(outside)} is not in the indexed release notes ({', '.join(releases_indexed)}): only "
+            f"{run_release} was searched"
+        )
+        incomplete.append(f"OpenShift {', '.join(outside)} is not indexed")
+        versions = [v for v in versions if _release(v) not in outside]
+        searched = [r for r in searched if r not in outside]
+    newest = _exact(corpus.newest.get(run_release or ""))
+    now = _exact(running)
+    if newest is not None and now is not None and now > newest:
+        caveats.append(
+            f"the cluster is at {running}, past the newest {run_release} update in the index "
+            f"({corpus.newest.get(run_release or '')}): issues reported after {as_of} are not included"
+        )
+    if rel.not_openshift:
+        pass
+    elif not version:
+        incomplete.append("the cluster's OpenShift version is not known: issues were not narrowed to a release")
+        caveats.append(
+            f"the cluster's OpenShift version is not known: every indexed release ({', '.join(releases_indexed)}) "
+            f"was searched; {hints['version']}"
+        )
+    elif not_indexed:
+        caveats.append(
+            f"OpenShift {version} (release {run_release}) is outside the indexed release notes "
+            f"({', '.join(releases_indexed)}, as of {as_of}): every operator is not determined"
+        )
+    if knowledge.get("recordsRejected"):
+        caveats.append(
+            f"{knowledge['recordsRejected']} record(s) of the loaded release notes were not usable and were left "
+            f"out: {'; '.join(ops._text(x, 120) for x in knowledge.get('rejectedRecords', []))}"
+        )
+    if knowledge.get("localCopyNote"):
+        caveats.append(str(knowledge["localCopyNote"]))
+    ctx = _Ctx(versions, searched, running, as_of)
+
+    # -- every operator
+    package_rows: dict[str, list[dict[str, Any]]] = {}
     entries: list[dict[str, Any]] = []
+    dead_seen: set[str] = set()
     for op in inv["operators"]:
         entry: dict[str, Any] = {
-            k: op[k] for k in ("namespace", "csv", "package", "packageFrom", "version", "versionFrom") if k in op
+            k: op[k]
+            for k in (
+                "namespace",
+                "csv",
+                "package",
+                "packageFrom",
+                "version",
+                "versionFrom",
+                "catalog",
+                "catalogNamespace",
+            )
+            if k in op
         }
         entry["inventoryState"] = op["state"]
+        kind = catalog_kind(op.get("catalog"), op.get("catalogNamespace"))
+        entry["catalogKind"] = kind
         notes: list[str] = []
-        rows: list[dict[str, Any]] = []
         package = op.get("package")
-        if op["state"] in ops.UNDETERMINED_STATES:
+        state = op["state"]
+        if state in ops.UNDETERMINED_STATES:
             notes.append("whether this operator is installed was not determined by the inventory")
-        if op["state"] in NOT_INSTALLED:
-            verdict: OpVerdict = "not-installed"
-            reason = "the inventory shows it subscribed to but not installed, so it was not assessed"
-        elif indexed is False:
+        rows: list[dict[str, Any]] = []
+        verdict: OpVerdict
+        if state == "not-installed":
+            verdict, reason = "not-installed", "subscribed to but nothing is installed, so it was not looked up"
+        elif state == "csv-missing":
             verdict = "not-determined"
-            reason = (
-                f"OpenShift {release} is not in the indexed release notes ({', '.join(releases)}), so whether they "
-                "name this operator for the release the cluster runs is not determined"
-            )
+            reason = "its Subscription names an installed CSV that was not read: whether it is installed is not known"
+        elif rel.not_openshift:
+            verdict, reason = "not-determined", "the cluster is not OpenShift: the OpenShift release notes do not apply"
+        elif not_indexed:
+            verdict = "not-determined"
+            reason = f"OpenShift {run_release} is not in the indexed release notes ({', '.join(releases_indexed)})"
         elif not package:
             verdict = "package-unknown"
             reason = (
-                "its package is not known (no Subscription or olm.package property names it), so it was not matched "
-                "against the release notes; the CSV's name is not used to guess it"
+                "its package is not known (no Subscription or olm.package property names it), so it was not looked "
+                "up; the CSV's name is not used to guess it"
             )
         elif package not in ALIASES:
             verdict = "no-alias"
             reason = (
-                "not matched against the release notes (no alias): kube-noob has no entry saying what name the "
-                "release notes use for this package, which is not the same as no reported issue"
+                "not matched against the release notes (no alias): kube-noob has no entry saying what name the notes "
+                "use for this package, which is not the same as no reported issue"
+            )
+        elif kind == "not-red-hat-build":
+            verdict = "not-determined"
+            reason = (
+                f"it comes from {op.get('catalog')}, not {RED_HAT_CATALOG}: the release notes describe Red Hat's build "
+                "of this package, not this one"
             )
         else:
-            for issue, name in named.get(package, []):
-                if release is None or issue.minor == release:
-                    rows.append(_row(issue, name, package, as_of))
-            rows = sorted({_issue_key(r): r for r in rows}.values(), key=_issue_key)
-            if rows:
+            if package not in package_rows:
+                package_rows[package] = _rows(corpus.hits.get(package, []), ctx)
+            rows = package_rows[package]
+            dead = corpus.dead.get(package, [])
+            where = f"OpenShift {', '.join(searched)}" if searched else "every indexed release (release not known)"
+            named_n = sum(r["tier"] == "named" for r in rows)
+            if named_n:
                 verdict = "named"
-                where = f"OpenShift {release}" if release else f"OpenShift {', '.join(releases)} (not narrowed)"
-                reason = f"the {where} release notes name this operator in {len(rows)} issue(s)"
-            elif release is None:
+                reason = f"the {where} release notes name this product in {named_n} issue(s)"
+                if len(rows) > named_n:
+                    reason += f" and only mention it in {len(rows) - named_n} more"
+            elif rows:
+                verdict = "mentioned"
+                reason = f"the {where} release notes only mention it, in {len(rows)} issue(s)"
+            elif dead:
+                verdict = "not-determined"
+                reason = (
+                    f"the loaded release notes no longer use {', '.join(repr(d) for d in dead)}, a name kube-noob "
+                    "looks for: an issue about it may be written another way"
+                )
+                if package not in dead_seen:
+                    dead_seen.add(package)
+                    caveats.append(f"{package}: the loaded release notes use none of {', '.join(map(repr, dead))}")
+            elif not version:
                 verdict = "not-determined"
                 reason = "no indexed release notes name it, and the cluster's release is not known"
             else:
                 verdict = "none-named"
                 reason = (
-                    f"no issue in the OpenShift {release} release notes names this operator; that says the notes "
+                    f"no issue in the {where} release notes uses a name kube-noob has for it; that says the notes "
                     "do not name it, not that it has no reported issue"
+                )
+            if rows and dead and package not in dead_seen:
+                dead_seen.add(package)
+                caveats.append(f"{package}: the loaded release notes use none of {', '.join(map(repr, dead))}")
+            if kind == "unknown":
+                notes.append(
+                    f"it comes from {'catalog ' + str(op['catalog']) if op.get('catalog') else 'a catalog not named'}"
+                    f", not {RED_HAT_CATALOG} in {MARKETPLACE_NAMESPACE}: the release notes describe Red Hat's build, "
+                    "and kube-noob cannot tell whether this is it (a mirror of it would be)"
                 )
         entry["verdict"] = verdict
         entry["reason"] = reason
-        entry["issuesTotal"] = len(rows)
-        entry["issues"] = rows[:issues_per_operator]
+        entry["issues"] = {
+            "open": sum(r["class"] == "open" for r in rows),
+            "fixed": sum(r["class"] == "fixed" for r in rows),
+            "named": sum(r["tier"] == "named" for r in rows),
+            "mentioned": sum(r["tier"] == "mentioned" for r in rows),
+        }
         entry["notes"] = notes
         entries.append(entry)
 
@@ -334,29 +765,39 @@ def assess(
         key=lambda e: (VERDICTS.index(e["verdict"]), e["namespace"], e.get("package") or "", e.get("csv") or "")
     )
     counts = Counter(e["verdict"] for e in entries)
-    not_assessed = inv.get("notShown", 0)
-    caveats = [f"inventory: {c}" for c in inv["caveats"]]
+    assessable = len(entries) - counts["not-installed"]
+    matched = sum(counts[v] for v in MATCHED)
+    unverified = sum(1 for e in entries if e["verdict"] in MATCHED and e["catalogKind"] == "unknown")
+    not_matched = assessable - matched
+    not_assessed = int(inv.get("notShown", 0))
+    if not inv["complete"]:
+        incomplete.append(f"the inventory is {inv['verdict']}")
     if not_assessed:
-        caveats.append(f"{not_assessed} operator(s) past the inventory's cap of {ops.MAX_OPERATORS} were not assessed")
-    if version is None:
-        caveats.append(
-            "the cluster's OpenShift version is not known"
-            + (f" ({version_note})" if version_note else "")
-            + f": issues were not narrowed to its release, and every indexed release ({', '.join(releases)}) was "
-            "searched; pass --openshift-version to narrow them"
+        incomplete.append(
+            f"{not_assessed} operator(s) past the inventory's cap of {ops.MAX_OPERATORS} were not assessed"
         )
-    elif indexed is False:
-        caveats.append(
-            f"OpenShift {version} (release {release}) is outside the indexed release notes ({', '.join(releases)}, as "
-            f"of {as_of}): every operator is not determined"
-        )
+    if counts_missing := sum(1 for e in entries if e["inventoryState"] == "csv-missing"):
+        incomplete.append(f"{counts_missing} operator(s) name a CSV that was not read")
+    caveats = [f"inventory: {c}" for c in inv["caveats"]] + caveats
     if counts["no-alias"]:
         caveats.append(
             f"{counts['no-alias']} operator(s) have no alias and were not matched against the release notes; that is "
             "not the same as having no reported issue"
         )
+    if foreign := sum(
+        1 for e in entries if e["catalogKind"] == "not-red-hat-build" and e["verdict"] == "not-determined"
+    ):
+        caveats.append(
+            f"{foreign} operator(s) come from {', '.join(sorted(OTHER_DEFAULT_CATALOGS))}, which are not Red Hat's "
+            "builds: the release notes do not describe them, so they were not looked up"
+        )
     if counts["package-unknown"]:
         caveats.append(f"{counts['package-unknown']} operator(s) have no known package and were not matched")
+    if unverified:
+        caveats.append(
+            f"{unverified} operator(s) come from a catalog other than {RED_HAT_CATALOG}: their matches describe "
+            "Red Hat's build, which kube-noob cannot confirm they are"
+        )
     undetermined = [e for e in entries if e["inventoryState"] in ops.UNDETERMINED_STATES]
     if undetermined:
         names = ", ".join(f"{e['namespace']}/{e.get('csv') or e.get('package') or '?'}" for e in undetermined[:10])
@@ -364,156 +805,260 @@ def assess(
 
     if inv["verdict"] in ("not-determined", "no-olm"):
         answer = inv["verdict"]
-    elif indexed is False:
+    elif rel.not_openshift or not_indexed:
         answer = "not-determined"
-    elif inv["complete"] and version is not None and not not_assessed:
-        answer = "assessed"
-    else:
+    elif incomplete:
         answer = "partial"
-    complete = answer in {"no-olm", "assessed"}
-    shown = entries[:top]
+    elif assessable == 0:
+        answer = "nothing-to-match"
+    elif not_matched == 0 and unverified == 0:
+        answer = "matched"
+    elif matched == 0:
+        answer = "not-matched"
+    else:
+        answer = "partly-matched"
+    complete = answer in ("matched", "partly-matched", "not-matched", "nothing-to-match", "no-olm")
+
+    issues_out: dict[str, Any] = {}
+    for package, rows in sorted(package_rows.items()):
+        shown = rows[:issues_per_package]
+        block: dict[str, Any] = {
+            "open": sum(r["class"] == "open" for r in rows),
+            "fixed": sum(r["class"] == "fixed" for r in rows),
+            "rows": shown,
+        }
+        cut = {c: sum(r["class"] == c for r in rows) - sum(r["class"] == c for r in shown) for c in ("open", "fixed")}
+        if any(cut.values()):
+            block["withheld"] = cut
+        issues_out[package] = block
+    shown_entries = entries[:top]
+    open_total = sum(b["open"] for b in issues_out.values())
+    fixed_total = sum(b["fixed"] for b in issues_out.values())
     out: dict[str, Any] = {
         "verdict": answer,
         "complete": complete,
-        "summary": _summary(answer, inv, counts, len(entries), release, releases, as_of),
+        "allMatched": complete and not_matched == 0 and unverified == 0,
+        "summary": _summary(
+            answer,
+            inv,
+            counts,
+            assessable,
+            not_matched,
+            unverified,
+            searched,
+            as_of,
+            open_total,
+            fixed_total,
+            incomplete,
+            rel,
+            run_release,
+            releases_indexed,
+            len(entries),
+            not_assessed,
+        ),
+        "incompleteBecause": incomplete,
         "cluster": {
             "openshiftVersion": version,
-            "versionFrom": version_from if version else None,
-            "release": release,
-            "indexed": indexed,
+            "versionFrom": (
+                "given"
+                if given
+                else ("clusterversion-desired" if rel.from_desired else "clusterversion")
+                if version
+                else None
+            ),
+            "detectedFrom": rel.detected_from,
+            "detectedVersion": detected,
+            "updatingTo": rel.updating_to,
+            "releasesSearched": searched,
+            "indexed": None if not version or rel.not_openshift else not not_indexed,
+            "notOpenShift": rel.not_openshift,
         },
         "knowledge": {
             "knownIssuesAsOf": as_of,
-            "openshiftReleases": releases,
+            "openshiftReleases": releases_indexed,
             "source": "OpenShift release notes (openshift/openshift-docs), known and fixed issues",
+            **{k: knowledge[k] for k in ("recordsRejected", "localCopyNote") if k in knowledge},
         },
         "counts": {
             "operators": len(entries),
+            "assessable": assessable,
+            "notMatched": not_matched,
+            "catalogUnverified": unverified,
             "named": counts["named"],
+            "mentioned": counts["mentioned"],
             "noneNamed": counts["none-named"],
             "noAlias": counts["no-alias"],
             "packageUnknown": counts["package-unknown"],
             "notDetermined": counts["not-determined"],
             "notInstalled": counts["not-installed"],
-            "issues": sum(e["issuesTotal"] for e in entries),
+            "notAssessed": not_assessed,
+            "openIssues": open_total,
+            "fixedIssues": fixed_total,
         },
-        "operators": shown,
+        "operators": shown_entries,
         "operatorsTotal": len(entries),
+        "issues": issues_out,
     }
-    if len(entries) > len(shown):
-        out["notShown"] = len(entries) - len(shown)
+    if len(entries) > len(shown_entries):
+        out["notShown"] = len(entries) - len(shown_entries)
     out["inventory"] = {k: inv[k] for k in ("source", "verdict", "complete", "summary")}
     out["caveats"] = caveats
+    out["hints"] = hints
+    out["fixNote"] = FIX_NOTE
     out["method"] = method_note()
     return out
 
 
-MUST_GATHER_ISSUES_PER_OPERATOR = 5  # inside a must-gather analysis, which already carries findings and inventory
-
-
-def for_must_gather(collected: ops.Collected, version: Any, data_dir: Path | None = None) -> dict[str, Any]:
-    """The answer for a must-gather already analysed: its ClusterVersion's completed version narrows the issues, and
-    each operator carries at most ``MUST_GATHER_ISSUES_PER_OPERATOR`` of them (``issuesTotal`` says how many)."""
-    parsed = parse_version(version)
+def for_must_gather(
+    collected: ops.Collected, cluster: dict[str, Any], surface: Surface = "must-gather", data_dir: Path | None = None
+) -> dict[str, Any]:
+    """The answer inside a must-gather analysis: the analyser's ClusterVersion narrows it, and each package carries
+    at most ``MUST_GATHER_ISSUES_PER_PACKAGE`` issues, with what was withheld per class."""
     return assess(
         collected,
-        openshift_version=parsed,
-        version_from="must-gather" if parsed else None,
-        version_note="" if parsed else "the must-gather holds no ClusterVersion with a completed version",
-        issues_per_operator=MUST_GATHER_ISSUES_PER_OPERATOR,
+        release=must_gather_release(cluster),
+        surface=surface,
+        issues_per_package=MUST_GATHER_ISSUES_PER_PACKAGE,
         data_dir=data_dir,
     )
 
 
 def _summary(
-    verdict: str,
+    answer: str,
     inv: dict[str, Any],
     counts: Counter[str],
-    total: int,
-    release: str | None,
-    releases: list[str],
+    assessable: int,
+    not_matched: int,
+    unverified: int,
+    searched: list[str],
     as_of: Any,
+    open_total: int,
+    fixed_total: int,
+    incomplete: list[str],
+    rel: Release,
+    run_release: str | None,
+    releases: list[str],
+    total: int,
+    not_assessed: int,
 ) -> str:
-    if verdict == "no-olm":
-        return "not an OLM cluster: there are no OLM-installed operators to match, and nothing was evaluated"
+    tail = " (a release-note lookup, not a vulnerability check)"
+    if answer == "no-olm":
+        return "not an OLM cluster: there are no OLM-installed operators to look up, and nothing was evaluated"
     if inv["verdict"] == "not-determined":
         return (
             f"not determined: the installed operators could not be read ({inv['summary']}). That does not mean no "
             "operator has a reported issue."
         )
-    if verdict == "not-determined":
+    if rel.not_openshift:
         return (
-            f"not determined: OpenShift {release} is not in the indexed release notes ({', '.join(releases)}, as of "
-            f"{as_of}), so none of the {total} operator(s) was assessed"
+            "not determined: the cluster is not OpenShift, so the OpenShift release notes do not apply to its "
+            f"{total} operator(s)"
         )
-    where = f"the OpenShift {release} release notes" if release else "the indexed release notes (release not known)"
-    head = (
-        f"{counts['named']} of {total} operator(s) named in {where} as of {as_of}; {counts['none-named']} named in "
-        f"none; {counts['no-alias']} operator(s) have no alias"
+    if answer == "not-determined":
+        return (
+            f"not determined: OpenShift {run_release} is not in the indexed release notes ({', '.join(releases)}, as "
+            f"of {as_of}), so none of the {total} operator(s) was looked up"
+        )
+    if answer == "nothing-to-match":
+        return f"no installed operator to look up ({total} subscribed, none installed)" + tail
+    where = f"the OpenShift {', '.join(searched)} release notes" if searched else "the indexed release notes"
+    lead = (
+        f"{not_matched} of {assessable} installed operator(s) were not matched against the release notes"
+        if not_matched
+        else f"all {assessable} installed operator(s) were looked up"
     )
-    extra = [
-        f"{counts[k]} {label}"
-        for k, label in (
-            ("package-unknown", "without a known package"),
-            ("not-determined", "not determined"),
-            ("not-installed", "not installed"),
-        )
-        if counts[k]
+    parts = [
+        lead,
+        f"{counts['named']} named and {counts['mentioned']} only mentioned in {where} as of {as_of} ({open_total} "
+        f"open, {fixed_total} fixed issue(s))",
+        f"{counts['none-named']} looked up and named in no issue",
     ]
-    if extra:
-        head += "; " + ", ".join(extra)
-    if verdict == "partial":
-        head += " -- incomplete" if inv["complete"] else f" -- incomplete: the inventory is {inv['verdict']}"
-        if release is None:
-            head += "; the cluster's release is not known"
-    return head
+    if unverified:
+        parts.append(f"{unverified} from a catalog other than {RED_HAT_CATALOG}")
+    head = "; ".join(parts)
+    if not_assessed:
+        head += f"; {not_assessed} operator(s) not assessed"
+    if incomplete:
+        head += " -- incomplete: " + "; ".join(incomplete)
+    return head + tail
 
 
 # ------------------------------------------------------------------------------------------------- text ----
 
 
 def render_text(out: dict[str, Any]) -> str:
-    """The text view: every operator, every issue with its link, source and the corpus date, and every caveat the
-    JSON carries (G221)."""
+    """The text view: every operator with every field the JSON gives it, every issue with its link, source and the
+    corpus date, and every caveat and hint the JSON carries (G221)."""
     c, cl, k = out["counts"], out["cluster"], out["knowledge"]
-    version = (
-        f"OpenShift {cl['openshiftVersion']} (from the {cl['versionFrom']})"
-        if cl["openshiftVersion"]
-        else ("OpenShift version not known")
-    )
+    if cl["openshiftVersion"]:
+        version = f"OpenShift {cl['openshiftVersion']} ({cl['versionFrom']})"
+    else:
+        version = "OpenShift version not known"
+    if cl["detectedVersion"] and cl["detectedVersion"] != cl["openshiftVersion"]:
+        version += f"; the ClusterVersion says {cl['detectedVersion']}"
+    if cl["updatingTo"]:
+        version += f"; updating to {cl['updatingTo']}"
     lines = [
         f"operator known issues ({out['inventory']['source']}): {out['verdict']} -- {out['summary']}",
-        f"cluster: {version}; release notes of OpenShift {', '.join(k['openshiftReleases'])} as of "
-        f"{k['knownIssuesAsOf']}",
-        f"counts: {c['operators']} operator(s), {c['named']} named, {c['noneNamed']} named in none, {c['noAlias']} "
-        f"no alias, {c['packageUnknown']} package unknown, {c['notDetermined']} not determined, {c['notInstalled']} "
-        f"not installed, {c['issues']} issue(s)",
+        f"cluster: {version}; searched {', '.join(cl['releasesSearched']) or 'no release'}",
+        f"release notes: {k['source']}, OpenShift {', '.join(k['openshiftReleases'])}, as of {k['knownIssuesAsOf']}"
+        + (f"; {k['recordsRejected']} record(s) left out as unusable" if k.get("recordsRejected") else ""),
+        f"counts: {c['operators']} operator(s), {c['assessable']} installed, {c['notMatched']} not matched, "
+        f"{c['named']} named, {c['mentioned']} mentioned, {c['noneNamed']} named in no issue, {c['noAlias']} no "
+        f"alias, {c['packageUnknown']} package unknown, {c['notDetermined']} not determined, {c['notInstalled']} not "
+        f"installed, {c['catalogUnverified']} catalog unverified, {c['notAssessed']} not assessed, {c['openIssues']} "
+        f"open and {c['fixedIssues']} fixed issue(s)",
     ]
+    shown_packages: set[str] = set()
     for op in out["operators"]:
-        name = op.get("csv") or "?"
-        version_text = op.get("version") or "unknown"
-        if op.get("versionFrom") == "derived-from-name":
-            version_text += " (derived from the name)"
+        package = op.get("package") or "unknown"
+        if op.get("packageFrom"):
+            package += f" (from the {op['packageFrom']})"
+        version_text = f"{op['version']} ({op.get('versionFrom')})" if op.get("version") else "unknown"
+        catalog = op.get("catalog") or "not named"
+        if op.get("catalogNamespace"):
+            catalog += f" in {op['catalogNamespace']}"
+        lines.append(f"  {op['namespace']}/{op.get('csv') or '?'}  {op['verdict']}: {op['reason']}")
         lines.append(
-            f"  {op['namespace']}/{name}  package {op.get('package') or 'unknown'}  version {version_text}  "
-            f"{op['verdict']}: {op['reason']}"
+            f"      package {package}  version {version_text}  state {op['inventoryState']}  catalog {catalog} "
+            f"({op['catalogKind']})"
         )
         for note in op["notes"]:
             lines.append(f"      note: {note}")
-        for row in op["issues"]:
-            lines.append(f"      {row['id']} [{row['kind']}, OpenShift {row['release']}] {row['status']}")
+        block = out["issues"].get(op.get("package") or "")
+        if block is None:
+            continue
+        if op["package"] in shown_packages:
+            lines.append(f"      issues: as listed above for {op['package']}")
+            continue
+        shown_packages.add(op["package"])
+        lines.append(f"      issues: {block['open']} open, {block['fixed']} fixed")
+        for row in block["rows"]:
+            head = f"      {row['id']} [{row['class']}, {row['tier']}, OpenShift {', '.join(row['releases'])}]"
+            lines.append(head + (f" {row['listed']}" if row.get("listed") else ""))
             lines.append(f"        {row['summary']}")
-            lines.append(
-                f"        named as {row['matchedName']!r}; fix in the installed operator: "
-                f"{row['installedHasFix']} ({row['why']})"
-            )
-            lines.append(f"        {row['url']}  source {row['source']}  (corpus as of {row['knownIssuesAsOf']})")
-        if op["issuesTotal"] > len(op["issues"]):
-            lines.append(f"      and {op['issuesTotal'] - len(op['issues'])} more issue(s) (see --format json)")
+            lines.append(f"        via {row['via']!r}: {row['tierWhy']}")
+            if row.get("workaround"):
+                lines.append(f"        workaround: {row['workaround']}")
+            if row["fixedInOpenShift"]:
+                lines.append(
+                    f"        fix listed for OpenShift {row['fixedInOpenShift']}; cluster at "
+                    f"{cl['openshiftVersion'] or 'an unknown version'}: {row['fixReleaseVsCluster']}; in this "
+                    f"operator: {row['installedHasFix']}"
+                )
+            else:
+                lines.append("        no fix listed")
+            lines.append(f"        {row['url']}  source {row['source']}  (as of {row['knownIssuesAsOf']})")
+        if block.get("withheld"):
+            w = block["withheld"]
+            lines.append(f"      and {w['open']} open and {w['fixed']} fixed more: {out['hints']['issues']}")
     if out.get("notShown"):
-        lines.append(f"  and {out['notShown']} more operator(s) (see --format json)")
+        lines.append(f"  and {out['notShown']} more operator(s): {out['hints']['operators']}")
     lines.append(f"inventory: {out['inventory']['verdict']} -- {out['inventory']['summary']}")
+    for reason in out["incompleteBecause"]:
+        lines.append(f"incomplete: {reason}")
     for caveat in out["caveats"]:
         lines.append(f"caveat: {caveat}")
+    lines.append(f"fix: {out['fixNote']}")
     lines.append(f"method: {out['method']}")
     return "\n".join(lines)

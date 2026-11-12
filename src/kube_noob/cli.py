@@ -347,6 +347,10 @@ def _print_known_issues(out: dict[str, Any]) -> None:
         _tprint(out["note"])
     k = out["knowledge"]
     print(f"index: release-note issues as of {k['knownIssuesAsOf']} for OpenShift {', '.join(k['openshiftReleases'])}")
+    if k.get("recordsRejected"):
+        print(f"index: {k['recordsRejected']} record(s) left out as unusable: {'; '.join(k['rejectedRecords'])}")
+    if k.get("localCopyNote"):
+        print(f"index: {k['localCopyNote']}")
     jt = k.get("jiraTickets")
     if jt:
         names = ", ".join(jt["projects"][:6]) + ("..." if len(jt["projects"]) > 6 else "")
@@ -1780,13 +1784,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     opk = opsub.add_parser(
         "issues",
-        help="Which installed operators the OpenShift release notes name in a reported issue, from the same inputs "
-        "as inventory; a fix stated as an OpenShift release is never compared with an operator version",
-        description="Matches each installed operator's package, through a table of the names the release notes use, "
-        "against the bundled OpenShift release-note issues for the cluster's release (--openshift-version, else the "
-        "must-gather's or the live ClusterVersion). An operator with no table entry is listed as not matched (no "
-        "alias), never as clean; a release outside the index is not determined. Example: kube-noob operators issues "
-        "--must-gather must-gather.tar.gz",
+        help="Look the installed operators up in the OpenShift release notes (a lookup, not a vulnerability check "
+        "or a gate), from the same inputs as inventory",
+        description="A release-note lookup, not a vulnerability check: for about a dozen Red Hat-built operators the "
+        "release notes name, it lists the known and fixed issues that use the operator's name, for the cluster's "
+        "release (--openshift-version, and the must-gather's or live ClusterVersion, which is read too). Most "
+        "operators have no table entry and are listed as not matched (no alias), never as clean; a release outside "
+        "the index is not determined; whether an installed operator has a fix is never decided, because the notes "
+        "list fixes by OpenShift release. Example: kube-noob operators issues --must-gather must-gather.tar.gz",
     )
     opk.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     opk.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
@@ -1801,9 +1806,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     opk.add_argument("--top", type=int, default=200, help="operators to show (1-500, default 200)")
     opk.add_argument(
+        "--issues", type=int, default=50, help="issues to show per package (1-200, default 50); the counts are of all"
+    )
+    opk.add_argument(
         "--require-complete",
         action="store_true",
-        help="exit 5 unless the inventory was complete and the cluster's release is known and indexed",
+        help="exit 5 unless the evidence was complete: the inventory read in full, and the cluster's release known, "
+        "settled (no update in progress) and indexed -- the same meaning complete has for operators inventory",
+    )
+    opk.add_argument(
+        "--require-matched",
+        action="store_true",
+        help="exit 5 unless the answer is complete AND every installed operator was looked up: none without an alias "
+        "or a known package, none not determined, none from a catalog other than redhat-operators",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -2596,7 +2611,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
         olm = mg_operators.collect(bundle)
         inventory = operators.inventory(olm)
-        op_issues = operator_issues.for_must_gather(olm, rep["cluster"].get("version"), s.data_dir)
+        op_issues = operator_issues.for_must_gather(olm, rep["cluster"], data_dir=s.data_dir)
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
@@ -3388,10 +3403,13 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         from kube_noob import operator_issues
 
         if a.openshift_version is not None and operator_issues.parse_version(a.openshift_version) is None:
-            raise ConfigError("--openshift-version must be an OpenShift version such as 4.21 or 4.21.9")
-    version: str | None = getattr(a, "openshift_version", None)
-    version_from = "flag" if version else None
-    version_note = ""
+            raise ConfigError(
+                "--openshift-version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, "
+                "no leading zeros)"
+            )
+        if not 1 <= a.issues <= operator_issues.MAX_ISSUES_PER_PACKAGE:
+            raise ConfigError(f"--issues must be 1-{operator_issues.MAX_ISSUES_PER_PACKAGE}")
+        release = operator_issues.Release()
     if a.live:
         if not s.cluster.enabled:
             raise ConfigError("--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled")
@@ -3399,9 +3417,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
         backend = get_backend(s)
         collected = operators.collect_live(backend, a.namespaces)
-        if issues and version is None:
-            version, version_note = operator_issues.live_openshift_version(backend)
-            version_from = "live ClusterVersion" if version else None
+        if issues:  # read even when a version is given, so a disagreement is said rather than hidden
+            release = operator_issues.live_release(backend)
     elif a.must_gather:
         from kube_noob.mustgather import ingest
         from kube_noob.mustgather import operators as mg_operators
@@ -3411,23 +3428,17 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         except ingest.MustGatherError as exc:
             raise ConfigError(str(exc)) from exc
         collected = mg_operators.collect(bundle)
-        if issues and version is None:
+        if issues:  # the ClusterVersion is found by the analysers, which read the whole must-gather to find it
             from kube_noob.mustgather import analyse
 
-            version = operator_issues.parse_version(analyse.analyse(bundle).as_dict()["cluster"].get("version"))
-            version_from = "must-gather" if version else None
-            version_note = "" if version else "the must-gather holds no ClusterVersion with a completed version"
+            release = operator_issues.must_gather_release(analyse.analyse(bundle).as_dict()["cluster"])
     else:
         sources, unreadable = _operator_files(a.file)
         collected = operators.from_sources(sources, unreadable)
     if issues:
+        release.given = a.openshift_version
         found = operator_issues.assess(
-            collected,
-            openshift_version=version,
-            version_from=version_from,
-            version_note=version_note,
-            top=a.top,
-            data_dir=s.data_dir,
+            collected, release=release, top=a.top, issues_per_package=a.issues, data_dir=s.data_dir
         )
         if a.format == "text":
             _tprint(operator_issues.render_text(found))
@@ -3436,6 +3447,15 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.require_complete and not found["complete"]:
             print(
                 f"refusing a complete verdict: the answer is {found['verdict']} ({found['summary']})", file=sys.stderr
+            )
+            return 5
+        if a.require_matched and not found["allMatched"]:
+            c = found["counts"]
+            print(
+                f"refusing: {c['notMatched']} of {c['assessable']} installed operator(s) were not matched against the "
+                f"release notes and {c['catalogUnverified']} come from a catalog that is not "
+                f"{operator_issues.RED_HAT_CATALOG} (the answer is {found['verdict']})",
+                file=sys.stderr,
             )
             return 5
         return 0

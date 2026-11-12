@@ -266,11 +266,18 @@ class Index:
 
     def knowledge(self) -> dict[str, Any]:
         minors = sorted({i.minor for i in self.issues}, key=vkey)
-        return {
+        out: dict[str, Any] = {
             "knownIssuesAsOf": self.meta.get("retrievedAt"),
             "openshiftReleases": minors,
             "issues": len(self.issues),
         }
+        rejected = self.meta.get("_rejected") or []
+        if rejected:  # every consumer returns this dict, so a record left out is never silent
+            out["recordsRejected"] = len(rejected)
+            out["rejectedRecords"] = list(rejected[:MAX_REJECTED_SHOWN])
+        if self.meta.get("_localNote"):
+            out["localCopyNote"] = self.meta["_localNote"]
+        return out
 
     def _tokens(self, issue: Issue) -> set[str]:
         key = f"{issue.id}@{issue.version}"
@@ -447,12 +454,88 @@ def _general_store() -> KnowledgeStore:
         return _general["__general__"]
 
 
-def _parse(doc: dict[str, Any]) -> list[Issue]:
-    commits = doc.get("commits", {})
+# What a record may hold. The bundled snapshot is written by scripts/vendor_known_issues.py; a newer copy in
+# <dataDir>/known_issues is written by `corpus known-issues --online` and is data from outside like any other, so
+# every field is checked before it can become a link, a version or a line of output. ASCII digits only ([0-9], not
+# \d, which accepts every script's digits) and no leading zeros, so "4.09" never sorts as 4.9.
+_ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]{0,15}-[1-9][0-9]{0,8}\Z")
+_NUM = r"(?:0|[1-9][0-9]{0,2})"
+_MINOR = re.compile(rf"^{_NUM}\.{_NUM}\Z")
+_RELEASE = re.compile(rf"^{_NUM}\.{_NUM}(?:\.(?:0|[1-9][0-9]{{0,4}}))?\Z")
+_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_COMMIT = re.compile(r"^[0-9a-f]{40}\Z")
+_DOC_PATH = r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,200}\.adoc"
+_RELATIVE_SOURCE = re.compile(rf"^{_DOC_PATH}\Z")
+_ABSOLUTE_SOURCE = re.compile(rf"^https://github\.com/openshift/openshift-docs/blob/[0-9a-f]{{40}}/{_DOC_PATH}\Z")
+MAX_TEXT = 50_000
+MAX_REJECTED_SHOWN = 10
+
+
+def valid_date(value: Any) -> bool:
+    """A calendar date written YYYY-MM-DD. Whether it is in the future cannot be decided deterministically (there is
+    no clock in a pure function), so only its form and its existence on the calendar are checked."""
+    import datetime
+
+    if not isinstance(value, str) or not _DATE.match(value):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _record_problem(r: Any, commits: dict[str, Any]) -> str | None:
+    """Why a record cannot be used, or None."""
+    if not isinstance(r, dict):
+        return "not an object"
+    for key, rx in (("id", _ISSUE_KEY), ("minor", _MINOR), ("version", _RELEASE)):
+        if not isinstance(r.get(key), str) or not rx.match(r[key]):
+            return f"{key} is not in the form the release notes use"
+    if r.get("kind") not in ("known", "fixed"):
+        return "kind is neither known nor fixed"
+    if ".".join(r["version"].split(".")[:2]) != r["minor"]:
+        return "version is not in its minor release"
+    ids = r.get("ids")
+    if ids is not None and not (
+        isinstance(ids, list) and 0 < len(ids) <= 20 and all(isinstance(i, str) and _ISSUE_KEY.match(i) for i in ids)
+    ):
+        return "ids are not issue keys"
+    fixed_in = r.get("fixedIn")
+    if fixed_in is not None and not (isinstance(fixed_in, str) and _RELEASE.match(fixed_in)):
+        return "fixedIn is not a release"
+    if r.get("issued") is not None and not valid_date(r["issued"]):
+        return "issued is not a date"
+    if not isinstance(r.get("text"), str) or not r["text"].strip() or len(r["text"]) > MAX_TEXT:
+        return "text is missing or too long"
+    source = r.get("source")
+    if not isinstance(source, str) or ".." in source:
+        return "source is not a release-notes file"
+    if _ABSOLUTE_SOURCE.match(source):
+        return None
+    if not _RELATIVE_SOURCE.match(source):
+        return "source is not a release-notes file"
+    commit = commits.get(r["minor"])
+    if commit is not None and not (isinstance(commit, str) and _COMMIT.match(commit)):
+        return "the commit for its release is not a commit id"
+    return None
+
+
+def _parse(doc: dict[str, Any], rejected: list[str] | None = None) -> list[Issue]:
+    """The records that are what they claim to be. Each one that is not is left out and, when ``rejected`` is given,
+    named there (its position and why, never its content)."""
+    raw_commits = doc.get("commits")
+    commits: dict[str, Any] = raw_commits if isinstance(raw_commits, dict) else {}
     out = []
-    for r in doc.get("records", []):
+    records = doc.get("records")
+    for n, r in enumerate(records if isinstance(records, list) else []):
+        problem = _record_problem(r, commits)
+        if problem is not None:
+            if rejected is not None:
+                rejected.append(f"record {n + 1}: {problem}")
+            continue
         source = r["source"]
-        if not source.startswith("http"):
+        if not source.startswith("https://"):
             commit = commits.get(r["minor"], f"enterprise-{r['minor']}")
             source = f"https://github.com/openshift/openshift-docs/blob/{commit}/{source}"
         out.append(
@@ -474,10 +557,18 @@ def _parse(doc: dict[str, Any]) -> list[Issue]:
 def _read_parts(files: list[Any]) -> tuple[list[Issue], dict[str, Any]]:
     issues: list[Issue] = []
     meta: dict[str, Any] = {}
+    rejected: list[str] = []
     for f in sorted(files, key=lambda p: p.name):
         doc = sanitize.loads_bounded(f.read_text(encoding="utf-8"), sanitize.MAX_JSON_DEPTH_FILE)
-        issues.extend(_parse(doc))
+        if not isinstance(doc, dict):
+            rejected.append(f"{f.name}: not a JSON object")
+            continue
+        before = len(rejected)
+        issues.extend(_parse(doc, rejected))
+        rejected[before:] = [f"{f.name} {x}" for x in rejected[before:]]
         meta = {k: v for k, v in doc.items() if k != "records"} or meta
+    if rejected:
+        meta["_rejected"] = rejected
     return issues, meta
 
 
@@ -497,7 +588,19 @@ def get_index(data_dir: Path | None = None) -> Index:
                 files = sorted(local.glob("*.json"))
                 if files:
                     l_issues, l_meta = _read_parts(files)
-                    if l_issues and str(l_meta.get("retrievedAt", "")) >= str(meta.get("retrievedAt", "")):
+                    if not valid_date(l_meta.get("retrievedAt")):
+                        # a date that does not parse would otherwise win the string comparison below and replace
+                        # the whole bundled snapshot ("2099-01-01 <b>" sorts after every real date)
+                        meta = {
+                            **meta,
+                            "_localNote": "a local copy in known_issues/ was not used: its retrievedAt is not a date",
+                        }
+                    elif not l_issues:
+                        meta = {
+                            **meta,
+                            "_localNote": "a local copy in known_issues/ was not used: it held no usable record",
+                        }
+                    elif str(l_meta["retrievedAt"]) >= str(meta.get("retrievedAt", "")):
                         issues, meta = l_issues, l_meta
             _cache[key] = Index(issues, meta)
         return _cache[key]

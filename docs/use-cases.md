@@ -457,21 +457,37 @@ analyze` return the same inventory as `operatorInventory`.
 
 ### Do the release notes report a problem with an operator I run?
 
-`operators issues` takes the same inputs as `operators inventory`, through the same reading code, and for each
-installed operator lists the issues in the bundled OpenShift release notes (4.20 to 4.22, as of the date it prints)
-that name the operator's product, for the release the cluster runs: the issue id and link, known or fixed, the
-OpenShift release of the fix, the release-notes file it came from and the corpus date. The release comes from
-`--openshift-version`, else the must-gather's ClusterVersion, else the live one.
+`operators issues` is a **lookup in the OpenShift release notes, not a vulnerability check and not a gate** on "do my
+operators have known issues". It takes the same inputs as `operators inventory`, through the same reading code, and
+for each installed operator lists the known and fixed issues in the bundled release notes (4.20 to 4.22, as of the
+date it prints) that use a name kube-noob has for it, for the release the cluster runs.
 
-What it can say is limited by what the release notes hold, and it says so. They key issues by OpenShift release and
-text, not by operator or operator version, so the match goes through a table of the names the notes use for each
-package (13 packages today, each name checked to occur in the notes). An operator with no table entry is listed as
-`no-alias` -- not matched, which is not the same as no issue -- and one whose package the inventory could not read is
-`package-unknown`, never guessed from its CSV's name. A fix is stated as an OpenShift release, and an operator
-OpenShift ships carries a version of the form `4.21.0-<build>` that OLM updates on its own schedule, so whether the
-installed operator has the fix is always `not-determined`, with the reason. A cluster release outside 4.20-4.22 is
-not determined for every operator; an unknown release searches all three and the answer is incomplete. An inventory
-that is `partial` makes this answer incomplete too, and `--require-complete` exits 5 on anything but a complete one.
+What it can say is limited by the release notes more than by kube-noob. They key issues by OpenShift release and
+text, not by operator or operator version, so the match goes through a table of names per package: the product's
+name (`named`), and component names and abbreviations only its stack uses, such as `linuxptp-daemon` or `OSSM`
+(`mentioned`, a weaker tier, never merged into the first). An issue that also names another product or a platform
+component (the Cluster Ingress Operator, the web console, FRR-K8s) is shown as a mention with that reason: it is about
+where the two meet, and its fix may be in the platform. On the bundled notes that leaves seven packages with issues
+that name them outright and six more that are only mentioned; "named" says the notes name the product, not that it
+is affected. Most operators have no table entry and are `no-alias` -- not matched, which is not the same as no issue.
+
+- **Open issues come first.** A known issue with no fix listed stays listed at later releases ("listed for OpenShift
+  4.20; no fix listed since"), the rule `known-issues` uses. Each row gives its issue link, release-notes file and
+  corpus date; each package's list is given once however many operators share it, with what was withheld per class.
+- **A fix is never decided.** The notes list "fixed in 4.21.4" and do not say whether that ships in the OpenShift
+  payload or the operator's own bundle, so `installedHasFix` is `not-determined`; `fixReleaseVsCluster` says only
+  whether 4.21.4 is at or before the cluster's version.
+- **Only Red Hat's build.** An operator from `community-operators`, `certified-operators` or `redhat-marketplace`
+  is not looked up; one from any other catalog (a mirror, a custom one) keeps its matches, labelled as unverified.
+- **The release.** `--openshift-version`, and the must-gather's or the live ClusterVersion named `version`, which is
+  read even when a version is given, so a disagreement is reported. An update in progress searches both releases and
+  is incomplete; a version taken from `status.desired` says so; a cluster that does not serve ClusterVersion is not
+  OpenShift, and the notes do not apply; a release outside 4.20-4.22 is not determined for every operator.
+- **Two gates, one meaning each.** `--require-complete` exits 5 unless the evidence was complete (the inventory read in
+  full, the release known, settled and indexed) -- what `complete` means for `operators inventory` and
+  `must-gather analyze` too. `--require-matched` also exits 5 unless every installed operator was looked up: none
+  without an alias or a known package, none not determined, none from another catalog. The verdict says which:
+  `matched`, `partly-matched`, `not-matched`, `partial`, `not-determined`, `nothing-to-match` or `no-olm`.
 
 ```bash
 kube-noob operators issues --must-gather must-gather.tar.gz
@@ -480,18 +496,21 @@ kube-noob --cluster-enabled operators issues --live --require-complete
 ```
 
 ```text
-operator known issues (manifests): assessed -- 2 of 3 operator(s) named in the OpenShift 4.21 release notes as of 2026-10-27; 0 named in none; 1 operator(s) have no alias
-  openshift-ptp/ptp-operator.v4.21.0-202602100915  package ptp-operator  version 4.21.0-202602100915 (derived from the name)  named: the OpenShift 4.21 release notes name this operator in 2 issue(s)
-      OCPBUGS-73795 [fixed, OpenShift 4.21] listed as fixed in OpenShift 4.21.4
-        named as 'PTP Operator'; fix in the installed operator: not-determined (the release notes state the fix as an OpenShift release (4.21.4), not a version of ptp-operator: ...)
-  openshift-sriov-network-operator/sriov-network-operator.v4.21.0-202602050101  ...  no-alias: not matched against the release notes (no alias): ...
-caveat: 1 operator(s) have no alias and were not matched against the release notes; that is not the same as having no reported issue
+operator known issues (manifests): partly-matched -- 1 of 2 installed operator(s) were not matched against the release notes; 1 named and 0 only mentioned in the OpenShift 4.22 release notes as of 2026-10-27 (6 open, 9 fixed issue(s)); 0 looked up and named in no issue (a release-note lookup, not a vulnerability check)
+  openshift-ptp/ptp-operator.v4.22.0-202601010000  named: the OpenShift 4.22 release notes name this product in 4 issue(s) and only mention it in 11 more
+      OCPBUGS-66413 [open, mentioned, OpenShift 4.22]
+        via 'PTP': uses 'PTP', a component name or abbreviation, not the product's name
+      OCPBUGS-74358 [fixed, named, OpenShift 4.22]
+        fix listed for OpenShift 4.22.0; cluster at 4.22.3: at-or-before; in this operator: not-determined
+  openshift-sriov-network-operator/sriov-network-operator.v4.22.0-202602050101  no-alias: not matched against the release notes (no alias): ...
 ```
 
 From an MCP client, `kubenoob_operator_known_issues` takes the objects as YAML and an `openshift_version`,
-`kubenoob_cluster_operator_known_issues` reads the cluster (and its ClusterVersion) when cluster access is on, and
-`kubenoob_analyze_must_gather` and `kube-noob must-gather analyze` carry the answer as `operatorKnownIssues`, with
-at most five issues per operator and the total beside them.
+`kubenoob_cluster_operator_known_issues` reads the cluster and its ClusterVersion when cluster access is on, and
+`kubenoob_analyze_must_gather` and `kube-noob must-gather analyze` carry the answer as `operatorKnownIssues`, with at
+most five issues per package; its hints point at `kube-noob operators issues --must-gather` for the rest. The next
+step that would make this an answer about the operators rather than the release notes is a join through the local
+Red Hat Jira copy, which keeps each ticket's components and fix versions (roadmap R5).
 
 ### Why was this denied?
 

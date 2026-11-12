@@ -609,13 +609,10 @@ class ClusterOperatorInventoryIn(_In):
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
 
 
-_OCP_VERSION_FIELD = Field(
-    None,
-    max_length=40,
-    pattern=r"^\d{1,3}\.\d{1,3}(\.\d{1,5})?$",
-    description="The cluster's OpenShift version (4.21 or 4.21.9): only that release's notes are searched. Without "
-    "it every indexed release is searched and the answer says it was not narrowed.",
-)
+def _ocp_version_field(description: str) -> Any:
+    from kube_noob.operator_issues import VERSION_FIELD_PATTERN
+
+    return Field(None, max_length=80, pattern=VERSION_FIELD_PATTERN, description=description)
 
 
 class OperatorKnownIssuesIn(_In):
@@ -626,8 +623,12 @@ class OperatorKnownIssuesIn(_In):
         description="OLM objects as YAML, as for operator_inventory (`oc get csv,sub -A -o yaml` output works). Secret "
         "objects are dropped unread.",
     )
-    openshift_version: str | None = _OCP_VERSION_FIELD
+    openshift_version: str | None = _ocp_version_field(
+        "The cluster's OpenShift version (4.21, 4.21.9 or 4.21.0-rc.1): only that release's notes are searched. "
+        "Without it every indexed release is searched and the answer is incomplete."
+    )
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+    issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
 
 
 class ClusterOperatorKnownIssuesIn(_In):
@@ -636,13 +637,12 @@ class ClusterOperatorKnownIssuesIn(_In):
         max_length=50,
         description="Namespaces to read (default: every namespace). With namespaces the answer is partial and says so.",
     )
-    openshift_version: str | None = Field(
-        None,
-        max_length=40,
-        pattern=r"^\d{1,3}\.\d{1,3}(\.\d{1,5})?$",
-        description="Overrides the version read from the cluster's ClusterVersion.",
+    openshift_version: str | None = _ocp_version_field(
+        "Used instead of the version the cluster's ClusterVersion gives, which is still read: a disagreement is "
+        "reported."
     )
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+    issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
 
 
 class BuildDiagnoseIn(_In):
@@ -1554,9 +1554,10 @@ class Toolkit:
 
         out = operator_issues.assess(
             operators.from_manifests(p.manifests),
-            openshift_version=p.openshift_version,
-            version_from="argument" if p.openshift_version else None,
+            release=operator_issues.Release(given=p.openshift_version),
+            surface="mcp",
             top=p.top,
+            issues_per_package=p.issues_per_package,
             data_dir=self.settings.data_dir,
         )
         self._observe([f"operator-issues:{out['verdict']}"])
@@ -1567,16 +1568,14 @@ class Toolkit:
 
         backend = get_backend(self.settings)
         collected = operators.collect_live(backend, list(p.namespaces))
-        version, note, source = p.openshift_version, "", "argument"
-        if version is None:
-            version, note = operator_issues.live_openshift_version(backend)
-            source = "live ClusterVersion"
+        release = operator_issues.live_release(backend)
+        release.given = p.openshift_version
         return operator_issues.assess(
             collected,
-            openshift_version=version,
-            version_from=source if version else None,
-            version_note=note,
+            release=release,
+            surface="mcp",
             top=p.top,
+            issues_per_package=p.issues_per_package,
             data_dir=self.settings.data_dir,
         )
 
@@ -1719,7 +1718,7 @@ class Toolkit:
         olm = mg_operators.collect(bundle)
         out["operatorInventory"] = operators.inventory(olm)
         out["operatorKnownIssues"] = operator_issues.for_must_gather(
-            olm, rep["cluster"].get("version"), self.settings.data_dir
+            olm, rep["cluster"], surface="mcp", data_dir=self.settings.data_dir
         )
         self._observe([f"signal:{s['kind']}:{s['name']}" for s in rep["signals"][:20]])
         return out

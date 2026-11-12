@@ -189,7 +189,12 @@ def _knowledge_line(r: dict[str, Any]) -> str:
         return "Known issues: no index available."
     releases = ", ".join(k.get("openshiftReleases", []))
     jira = " and the local Jira cache" if k.get("jiraTickets") else ""
-    return f"Known issues from the OpenShift {releases} release notes{jira}, as of {_md(k['knownIssuesAsOf'])}."
+    line = f"Known issues from the OpenShift {releases} release notes{jira}, as of {_md(k['knownIssuesAsOf'])}."
+    if k.get("recordsRejected"):
+        line += f" {k['recordsRejected']} record(s) of the index were unusable and left out."
+    if k.get("localCopyNote"):
+        line += f" {_md(str(k['localCopyNote']))}."
+    return line
 
 
 def markdown(r: dict[str, Any]) -> str:
