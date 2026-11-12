@@ -19,6 +19,8 @@ POD_SPEC_PATHS: dict[str, PathT] = {
     "Job": ("spec", "template", "spec"),
     "CronJob": ("spec", "jobTemplate", "spec", "template", "spec"),
     "DeploymentConfig": ("spec", "template", "spec"),
+    # core/v1 PodTemplate: a pod template on its own, `template.spec` (G272; a must-gather carries them).
+    "PodTemplate": ("template", "spec"),
 }
 
 #: Kinds that carry one or more pod specs somewhere other than the nine places above, with ``*`` standing for

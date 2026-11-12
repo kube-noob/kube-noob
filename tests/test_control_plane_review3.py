@@ -362,13 +362,16 @@ def test_the_gate_assumptions_section_is_an_allowlist() -> None:
 # --- 8. --insecure-port: a CRITICAL finding before 1.24, a decline after ------------------------------------------
 
 
-def test_the_insecure_port_on_a_network_address_before_1_24_is_critical() -> None:
+def test_the_insecure_port_on_a_network_address_up_to_1_19_is_critical() -> None:
+    """Corrected by the fourth review: 1.20-1.23 REFUSE a non-zero insecure port (checkNonZeroInsecurePort), so
+    the finding is for a stated 1.19 or older; tests/test_control_plane_review4.py holds the whole version table."""
     argv = ["kube-apiserver", "--authorization-mode=Node,RBAC", "--anonymous-auth=false"]
     text = _pod([*argv, "--insecure-port=8080", "--insecure-bind-address=0.0.0.0"])
-    hits = _hits(_r(text, version="1.22"), KAS)
-    assert [h.severity for h in hits] == [Severity.CRITICAL] and "insecure-port" in hits[0].message
-    assert not _hits(_r(_pod([*argv, "--insecure-port=0", "--insecure-bind-address=0.0.0.0"]), version="1.22"), KAS)
-    assert _clean(_r(_pod([*argv, "--insecure-port=8080"]), version="1.22"), KAS)  # bound to 127.0.0.1
+    hits = _hits(_r(text, version="1.19"), KAS)
+    assert [h.severity for h in hits] == [Severity.CRITICAL] and "insecure port" in hits[0].message
+    assert not _hits(_r(_pod([*argv, "--insecure-port=0", "--insecure-bind-address=0.0.0.0"]), version="1.19"), KAS)
+    assert _clean(_r(_pod([*argv, "--insecure-port=8080"]), version="1.19"), KAS)  # bound to 127.0.0.1
+    assert _declined(_r(text, version="1.22"), KAS)
 
 
 @pytest.mark.parametrize("version", ["1.24", "1.33", None])
@@ -450,9 +453,13 @@ _KAS_CR = (
 
 @pytest.mark.parametrize(("text", "rid"), [(_CC4, KAS), (_CC3, KAS), (_CC3, ETCD)])
 def test_a_kubeadm_cluster_configuration_is_named_as_unread(text: str, rid: str) -> None:
-    report = _r(text)
-    assert _declined(report, rid) and "ClusterConfiguration" in json.dumps(report.as_dict()["declined"][rid])
+    """Since the fourth review the decisive settings are READ (AlwaysAllow, a plaintext URL: findings); a
+    ClusterConfiguration that sets nothing decisive is still named as not read."""
+    assert [h.severity for h in _hits(_r(text), rid)] == [Severity.CRITICAL]
     assert not _clean(_r(text + "---\n" + (GOOD_KAS if rid == KAS else GOOD_ETCD)), rid)
+    quiet = text.replace("AlwaysAllow", "Node,RBAC").replace("http://0.0.0.0:2379", "https://10.0.0.1:2379")
+    report = _r(quiet)
+    assert _declined(report, rid) and "ClusterConfiguration" in json.dumps(report.as_dict()["declined"][rid])
 
 
 @pytest.mark.parametrize("platform", ["openshift", "kubernetes"])

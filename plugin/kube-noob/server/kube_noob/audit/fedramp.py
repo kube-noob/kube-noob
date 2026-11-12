@@ -1251,6 +1251,8 @@ def summary(
                         # Found something here and declined elsewhere (G272): counted under findings or withheld,
                         # and named, so a declined object never reads as covered by this indicator.
                         row["partlyEvaluatedRules"] = partly[:MAX_NAMED_RULES]
+                        if len(partly) > MAX_NAMED_RULES:
+                            row["morePartlyEvaluated"] = len(partly) - MAX_NAMED_RULES
                     if undecided:
                         # Naming them matters: a bare notEvaluated: 1 on an AdminNetworkPolicy bundle is the one
                         # rule that knows the policy may be inert (KN-N014), and a caller who cannot see which

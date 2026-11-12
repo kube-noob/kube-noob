@@ -451,6 +451,12 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
         )
     for note in report.get("assumptions") or []:
         items.append(("Assumed", str(note), "Give kube-noob what it assumed, and the assumption becomes a result."))
+    from kube_noob.cli import caveat_lines
+
+    # The same two lines the gate's Markdown carries (G272): which rules reached no verdict, and which found
+    # something and declined elsewhere. Without them the page counted declined objects nowhere.
+    for line in caveat_lines(report.get("controlSummary") or {}):
+        items.append(("Not evaluated in full", line, "The JSON report's `declined` map names every object."))
     limit = report.get("notCheckedBeyond")
     if isinstance(limit, dict) and limit.get("why"):
         items.append(("Not checked that far", str(limit["why"]), "Nothing beyond that point is covered either way."))
@@ -650,6 +656,10 @@ def _caveats(report: dict[str, Any]) -> list[str]:
         )
     for note in report.get("assumptions") or []:
         out.append(f'<div class="caveat"><b>Assumed</b>{_rich(note)}</div>')
+    from kube_noob.cli import caveat_lines
+
+    for line in caveat_lines(report.get("controlSummary") or {}):
+        out.append(f'<div class="caveat"><b>Not evaluated in full</b>{_rich(line)}</div>')
     limit = report.get("notCheckedBeyond")
     if limit:
         out.append(f'<div class="caveat"><b>Not checked that far</b>{_rich(limit.get("why"))}</div>')

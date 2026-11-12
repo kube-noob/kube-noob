@@ -72,12 +72,13 @@ _IMAGE_NOT_THE_SERVER = frozenset(
     {"operator", "controller", "manager", "exporter", "backup", "proxy", "defrag", "client", "ctl", "tools", "druid"}
 )
 #: Commands a shell script on the etcd image may run and still be positively not etcd: the clients, and builtins
-#: and coreutils that start nothing else.
+#: and coreutils that start nothing else. Not `find` (-exec), `tar` (--to-command), `sort` (--compress-program),
+#: `xargs`, `awk`, `sed` (e), `env`, `nice`, `timeout` or anything else that can run another program (G272).
 _ETCD_SCRIPT_SAFE = frozenset(
     {
         "etcdctl", "etcdutl", "echo", "printf", "sleep", "test", "[", "[[", "true", "false", ":", "date",
-        "mkdir", "cp", "mv", "rm", "ls", "cat", "gzip", "gunzip", "tar", "find", "sha256sum", "md5sum",
-        "export", "set", "exit", "wc", "head", "tail", "grep", "cut", "sort", "tee", "touch", "chmod",
+        "mkdir", "cp", "mv", "rm", "ls", "cat", "gzip", "gunzip", "sha256sum", "md5sum",
+        "export", "set", "exit", "wc", "head", "tail", "grep", "cut", "tee", "touch", "chmod",
         "basename", "dirname", "stat", "df", "du",
     }
 )  # fmt: skip
@@ -95,7 +96,15 @@ _WORD_START = r"(?:^|(?<=[\s;&|()`'\"{}<>])|(?<=:-))"
 #: The directory part of a command word: none, `.`, `/`, or a directory ending in `bin` or `sbin`. A path such as
 #: `/var/lib/etcd` is a data directory, not the program (G272).
 _BIN_DIR = r"(?:(?:\.|(?:/[^\s/;&|()`'\"]+)*/s?bin)?/)?"
-_MENTION_PATTERNS: dict[str, re.Pattern[str]] = {}
+_MENTION_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {}
+#: What puts a word in COMMAND position in a script: its start, a shell operator or a newline, or a keyword that
+#: runs the next word (`exec`, with `-a NAME`, `then`, `do`, `else`, `nohup`, `time`), then `NAME=value`
+#: assignments. There an absolute path names the program from ANY directory (`/opt/k8s/kube-apiserver`); in
+#: argument position only a `bin` directory does, so `tar czf b /var/lib/etcd` is not etcd (G272).
+_COMMAND_POSITION = (
+    r"(?:^|[;&|(\n`]|\b(?:exec|then|do|else|nohup|time))\s*(?:-a\s+\S+\s+)?(?>[A-Za-z_]\w*=\S*\s+)*"
+    r"/(?:[^\s/;&|()`'\"]+/)*"
+)
 
 
 def _basename(token: str) -> str:
@@ -128,22 +137,50 @@ def _image_is(binary: str, image: str) -> bool:
 def _mentions(binary: str, text: str) -> bool:
     """Does ``text`` name ``binary`` as a command word: bare, or as a path in a `bin` or `sbin` directory, `.` or
     `/`, anywhere -- at the end of a script, before `;`, `&`, `|`, `)` or a newline, after `exec`, `then` or
-    `&&`, as `${X:-binary}`? Not as a `--flag=` value and not inside a longer name (`etcdctl`, `/var/lib/etcd`,
-    `etcd-operator`). Text longer than `_SCRIPT_SCAN` names it if the name is anywhere in it."""
+    `&&`, as `${X:-binary}` -- or as an absolute path from any directory in command position, or as Windows'
+    `binary.exe`? Not as a `--flag=` value and not inside a longer name (`etcdctl`, `/var/lib/etcd`,
+    `etcd-operator`). Shell quoting is removed first, so `e''tcd`, `"et"cd` and `\\etcd` are etcd. Text longer
+    than `_SCRIPT_SCAN` names it if the name is anywhere in it."""
     if len(text) > _SCRIPT_SCAN:
         return binary in text
-    pat = _MENTION_PATTERNS.get(binary)
-    if pat is None:
-        pat = re.compile(_WORD_START + _BIN_DIR + re.escape(binary) + r"(?![\w./-])")
-        _MENTION_PATTERNS[binary] = pat
-    return pat.search(text) is not None
+    pats = _MENTION_PATTERNS.get(binary)
+    if pats is None:
+        b = re.escape(binary)
+        pats = (
+            re.compile(_WORD_START + _BIN_DIR + b + r"(?![\w./-])"),
+            re.compile(_COMMAND_POSITION + b + r"(?![\w./-])"),
+            re.compile(r"(?:^|(?<=[\s\"'&;|(\\/:]))" + b + r"\.exe(?![\w.-])", re.IGNORECASE),
+        )
+        _MENTION_PATTERNS[binary] = pats
+    unquoted = re.sub(r"[\"'\\]", "", text)
+    # Command position needs a script: a single argv word such as `/var/lib/etcd` is an argument, and only its
+    # `bin` directory could make it the program (the first pattern).
+    usable = pats if any(ch.isspace() or ch in ";&|" for ch in text) else (pats[0], pats[2])
+    return any(p.search(t) is not None for p in usable for t in {text, unquoted})
+
+
+def _words(text: str) -> list[str]:
+    """The whitespace-separated words of an argv token, a script or an env value, quotes removed."""
+    if len(text) > _SCRIPT_SCAN:
+        text = text[:_SCRIPT_SCAN]
+    return [w.strip("\"'") for w in text.split()]
+
+
+def _abs_program(binary: str, value: str) -> bool:
+    """Is a whole value (an env variable) an absolute path to the binary, from any directory? `BIN=/opt/x/etcd`
+    used as `$(BIN)` in command position is the program (G272)."""
+    return (
+        value.startswith("/") and _basename(value.strip()) == binary and not any(ch.isspace() for ch in value.strip())
+    )
 
 
 def _names(binary: str, token: str) -> bool:
-    """Is one argv token the binary: bare, or a path whose directory is `*/bin`, `*/sbin`, `/` or `.`? Never a
-    `--flag=value`, never `/var/lib/etcd` (G272)."""
+    """Is one argv token the binary: bare, or a path whose directory is `*/bin`, `*/sbin`, `/` or `.`, or a
+    Windows `binary.exe` in any directory? Never a `--flag=value`, never `/var/lib/etcd` (G272)."""
     if len(token) > _SCRIPT_SCAN:
         return False
+    if re.split(r"[\\/]", token)[-1].lower() == f"{binary}.exe":
+        return True
     return re.fullmatch(_BIN_DIR + re.escape(binary), token) is not None
 
 
@@ -310,12 +347,24 @@ def _launch(
     env_names = [str(e.get("name") or "") for e in env]
     env_values = [v for e in env if isinstance(v := e.get("value"), str)]
     image = _image_name(c.get("image"))
-    own_image = _image_is(binary, image) or (binary == "kube-apiserver" and image.lower() in _APISERVER_IMAGE_NAMES)
+    own_image = _image_is(binary, image) or (
+        binary == "kube-apiserver" and (image.lower() in _APISERVER_IMAGE_NAMES or _image_is("hyperkube", image))
+    )
     embed_image = next((e for e in sorted(_EMBEDDING) if _image_is(e, image)), "")
-    mentioned = any(_mentions(binary, t) for t in [*texts, *env_values])
+    mentioned = any(_mentions(binary, t) for t in [*texts, *env_values]) or any(
+        _abs_program(binary, v) for v in env_values
+    )
     embed_mention = next((e for e in sorted(_EMBEDDING) if any(_mentions(e, t) for t in texts)), "")
-    flagged = any(_is_hint(t, hints) for t in texts)
-    settings = env_prefix is not None and any(n.startswith(env_prefix) for n in env_names)
+    # Flag words inside a script or an env value count as much as a whole argv token (G272): `sh -c "exec $BIN
+    # --etcd-servers=..."` carries the API server's flags whatever $BIN is.
+    flagged = any(_is_hint(w, hints) for t in [*texts, *env_values] for w in _words(t))
+    raw_from = c.get("envFrom")
+    prefixes = (
+        [str(e.get("prefix") or "") for e in raw_from if isinstance(e, dict)] if isinstance(raw_from, list) else []
+    )
+    settings = env_prefix is not None and (
+        any(n.startswith(env_prefix) for n in env_names) or any(p.startswith(env_prefix) for p in prefixes)
+    )
     evidence = bool(own_image or embed_image or mentioned or embed_mention or flagged or settings)
 
     def why() -> str:
@@ -531,3 +580,97 @@ _GO_FALSE = frozenset({"0", "f", "F", "FALSE", "false", "False"})
 
 def _go_bool(value: str) -> bool | None:
     return True if value in _GO_TRUE else False if value in _GO_FALSE else None
+
+
+#: The insecure (unauthenticated, unauthorized) port, as each release reads it. Read from the source at each tag:
+#: v1.18.0 and v1.19.0 staging/src/k8s.io/apiserver/pkg/server/options/deprecated_insecure_serving.go register
+#: --insecure-bind-address and --address on ONE variable, --insecure-port and --port on another (L70, L76, L89,
+#: L94 at v1.19.0), with kube-apiserver's defaults 127.0.0.1 and 8080 (pkg/kubeapiserver/options/serving.go
+#: L47-48) and no serving at a port <= 0; v1.20.0, v1.21.0 and v1.23.0 keep all four as dummies on shared
+#: variables and cmd/kube-apiserver/app/server.go checkNonZeroInsecurePort refuses to start on a non-zero port
+#: (L91-102 at v1.20.0); v1.24.0 removed them, so the server refuses any of them as an unknown flag (G272).
+INSECURE_PORT_REFUSED = (1, 20)
+INSECURE_PORT_REMOVED = (1, 24)
+_INSECURE_PORT_FLAGS = ("insecure-port", "port")
+_INSECURE_ADDRESS_FLAGS = ("insecure-bind-address", "address")
+INSECURE_FLAGS = frozenset({*_INSECURE_PORT_FLAGS, *_INSECURE_ADDRESS_FLAGS})
+_GO_INT = re.compile(
+    r"[+-]?(?:0[xX](?:_?[0-9a-fA-F])+|0[bB](?:_?[01])+|0[oO](?:_?[0-7])+|0(?:_?[0-7])*|[1-9](?:_?[0-9])*)"
+)
+
+
+def _pflag_int(value: str) -> int | None:
+    """pflag IntVar's parse, strconv.ParseInt(s, 0, 64): a base prefix, a leading 0 for octal (`08080` is
+    refused), underscores only between digits. None when pflag refuses it."""
+    if _GO_INT.fullmatch(value) is None:
+        return None
+    sign, body = (-1, value[1:]) if value[:1] == "-" else (1, value.lstrip("+"))
+    body = body.replace("_", "")
+    if body[:2].lower() in {"0x", "0b", "0o"}:
+        return sign * int(body, 0)
+    return sign * (int(body[1:], 8) if body.startswith("0") and len(body) > 1 else int(body))
+
+
+def _pflag_ip(value: str) -> bool | None:
+    """pflag IPVar's parse (net.ParseIP): None when refused, else whether the address is loopback."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return None
+
+
+def insecure_serving(
+    flags: dict[str, list[tuple[str, int]]], version_stated: bool, minor: tuple[int, int], target: str
+) -> tuple[str, str, int] | None:
+    """("finding", what it serves, the argv index to point at), ("decline", why, -1), or None (nothing to say).
+
+    The last occurrence across both names of a pair wins, because both names set one variable. CRITICAL only on
+    a stated release up to 1.19, with an effective port above 0 on an address that is not loopback (the port is
+    8080 when only the address is given). 1.20 to 1.23 refuse a non-zero port; from 1.24, and on an assumed
+    version, any of the four flags declines.
+    """
+    ports = sorted((o for f in _INSECURE_PORT_FLAGS for o in flags.get(f, [])), key=lambda o: o[1])
+    addrs = sorted((o for f in _INSECURE_ADDRESS_FLAGS for o in flags.get(f, [])), key=lambda o: o[1])
+    if not ports and not addrs:
+        return None
+    if not version_stated or minor >= INSECURE_PORT_REMOVED:
+        return (
+            "decline",
+            "sets --insecure-port, --port, --insecure-bind-address or --address, which Kubernetes 1.24 removed: on "
+            f"the target ({target}) the server refuses to start with them, or it runs an older release than the one "
+            "audited",
+            -1,
+        )
+    for value, _ in ports:
+        if _pflag_int(value) is None:
+            return (
+                "decline",
+                f"sets an insecure port of {_quoted(value, 40)}, which pflag refuses, so it does not start",
+                -1,
+            )
+    for value, _ in addrs:
+        if _pflag_ip(value) is None:
+            return (
+                "decline",
+                f"sets an insecure address of {_quoted(value, 60)}, which pflag refuses, so it does not start",
+                -1,
+            )
+    port = _pflag_int(ports[-1][0]) if ports else None
+    if minor >= INSECURE_PORT_REFUSED:
+        if port:
+            return (
+                "decline",
+                "sets a non-zero insecure port, and the API server refuses to start with a non-zero insecure port "
+                "(1.20–1.23, checkNonZeroInsecurePort)",
+                -1,
+            )
+        return None
+    effective_port = 8080 if port is None else port
+    address = addrs[-1][0] if addrs else "127.0.0.1"
+    if effective_port <= 0 or _pflag_ip(address):
+        return None
+    index = ports[-1][1] if ports else addrs[-1][1]
+    said = "the default port 8080" if port is None else f"port {effective_port}"
+    return ("finding", f"serves the insecure port ({said}) on {_quoted(address, 60)}", index)

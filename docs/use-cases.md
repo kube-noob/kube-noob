@@ -1124,8 +1124,8 @@ has it as a dash-separated component (`etcd-amd64`, `kube-apiserver-amd64`, `hyp
 none of its flags, no `ETCD_*` variable, no mention of it (or of k3s, rke2 or k0s) as a command word in argv, args,
 env values or a script -- or when it is positively something else: `etcdctl`, `k3s agent`, or a script on the
 etcd image made only of etcdctl and coreutils. A path is the program only in a `bin` or `sbin` directory, `.` or
-`/`, so `tar czf b /var/lib/etcd` is not etcd. `--insecure-port` on a network address is a CRITICAL finding on a
-stated release before 1.24;
+`/`, so `tar czf b /var/lib/etcd` is not etcd. the insecure port on a network address is a CRITICAL finding on a
+stated release up to 1.19;
 kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
 absent flag is the upstream default, named in the finding with the releases it was checked at:
 anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
@@ -1140,8 +1140,10 @@ reads it); a shell script (directly, as `busybox sh` or after `env`), a wrapper 
 image entrypoint (no `command`, or `command: []`), or any other entrypoint -- a script file, `s6-svscan`, `/pause`,
 `python3 -c` -- that something points at is not executed; k3s, rke2 and k0s set the API server's other flags from
 their own defaults (an AlwaysAllow passed through `--kube-apiserver-arg` is still read as a finding); ABAC and
-Webhook authorize from a file not in the input; `--insecure-port` on 1.24 or later, or on an assumed version, is a
-flag the server refuses; `--enable-v2` is refused by etcd 3.6 unless the image says 3.5; a kubeadm
+Webhook authorize from a file not in the input; a non-zero insecure port on 1.20-1.23, and any insecure-port flag on 1.24 or later or an assumed version, is a
+setting the server refuses; an object that writes the flags -- a kubeadm `ClusterConfiguration`, Cluster API's
+`KubeadmControlPlane`, the `kubeadm-config` ConfigMap, a kind cluster, a k0s `ClusterConfig`, a Rancher `Cluster` --
+is read for AlwaysAllow, an explicit `anonymous-auth: true` and a plaintext etcd URL, and named as not read for the rest; `--enable-v2` is refused by etcd 3.6 unless the image says 3.5; a kubeadm
 `ClusterConfiguration` or an OpenShift `KubeAPIServer` writes the flags and is named as seen and not read; a `$(VAR)` anywhere in argv is not expanded; a flag
 kube-noob does not know, given without `=` before another flag, may swallow it (so `--version` or `-h` there is
 not read as one); an authorization-mode combination the API server refuses to start with, and a `KMS` encryption

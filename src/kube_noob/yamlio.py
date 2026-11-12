@@ -142,11 +142,40 @@ def load_documents(text: str) -> list[Document]:
     return _flatten_lists(docs)
 
 
+def is_list_kind(data: object) -> bool:
+    """`List`, or a typed list (`PodList`, `DeploymentList`) as `kubectl get -o yaml` and must-gathers write it:
+    a kind ending in `List` with `items` and no `spec`. Only `List` was unwrapped before G272, so the pods in a
+    PodList were never audited."""
+    if not isinstance(data, dict):
+        return False
+    kind = data.get("kind")
+    return isinstance(kind, str) and kind.endswith("List") and "items" in data and "spec" not in data
+
+
 def _flatten_lists(docs: list[Document]) -> list[Document]:
+    """Open every list kind whose items are all mappings into one document per item.
+
+    An item of a typed list (`PodList`) that carries no `kind` or `apiVersion` -- the API server's own list
+    responses omit them; kubectl's printer adds them -- is given the list's (`Pod`, `v1`), set in place so the
+    fixer still writes to the same dict. A list with an item that is not a mapping is left whole, so a reader
+    sees it as a list it could not open rather than as the subset of it that parsed (G272).
+    """
     out: list[Document] = []
     for d in docs:
-        if isinstance(d.data, dict) and d.data.get("kind") == "List" and isinstance(d.data.get("items"), list):
-            for i, item in enumerate(d.data["items"]):
+        items = d.data.get("items") if isinstance(d.data, dict) else None
+        if (
+            is_list_kind(d.data)
+            and isinstance(d.data, dict)
+            and isinstance(items, list)
+            and all(isinstance(i, dict) for i in items)
+        ):
+            kind = str(d.data.get("kind"))
+            element = kind[: -len("List")] if kind != "List" else ""
+            for i, item in enumerate(items):
+                if element:
+                    item.setdefault("kind", element)
+                    if isinstance(d.data.get("apiVersion"), str):
+                        item.setdefault("apiVersion", d.data["apiVersion"])
                 prefix: PathT = ("items", i)
                 sub = {k[len(prefix) :]: v for k, v in d.lines.items() if k[: len(prefix)] == prefix}
                 sub_dups = [(k[len(prefix) :], ln) for k, ln in d.duplicate_keys if k[: len(prefix)] == prefix]

@@ -15,6 +15,7 @@ from typing import Any
 
 from kube_noob.audit.argv import (
     _EMBEDDED_APISERVER_ARG,
+    INSECURE_FLAGS,
     _exits_at_once,
     _expands,
     _flag_values,
@@ -24,6 +25,7 @@ from kube_noob.audit.argv import (
     _launch,
     _quoted,
     _shown,
+    insecure_serving,
 )
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
@@ -4281,20 +4283,7 @@ _APISERVER_READ = _APISERVER_FLAGS | {
     "authorization-policy-file",
     "help",
     "version",
-    "insecure-port",
-    "insecure-bind-address",
-}
-#: The release that removed --insecure-port and --insecure-bind-address (kubernetes/kubernetes#95856 removed the
-#: insecure serving; the flags are gone from 1.24's option sets, which the reviewer's v1.29+ flag tables confirm).
-INSECURE_PORT_REMOVED = (1, 24)
-#: Configuration objects that WRITE a control plane's flags, which these rules do not read: kubeadm's
-#: ClusterConfiguration (its apiServer/etcd extraArgs become the static pods' argv) and OpenShift's operator
-#: KubeAPIServer (unsupportedConfigOverrides). Seen in the input, each is named as unread, never passed over.
-_CONTROL_PLANE_CONFIG = {
-    ("kubeadm.k8s.io", "ClusterConfiguration"): "a kubeadm ClusterConfiguration, whose extraArgs kubeadm writes "
-    "into the static pods' arguments; it is not read (audit the static pods it renders)",
-    ("operator.openshift.io", "KubeAPIServer"): "the OpenShift operator's KubeAPIServer, whose overrides the "
-    "operator writes into the API server's arguments; it is not read",
+    *INSECURE_FLAGS,
 }
 #: kube-apiserver's boolean flags at v1.34.0 (every BoolVar its option sets register, plus cobra's --help and
 #: component-base's --version, which pflag reads bare as true), so a bare one is read as true rather than as a
@@ -4435,22 +4424,110 @@ def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, la
     )
 
 
-def _config_objects_unread(ctx: AuditContext, r: Rule, kinds: tuple[str, ...]) -> bool:
-    """Name every control-plane configuration object of ``kinds`` in the input as seen and not read (G272)."""
+def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
+    """A list kind still in the input was not opened (`items` is not a list, or holds something that is not a
+    mapping), so the pods it may hold were not read: declined, never the opened subset read as the whole."""
+    from kube_noob.yamlio import is_list_kind
+
     seen = False
-    for d in ctx.by_kind(*kinds):
-        what = _CONTROL_PLANE_CONFIG.get((d.api_version.split("/", 1)[0], d.kind))
-        if what is None:
+    for d in ctx.docs:
+        if is_list_kind(d.data):
+            seen = True
+            ref = _shown(d.ref(), 160)
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{ref} is a list kube-noob could not open (its items are not all mappings), so what it holds was "
+                "not read",
+                ref,
+            )
+    return seen
+
+
+def _config_objects(ctx: AuditContext, r: Rule, component: str) -> tuple[bool, list[Finding]]:
+    """Every object in the input that writes ``component``'s flags (`cpconfig.read_config`): the settings that
+    decide on their own become findings, and everything else is named as seen and not read (G272).
+
+    kube-apiserver: AlwaysAllow anywhere in the `authorization-mode` values is CRITICAL (a repeated v1beta4 entry
+    is a repeated flag, which pflag appends), and an explicit `anonymous-auth: true` is MEDIUM; etcd: a plaintext
+    listener or advertised URL on a network address. The rest depends on the tool's own defaults and declines.
+    """
+    from kube_noob.audit.cpconfig import read_config
+
+    seen = False
+    out: list[Finding] = []
+    for d in ctx.docs:
+        read = read_config(d, component)
+        if read is None:
             continue
         seen = True
         ref = _shown(d.ref(), 160)
         ctx.looked_at(r.rule_id, ref)
-        ctx.cannot_decide(r.rule_id, f"{ref} is {what}", ref)
-    return seen
+        decided = False
+        if component == "kube-apiserver":
+            modes = [(m, path) for k, v, path in read.pairs if k == "authorization-mode" for m in v.split(",")]
+            anon = [(v, path) for k, v, path in read.pairs if k == "anonymous-auth"]
+            if any(k == "authorization-config" for k, _, _ in read.pairs):
+                read.unread.append("it names --authorization-config, a file that is not in the input")
+            elif any(m == "AlwaysAllow" for m, _ in modes):
+                decided = True
+                out.append(
+                    r.finding(
+                        d,
+                        next(p for m, p in reversed(modes) if m == "AlwaysAllow"),
+                        f"{ref} has {read.tool} pass AlwaysAllow in --authorization-mode "
+                        f"({_quoted(','.join(m for m, _ in modes))}) to kube-apiserver: any request no earlier "
+                        "authorizer denies is allowed, so an authenticated client can do anything.",
+                    )
+                )
+            if not decided and anon and _go_bool(anon[-1][0]):
+                out.append(
+                    r.finding(
+                        d,
+                        anon[-1][1],
+                        f"{ref} has {read.tool} pass --anonymous-auth=true to kube-apiserver: a request with no "
+                        "credentials is served as system:anonymous in group system:unauthenticated.",
+                        severity=Severity.MEDIUM,
+                    )
+                )
+        else:
+            for k, v, path in read.pairs:
+                if k not in _ETCD_URL_DEFAULTS:
+                    continue
+                try:
+                    plain, _ = _network_urls(v, k)
+                except _Undecidable as why:
+                    read.unread.append(str(why))
+                    continue
+                if plain:
+                    side = "client" if "client" in k else "peer"
+                    out.append(
+                        r.finding(
+                            d,
+                            path,
+                            f"{ref} has {read.tool} pass --{k}={_quoted(', '.join(plain))} to etcd: plaintext "
+                            f"{side} traffic on a network address, where no certificate can be required.",
+                            severity=Severity.CRITICAL if side == "client" else Severity.HIGH,
+                        )
+                    )
+        if not decided:
+            rest = "; ".join(read.unread[:3]) or f"the rest of what it sets depends on {read.tool}'s own defaults"
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{ref} writes {component}'s flags through {read.tool}, and is read only for the settings that "
+                f"decide on their own: {rest}",
+                ref,
+            )
+    return seen, out
 
 
 #: Flags that mark a container with no `command` as an API server: its own, and k3s/rke2's pass-through.
-_APISERVER_HINTS = _APISERVER_FLAGS | {"etcd-servers", "kube-apiserver-arg"}
+_APISERVER_HINTS = _APISERVER_FLAGS | {
+    "etcd-servers",
+    "kube-apiserver-arg",
+    "service-account-issuer",
+    "service-account-signing-key-file",
+    "kubelet-client-certificate",
+}
 
 
 @rule(
@@ -4490,7 +4567,9 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if minor > _APISERVER_DEFAULTS_THROUGH
         else ""
     )
-    recognised = _config_objects_unread(ctx, r, ("ClusterConfiguration", "KubeAPIServer"))
+    recognised, written = _config_objects(ctx, r, "kube-apiserver")
+    recognised = _unread_lists(ctx, r) or recognised
+    yield from written
     for d, _pt, c in _containers(ctx):
         launch = _launch(c.container, "kube-apiserver", _APISERVER_HINTS, None)
         if launch is None:
@@ -4548,33 +4627,19 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             ctx.cannot_decide(r.rule_id, f"{where} {refused}", ref)
             continue
         skip = launch.skip
-        # --- the insecure port, removed in 1.24: a finding on a release that had it, a decline on any other ---
-        insecure = flags.get("insecure-port") or flags.get("insecure-bind-address")
-        if insecure:
-            if not ctx.version_stated or minor >= INSECURE_PORT_REMOVED:
-                target = f"Kubernetes {ctx.k8s_version}" + ("" if ctx.version_stated else ", assumed")
-                ctx.cannot_decide(
-                    r.rule_id,
-                    f"{where} sets --insecure-port or --insecure-bind-address, which were removed in Kubernetes 1.24: "
-                    f"on the target ({target}) the server refuses to start with them, or it runs an older release "
-                    "than the one audited",
-                    ref,
-                )
-                continue
-            port_value = _last(flags, "insecure-port")
-            bind = _last(flags, "insecure-bind-address") or "127.0.0.1"
-            if not port_value.isdigit():
-                ctx.cannot_decide(r.rule_id, f"{where} sets --insecure-port={_quoted(port_value, 40)}", ref)
-                continue
-            if int(port_value) and not _is_loopback(bind):
-                port_index = flags["insecure-port"][-1][1]
-                yield r.finding(
-                    d,
-                    _argv_path(c, skip, port_index),
-                    f"{where} serves --insecure-port={port_value} on --insecure-bind-address={_quoted(bind, 80)}: "
-                    "on that port (Kubernetes before 1.24) a request is neither authenticated nor authorized, so "
-                    "anyone who can reach it has the API server as cluster-admin.",
-                )
+        # --- the insecure port: a finding up to a stated 1.19, a decline after (argv.insecure_serving) ---
+        target = f"Kubernetes {ctx.k8s_version}" + ("" if ctx.version_stated else ", assumed")
+        insecure = insecure_serving(flags, ctx.version_stated, minor, target)
+        if insecure is not None and insecure[0] == "decline":
+            ctx.cannot_decide(r.rule_id, f"{where} {insecure[1]}", ref)
+            continue
+        if insecure is not None:
+            yield r.finding(
+                d,
+                _argv_path(c, skip, insecure[2]),
+                f"{where} {insecure[1]}: on that port (Kubernetes 1.19 and older) a request is neither "
+                "authenticated nor authorized, so anyone who can reach it has the API server as cluster-admin.",
+            )
         # --- authorization ---
         always_allow = False
         if _last(flags, "authorization-config"):
@@ -4849,7 +4914,9 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     file turns client certificates on as surely as the switch. One undecidable setting declines that setting and
     keeps what was decided beside it (G272).
     """
-    recognised = _config_objects_unread(ctx, r, ("ClusterConfiguration",))
+    recognised, written = _config_objects(ctx, r, "etcd")
+    recognised = _unread_lists(ctx, r) or recognised
+    yield from written
     for d, _pt, c in _containers(ctx):
         launch = _launch(c.container, "etcd", _ETCD_HINTS, "ETCD_", frozenset({"config-file"}))
         if launch is None:
