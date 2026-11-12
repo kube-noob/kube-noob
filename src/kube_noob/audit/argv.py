@@ -143,6 +143,11 @@ def _mentions(binary: str, text: str) -> bool:
     than `_SCRIPT_SCAN` names it if the name is anywhere in it."""
     if len(text) > _SCRIPT_SCAN:
         return binary in text
+    # The name must occur at all before any pattern is tried: a 20,000-token argv is scanned for four names by
+    # two rules, and the regexes alone took seconds on a shared runner. Quotes can split the name (`e''tcd`), so
+    # the second look is at the text with quoting removed, and only when there is quoting to remove.
+    if binary not in text and (not any(ch in text for ch in "\"'\\") or binary not in re.sub(r"[\"'\\]", "", text)):
+        return False
     pats = _MENTION_PATTERNS.get(binary)
     if pats is None:
         b = re.escape(binary)
