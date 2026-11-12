@@ -415,16 +415,22 @@ _WEAK_WITHOUT_CONTEXT: dict[str, frozenset[str]] = {
 
 
 def diagnose(
-    text: str, platform: str | None = None, limit: int = 5, signals: list[Signal] | None = None
+    text: str,
+    platform: str | None = None,
+    limit: int = 5,
+    signals: list[Signal] | None = None,
+    context: dict[str, str] | None = None,
 ) -> DiagnoseResult:
     """Rank playbooks for ``text``: one point per matching pattern plus ``SIGNAL_WEIGHT`` when catalogued signals point
     at the playbook (``kube_noob.signals``: an alert name, a container or event reason, a phrase such as "leader
     changed"), times the playbook's weight. ``signals`` overrides the signals read from ``text``, e.g. the ones read
-    from an Alertmanager payload."""
+    from an Alertmanager payload; ``context`` likewise overrides the names steps are filled with."""
     if len(text) > MAX_INPUT:
         text = text[-MAX_INPUT:]
     text = redact_text(text)
-    ctx = extract_context(text)
+    # `context` replaces the names read from the text: an Alertmanager payload's names come from its labels, because
+    # its annotations are prose that anyone writing the alert rule controls (G274).
+    ctx = extract_context(text) if context is None else dict(context)
     if signals is None:
         signals = for_text(text)
     linked = playbooks_for(signals)

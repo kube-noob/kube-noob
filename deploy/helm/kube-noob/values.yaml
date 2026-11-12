@@ -119,13 +119,16 @@ alertReports:
   # Evidence reports for Alertmanager payloads posted to POST /v1/alert-reports (point an Alertmanager webhook
   # receiver at it; docs/operations.md has the AlertmanagerConfig). Each report is built from the payload and local
   # knowledge only -- no cluster read -- and kept in <dataDir>/alert-reports, owner-only. Without persistence.enabled
-  # the data directory is an emptyDir, so reports last until the pod restarts. Worst-case disk is
-  # maxReports x maxReportBytes (200 MiB by default); without persistence the chart refuses more than 512 MiB, so a
-  # flood of reports cannot push the pod's emptyDir past its size limit.
-  store: true
+  # the data directory is an emptyDir, so reports last until the pod restarts. Off by default because the chart runs
+  # two replicas, each with its own volume, and a report kept by one is not found through the Service on the other:
+  # turning it on needs replicaCount: 1 (the same rule as watch.enabled and posture.report.enabled). Off, the POST
+  # still answers with the report and stored: false. Worst-case disk is maxReports x (maxReportBytes + 32 KiB),
+  # 206 MiB by default; the chart refuses more than 512 MiB on the emptyDir, or more than half of persistence.size.
+  store: false
   maxReports: 200            # the newest kept; older ones are removed first
   maxAgeDays: 14             # and none older than this
-  maxReportBytes: 1048576    # a larger report keeps every alert's heading and verdict and drops detail, saying so
+  maxReportBytes: 1048576    # a larger report keeps a row for every alert; resolved and low-severity ones lose detail first
+  budgetSeconds: 30          # one payload's time; alerts not reached are kept as not-evaluated rows and counted
 
 rhacs:
   # Read RHACS Central's policies (GET /v1/policies, read-only) for the MCP tool rhacs_compare_live: which of your

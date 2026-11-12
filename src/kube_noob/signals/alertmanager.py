@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from kube_noob import sanitize
@@ -33,8 +34,20 @@ MAX_TEXT = 400_000  # characters of readable text, the diagnose input limit
 VERSION_LABELS = ("openshift_version", "version")
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]{0,127}\Z")
-_OCP_RELEASE = re.compile(r"^4\.\d{1,2}(\.\d{1,3})?\Z")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_OCP_RELEASE = re.compile(r"^4\.[0-9]{1,2}(\.[0-9]{1,3})?\Z")
+#: Control characters and lone UTF-16 surrogates. A surrogate decodes from a JSON escape (`"\ud800"`) but cannot be
+#: encoded, so one in any label made every later step that encodes the text fail -- and the whole group with it.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\ud800-\udfff]")
+#: Names a suggested command may use: a namespace is a DNS-1123 label, a pod, service or claim a DNS-1123 subdomain.
+_NAMESPACE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
+_OBJECT = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?\Z")
+#: Label -> the name a playbook step fills in (kube_noob.debug.diagnose._fill), and the shape it must have.
+CONTEXT_LABELS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("namespace", "ns", _NAMESPACE),
+    ("pod", "pod", _OBJECT),
+    ("service", "svc", _OBJECT),
+    ("persistentvolumeclaim", "pvc", _OBJECT),
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +59,10 @@ class Payload:
     alertnames: tuple[str, ...]
     version: str | None
     version_from: str | None
+    #: The names a suggested command may use, read from the alerts' own labels and nothing else (G274): annotation text
+    #: is whatever the alert's author wrote, and "run kubectl logs x -n other" in a summary must not choose the
+    #: namespace a step reads. A name is kept only when every alert that carries the label agrees on it.
+    context: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -60,18 +77,50 @@ class Payload:
         return out
 
 
-def _clean(value: Any) -> str:
+#: What a ``transform`` may read of one value: enough that a credential cut by the clip is still seen whole.
+MAX_TRANSFORMED = MAX_VALUE * 4
+
+
+def _clean(value: Any, transform: Callable[[str], str] | None = None) -> str:
+    """One value with control characters and surrogates gone and whitespace collapsed, at most ``MAX_VALUE``
+    characters. ``transform`` (a redactor) runs before the clip, so a value is never cut through a credential and
+    then redacted, which left a private key without its END line looking like no key at all."""
     text = value if isinstance(value, str) else ""
-    return " ".join(_CONTROL.sub(" ", text[: MAX_VALUE * 2]).split())[:MAX_VALUE]
+    text = _CONTROL.sub(" ", text[: MAX_TRANSFORMED if transform else MAX_VALUE * 2])
+    if transform is not None:
+        text = transform(text)
+    return " ".join(text.split())[:MAX_VALUE]
 
 
-def _labels(value: Any) -> dict[str, str]:
+def _labels(value: Any, transform: Callable[[str], str] | None = None) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     out: dict[str, str] = {}
     for k, v in list(value.items())[:MAX_LABELS]:
         if isinstance(k, str) and _NAME.match(k) and isinstance(v, str):
-            out[k] = _clean(v)
+            out[k] = _clean(v, transform)
+    return out
+
+
+def _release(labels: dict[str, str]) -> tuple[str, str] | None:
+    for key in VERSION_LABELS:
+        value = labels.get(key, "")
+        if _OCP_RELEASE.match(value):
+            return value, f"label {key}"
+    return None
+
+
+def label_context(labelsets: list[dict[str, str]]) -> dict[str, str]:
+    """The names the labels agree on, each of the shape a command may hold; a disagreement leaves the placeholder."""
+    out: dict[str, str] = {}
+    for label, key, shape in CONTEXT_LABELS:
+        values = {ls[label] for ls in labelsets if ls.get(label)}
+        if len(values) == 1:
+            (value,) = values
+            if shape.match(value):
+                out[key] = value
+    if "pod" in out:
+        out["name"] = out["pod"]
     return out
 
 
@@ -116,7 +165,9 @@ def _load(text: str) -> tuple[Any, list[dict[str, Any]]] | None:
     return (doc, alerts) if alerts is not None else None
 
 
-_STARTS_AT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\Z")
+_STARTS_AT = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})\Z"
+)
 _FINGERPRINT = re.compile(r"^[0-9a-f]{1,32}\Z")
 #: The annotations a report reads. ``runbook_url`` and every other annotation are left out on purpose: a URL in a
 #: payload is somebody else's text, and nothing kube-noob writes should hand a reader a link it never checked.
@@ -136,6 +187,11 @@ class Alert:
     annotations: dict[str, str]
     starts_at: str | None
     fingerprint: str | None
+    #: The OpenShift release this alert names: its own label first, then the payload's commonLabels. Alertmanager's
+    #: commonLabels are the labels every alert of the group shares, so the two agree on a real payload; a hand-made
+    #: one can disagree, and the alert's own label is the more specific claim.
+    version: str | None = None
+    version_from: str | None = None
 
     def payload(self) -> str:
         """This alert alone as a payload ``parse`` reads back to the same alert: what the per-alert diagnosis gets."""
@@ -159,9 +215,10 @@ class Split:
     not_read: dict[str, int]
 
 
-def split(text: str) -> Split | None:
+def split(text: str, transform: Callable[[str], str] | None = None) -> Split | None:
     """The payload alert by alert, with what was not read counted rather than dropped. None when ``text`` is not an
-    Alertmanager payload (the same test ``parse`` applies)."""
+    Alertmanager payload (the same test ``parse`` applies). ``transform`` runs on every label and annotation value
+    before it is clipped (the report passes the redactor and the URL filter)."""
     payload = parse(text)
     loaded = _load(text) if payload is not None else None
     if payload is None or loaded is None:
@@ -173,6 +230,8 @@ def split(text: str) -> Split | None:
         items = doc["data"]["alerts"]
     else:
         items = doc
+    common = _labels(doc.get("commonLabels")) if isinstance(doc, dict) else {}
+    common_release = _release(common)
     not_read: dict[str, int] = {}
     if len(items) > MAX_ALERTS:
         not_read["over the limit of 500 alerts"] = len(items) - MAX_ALERTS
@@ -181,13 +240,16 @@ def split(text: str) -> Split | None:
         if not isinstance(item, dict) or not isinstance(item.get("labels"), dict):
             not_read["not an alert object with labels"] = not_read.get("not an alert object with labels", 0) + 1
             continue
-        labels = _labels(item["labels"])
+        labels = _labels(item["labels"], transform)
         name = labels.get("alertname", "")
         if not _NAME.match(name):
             key = "no valid alertname label"
             not_read[key] = not_read.get(key, 0) + 1
             continue
-        notes = {k: v for k, v in _labels(item.get("annotations")).items() if k in READ_ANNOTATIONS and v}
+        notes = {k: v for k, v in _labels(item.get("annotations"), transform).items() if k in READ_ANNOTATIONS and v}
+        release = _release(labels) or (
+            (common_release[0], f"commonLabels {common_release[1].removeprefix('label ')}") if common_release else None
+        )
         starts = item.get("startsAt") if isinstance(item.get("startsAt"), str) else None
         fingerprint = item.get("fingerprint") if isinstance(item.get("fingerprint"), str) else None
         out.append(
@@ -199,6 +261,8 @@ def split(text: str) -> Split | None:
                 annotations=notes,
                 starts_at=starts if starts and _STARTS_AT.match(starts) else None,
                 fingerprint=fingerprint if fingerprint and _FINGERPRINT.match(fingerprint) else None,
+                version=release[0] if release else None,
+                version_from=release[1] if release else None,
             )
         )
     return Split(payload, tuple(out), not_read)
@@ -247,8 +311,8 @@ def parse(text: str) -> Payload | None:
             value = source.get(key, "")
             if version is None and _OCP_RELEASE.match(value):
                 version = (value, f"label {key}")
-    for alert in alerts:
-        labels = _labels(alert["labels"])
+    labelsets = [_labels(a["labels"]) for a in alerts]
+    for alert, labels in zip(alerts, labelsets, strict=True):
         name = labels["alertname"]
         names.add(name)
         state = _state(alert)
@@ -279,4 +343,5 @@ def parse(text: str) -> Payload | None:
         alertnames=tuple(sorted(names)),
         version=version[0] if version else None,
         version_from=version[1] if version else None,
+        context=label_context(labelsets),
     )

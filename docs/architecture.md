@@ -136,15 +136,20 @@ flowchart LR
 - Alert evidence reports (`kube_noob.alert_report`, `kube_noob.alert_store`; `POST /v1/alert-reports`, `GET
   /v1/alert-reports[/<id>]`, the `alert_report*` tools, `kube-noob alerts`). Trust boundary: whoever can post with the
   bearer token, and through it whoever can put text in an alert's labels and annotations. The payload is read with the
-  bounds above, each alert is handed alone to the `diagnose` tool (no cluster read, no fetch), and the report is
-  redacted and cleaned before it is returned or kept; no URL from the payload and no request header reaches it, and
-  next steps are kube-noob's own read-only commands with names filled in only where they are shell-safe. Only the
-  HTTP server writes reports, into `<dataDir>/alert-reports`: the folder is opened with `O_NOFOLLOW` and must be the
-  process's own (made 0700), files are created `O_EXCL | O_NOFOLLOW` at 0600 relative to it and renamed into place,
-  and retention (`alertReports.maxReports`, `maxAgeDays`) runs after every write, counted on `/metrics`. Ids are
-  `<UTC time>-<96 random bits>`, checked against `\Z` with no separator before they name a file. Reports read back
-  are untrusted: `O_NOFOLLOW`, regular files under the size cap, depth-bounded JSON, cleaned again on the tool path.
-  Writing one is kube-noob's own local state, like drift snapshots: no tier, nothing in a cluster or anywhere else.
+  bounds above; each label and annotation value is redacted before it is clipped and its `scheme://` URLs are
+  replaced; each alert is handed alone to the `diagnose` tool (no cluster read, no fetch), with the names its steps may
+  use taken only from the alert's own labels and only when they are valid Kubernetes names, never from annotation
+  prose. A post gets `alertReports.budgetSeconds` of work, then the alerts not reached keep `not-evaluated` rows; the
+  body is read, the report built and the answer rendered in worker threads, at most two reports at a time, so a large
+  post cannot stall `/healthz` or another route. Only the HTTP server writes reports, into `<dataDir>/alert-reports`:
+  the folder is opened with `O_NOFOLLOW` and must be the process's own (made 0700 by the writer only), files are
+  created `O_EXCL | O_NOFOLLOW` at 0600 relative to it and renamed into place, and retention
+  (`alertReports.maxReports`, `maxAgeDays`) runs after every write, never removes the report just written, and
+  counts what it could not remove instead of stopping. Ids are `<UTC time>-<96 random bits>`, checked against
+  `[0-9]` and `\Z` with no separator before they name a file. Reports read back are untrusted: `O_NOFOLLOW`, regular
+  files under the size cap, depth-bounded JSON, every field type-checked, cleaned again on the tool path; a damaged
+  one is a 500 naming no path. Writing one is kube-noob's own local state, like drift snapshots: no tier, nothing in
+  a cluster or anywhere else. The chart keeps none by default, because each of its two replicas has its own volume.
 - Drift snapshots and reports (`kube_noob.drift`) are local files, owner-only, with hashes and names only: a snapshot cannot be turned back into configuration. The daily job reads through the same read-only allowlist.
 - `policy generate` (CLI and the read-only `policy_generate` tool) only writes YAML: it applies nothing, reads no
   cluster and fetches nothing. What the policies do is decided by the person who applies them; enforce mode refuses

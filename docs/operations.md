@@ -152,11 +152,18 @@ If the artifacts have expired, build the wheel, chart, GIFs and skill ZIP from t
 
 ## Alert evidence reports (the Alertmanager receiver)
 
-`kube-noob serve` (the chart) answers `POST /v1/alert-reports` with one evidence report per alert in an Alertmanager
-payload and keeps it in `<dataDir>/alert-reports`: owner-only, the newest `alertReports.maxReports` (200), none older
-than `alertReports.maxAgeDays` (14), each at most `alertReports.maxReportBytes` (1 MiB). The report is built from the
-payload and kube-noob's local knowledge alone; it reads no cluster and sends nothing anywhere. Without
-`persistence.enabled` the data directory is the pod's emptyDir and the reports go with the pod.
+`kube-noob serve` answers `POST /v1/alert-reports` with one evidence report per alert in an Alertmanager payload
+and, with `alertReports.store`, keeps it in `<dataDir>/alert-reports`: owner-only, the newest
+`alertReports.maxReports` (200), none older than `alertReports.maxAgeDays` (14), each at most
+`alertReports.maxReportBytes` (1 MiB). The report is built from the payload and kube-noob's local knowledge alone; it
+reads no cluster and sends nothing anywhere. One post gets `alertReports.budgetSeconds` (30) of work; alerts not
+reached by then keep a `not-evaluated` row, are named in `notIncluded`, and the stored record says the same.
+
+The chart keeps no report by default (`alertReports.store: false`): it runs two replicas, each with its own volume,
+and a report kept by one is not found through the Service on the other. To keep them set `alertReports.store: true`
+and `replicaCount: 1` (the chart refuses the first without the second, as it does for `watch.enabled` and
+`posture.report.enabled`), and `persistence.enabled` if they should outlive the pod. Off, every POST still answers
+with the report and `stored: false`.
 
 Field names below were checked against Alertmanager v0.28.1 (`docs/configuration.md`: `webhook_config` has `url`,
 `url_file`, `send_resolved`, `http_config`, `max_alerts`, `timeout`; `http_config.authorization` has `type`, default
@@ -210,8 +217,12 @@ spec:
 
 Two chart settings decide whether the post arrives: the Alertmanager's namespace must be allowed in by the chart's
 NetworkPolicy (`networkPolicy.allowIngressNamespace: openshift-monitoring`, or `openshift-user-workload-monitoring`
-for the user-workload Alertmanager), and the server's body limit is 1.5 MiB, which `max_alerts: 500` keeps a payload
-well under. A post above the limit gets 413 and Alertmanager retries it; nothing is half-read.
+for the user-workload Alertmanager), and the server's body limit is 1.5 MiB (1,572,864 bytes). `max_alerts` bounds
+the count, not the size: 500 alerts fit only while each averages under about 3 KB of labels and annotations, so set
+it from your own alerts (a group of 900 alerts of 1.9 KB each was refused). A post above the limit gets 413 and is
+not read at all. Alertmanager does not retry it: its webhook notifier retries a 5xx answer only and drops any 4xx as
+a failed notification (`notify/util.go`, `Retrier.Check`, v0.28.1). A storage failure is not a 4xx: the POST still
+answers 200 with the report and `stored: false`.
 
 Reading them back, with the same bearer token:
 
@@ -228,11 +239,19 @@ What to watch:
   log line `alert report <id> not stored` carries the same reason; the dashboard's "Reports kept, not kept" panel
   counts them.
 - `kube_noob_alert_report_duration_seconds` is the receipt-to-report time, from the request reaching the route to the
-  report being ready (before it is written). The north-star claim is under a minute. `kube-noob demo alerts` posts
-  the bundled payload to an in-process server and fails over 2 s; measured on a 2-core build machine on 2026-11-11 it
-  took 0.09 s cold, then p50 21 ms and p95 25 ms over 250 posts, and a 500-alert payload took 5.7 s.
+  report being ready (before it is written), including any wait: reports are built two at a time. The north-star
+  claim is under a minute; after `alertReports.budgetSeconds` (30) a post starts no further alert, so one post
+  ends within the budget plus the one alert in progress. `kube-noob demo
+  alerts` posts the bundled payload to an in-process server and fails over 2 s. Measured on the 2-core, 7 GB build
+  machine on 2026-11-12, idle apart from one other test run: the bundled payload 0.09 s as the first request of a
+  fresh process, then p50 22 ms and p95 23 ms over 250 posts; the review's worst in-bounds payloads 4.5 s (150 alerts,
+  five 2,000-character fields each, 1.51 MB) and 5.7 s (500 alerts of 2.8 KB, 1.49 MB). Before the redaction fix the
+  first of those took 40.4 s. With other test suites on both cores the same two took about 15 s each, which is what
+  `budgetSeconds` is for.
 - `kube_noob_alert_reports_evicted_total` rising steadily means retention is doing its job; reports you need longer
   belong in a ticket, not in a larger `maxReports`.
+- `retentionNotRemoved` on a POST means retention found something it could not remove under a report's name (a
+  directory, say): the report was stored, and the log names the count. Remove the stray entry by hand.
 - To keep nothing: `alertReports.store: false`. To delete what was kept: remove `<dataDir>/alert-reports`.
 
 ## Rollback

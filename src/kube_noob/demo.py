@@ -322,9 +322,10 @@ def _mustgather(kit: Any, emit: Emit) -> None:
 
 
 #: The north-star claim is an alert turned into an evidence pack within a minute. This gate is far tighter: the bundled
-#: two-alert payload, posted cold (the first request also loads the indexes) to an in-process server, must come back
-#: as a stored report within 2 s. Measured on a 2-core, 7 GB build machine on 2026-11-11: about 0.4 s cold, then
-#: p50 21 ms and p95 25 ms over 250 posts; a 500-alert payload took 5.7 s.
+#: two-alert payload, posted to an in-process server, must come back as a stored report within 2 s. Measured on a
+#: 2-core, 7 GB build machine on 2026-11-12: 0.03 s here (the offline step before it has loaded the indexes), 0.09 s
+#: as the first request of a fresh process, then p50 22 ms and p95 23 ms over 250 posts; the reviewer's worst
+#: in-bounds payloads took 4.5 s (150 alerts of five 2,000-character fields) and 5.7 s (500 alerts).
 ALERT_REPORT_BUDGET_SECONDS = 2.0
 
 
@@ -339,7 +340,10 @@ def _alerts(kit: Any, emit: Emit) -> None:
     server = kit.settings.server.model_copy(
         update={"host": "127.0.0.1", "auth_token_env": "KUBE_NOOB_DEMO_UNSET", "allowed_hosts": []}
     )
-    settings = kit.settings.model_copy(update={"server": server})
+    # Storing on, whatever the user's configuration says: the demo shows the receiver keeping a report, in its own
+    # throwaway data directory.
+    reports = kit.settings.alert_reports.model_copy(update={"store": True})
+    settings = kit.settings.model_copy(update={"server": server, "alert_reports": reports})
     payload = _example("alertmanager-etcd.json")
     _step(
         emit,
@@ -348,7 +352,10 @@ def _alerts(kit: Any, emit: Emit) -> None:
     )
     offline = kit.alert_report(tk.AlertReportIn(payload=payload))
     summary = offline["report"]["summary"]
-    emit(f"{summary['alerts']} alerts, version {summary['version']} ({summary['versionFrom']}): {summary['byVerdict']}")
+    emit(
+        f"{summary['alerts']} alerts, OpenShift {', '.join(summary['versions'])} (from their labels): "
+        f"{summary['byVerdict']}"
+    )
     _step(
         emit,
         "Alertmanager posts a firing group to the receiver; kube-noob answers with an evidence report and keeps it",

@@ -173,6 +173,10 @@ _CONTAINER = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
 
 _LOG_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1***"),
+    # Basic credentials are base64 of user:password, so the value is the password (G274).
+    (re.compile(r"(?i)(authorization:\s*basic\s+)[A-Za-z0-9+/=]+"), r"\1***"),
+    # A key named by a word and a space rather than `=`: "apikey sk-live-..." (G274).
+    (re.compile(r"(?i)\b(api[_-]?key|access[_-]?key)(\s+)[^\s\"',;]{8,}"), r"\1\2***"),
     (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "***JWT***"),
     (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "***aws-key-id***"),
     (
@@ -180,16 +184,50 @@ _LOG_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
         r"\1\2***",
     ),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), "***PRIVATE KEY***"),
+    # A key with no END line -- cut by a length limit or pasted in part -- is still a key: everything after BEGIN goes.
+    # Complete keys were replaced by the line above, so any BEGIN left here has no END after it.
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*"), "***PRIVATE KEY (cut)***"),
+    # Stripe-style live and test keys, which travel without a name in front of them.
+    (re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{10,}|\b[rs]k-(?:live|test)-[A-Za-z0-9]{10,}"), "***api-key***"),
     (re.compile(r"(?i)(://[^:/\s]+:)[^@/\s]+@"), r"\1***@"),
     (re.compile(r"\bhv[sbr]\.[A-Za-z0-9_-]{20,}"), "***vault-token***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), "***github-token***"),
     (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "***slack-token***"),
-    # The flag-name prefix is bounded: unbounded, a long "a-a-a-..." token made this quadratic (minutes per 200 KB).
-    (
-        re.compile(r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|secret|token|api[-_]?key)[=\s]+)[^\s\"',;]+"),
-        r"\1***",
-    ),
 ]
+
+# A secret passed as a flag (`--db-password=x`, `--api-key x`). Run through `_sub_flags`, never as a plain `sub`: the
+# flag-name prefix is bounded (unbounded, a long "a-a-a-..." token made this quadratic, minutes per 200 KB), but even
+# bounded the engine tried it at every dash, about 400 steps each, so a run of 2,000 dashes cost 20 ms and an
+# in-bounds Alertmanager payload of them a minute (G274). The text it rewrites is exactly what `sub` rewrote.
+_FLAG_SECRET = re.compile(r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|secret|token|api[-_]?key)[=\s]+)[^\s\"',;]+")
+#: A keyword followed by what `_FLAG_SECRET` needs after it. Every match of `_FLAG_SECRET` contains one, starting at
+#: most 66 characters after the match does (`--` plus the 64-character prefix), so only those windows are tried.
+_FLAG_KEYWORD = re.compile(r"(?i)(?:password|passwd|secret|token|api[-_]?key)[=\s]+[^\s\"',;]")
+_FLAG_REACH = 66
+
+
+def _sub_flags(text: str) -> str:
+    """``_FLAG_SECRET.sub(r"\\1***", text)``, in time linear in the text: a match can only start at a dash within
+    ``_FLAG_REACH`` characters before a keyword that is followed by a value, so the positions tried are those, each
+    at most once and in increasing order -- which is the leftmost-first order ``sub`` itself uses."""
+    out: list[str] = []
+    cursor = 0  # text before this is already in `out`
+    tried = 0  # positions below this were tried and start no match
+    while True:
+        found = None
+        for kw in _FLAG_KEYWORD.finditer(text, cursor):
+            for start in range(max(cursor, tried, kw.start() - _FLAG_REACH), kw.start()):
+                if text[start] == "-" and (found := _FLAG_SECRET.match(text, start)) is not None:
+                    break
+            if found is not None:
+                break
+            tried = max(tried, kw.start())
+        if found is None:
+            out.append(text[cursor:])
+            return "".join(out)
+        out.append(text[cursor : found.start()])
+        out.append(found.expand(r"\1***"))
+        cursor = tried = found.end()
 
 
 _BARE_SECRET_FLAG = re.compile(r"(?i)^--?[a-z0-9_.-]*(?:password|passwd|secret|token|api[-_]?key)$")
@@ -198,7 +236,7 @@ _BARE_SECRET_FLAG = re.compile(r"(?i)^--?[a-z0-9_.-]*(?:password|passwd|secret|t
 def redact_text(text: str) -> str:
     for pat, repl in _LOG_REDACTIONS:
         text = pat.sub(repl, text)
-    return text
+    return _sub_flags(text)
 
 
 def _element_kind(kind: Any) -> str | None:

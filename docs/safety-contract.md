@@ -111,7 +111,7 @@ Off until `cluster.enabled` is true. The backends are `KubectlBackend` (runs `ku
 - API paths it builds: `/api/v1`, `/api/v1/namespaces/`, `/api/v1/namespaces/{namespace}/pods/{pod}/log`, `/apis/`, `/apis/{self.group_version}`, `/version`
 - Names, namespaces, selectors and containers taken from a caller must match strict patterns (`_NAME`, `_SELECTOR`, `_FIELD_SELECTOR`, `_CONTAINER` in `debug/cluster.py`), none of which admits `/`, `?`, `#` or a newline, so a name cannot add a path segment such as `/exec` or `/proxy`.
 - `resolve_resource` refuses `secrets` by name and any resource outside the allowlist below (46 resources, 58 short names); subresources such as `pods/exec` are not in it.
-- Output is redacted before it leaves the backend: 10 credential patterns for logs and text (markers `***JWT***`, `***PRIVATE KEY***`, `***aws-key-id***`, `***github-token***`, `***slack-token***`, `***vault-token***` and `***` for values), ConfigMap `data` and `binaryData` replaced by byte counts, sensitive `env` values, `last-applied-configuration` and sensitive annotations masked, `managedFields` dropped.
+- Output is redacted before it leaves the backend: 13 credential patterns for logs and text (markers `***JWT***`, `***PRIVATE KEY (cut)***`, `***PRIVATE KEY***`, `***api-key***`, `***aws-key-id***`, `***github-token***`, `***slack-token***`, `***vault-token***` and `***` for values), ConfigMap `data` and `binaryData` replaced by byte counts, sensitive `env` values, `last-applied-configuration` and sensitive annotations masked, `managedFields` dropped.
 
 Resources the backend can read (all `get` and `list`; `pods/log` through `logs`):
 
@@ -201,7 +201,7 @@ Every rule below grants a verb other than get, list or watch. Each sits behind t
 
 ## What is off by default
 
-Defaults of `kube_noob.config.Settings`, evaluated with no configuration file and no environment variable. Everything below is off except `alertReports.store` (local state), `learningEnabled` (local state), `mustGather.enabled` (opt-in feature). Local state is kube-noob's own files in its data directory and reaches no cluster and no other system -- `learningEnabled`: the learning file (`<dataDir>/learning.json`), written by the tools that are not read-only; `alertReports.store`: the evidence reports `kube-noob serve` keeps for Alertmanager payloads posted to `POST /v1/alert-reports` (`<dataDir>/alert-reports`, owner-only, the newest `alertReports.maxReports` for at most `alertReports.maxAgeDays`). The server binds `127.0.0.1`. `offline` and `webLocked` describe an administrator's lock on the web and on downloads: off here means not locked.
+Defaults of `kube_noob.config.Settings`, evaluated with no configuration file and no environment variable. Everything below is off except `mustGather.enabled` (local file read), `alertReports.store` (local state), `learningEnabled` (local state), each reviewed by name in the script (a boolean that defaults to on without a review fails the check). Local state is kube-noob's own files in its data directory and reaches no cluster and no other system. What each switches on -- `learningEnabled`: the learning file (`<dataDir>/learning.json`): notes and the profile, written only by the tools that are not read-only, after the user confirmed; and pattern counters (rule, playbook and issue ids, never text), which read-only tools such as `diagnose`, `known_issues` and `alert_report` bump too; `alertReports.store`: the evidence reports `kube-noob serve` keeps for Alertmanager payloads posted to `POST /v1/alert-reports` (`<dataDir>/alert-reports`, owner-only, the newest `alertReports.maxReports` for at most `alertReports.maxAgeDays`), written by the HTTP receiver route and by no tool, CLI command or stdio server; the chart turns it off by default; `mustGather.enabled`: offers `analyze_must_gather`, the one tool that opens a path rather than reading text it was handed: any path the user names on a local stdio server, and on a shared server only with `mustGather.allowedDir` and only inside it; it reads and never writes. The server binds `127.0.0.1`. `offline` and `webLocked` describe an administrator's lock on the web and on downloads: off here means not locked.
 
 | Setting | Default | State | Group |
 |---|---|---|---|
@@ -228,9 +228,9 @@ Defaults of `kube_noob.config.Settings`, evaluated with no configuration file an
 | `itsm.writeEnabled` | `false` | off | tier W |
 | `notify.enabled` | `false` | off | tier W |
 | `webEnabled` | `false` | off | web |
+| `mustGather.enabled` | `true` | on | local file read |
 | `alertReports.store` | `true` | on | local state |
 | `learningEnabled` | `true` | on | local state |
-| `mustGather.enabled` | `true` | on | opt-in feature |
 
 Capability tiers (`src/kube_noob/tiers.py`); every tier beyond R needs a person's approval for each action:
 
@@ -266,6 +266,7 @@ kube-noob calls no model, but the model that calls kube-noob reads its results, 
 Where it is applied (found in the code):
 
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
+- `kube_noob/alert_report.py` `_str` calls `sanitize.clean`
 - `kube_noob/alert_report.py` `build` calls `sanitize.result`
 - `kube_noob/audit/exceptions.py` `review` calls `sanitize.safe_load_bounded`
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
@@ -285,7 +286,7 @@ Where it is applied (found in the code):
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
 - `kube_noob/server/mcp_app.py` `build_server.knowledge_doc` calls `sanitize.clean`
-- `kube_noob/server/rest.py` `register.endpoint.handle` calls `sanitize.json_nesting_ok`
+- `kube_noob/server/rest.py` `_arguments_from_body` calls `sanitize.json_nesting_ok`
 - `kube_noob/signals/alertmanager.py` `_load` calls `sanitize.json_nesting_ok`
 - `kube_noob/signals/core.py` `_parse` calls `sanitize.loads_bounded`
 - `kube_noob/sources/db_bundle.py` `_known_problems` calls `sanitize.loads_bounded`

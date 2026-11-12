@@ -200,13 +200,17 @@ class AlertReportSettings(_Base):
     Written by ``kube-noob serve`` only (never by a tool, the CLI or the stdio server) into ``<dataDir>/alert-reports``,
     owner-only and atomically, never through a symbolic link. Retention is bounded twice: the newest ``maxReports``
     are kept and anything older than ``maxAgeDays`` goes, oldest first. A report larger than ``maxReportBytes`` keeps
-    every alert's name, state and verdict and drops detail from the last alerts first, and says so. ``store: false``
+    every alert's row (name, state, verdict) and drops detail from resolved and low-severity alerts first, naming them.
+    A payload gets ``budgetSeconds`` at most; alerts not reached are kept as ``not-evaluated``. ``store: false``
     keeps nothing: the POST still answers with the report and ``stored: false``."""
 
     store: bool = True
     max_reports: int = Field(default=200, ge=1, le=5000)
     max_age_days: int = Field(default=14, ge=1, le=365)
     max_report_bytes: int = Field(default=1_048_576, ge=262_144, le=8_388_608)
+    #: Seconds one payload may spend being reported. Alerts not reached by then keep a `not-evaluated` row and are
+    #: counted, so a sender cannot hold the server for longer than this with one post (G274).
+    budget_seconds: int = Field(default=30, ge=1, le=300)
 
 
 class PostureSettings(_Base):

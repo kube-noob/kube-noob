@@ -42,15 +42,18 @@ from pathlib import Path
 from typing import Any
 
 from kube_noob.config import AlertReportSettings
-from kube_noob.errors import KubeNoobError
+from kube_noob.errors import StoredStateError
 from kube_noob.sanitize import MAX_JSON_DEPTH_FILE, loads_bounded
 
 DIRNAME = "alert-reports"
 RECORD_FORMAT = "kube-noob/alert-report-record/v1"
-ID = re.compile(r"^(\d{8}T\d{6}\.\d{6}Z)-([0-9a-f]{24})\Z")
-_REPORT = re.compile(r"^(\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{24})\.json\Z")
-_SUMMARY = re.compile(r"^(\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{24})\.summary\.json\Z")
-_TEMP = re.compile(r"^\.[0-9A-Za-z-]{1,80}\.tmp\Z")
+# [0-9], not \d: \d also matches Arabic-Indic and other Unicode digits, which made "2\u0660..." a valid id.
+ID = re.compile(r"^([0-9]{8}T[0-9]{6}\.[0-9]{6}Z)-([0-9a-f]{24})\Z")
+_REPORT = re.compile(r"^([0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{24})\.json\Z")
+_SUMMARY = re.compile(r"^([0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{24})\.summary\.json\Z")
+#: The temporary names `_write` makes: `.<id>-<8 hex>.tmp` and `.<id>.summary-<8 hex>.tmp`. An id holds a dot, which
+#: the first version of this pattern did not allow, so a killed write's leftovers were never collected.
+_TEMP = re.compile(r"^\.[0-9A-Za-z.-]{1,90}\.tmp\Z")
 MAX_SUMMARY_BYTES = 16_384
 MAX_LIST = 200
 SUMMARY_NAMES = 20
@@ -58,8 +61,18 @@ STALE_TEMP_SECONDS = 3600
 _log = logging.getLogger("kube_noob.alert_store")
 
 
-class StoreUnavailable(KubeNoobError):
-    """Storing or reading is not possible here; the message says why and is safe to show the caller."""
+class StoreUnavailable(StoredStateError):
+    """Storing or reading is not possible here; the message says why and is safe to show the caller. It is the
+    server's own state that is wrong, never the caller's input, so the routes answer 500 with this message."""
+
+
+@dataclass(frozen=True)
+class Retention:
+    """What retention did after a write: reports removed, and reports it should have removed and could not (a name
+    taken by something that is not a file, say). The second is reported, never allowed to stop the first."""
+
+    evicted: int
+    not_removed: int = 0
 
 
 def new_id(now: dt.datetime) -> str:
@@ -132,7 +145,8 @@ class AlertReportStore:
         if st.st_uid != os.geteuid():
             os.close(fd)
             raise StoreUnavailable(f"{DIRNAME} in the data directory belongs to another user")
-        if stat.S_IMODE(st.st_mode) & 0o077:
+        # Only the writer tightens the mode: listing and reading are read-only paths and change nothing (G274).
+        if create and stat.S_IMODE(st.st_mode) & 0o077:
             try:
                 os.fchmod(fd, 0o700)
             except OSError as exc:
@@ -155,9 +169,9 @@ class AlertReportStore:
                 os.unlink(tmp, dir_fd=dfd)
             raise
 
-    def save(self, record: dict[str, Any], now: dt.datetime) -> int:
-        """Write one record and apply retention. Returns how many reports retention removed. Raises
-        StoreUnavailable with the reason when the record cannot be kept."""
+    def save(self, record: dict[str, Any], now: dt.datetime) -> Retention:
+        """Write one record and apply retention, which never removes the record just written. Raises StoreUnavailable
+        with the reason when the record cannot be kept; a retention failure is reported in the result instead."""
         report_id = str(record.get("id", ""))
         if not valid_id(report_id):
             raise StoreUnavailable("the report has no valid id")
@@ -177,11 +191,11 @@ class AlertReportStore:
                         with contextlib.suppress(OSError):
                             os.unlink(name, dir_fd=dfd)
                     raise StoreUnavailable(f"the report could not be written ({_why(exc)})") from None
-                return self._retain(dfd, now)
+                return self._retain(dfd, now, report_id)
             finally:
                 os.close(dfd)
 
-    def _retain(self, dfd: int, now: dt.datetime) -> int:
+    def _retain(self, dfd: int, now: dt.datetime, keep: str) -> Retention:
         ids: set[str] = set()
         for name in os.listdir(dfd):
             m = _REPORT.match(name) or _SUMMARY.match(name)
@@ -194,14 +208,26 @@ class AlertReportStore:
                     if time.time() - st.st_mtime > STALE_TEMP_SECONDS:
                         os.unlink(name, dir_fd=dfd)
         oldest_kept = now - dt.timedelta(days=self.settings.max_age_days)
-        ordered = sorted(ids)  # the id starts with its UTC time, so name order is age order
-        doomed = set(ordered[: max(0, len(ordered) - self.settings.max_reports)])
-        doomed |= {i for i in ordered if (_id_time(i) or now) < oldest_kept}
+        # The id starts with its UTC time, so name order is age order. The report just written is never a candidate:
+        # ids dated in the future (a clock that stepped back) once made it the oldest, so the POST said stored and
+        # the file was gone (G274).
+        others = sorted(ids - {keep})
+        doomed = set(others[: max(0, len(others) - (self.settings.max_reports - 1))])
+        doomed |= {i for i in others if (_id_time(i) or now) < oldest_kept}
+        evicted = not_removed = 0
         for report_id in sorted(doomed):
+            failed = False
             for name in (f"{report_id}.json", f"{report_id}.summary.json"):
-                with contextlib.suppress(FileNotFoundError):
+                try:
                     os.unlink(name, dir_fd=dfd)
-        return len(doomed)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # A directory planted at a report's name stopped retention for good when this raised (G274).
+                    failed = True
+            not_removed += failed
+            evicted += not failed
+        return Retention(evicted, not_removed)
 
     # -- reading -------------------------------------------------------------------------------------------------
     def _read(self, dfd: int, name: str, cap: int) -> Any:
@@ -235,9 +261,10 @@ class AlertReportStore:
             raise KeyError(f"no alert report {report_id}") from None
         finally:
             os.close(dfd)
-        if not isinstance(data, dict) or data.get("format") != RECORD_FORMAT or data.get("id") != report_id:
+        if not _is_record(data, report_id):
             raise StoreUnavailable(f"the stored file for {report_id} is not an alert report; it was not returned")
-        return data
+        record: dict[str, Any] = data
+        return record
 
     def newest(self, limit: int) -> dict[str, Any]:
         """The newest ``limit`` reports, newest first, from their small summary files. A report whose summary cannot
@@ -253,7 +280,7 @@ class AlertReportStore:
             for report_id in ids[:limit]:
                 try:
                     row = self._read(dfd, f"{report_id}.summary.json", MAX_SUMMARY_BYTES)
-                    if not isinstance(row, dict) or row.get("id") != report_id:
+                    if not _is_summary(row, report_id):
                         raise StoreUnavailable("not a summary")
                     rows.append(row)
                 except (KeyError, StoreUnavailable):
@@ -263,10 +290,63 @@ class AlertReportStore:
         return {"reports": rows, "total": len(ids)}
 
 
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _str_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+
+
+def _counts(value: Any) -> bool:
+    return isinstance(value, dict) and all(isinstance(k, str) and _is_count(v) for k, v in value.items())
+
+
+def _is_record(data: Any, report_id: str) -> bool:
+    """A stored record is somebody's file on a volume: every field a reader uses is checked for its type, so a
+    tampered file is refused rather than handed on with a string where a number was (G274)."""
+    if not isinstance(data, dict) or data.get("format") != RECORD_FORMAT or data.get("id") != report_id:
+        return False
+    if not (isinstance(data.get("receivedAt"), str) and _is_number(data.get("durationSeconds"))):
+        return False
+    if not (isinstance(data.get("bodySha256"), str) and isinstance(data.get("stored"), bool)):
+        return False
+    for key in ("notStoredReason", "knowledgeAsOf"):
+        if key in data and not isinstance(data[key], str):
+            return False
+    report = data.get("report")
+    if not isinstance(report, dict):
+        return False
+    summary = report.get("summary")
+    if not (isinstance(summary, dict) and _is_count(summary.get("alerts")) and _counts(summary.get("byVerdict"))):
+        return False
+    if not (_str_list(summary.get("alertnames")) and _str_list(report.get("caveats"))):
+        return False
+    alerts, missing = report.get("alerts"), report.get("notIncluded")
+    if not (isinstance(alerts, list) and all(isinstance(a, dict) for a in alerts)):
+        return False
+    return isinstance(missing, list) and all(isinstance(m, dict) for m in missing)
+
+
+def _is_summary(row: Any, report_id: str) -> bool:
+    if not isinstance(row, dict) or row.get("id") != report_id or not isinstance(row.get("receivedAt"), str):
+        return False
+    if not (_is_count(row.get("alerts")) and _counts(row.get("byVerdict")) and _str_list(row.get("alertnames"))):
+        return False
+    return (row.get("durationSeconds") is None or _is_number(row["durationSeconds"])) and (
+        "alertnamesNotShown" not in row or _is_count(row["alertnamesNotShown"])
+    )
+
+
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
-    report = record.get("report") or {}
-    s = report.get("summary") or {}
-    names = list(s.get("alertnames") or [])
+    report: dict[str, Any] = record["report"] if isinstance(record.get("report"), dict) else {}
+    s: dict[str, Any] = report["summary"] if isinstance(report.get("summary"), dict) else {}
+    raw: list[Any] = s["alertnames"] if isinstance(s.get("alertnames"), list) else []
+    names = [n for n in raw if isinstance(n, str)]
     out = {
         "id": record.get("id"),
         "receivedAt": record.get("receivedAt"),
@@ -312,13 +392,13 @@ class Receiver:
             "stored": False,
             "report": body,
         }
-        evicted = 0
+        retention = Retention(0)
         if not self.enabled:
             record["notStoredReason"] = "alertReports.store is false: this server keeps no report"
         else:
             record["stored"] = True
             try:
-                evicted = self.store.save(record, received_at)
+                retention = self.store.save(record, received_at)
             except StoreUnavailable as exc:
                 record["stored"] = False
                 record["notStoredReason"] = str(exc)
@@ -327,10 +407,14 @@ class Receiver:
                 record["stored"] = False
                 record["notStoredReason"] = f"the report could not be kept ({type(exc).__name__}); see the server log"
                 _log.exception("alert report %s not stored", record["id"])
-        metrics.REGISTRY.alert_report(seconds, "stored" if record["stored"] else "not-stored", evicted)
+        metrics.REGISTRY.alert_report(seconds, "stored" if record["stored"] else "not-stored", retention.evicted)
         out = {**record}
-        if evicted:
-            out["evicted"] = evicted
+        if retention.evicted:
+            out["evicted"] = retention.evicted
+        if retention.not_removed:
+            # Stored, and said separately: retention could not remove this many older reports (see the server log).
+            out["retentionNotRemoved"] = retention.not_removed
+            _log.warning("alert report retention could not remove %d report(s)", retention.not_removed)
         if "knowledgeAsOf" in result:
             out["knowledgeAsOf"] = result["knowledgeAsOf"]
         return out

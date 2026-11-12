@@ -67,3 +67,8 @@ class TierDisabledError(KubeNoobError):
 
 class ApprovalError(KubeNoobError):
     """A change was attempted without a valid approval: missing, for another action or tier, expired or reused."""
+
+
+class StoredStateError(KubeNoobError):
+    """kube-noob's own stored state (a file in its data directory) is missing, damaged or unusable. Not the caller's
+    input: the HTTP routes answer 500 with this message rather than 400."""

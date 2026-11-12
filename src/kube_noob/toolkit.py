@@ -354,7 +354,7 @@ class AlertReportGetIn(_In):
     id: str = Field(
         ...,
         max_length=64,
-        pattern=r"^\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{24}$",  # pydantic matches with Rust regex: $ is the very end
+        pattern=r"^[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{24}$",  # pydantic matches with Rust regex: $ is the very end
         description="A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
     )
 
@@ -1274,7 +1274,13 @@ class Toolkit:
         payload = alertmanager.parse(p.text)
         text = payload.text if payload else p.text
         version = p.version or (payload.version if payload else None)
-        out = diagnose(text, platform=p.platform, limit=p.limit, signals=for_text(p.text)).as_dict()
+        out = diagnose(
+            text,
+            platform=p.platform,
+            limit=p.limit,
+            signals=for_text(p.text),
+            context=payload.context if payload else None,
+        ).as_dict()
         if payload:
             out = {
                 "input": {**payload.summary(), "version": version} | ({"versionFrom": "argument"} if p.version else {}),
@@ -1434,18 +1440,30 @@ class Toolkit:
         return self.diagnose(DiagnoseIn(text=text, version=version, limit=MAX_PLAYBOOKS))
 
     def alert_report(self, p: AlertReportIn) -> dict[str, Any]:
-        """The evidence report for a payload, built offline from the payload and local knowledge. This tool keeps
-        nothing: the HTTP receiver (POST /v1/alert-reports) stores what it returns."""
-        from kube_noob.alert_report import build
+        """The evidence report for a payload, built offline from the payload and local knowledge. This tool keeps no
+        report: the HTTP receiver (POST /v1/alert-reports) stores what it returns. Like diagnose, it counts the ids
+        it matched in the learning file, once per payload rather than once per alert."""
+        from kube_noob import alert_report
         from kube_noob.alert_store import body_sha256
+        from kube_noob.known_issues import get_index
 
+        # Each OpenShift minor the local reported issues cover, and the newest release in it: a version outside them
+        # is reported as not evaluated rather than as "no match".
+        coverage: dict[str, str] = {}
+        for issue in get_index(self.settings.data_dir).issues:
+            newest = coverage.get(issue.minor)
+            if newest is None or alert_report._vkey(issue.version) > alert_report._vkey(newest):
+                coverage[issue.minor] = issue.version
+        deadline = alert_report._now() + self.settings.alert_reports.budget_seconds
         self._quiet.on = True
         try:
-            body = build(
+            body = alert_report.build(
                 p.payload,
                 self._diagnose_alert,
                 memory_configured=bool(self.settings.memory.paths),
                 max_bytes=self.settings.alert_reports.max_report_bytes,
+                deadline=deadline,
+                coverage=coverage,
             )
         finally:
             self._quiet.on = False
@@ -2179,7 +2197,8 @@ class Toolkit:
                 "team memory when configured, and read-only next steps. Every section says what it could not "
                 "determine and why; an alert kube-noob recognises nothing in is reported as such, never as healthy, "
                 "and a resolved alert is recorded, not diagnosed. Offline, from the payload alone: no cluster is "
-                "read. This tool keeps nothing; the HTTP receiver POST /v1/alert-reports stores the same report.",
+                "read. This tool keeps no report (like diagnose it counts the playbook and issue ids it matched in "
+                "the local learning file); the HTTP receiver POST /v1/alert-reports stores the same report.",
                 AlertReportIn,
                 self.alert_report,
             ),

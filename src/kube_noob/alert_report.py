@@ -1,21 +1,23 @@
 """An evidence report for an Alertmanager payload, alert by alert (moat item I1).
 
 For every alert a payload carries: the signals it carries, the diagnosis the deterministic playbooks give, the
-reported issues that match for the version the payload names, approved team memory when a memory repository is
-configured, and read-only next steps. Each of those comes from the ``diagnose`` tool itself, called once per alert
+reported issues that match for the release that alert's labels name, approved team memory when a memory repository
+is configured, and read-only next steps. Each of those comes from the ``diagnose`` tool itself, called once per alert
 with that alert alone (``kube_noob.toolkit.Toolkit.diagnose``), so the report is what the tools already answer and
 not a second implementation of them.
 
 Every section says what it could not determine and why. An alert kube-noob recognises nothing in is reported as
 exactly that and kept, never dropped and never shown as healthy; a resolved alert is recorded as resolved and not
-diagnosed as if it were firing; alerts and list items that could not be read are counted with the reason.
+diagnosed as if it were firing; an alert whose diagnosis failed, or that the time budget did not reach, keeps its row
+as ``not-evaluated``; list items that could not be read are counted with the reason.
 
-The body is deterministic: the same payload gives the same bytes (``canonical``). Ids, times and durations belong to
-the receipt the HTTP receiver adds (``kube_noob.alert_store``), never to the body. The body is built from
-third-party text -- an Alertmanager payload is whatever its senders put in labels and annotations -- so every string
-in it is redacted for credential shapes and then cleaned by ``kube_noob.sanitize`` before it is returned or kept, and
-it carries no URL, file name or command from the payload: next steps come from kube-noob's playbooks, with names
-from the alert filled in only where they are shell-safe (``kube_noob.debug.diagnose``).
+The body is deterministic for a payload reported within its time budget: the same payload gives the same bytes
+(``canonical``). Ids, times and durations belong to the receipt the HTTP receiver adds (``kube_noob.alert_store``),
+never to the body. The body is built from third-party text -- an Alertmanager payload is whatever its senders put in
+labels and annotations -- so every label and annotation value is redacted for credential shapes before it is
+clipped, has its URLs (``scheme://...``) replaced by ``[url removed]``, and the whole body is then cleaned by
+``kube_noob.sanitize``. Next steps come from kube-noob's playbooks, with names filled in only from the alert's own
+labels and only where they are valid Kubernetes names (``alertmanager.label_context``).
 
 Nothing here reads a cluster, a file or the network, and nothing here writes: storing a report is the HTTP
 receiver's job.
@@ -24,6 +26,8 @@ receiver's job.
 from __future__ import annotations
 
 import json
+import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -32,28 +36,40 @@ from kube_noob.debug.cluster import redact_text
 from kube_noob.signals import alertmanager
 
 FORMAT = "kube-noob/alert-report/v1"
-VERDICTS = ("diagnosed", "no-playbook", "no-recognised-signal", "resolved")
+VERDICTS = ("diagnosed", "no-playbook", "no-recognised-signal", "resolved", "not-evaluated")
 #: States that mean the condition is over. ``inactive`` is Prometheus's word for it, ``resolved`` Alertmanager's.
 NOT_FIRING = frozenset({"resolved", "inactive"})
 SHOWN_LABELS = ("severity", "namespace", "pod", "container", "service", "instance", "node", "job")
 MAX_SHOWN = 256  # characters of one label or summary kept in an alert's heading
+MAX_ROW_NAME = 128  # an alertname is at most 128 characters (alertmanager._NAME)
 MAX_STEPS = 8
 MAX_PLAYBOOKS = 3
 MAX_CAUSES = 3
 DEFAULT_MAX_BYTES = 1_048_576
 DETAIL_KEYS = ("signals", "diagnosis", "knownIssues", "memory", "nextSteps")
+#: What a row keeps when the size cap takes its detail: enough to see that the alert exists and what became of it.
+MINIMAL_KEYS = ("index", "alertname", "state", "severity", "verdict")
+URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
+URL_REMOVED = "[url removed]"
 
 #: ``diagnose(text, version)`` -> the diagnose tool's result for one alert's payload.
 Diagnose = Callable[[str, str | None], dict[str, Any]]
+#: Monotonic seconds; a module attribute so a test can drive the time budget deterministically.
+_now: Callable[[], float] = time.monotonic
 
 CAVEATS = (
     "Built from the payload and kube-noob's local knowledge only: no cluster, file or network was read, so the "
     "report says what the alert names point at, not what is true in the cluster now.",
-    "Labels and annotations are text from whoever sent the payload: they are shown redacted and cleaned, and "
-    "kube-noob acts on none of them.",
+    "Labels and annotations are text from whoever sent the payload: they are shown redacted, with URLs removed and "
+    "cleaned, and kube-noob acts on none of them. Names in next steps come only from the alert's own labels.",
     "Next steps are read-only checks from kube-noob's playbooks. Commands that execute in a container or change the "
     "cluster are left out; `kube-noob diagnose` lists them, each needing approval.",
 )
+
+
+def scrub(value: str) -> str:
+    """A label or annotation value as a report may keep it: credential shapes redacted, then URLs removed."""
+    return URL.sub(URL_REMOVED, redact_text(value))
 
 
 def _clip(value: str) -> str:
@@ -73,13 +89,14 @@ def _recognised(signals: list[dict[str, Any]]) -> list[str]:
 
 
 def _heading(alert: alertmanager.Alert) -> dict[str, Any]:
+    # Values were redacted and stripped of URLs by `scrub` before they were clipped (alertmanager.split).
     head: dict[str, Any] = {"index": alert.index, "alertname": alert.name, "state": alert.state}
-    shown = {k: _clip(redact_text(alert.labels[k])) for k in SHOWN_LABELS if alert.labels.get(k)}
+    shown = {k: _clip(alert.labels[k]) for k in SHOWN_LABELS if alert.labels.get(k)}
     if shown:
         head["labels"] = shown
     short = alert.annotations.get("summary") or alert.annotations.get("message")
     if short:
-        head["summary"] = _clip(redact_text(short))
+        head["summary"] = _clip(short)
     if alert.starts_at:
         head["startsAt"] = alert.starts_at
     if alert.fingerprint:
@@ -91,11 +108,10 @@ def _not_evaluated(why: str) -> dict[str, Any]:
     return {"status": "not-evaluated", "note": why}
 
 
-def _resolved(alert: alertmanager.Alert) -> dict[str, Any]:
-    why = f"The alert is {alert.state}: recorded, not diagnosed, because a cleared condition is not a symptom."
+def _unevaluated_row(alert: alertmanager.Alert, verdict: str, why: str) -> dict[str, Any]:
     return {
         **_heading(alert),
-        "verdict": "resolved",
+        "verdict": verdict,
         "verdictReason": why,
         **{k: _not_evaluated(why) for k in DETAIL_KEYS},
     }
@@ -145,9 +161,41 @@ def _diagnosis_section(out: dict[str, Any], recognised: list[str]) -> dict[str, 
     return section
 
 
-def _known_issues_section(out: dict[str, Any], version: str | None, version_from: str | None) -> dict[str, Any]:
+def _vkey(version: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"[0-9]+", version)[:3])
+
+
+def _minor(version: str) -> str:
+    return ".".join(version.split(".")[:2])
+
+
+def _known_issues_section(
+    out: dict[str, Any], alert: alertmanager.Alert, coverage: dict[str, str] | None
+) -> dict[str, Any]:
+    version, version_from = alert.version, alert.version_from
     matches = list(out.get("knownIssues") or [])
     section: dict[str, Any] = {"status": "found" if matches else "none", "matches": matches, "version": version}
+    covered = ", ".join(sorted(coverage or {}, key=_vkey)) or "none"
+    if version and coverage is not None and _minor(version) not in coverage:
+        # The local issues are for the releases the index holds; for another one an empty list proves nothing.
+        return {
+            "status": "not-evaluated",
+            "matches": [],
+            "version": version,
+            "note": f"OpenShift {version} ({version_from}) is outside the releases kube-noob's local reported issues "
+            f"cover ({covered}), so no match was looked for and none is implied.",
+        }
+    if version and coverage is not None and _vkey(version) > _vkey(coverage[_minor(version)]):
+        newest = coverage[_minor(version)]
+        note = (
+            f"OpenShift {version} ({version_from}) is newer than the newest {_minor(version)} release kube-noob's "
+            f"local reported issues cover ({newest}; releases covered: {covered}): issues reported after it are "
+            "unknown here."
+        )
+        if not matches:
+            return {"status": "not-evaluated", "matches": [], "version": version, "note": note}
+        section["note"] = note
+        return section
     if version:
         section["note"] = f"Narrowed to OpenShift {version} ({version_from}): issues fixed before it are left out."
     else:
@@ -165,9 +213,18 @@ def _memory_section(out: dict[str, Any], memory_configured: bool) -> dict[str, A
     if not memory_configured:
         return _not_evaluated("No team memory repository is configured (memory.paths): no past fix was searched.")
     matches = list(out.get("memory") or [])
+    unreadable = len(out.get("memoryNotes") or [])
     section: dict[str, Any] = {"status": "found" if matches else "none", "matches": matches}
-    if out.get("memoryNotes"):
-        section["notes"] = list(out["memoryNotes"])
+    if unreadable:
+        # The notes name the server's own paths; the count and the setting are what a reader of a report needs.
+        why = (
+            f"{unreadable} configured memory repository(ies) could not be read (see memory.paths and "
+            "`kube-noob memory validate` on the server)"
+        )
+        if not matches:
+            return _not_evaluated(why + ": nothing was searched there, so no match is implied.")
+        section["note"] = why + "."
+        return section
     if not matches:
         section["note"] = "No approved entry in the configured memory matched this alert."
     return section
@@ -192,7 +249,12 @@ def _steps_section(out: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _diagnosed(alert: alertmanager.Alert, out: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+def _diagnosed(
+    alert: alertmanager.Alert,
+    out: dict[str, Any],
+    memory_configured: bool,
+    coverage: dict[str, str] | None,
+) -> dict[str, Any]:
     found = [s for s in out.get("signals") or [] if isinstance(s, dict)]
     recognised = _recognised(found)
     diagnosis = _diagnosis_section(out, recognised)
@@ -211,8 +273,8 @@ def _diagnosed(alert: alertmanager.Alert, out: dict[str, Any], ctx: dict[str, An
         "verdictReason": why,
         "signals": _signals_section(found, recognised),
         "diagnosis": diagnosis,
-        "knownIssues": _known_issues_section(out, ctx["version"], ctx["versionFrom"]),
-        "memory": _memory_section(out, ctx["memory"]),
+        "knownIssues": _known_issues_section(out, alert, coverage),
+        "memory": _memory_section(out, memory_configured),
         "nextSteps": _steps_section(out),
     }
 
@@ -222,67 +284,177 @@ def canonical(body: dict[str, Any]) -> bytes:
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+_SEVERITY_RANK = {
+    "critical": 4,
+    "error": 4,
+    "high": 4,
+    "page": 4,
+    "warning": 2,
+    "warn": 2,
+    "medium": 2,
+    "info": 1,
+    "informational": 1,
+    "low": 1,
+    "none": 1,
+}
+
+
+def _keep_rank(row: dict[str, Any]) -> tuple[int, int]:
+    """How much a row's detail is worth keeping: a resolved alert least, then by severity. An unrecognised or missing
+    severity ranks with critical, because an unknown is not a reason to drop something first. Ties keep the earlier
+    alert, so the order is deterministic and never position alone."""
+    if row.get("state") in NOT_FIRING:
+        return (0, -int(row.get("index", 0)))
+    severity = str((row.get("labels") or {}).get("severity", "")).lower()
+    return (_SEVERITY_RANK.get(severity, 3), -int(row.get("index", 0)))
+
+
+def _minimal(row: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {k: row[k] for k in ("index", "alertname", "state", "verdict") if k in row}
+    severity = (row.get("labels") or {}).get("severity")
+    if severity:
+        out["severity"] = str(severity)[:32]
+    out["detail"] = "omitted: the report reached its size limit (alertReports.maxReportBytes)"
+    return out
+
+
 def _bound(body: dict[str, Any], max_bytes: int) -> dict[str, Any]:
-    """Keep the body under ``max_bytes``: detail goes from the last alerts first, then (only if the headings alone
-    are too large) the last headings, and either is counted in ``notIncluded``. Nothing goes without being said."""
+    """Keep the body under ``max_bytes`` without losing an alert: the least important rows (resolved, then the lowest
+    severity, then the later alert) lose their sections first, keeping their heading; if that is not enough, the
+    same order loses the heading down to ``{index, alertname, state, severity, verdict}``. Every alert keeps a row,
+    the summary is computed before any of this, and the indices that lost detail are named in ``notIncluded``."""
     if len(canonical(body)) <= max_bytes:
         return body
-    alerts = body["alerts"]
-    stripped = 0
-    for i in range(len(alerts) - 1, -1, -1):
-        alerts[i] = {
-            **{k: v for k, v in alerts[i].items() if k not in DETAIL_KEYS},
-            "detail": "omitted: the report reached its size limit (alertReports.maxReportBytes)",
-        }
-        stripped += 1
-        if len(canonical(body)) <= max_bytes:
+    alerts: list[dict[str, Any]] = body["alerts"]
+    order = sorted(range(len(alerts)), key=lambda i: _keep_rank(alerts[i]))
+    # Tier by tier, least important first: a tier's rows lose their sections, then their headings, before any row of
+    # a more important tier loses anything -- so a critical alert keeps its detail while an info alert has a heading.
+    tiers: dict[int, list[int]] = {}
+    for i in order:
+        tiers.setdefault(_keep_rank(alerts[i])[0], []).append(i)
+    ops = [(step, i) for rank in sorted(tiers) for step in ("sections", "heading") for i in tiers[rank]]
+    size = len(canonical(body))
+    # Room for the two notIncluded entries that name the indices: up to six characters an index, twice, and words.
+    target = max_bytes - (14 * len(alerts) + 600)
+    stripped: list[int] = []
+    minimal: list[int] = []
+    for step, i in ops:
+        if size <= target:
             break
-    body["notIncluded"].append(
-        {"what": "alert detail (sections)", "count": stripped, "why": "the report reached its size limit"}
-    )
-    dropped = 0
-    while alerts and len(canonical(body)) > max_bytes:
-        alerts.pop()
-        dropped += 1
-    if dropped:
+        before = len(canonical(alerts[i]))
+        if step == "sections":
+            alerts[i] = {
+                **{k: v for k, v in alerts[i].items() if k not in DETAIL_KEYS},
+                "detail": "omitted: the report reached its size limit (alertReports.maxReportBytes)",
+            }
+            stripped.append(alerts[i]["index"])
+        else:
+            alerts[i] = _minimal(alerts[i])
+            minimal.append(alerts[i]["index"])
+        size += len(canonical(alerts[i])) - before
+    if stripped:
         body["notIncluded"].append(
-            {"what": "alerts (heading too)", "count": dropped, "why": "the report reached its size limit"}
+            {
+                "what": "alert detail (sections)",
+                "count": len(stripped),
+                "why": "the report reached its size limit; resolved and lower-severity alerts lost detail first",
+                "indices": sorted(stripped),
+            }
+        )
+    if minimal:
+        body["notIncluded"].append(
+            {
+                "what": "alert detail (labels and summary too)",
+                "count": len(minimal),
+                "why": "the report reached its size limit; each of these keeps its name, state and verdict",
+                "indices": sorted(minimal),
+            }
         )
     return body
 
 
 def build(
-    text: str, diagnose: Diagnose, *, memory_configured: bool, max_bytes: int = DEFAULT_MAX_BYTES
+    text: str,
+    diagnose: Diagnose,
+    *,
+    memory_configured: bool,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    deadline: float | None = None,
+    coverage: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """The report body for an Alertmanager payload. Raises ValueError when ``text`` is not one."""
-    split = alertmanager.split(text)
+    """The report body for an Alertmanager payload. Raises ValueError when ``text`` is not one.
+
+    ``deadline`` is a ``_now()`` value: alerts not started by then are kept as ``not-evaluated`` rows and counted,
+    so one payload cannot hold the server for longer than its budget. ``coverage`` maps each OpenShift minor the
+    local reported issues cover to the newest release in it; a version outside it is reported as not evaluated."""
+    split = alertmanager.split(text, scrub)
     if split is None:
         raise ValueError(
             "not an Alertmanager payload: expected the webhook body (alerts[] with labels.alertname), the API's alert "
-            "list, or Prometheus's /api/v1/alerts, as JSON of at most 2 MB"
+            "list, or Prometheus's /api/v1/alerts, as JSON of at most 2,000,000 characters (the HTTP server takes "
+            "at most 1.5 MiB)"
         )
-    payload = split.payload
-    ctx = {"version": payload.version, "versionFrom": payload.version_from, "memory": memory_configured}
-    memo: dict[str, dict[str, Any]] = {}
+    memo: dict[tuple[str, str | None], dict[str, Any]] = {}
     alerts: list[dict[str, Any]] = []
+    out_of_time: list[int] = []
+    failed: dict[str, list[int]] = {}
     for alert in split.alerts:
         if alert.state in NOT_FIRING:
-            alerts.append(_resolved(alert))
+            why = f"The alert is {alert.state}: recorded, not diagnosed, because a cleared condition is not a symptom."
+            alerts.append(_unevaluated_row(alert, "resolved", why))
             continue
-        one = alert.payload()
-        # Two alerts with the same labels and annotations get the same diagnosis: computed once.
-        if one not in memo:
-            memo[one] = diagnose(one, payload.version)
-        alerts.append(_diagnosed(alert, memo[one], ctx))
+        if deadline is not None and _now() >= deadline:
+            out_of_time.append(alert.index)
+            why = "Not evaluated: the report's time budget (alertReports.budgetSeconds) ran out before this alert."
+            alerts.append(_unevaluated_row(alert, "not-evaluated", why))
+            continue
+        key = (alert.payload(), alert.version)
+        try:
+            # Two alerts with the same labels and annotations get the same diagnosis: computed once.
+            if key not in memo:
+                memo[key] = diagnose(*key)
+        except Exception as exc:  # noqa: BLE001 - one alert that cannot be diagnosed must not sink the group
+            # The class name only: a message can quote the payload, and the payload is somebody else's text.
+            failed.setdefault(type(exc).__name__, []).append(alert.index)
+            why = f"Not evaluated: its diagnosis failed ({type(exc).__name__})."
+            alerts.append(_unevaluated_row(alert, "not-evaluated", why))
+            continue
+        alerts.append(_diagnosed(alert, memo[key], memory_configured, coverage))
     by_verdict = {v: sum(1 for a in alerts if a["verdict"] == v) for v in VERDICTS}
     by_state: dict[str, int] = {}
     for a in alerts:
         by_state[a["state"]] = by_state.get(a["state"], 0) + 1
+    not_included: list[dict[str, Any]] = [
+        {"what": "items of the alert list", "count": n, "why": why} for why, n in sorted(split.not_read.items())
+    ]
+    if out_of_time:
+        not_included.append(
+            {
+                "what": "alerts not evaluated",
+                "count": len(out_of_time),
+                "why": "the report's time budget (alertReports.budgetSeconds) ran out; each keeps its row",
+                "indices": out_of_time,
+            }
+        )
+    for name, indices in sorted(failed.items()):
+        not_included.append(
+            {
+                "what": "alerts not evaluated",
+                "count": len(indices),
+                "why": f"their diagnosis failed ({name}); each keeps its row",
+                "indices": indices,
+            }
+        )
+    versions = sorted({a.version for a in split.alerts if a.version}, key=_vkey)
     caveats = list(CAVEATS)
-    if not payload.version:
+    if not versions:
         caveats.append(
             "The payload names no OpenShift release (an openshift_version or version label such as 4.21.3), so no "
             "known-issue match is narrowed to a version."
+        )
+    elif len(versions) > 1:
+        caveats.append(
+            f"The alerts name different OpenShift releases ({', '.join(versions)}): each is read for its own."
         )
     if not memory_configured:
         caveats.append("No team memory repository is configured, so no team fix was searched.")
@@ -293,68 +465,89 @@ def build(
             "byVerdict": by_verdict,
             "byState": dict(sorted(by_state.items())),
             "alertnames": sorted({a["alertname"] for a in alerts}),
-            "version": payload.version,
-            "versionFrom": payload.version_from,
+            "versions": versions,
+            # One release for the whole payload when every alert that names one names the same; otherwise None and
+            # each alert's knownIssues.version says which release it was read for.
+            "version": versions[0] if len(versions) == 1 else None,
+            "versionFrom": next((a.version_from for a in split.alerts if a.version), None)
+            if len(versions) == 1
+            else None,
         },
-        "notIncluded": [
-            {"what": "items of the alert list", "count": n, "why": why} for why, n in sorted(split.not_read.items())
-        ],
+        "notIncluded": not_included,
         "caveats": caveats,
         "alerts": alerts,
     }
-    # Third-party text: redacted above where it is copied, and cleaned here as a whole, so a stored report is already
-    # what a caller may see. Cleaning first and bounding second means the size is the size of what is kept.
+    # Third-party text: redacted and stripped of URLs where it was read, and cleaned here as a whole, so a stored
+    # report is already what a caller may see. Cleaning first and bounding second means the size is what is kept.
     cleaned: dict[str, Any] = sanitize.result(body)
     return _bound(cleaned, max_bytes)
 
 
+def _str(value: Any) -> str:
+    """A value from a body for a terminal: one line, visible characters only."""
+    return " ".join(sanitize.clean(str(value))[0].split()) if value is not None else ""
+
+
 def render_text(body: dict[str, Any], receipt: dict[str, Any] | None = None) -> str:
-    """The report for a terminal: the summary, what was not read, the caveats, then each alert."""
+    """The report for a terminal: the summary, what was not included, the caveats, then each alert."""
     s = body.get("summary") or {}
-    lines = [f"Alert evidence report: {s.get('alerts', 0)} alert(s)"]
+    lines = [f"Alert evidence report: {_str(s.get('alerts', 0))} alert(s)"]
     if receipt:
-        stored = "stored" if receipt.get("stored") else f"not stored ({receipt.get('notStoredReason', '')})"
-        lines.append(f"id {receipt.get('id', '-')}, received {receipt.get('receivedAt', '-')}, {stored}")
-        if "durationSeconds" in receipt:
-            lines.append(f"receipt to report: {receipt['durationSeconds']:.3f}s")
-    counts = ", ".join(f"{k} {v}" for k, v in (s.get("byVerdict") or {}).items())
+        if receipt.get("stored"):
+            stored = "stored"
+        else:
+            stored = f"not stored ({_str(receipt.get('notStoredReason', ''))})"
+        lines.append(f"id {_str(receipt.get('id', '-'))}, received {_str(receipt.get('receivedAt', '-'))}, {stored}")
+        seconds = receipt.get("durationSeconds")
+        if isinstance(seconds, int | float) and not isinstance(seconds, bool):
+            lines.append(f"receipt to report: {seconds:.3f}s")
+    counts = ", ".join(f"{_str(k)} {_str(v)}" for k, v in (s.get("byVerdict") or {}).items())
     lines.append(f"verdicts: {counts}")
-    version = s.get("version")
-    lines.append(f"version: {version} ({s.get('versionFrom')})" if version else "version: not named by the payload")
+    versions = s.get("versions") or []
+    lines.append(
+        f"versions: {', '.join(_str(v) for v in versions)}" if versions else "version: not named by the payload"
+    )
     for item in body.get("notIncluded") or []:
-        lines.append(f"not included: {item['count']} {item['what']} ({item['why']})")
+        indices = item.get("indices")
+        where = f" [alerts {', '.join(_str(i) for i in indices)}]" if indices else ""
+        lines.append(
+            f"not included: {_str(item.get('count'))} {_str(item.get('what'))} ({_str(item.get('why'))}){where}"
+        )
     if body.get("untrusted"):
         lines.append(f"untrusted text neutralised: {len(body.get('injectionSignals') or [])} signal(s)")
     lines.append("caveats:")
-    lines += [f"  - {c}" for c in body.get("caveats") or []]
+    lines += [f"  - {_str(c)}" for c in body.get("caveats") or []]
     for a in body.get("alerts") or []:
         lines.append("")
         labels = a.get("labels") or {}
-        where = ", ".join(f"{k} {v}" for k, v in labels.items())
-        lines.append(f"[{a.get('index')}] {a.get('alertname')} {a.get('state')}" + (f" ({where})" if where else ""))
+        where = ", ".join(f"{_str(k)} {_str(v)}" for k, v in labels.items())
+        head = f"[{_str(a.get('index'))}] {_str(a.get('alertname'))} {_str(a.get('state'))}"
+        lines.append(head + (f" ({where})" if where else ""))
         if a.get("summary"):
-            lines.append(f"    {a['summary']}")
-        lines.append(f"    verdict: {a.get('verdict')}: {a.get('verdictReason')}")
+            lines.append(f"    {_str(a['summary'])}")
+        lines.append(f"    verdict: {_str(a.get('verdict'))}: {_str(a.get('verdictReason'))}")
         if a.get("detail"):
-            lines.append(f"    {a['detail']}")
+            lines.append(f"    {_str(a['detail'])}")
             continue
-        if a.get("verdict") == "resolved":
+        if a.get("verdict") in {"resolved", "not-evaluated"}:
             continue
         sig = a.get("signals") or {}
-        names = ", ".join(f"{x['kind']}:{x['name']}" for x in sig.get("items") or [])
+        names = ", ".join(f"{_str(x.get('kind'))}:{_str(x.get('name'))}" for x in sig.get("items") or [])
         lines.append(f"    signals: {names or 'none'}")
         for name in DETAIL_KEYS:
             section = a.get(name) or {}
             if section.get("note"):
-                lines.append(f"    {name}: {section.get('status')}: {section['note']}")
+                lines.append(f"    {name}: {_str(section.get('status'))}: {_str(section['note'])}")
+            for note in section.get("notes") or []:
+                lines.append(f"    {name} note: {_str(note)}")
         for p in (a.get("diagnosis") or {}).get("playbooks") or []:
-            lines.append(f"    playbook {p['id']} ({p['confidence']}): {p['title']}")
+            lines.append(f"    playbook {_str(p.get('id'))} ({_str(p.get('confidence'))}): {_str(p.get('title'))}")
             if p.get("likelyCause"):
-                lines.append(f"      likely cause: {p['likelyCause']}")
+                lines.append(f"      likely cause: {_str(p['likelyCause'])}")
         for m in (a.get("knownIssues") or {}).get("matches") or []:
-            lines.append(f"    known issue {m.get('id')}: {m.get('status') or m.get('summary') or ''}")
+            lines.append(f"    known issue {_str(m.get('id'))}: {_str(m.get('status') or m.get('summary') or '')}")
         for m in (a.get("memory") or {}).get("matches") or []:
-            lines.append(f"    memory {m.get('citation') or m.get('id')}: {m.get('symptom') or ''}")
+            lines.append(f"    memory {_str(m.get('citation') or m.get('id'))}: {_str(m.get('symptom') or '')}")
         for st in (a.get("nextSteps") or {}).get("readOnly") or []:
-            lines.append(f"    read-only: {st.get('command') or st.get('instruction')}")
+            lines.append(f"    read-only: {_str(st.get('command') or st.get('instruction'))}")
     return "\n".join(lines)

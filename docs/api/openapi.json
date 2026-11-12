@@ -13,7 +13,7 @@
      "id": {
       "description": "A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
       "maxLength": 64,
-      "pattern": "^\\d{8}T\\d{6}\\.\\d{6}Z-[0-9a-f]{24}$",
+      "pattern": "^[0-9]{8}T[0-9]{6}\\.[0-9]{6}Z-[0-9a-f]{24}$",
       "title": "Id",
       "type": "string"
      }
@@ -699,6 +699,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -709,8 +729,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -779,6 +809,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -789,8 +839,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -859,6 +919,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -869,8 +949,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -939,6 +1029,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -949,8 +1059,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1019,6 +1139,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1029,8 +1169,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1099,6 +1249,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1109,8 +1279,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1179,6 +1359,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1189,8 +1389,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1259,6 +1469,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1269,8 +1499,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1339,6 +1579,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1349,8 +1609,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1407,6 +1677,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1417,8 +1707,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1487,6 +1787,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1497,8 +1817,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1567,6 +1897,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1577,8 +1927,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1604,10 +1964,10 @@
    "post": {
     "operationId": "post_alert_report",
     "summary": "Alertmanager webhook receiver: post the payload, get (and keep) an evidence report per alert",
-    "description": "One report per alert in an Alertmanager payload: the signals it carries, the diagnosis kube-noob's playbooks give, the reported OpenShift issues that match for the version its labels name, approved team memory when configured, and read-only next steps. Every section says what it could not determine and why; an alert kube-noob recognises nothing in is reported as such, never as healthy, and a resolved alert is recorded, not diagnosed. Offline, from the payload alone: no cluster is read. This tool keeps nothing; the HTTP receiver POST /v1/alert-reports stores the same report.",
+    "description": "One report per alert in an Alertmanager payload: the signals it carries, the diagnosis kube-noob's playbooks give, the reported OpenShift issues that match for the version its labels name, approved team memory when configured, and read-only next steps. Every section says what it could not determine and why; an alert kube-noob recognises nothing in is reported as such, never as healthy, and a resolved alert is recorded, not diagnosed. Offline, from the payload alone: no cluster is read. This tool keeps no report (like diagnose it counts the playbook and issue ids it matched in the local learning file); the HTTP receiver POST /v1/alert-reports stores the same report.",
     "responses": {
      "200": {
-      "description": "The tool's result (always carries knowledgeAsOf)",
+      "description": "The receiver's record: id, receivedAt, durationSeconds (receipt to report), bodySha256, stored and, when it was not kept, notStoredReason; the report itself under report; knowledgeAsOf",
       "content": {
        "application/json": {
         "schema": {
@@ -1647,6 +2007,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1657,8 +2037,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1725,6 +2115,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1735,8 +2145,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1810,6 +2230,26 @@
        }
       }
      },
+     "403": {
+      "description": "Origin not allowed (the transport's DNS-rebinding check)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "405": {
+      "description": "Method not allowed; the Allow header names the ones served on this path",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "413": {
       "description": "Request body too large",
       "content": {
@@ -1820,8 +2260,18 @@
        }
       }
      },
+     "421": {
+      "description": "Host not allowed (server.allowedHosts)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
      "500": {
-      "description": "Internal error (details in the server log only)",
+      "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
       "content": {
        "application/json": {
         "schema": {
@@ -1839,7 +2289,7 @@
       "schema": {
        "description": "A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
        "maxLength": 64,
-       "pattern": "^\\d{8}T\\d{6}\\.\\d{6}Z-[0-9a-f]{24}$",
+       "pattern": "^[0-9]{8}T[0-9]{6}\\.[0-9]{6}Z-[0-9a-f]{24}$",
        "title": "Id",
        "type": "string"
       }

@@ -51,8 +51,8 @@ Sequence, with what each already has:
 2. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
 3. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
 4. **I1** Alertmanager receiver, the forwarders. The per-alert report, its storage and the receipt-to-report clock
-   shipped on 2026-11-11 (G274), so *alert to evidence pack in a minute* is now a measured number (p95 25 ms for the
-   bundled payload here, 5.7 s for 500 alerts). Left: posting the report on to chat or ITSM (tier W), and whether a
+   shipped on 2026-11-11 (G274), so *alert to evidence pack in a minute* is now a measured number (p95 23 ms for the
+   bundled payload here, 5.7 s for the review's worst 500-alert payload, a 30 s budget per post). Left: posting the report on to chat or ITSM (tier W), and whether a
    report should ever read the cluster.
 
 I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF

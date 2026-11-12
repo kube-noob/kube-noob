@@ -61,16 +61,33 @@ LOCAL_STATE_WRITERS: dict[str, str] = {
     "read-only on a shared server",
 }
 
-# Settings that switch on a write to kube-noob's OWN data directory, never to a cluster or another system, and are on
-# by default. They are listed rather than inferred so that a new default-on write is a reviewed line here, not a row
-# that quietly reads "opt-in feature". learning.json is written by the tools named in LOCAL_STATE_WRITERS; the alert
-# reports are written by the HTTP server's receiver route, which no tool, CLI command or stdio server reaches.
-LOCAL_STATE_SWITCHES: dict[str, str] = {
-    "learningEnabled": "the learning file (`<dataDir>/learning.json`), written by the tools that are not read-only",
-    "alertReports.store": "the evidence reports `kube-noob serve` keeps for Alertmanager payloads posted to "
-    "`POST /v1/alert-reports` (`<dataDir>/alert-reports`, owner-only, the newest `alertReports.maxReports` for at "
-    "most `alertReports.maxAgeDays`)",
+# Every boolean setting that is ON by default, with its group and what it switches on. Reviewed, not inferred:
+# `default_violations` fails when a boolean defaults to true and is not listed here, and when a listed key no longer
+# exists or no longer defaults to true -- so a new default-on behaviour is a line someone wrote, never a row that
+# quietly reads "opt-in feature" (G274). "local state" is a write to kube-noob's own data directory, never to a
+# cluster or another system.
+DEFAULT_ON: dict[str, tuple[str, str]] = {
+    "learningEnabled": (
+        "local state",
+        "the learning file (`<dataDir>/learning.json`): notes and the profile, written only by the tools that are not "
+        "read-only, after the user confirmed; and pattern counters (rule, playbook and issue ids, never text), which "
+        "read-only tools such as `diagnose`, `known_issues` and `alert_report` bump too",
+    ),
+    "alertReports.store": (
+        "local state",
+        "the evidence reports `kube-noob serve` keeps for Alertmanager payloads posted to `POST /v1/alert-reports` "
+        "(`<dataDir>/alert-reports`, owner-only, the newest `alertReports.maxReports` for at most "
+        "`alertReports.maxAgeDays`), written by the HTTP receiver route and by no tool, CLI command or stdio server; "
+        "the chart turns it off by default",
+    ),
+    "mustGather.enabled": (
+        "local file read",
+        "offers `analyze_must_gather`, the one tool that opens a path rather than reading text it was handed: any "
+        "path the user names on a local stdio server, and on a shared server only with `mustGather.allowedDir` and "
+        "only inside it; it reads and never writes",
+    ),
 }
+LOCAL_STATE_SWITCHES: dict[str, str] = {k: why for k, (group, why) in DEFAULT_ON.items() if group == "local state"}
 
 # Settings that switch one extra thing on, to find which tools each one adds. Each takes a scratch directory.
 SWITCHES: dict[str, Callable[[str], dict[str, Any]]] = {
@@ -885,8 +902,8 @@ def _group(key: str, tier_switches: dict[str, str]) -> str:
         return "web"
     if key in {"offline", "webLocked"}:
         return "admin lock"
-    if key in LOCAL_STATE_SWITCHES:
-        return "local state"
+    if key in DEFAULT_ON:
+        return DEFAULT_ON[key][0]
     if key == "cluster.enabled":
         return "cluster (tier R)"
     if key.startswith(("llm.", "judge.")):
@@ -913,12 +930,23 @@ def defaults(settings: Any | None = None) -> list[Default]:
     return sorted(rows, key=lambda d: (d.state != "off", d.group, d.key))
 
 
-def default_violations(settings: Any | None = None) -> list[str]:
+def default_violations(settings: Any | None = None, reviewed: Mapping[str, Any] | None = None) -> list[str]:
+    """``reviewed`` defaults to DEFAULT_ON, the boolean settings allowed to be on by default."""
     from kube_noob import tiers
     from kube_noob.config import Settings
 
     s = settings or Settings.model_validate({"dataDir": "/nonexistent"})
+    allowed = DEFAULT_ON if reviewed is None else reviewed
     problems = []
+    flags = {key: value for key, value in _walk(s) if isinstance(value, bool)}
+    for key, value in sorted(flags.items()):
+        if value and key not in allowed:
+            problems.append(f"{key} is on by default and not reviewed in DEFAULT_ON")
+    for key in sorted(allowed):
+        if key not in flags:
+            problems.append(f"DEFAULT_ON lists {key}, which is not a boolean setting any more: remove the entry")
+        elif not flags[key]:
+            problems.append(f"DEFAULT_ON lists {key}, which is off by default now: remove the entry")
     if s.web_enabled:
         problems.append("webEnabled is on by default")
     if s.cluster.enabled:
@@ -1491,14 +1519,16 @@ def _defaults_section(rows: Sequence[Default]) -> list[str]:
 
     on = [f"`{d.key}` ({d.group})" for d in rows if d.state == "on"]
     host = Settings.model_validate({"dataDir": "/nonexistent"}).server.host
-    local = "; ".join(f"`{k}`: {why}" for k, why in LOCAL_STATE_SWITCHES.items())
+    local = "; ".join(f"`{k}`: {why}" for k, (_, why) in DEFAULT_ON.items())
     tier_rows = [(t.code, t.name, _list(t.switches), _yes(t.writes), _yes(t.external)) for t in tiers.TIERS]
     return [
         "## What is off by default",
         "",
         "Defaults of `kube_noob.config.Settings`, evaluated with no configuration file and no environment variable. "
-        f"Everything below is off except {', '.join(on) or 'none'}. Local state is kube-noob's own files in its "
-        f"data directory and reaches no cluster and no other system -- {local}. The server binds `{host}`. "
+        f"Everything below is off except {', '.join(on) or 'none'}, each reviewed by name in the script (a boolean "
+        "that defaults to on without a review fails the check). Local state is kube-noob's own files in its data "
+        f"directory and reaches no cluster and no other system. What each switches on -- {local}. The server binds "
+        f"`{host}`. "
         "`offline` and `webLocked` describe an administrator's lock on the web and on downloads: off here means not "
         "locked.",
         "",

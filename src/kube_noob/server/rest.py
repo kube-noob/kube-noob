@@ -162,7 +162,12 @@ def openapi(specs: list[ToolSpec]) -> dict[str, Any]:
         body = keys[(spec.model, "validation")]
         responses = {
             "200": {
-                "description": "The tool's result (always carries knowledgeAsOf)",
+                "description": (
+                    "The receiver's record: id, receivedAt, durationSeconds (receipt to report), bodySha256, stored "
+                    "and, when it was not kept, notStoredReason; the report itself under report; knowledgeAsOf"
+                    if route.receiver
+                    else "The tool's result (always carries knowledgeAsOf)"
+                ),
                 "content": {"application/json": {"schema": {"type": "object", "additionalProperties": True}}},
             },
             **{
@@ -174,8 +179,11 @@ def openapi(specs: list[ToolSpec]) -> dict[str, Any]:
                     ("400", "Invalid arguments, or the tool refused the input"),
                     ("401", "No or wrong bearer token"),
                     ("404", "Unknown id"),
+                    ("403", "Origin not allowed (the transport's DNS-rebinding check)"),
+                    ("405", "Method not allowed; the Allow header names the ones served on this path"),
                     ("413", "Request body too large"),
-                    ("500", "Internal error (details in the server log only)"),
+                    ("421", "Host not allowed (server.allowedHosts)"),
+                    ("500", "Internal error, or kube-noob's own stored data is damaged (the message says which)"),
                 )
             },
         }
@@ -226,6 +234,52 @@ def _parameters(spec: ToolSpec, route: Route) -> list[dict[str, Any]]:
     return out
 
 
+#: Alert reports built at once. Each is CPU work for seconds on a large payload, and every Python thread shares one
+#: interpreter lock with the event loop, so eight at once slowed /healthz to half a second (G274). More posts wait
+#: their turn -- the wait counts in their receipt-to-report time -- rather than taking the loop's share.
+MAX_CONCURRENT_REPORTS = 2
+
+
+class _Refused(Exception):
+    """A request body that never reaches a tool: the message is safe to show the caller."""
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.message, self.status = message, status
+
+
+def _arguments_from_body(raw: bytes, route: Route) -> Any:
+    """The tool's arguments from a POST body. Runs in a worker thread: decoding, the nesting scan (pure Python) and
+    the parse of a 1.5 MiB body took the event loop long enough to stall /healthz behind one post (G274)."""
+    if not raw.strip():
+        return {}
+    # Decode once and parse the text, never the bytes. json.loads auto-detects UTF-16 and UTF-32 from a BOM or NUL
+    # pattern, so counting brackets on a UTF-8 decoding of the same bytes checked a different string from the one the
+    # parser read -- a bypass of the guard that exists because deep nesting overflows the C stack on CPython 3.14 as
+    # a fatal error, not a RecursionError.
+    try:
+        text = _decode_json_text(raw)
+    except UnicodeDecodeError:
+        raise _Refused("the body is not JSON") from None
+    if not sanitize.json_nesting_ok(text):
+        raise _Refused("the body is not JSON")
+    try:
+        arguments = json.loads(text)
+    except (ValueError, RecursionError):
+        raise _Refused("the body is not JSON") from None
+    if route.body_as is not None:
+        # Somebody else's payload shape: the body is the input, not the argument map.
+        return {route.body_as: text}
+    if not isinstance(arguments, dict):
+        raise _Refused("the body must be a JSON object")
+    return arguments
+
+
+def _render(result: Any) -> bytes:
+    """What JSONResponse renders, made in a worker thread: a report is up to a megabyte of JSON."""
+    return json.dumps(result, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode("utf-8")
+
+
 def register(
     mcp: Any,
     specs: list[ToolSpec],
@@ -235,18 +289,28 @@ def register(
 ) -> list[str]:
     """Add the routes to an MCPServer (``mcp.custom_route``). ``call(spec, arguments)`` runs a tool synchronously and
     returns its result or raises ``CallFailed``. ``receiver(result, started, received_at)`` finishes a receiver
-    route's answer (``kube_noob.alert_store.Receiver``). Returns the paths added."""
+    route's answer (``kube_noob.alert_store.Receiver``). Returns the paths added.
+
+    Routes that share a path are served by one handler, so a method that is not served gets 405 with an ``Allow``
+    header naming every method that is (two handlers each answered for their own method only). Everything that costs
+    time -- reading the body, the tool, rendering the answer -- runs in worker threads, never on the event loop."""
     from kube_noob.server.mcp_app import CallFailed
 
     guard = TransportSecurityMiddleware(security)
     pairs = offered(specs)
     document = openapi(specs)
+    by_path: dict[str, dict[str, tuple[Route, ToolSpec]]] = {}
+    for route, spec in pairs:
+        for method in route.methods:
+            by_path.setdefault(route.path, {})[method] = (route, spec)
+    limiter: list[anyio.CapacityLimiter] = []  # made on first use, inside the running event loop
 
-    def endpoint(spec: ToolSpec, route: Route) -> Any:
+    def endpoint(methods: dict[str, tuple[Route, ToolSpec]]) -> Any:
         async def handle(request: Request) -> Response:
             # The receipt clock starts here, before the body is read: the duration a receiver reports is the time
-            # this process took from receiving the payload to having its report.
+            # this process took from receiving the payload to having its report, including any wait for its turn.
             started, received_at = time.monotonic(), dt.datetime.now(dt.UTC)
+            route, spec = methods["GET" if request.method == "HEAD" else request.method]
             is_post = request.method == "POST"
             refused = await guard.validate_request(request, is_post=is_post)
             if refused is not None:
@@ -254,42 +318,32 @@ def register(
             arguments: Any = {}
             if is_post:
                 raw = await request.body()
-                if raw.strip():
-                    # Decode once and parse the text, never the bytes. json.loads auto-detects UTF-16 and UTF-32
-                    # from a BOM or NUL pattern, so counting brackets on a UTF-8 decoding of the same bytes checked
-                    # a different string from the one the parser read -- a bypass of the guard that exists because
-                    # deep nesting overflows the C stack on CPython 3.14 as a fatal error, not a RecursionError.
-                    try:
-                        text = _decode_json_text(raw)
-                    except UnicodeDecodeError:
-                        return JSONResponse({"error": "the body is not JSON"}, status_code=400)
-                    if not sanitize.json_nesting_ok(text):
-                        return JSONResponse({"error": "the body is not JSON"}, status_code=400)
-                    try:
-                        arguments = json.loads(text)
-                    except (ValueError, RecursionError):
-                        return JSONResponse({"error": "the body is not JSON"}, status_code=400)
-                    if route.body_as is not None:
-                        # Somebody else's payload shape: the body is the input, not the argument map.
-                        arguments = {route.body_as: text}
-                    elif not isinstance(arguments, dict):
-                        return JSONResponse({"error": "the body must be a JSON object"}, status_code=400)
+                try:
+                    arguments = await anyio.to_thread.run_sync(_arguments_from_body, raw, route)
+                except _Refused as exc:
+                    return JSONResponse({"error": exc.message}, status_code=exc.status)
             else:
                 # Path parameters are the route's own ({id}); query parameters only those the route names.
                 arguments = {k: v for k, v in request.query_params.items() if k in route.query}
                 arguments.update(request.path_params)
+            bounded: anyio.CapacityLimiter | None = None
+            if route.receiver:
+                if not limiter:
+                    limiter.append(anyio.CapacityLimiter(MAX_CONCURRENT_REPORTS))
+                bounded = limiter[0]
             try:
-                result = await anyio.to_thread.run_sync(call, spec, arguments)
+                result = await anyio.to_thread.run_sync(call, spec, arguments, limiter=bounded)
                 if route.receiver and is_post and receiver is not None:
                     result = await anyio.to_thread.run_sync(receiver, result, started, received_at)
             except CallFailed as exc:
                 return JSONResponse({"error": exc.message, "outcome": exc.outcome}, status_code=exc.status)
-            return JSONResponse(result)
+            body = await anyio.to_thread.run_sync(_render, result)
+            return Response(content=body, media_type="application/json")
 
         return handle
 
-    for route, spec in pairs:
-        mcp.custom_route(route.path, methods=list(route.methods))(endpoint(spec, route))
+    for path, methods in by_path.items():
+        mcp.custom_route(path, methods=sorted(methods))(endpoint(methods))
 
     async def describe(request: Request) -> Response:
         refused = await guard.validate_request(request)
@@ -303,4 +357,4 @@ def register(
 
     mcp.custom_route("/v1", methods=["GET"])(describe)
     mcp.custom_route("/v1/openapi.json", methods=["GET"])(describe)
-    return ["/v1", "/v1/openapi.json", *(r.path for r, _ in pairs)]
+    return ["/v1", "/v1/openapi.json", *by_path]

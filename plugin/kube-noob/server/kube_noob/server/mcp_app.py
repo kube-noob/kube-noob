@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 from kube_noob import __version__, sanitize, tool_runner
 from kube_noob.audit.engine import list_rules
 from kube_noob.config import Settings
-from kube_noob.errors import KubeNoobError
+from kube_noob.errors import KubeNoobError, StoredStateError
 from kube_noob.knowledge.store import get_store
 from kube_noob.knowledge_status import line as knowledge_line
 from kube_noob.learn.tutor import curriculum
@@ -166,6 +166,10 @@ def run_tool(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str, via: str = 
     except ValidationError as exc:
         outcome = "invalid-arguments"
         raise CallFailed(400, outcome, f"invalid arguments: {str(exc)[:MAX_ERROR_CHARS]}") from None
+    except StoredStateError as exc:
+        # The server's own files, not the caller's input: a 500 with the reason, which names no path.
+        outcome = "error"
+        raise CallFailed(500, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
     except (KubeNoobError, ValueError) as exc:
         outcome = type(exc).__name__
         raise CallFailed(400, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
