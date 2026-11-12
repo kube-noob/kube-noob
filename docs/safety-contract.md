@@ -266,6 +266,7 @@ Where it is applied (found in the code):
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
 - `kube_noob/build/oci.py` `_json` calls `sanitize.loads_bounded`
+- `kube_noob/cli.py` `_error_line` calls `sanitize.clean`
 - `kube_noob/cli.py` `for_model` calls `sanitize.result`
 - `kube_noob/code/sarif.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/code/ship.py` `_args` calls `sanitize.loads_bounded`

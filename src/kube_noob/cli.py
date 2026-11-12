@@ -228,6 +228,17 @@ def for_model(obj: Any) -> Any:
     return out
 
 
+def _error_line(line: str) -> str:
+    """An error message, cleaned like a result in the model mode: an error can quote the input (a file name, a field
+    value), and the skills read it when the exit is not 0 or 1 (G276)."""
+    if not _for_model():
+        return line
+    from kube_noob import sanitize
+
+    cleaned, found = sanitize.clean(line, "error")
+    return cleaned + (" [untrusted: text shaped like instructions was removed]" if found else "")
+
+
 def _emit(obj: Any, fmt: str) -> None:
     if _for_model():
         obj = for_model(obj)
@@ -494,8 +505,10 @@ def _print_report(rep: dict[str, Any]) -> None:
         print()
         print(render_text(cov), end="")
     for sc in rep.get("redTeam", []):
-        if sc["verdict"] == "exposed":
-            print(f"[RED-TEAM {sc['severity'].upper()}] {sc['scenarioId']}: {sc['question']}")
+        if sc["verdict"] in ("exposed", "undecided"):
+            # An undecided scenario could not read its input; printed so a terminal reader does not take it as clean.
+            label = sc["severity"].upper() if sc["verdict"] == "exposed" else "UNDECIDED"
+            print(f"[RED-TEAM {label}] {sc['scenarioId']}: {sc['question']}")
             for e in sc["evidence"][:4]:
                 print(f"           - {e}")
 
@@ -2206,11 +2219,11 @@ def main(argv: list[str] | None = None) -> int:
         _emit({"status": "needs-clarification", "questions": exc.questions}, "yaml" if a.format == "text" else a.format)
         return 3
     except (ConfigError, FileNotFoundError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(_error_line(f"error: {exc}"), file=sys.stderr)
         return 2
     except (KubeNoobError, KeyError, ValueError) as exc:
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
-        print(f"error: {msg}", file=sys.stderr)
+        print(_error_line(f"error: {msg}"), file=sys.stderr)
         return 4
     except BrokenPipeError:
         # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
@@ -2224,7 +2237,8 @@ def main(argv: list[str] | None = None) -> int:
         # re-raises for the traceback.
         if os.environ.get("KUBE_NOOB_DEBUG", "").lower() in ("1", "true", "yes"):
             raise
-        print(f"error: internal error ({type(exc).__name__}): {' '.join(str(exc).split())[:300]}", file=sys.stderr)
+        detail = " ".join(str(exc).split())[:300]
+        print(_error_line(f"error: internal error ({type(exc).__name__}): {detail}"), file=sys.stderr)
         return 4
 
 

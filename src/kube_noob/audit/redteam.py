@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from kube_noob import shape
 from kube_noob.audit.model import Finding, RedTeamScenario, Severity
 from kube_noob.audit.podspec import REPLICATED_KINDS, replicas
 from kube_noob.audit.rules import AuditContext
@@ -107,21 +108,28 @@ def rwx_split_brain(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenar
         (d.namespace or "", d.name): get_path(d.data, ("spec", "accessModes")) or []
         for d in ctx.by_kind("PersistentVolumeClaim")
     }
+    unread: list[str] = []
     for d, pt in ctx.workloads():
         if (replicas(d) or 1) < 2:
             continue
-        for v in pt.spec.get("volumes") or []:
+        try:
+            volumes = shape.sequence(pt.spec.get("volumes"), f"{d.ref()} spec.volumes")
+        except shape.WrongShape as exc:
+            # Not "no shared volume": the volumes could not be read, so this workload is undecided (G276).
+            unread.append(f"not read: {exc}")
+            continue
+        for v in volumes:
             claim = get_path(v, ("persistentVolumeClaim", "claimName")) if isinstance(v, dict) else None
             if claim and "ReadWriteMany" in pvc_modes.get((d.namespace or "", str(claim)), []):
                 shared.append(f"{d.ref()} ({replicas(d)} replicas) writes to RWX claim '{claim}'")
     fs = _ids(findings, "KN-ST001")
-    if not shared and not fs:
+    if not shared and not fs and not unread:
         return None
-    evidence = shared + _evidence(fs)
+    evidence = shared + _evidence(fs) + unread
     return RedTeamScenario(
         "RT-RWX-SPLIT-BRAIN",
         "Does this ReadWriteMany volume cause split-brain, locking or corruption?",
-        "exposed",
+        "exposed" if shared or fs else "undecided",
         Severity.HIGH if fs else Severity.MEDIUM,
         evidence,
         "RWX only guarantees that several pods can mount the volume. Concurrent writers need application-level "

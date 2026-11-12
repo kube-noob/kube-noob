@@ -7,8 +7,8 @@ now: a rule that meets a shape it cannot read is recorded as NOT evaluated (neve
 escapes `main` exits 4, "a kube-noob error", with one line on stderr.
 
 The mutation test walks every distinct field of every rule fixture and sets it to the shapes YAML can give a field --
-an int, a string, null, a list and a mapping -- and runs the commands that read manifests. It fails on an
-`internal error` too, so the catch-all in `main` cannot hide a crash the rules should have declined.
+an int, a string, null, a list, a mapping, a boolean and a float -- and runs the commands that read manifests. It
+fails on an `internal error` too, so the catch-all in `main` cannot hide a crash the readers should have declined.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import yaml
 from kube_noob import cli
 
 ROOT = Path(__file__).resolve().parents[1]
-WRONG: list[Any] = [7, "x", None, [1], {"a": 1}]
+WRONG: list[Any] = [7, "x", None, [1], {"a": 1}, True, 1.5]
 
 
 def _run(argv: list[str]) -> tuple[int, str, str]:
@@ -58,7 +58,7 @@ def _paths(node: Any, prefix: tuple[Any, ...] = ()) -> Iterator[tuple[Any, ...]]
 
 def _mutations() -> Iterator[tuple[str, int, list[dict[str, Any]]]]:
     """One mutation per distinct (kind, field path) across the rule fixtures -- the same field in two fixtures reaches
-    the same code -- tried with two of the five wrong shapes, rotating, so every shape meets every kind of field
+    the same code -- tried with two of the seven wrong shapes, rotating, so every shape meets every kind of field
     somewhere. Yields the label, the field's ordinal and the mutated documents."""
     seen: set[tuple[Any, ...]] = set()
     for fx in sorted((ROOT / "tests" / "fixtures" / "rules").glob("*.yaml")):
@@ -148,3 +148,56 @@ def test_wrong_typed_fields_never_exit_1_without_a_json_document(tmp_path: Path)
                 bad.append(f"{command} {label}: {err.strip()[:160]}")
     assert cases > 2000, f"{cases} cases: the mutation walk found too few fields; it is measuring nothing"
     assert not bad, f"{len(bad)} of {cases}:\n" + "\n".join(sorted(set(bad))[:60])
+
+
+_DEPLOY = (
+    "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: web, namespace: shop}\nspec:\n  replicas: 3\n"
+    "  selector: {matchLabels: {app: web}}\n  template:\n    metadata: {labels: {app: web}}\n    spec:\n"
+    "      volumes: 7\n      containers: [{name: web, image: nginx}]\n"
+)
+
+
+def test_a_red_team_scenario_that_cannot_read_its_input_is_undecided_not_mitigated(tmp_path: Path) -> None:
+    f = tmp_path / "d.yaml"
+    f.write_text(_DEPLOY)
+    rc, out, _ = _run(["redteam", "-f", str(f), "--format", "json"])
+    scenarios = {s["scenarioId"]: s for s in json.loads(out)["scenarios"]}
+    rwx = scenarios["RT-RWX-SPLIT-BRAIN"]
+    assert rc == 0 and rwx["verdict"] == "undecided", rwx
+    assert any("spec.volumes is int" in e for e in rwx["evidence"])
+
+
+def test_a_fix_that_cannot_read_a_document_leaves_it_untouched_and_says_so(tmp_path: Path) -> None:
+    f = tmp_path / "np.yaml"
+    f.write_text(
+        "apiVersion: k8s.ovn.org/v1\nkind: EgressFirewall\nmetadata: {name: default, namespace: shop}\n"
+        "spec:\n  egress:\n  - type: Allow\n    to: [1]\n"
+    )
+    rc, out, _ = _run(["fix", "-f", str(f), "-o", str(tmp_path / "out.yaml"), "--format", "json"])
+    report = json.loads(out)
+    assert rc == 0 and not report["changes"], report["changes"]
+    assert any("not fixed, because" in m and "egress rule to is list" in m for m in report["manualFollowUps"])
+    assert yaml.safe_load((tmp_path / "out.yaml").read_text())["spec"]["egress"][0]["to"] == [1]
+
+
+def test_the_threat_model_reports_a_workload_it_could_not_read(tmp_path: Path) -> None:
+    """Not "stateless": whether it keeps data was not decided, and the model says so under `notRead`."""
+    f = tmp_path / "d.yaml"
+    f.write_text(
+        _DEPLOY.replace("replicas: 3", "replicas: 1")
+        + "---\napiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\n"
+        "spec: {type: LoadBalancer, selector: {app: web}, ports: [{port: 80}]}\n"
+    )
+    rc, out, err = _run(["vuln", "threat", "-f", str(f), "--format", "json"])
+    doc = json.loads(out)
+    assert rc == 0, err
+    assert any("Deployment/shop/web" in n and "not decided" in n for n in doc["notRead"]), doc.get("notRead")
+    assert all("Deployment/shop/web" not in a["dataStores"] for a in doc["applications"])
+
+
+def test_the_attack_path_scan_reports_a_service_it_could_not_read(tmp_path: Path) -> None:
+    f = tmp_path / "s.yaml"
+    f.write_text("apiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\nspec: 7\n")
+    rc, out, _ = _run(["posture", "scan", "-f", str(f), "--format", "json"])
+    doc = json.loads(out)
+    assert rc == 0 and any("Service/shop/web" in n and "not a mapping" in n for n in doc["notRead"]), doc["notRead"]

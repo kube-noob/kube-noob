@@ -103,8 +103,8 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
   code; the table under "Which command" says, for each command here, whether it does and which fields carry the
   verdict. Read those fields.
 - Verdicts can have three values. `undetermined` is its own answer, neither allowed nor denied, neither pass nor fail;
-  give the reason kube-noob gives for it (`undeterminedBy`, `summary`). A red-team scenario is `exposed` or
-  `mitigated`; a threat-model status can be `not assessed`.
+  give the reason kube-noob gives for it (`undeterminedBy`, `summary`). A red-team scenario is `exposed`,
+  `mitigated` or `undecided` (an input it could not read); a threat-model status can be `not assessed`.
 - **What was not read or not evaluated is part of the answer.** Before you call anything clean, read and repeat every
   non-empty one of these the result carries: `assumptions`, `unreadable`, `notEvaluated`, `notRead`, `notChecked`,
   `unparsed`, `coverage`, `skipped`, `excluded`, `notShipped`, `limitations`, `withheld`, `secretsIgnored`,
@@ -135,7 +135,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `build diagnose` | always 0 | `cause`, `fix`, `failingStep` | |
 | `build audit` | 1 = a finding at or above `--fail-on` (default high), so a medium finding exits 0 | `findings`, `counts` | `notChecked`, `notes` |
 | `vuln report` | always 0 unless `--fail-on` is given | `ranking`, `findings`, `counts`, `kev`, `vex` | `excluded`, `notes` |
-| `vuln threat` | always 0 | `applications`, `statuses` | `secretsIgnored` |
+| `vuln threat` | always 0 | `applications`, `statuses` | `secretsIgnored`, `notRead?` |
 | `code report` | always 0 unless `--fail-on` is given | `ranking`, `counts`, `quality` | `excluded`, `notShipped`, `notes` |
 | `must-gather analyze` | 0 unless `--fail-on` or `--require-complete` is given; 5 = incomplete evidence | `findings`, `counts` | `unparsed`, `coverage`, `skipped` |
 

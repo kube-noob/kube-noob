@@ -104,8 +104,8 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
   code; the table under "Which command" says, for each command here, whether it does and which fields carry the
   verdict. Read those fields.
 - Verdicts can have three values. `undetermined` is its own answer, neither allowed nor denied, neither pass nor fail;
-  give the reason kube-noob gives for it (`undeterminedBy`, `summary`). A red-team scenario is `exposed` or
-  `mitigated`; a threat-model status can be `not assessed`.
+  give the reason kube-noob gives for it (`undeterminedBy`, `summary`). A red-team scenario is `exposed`,
+  `mitigated` or `undecided` (an input it could not read); a threat-model status can be `not assessed`.
 - **What was not read or not evaluated is part of the answer.** Before you call anything clean, read and repeat every
   non-empty one of these the result carries: `assumptions`, `unreadable`, `notEvaluated`, `notRead`, `notChecked`,
   `unparsed`, `coverage`, `skipped`, `excluded`, `notShipped`, `limitations`, `withheld`, `secretsIgnored`,
@@ -133,7 +133,7 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 | `protocol` | 0 ready, 1 blocked (a HIGH or CRITICAL finding remains), 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary` |
 | `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings` | `assumptions`, `unreadable`, `controlSummary` |
-| `redteam` | always 0 | `scenarios`, each exposed or mitigated | |
+| `redteam` | always 0 | `scenarios`, each exposed, mitigated or undecided | |
 | `fix` | always 0 | `changes`, `manualFollowUps`, `after` | |
 | `generate` | 0, or 3 needs clarification | `audit`, `assumptions`, `prerequisites` | |
 | `helm-chart` | always 0 | `files`, `assumptions`, `prerequisites` | |

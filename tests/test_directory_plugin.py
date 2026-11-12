@@ -570,7 +570,11 @@ def test_no_pasted_text_goes_through_a_heredoc_or_a_fixed_temporary_path() -> No
         text = p.read_text()
         for info, body in _fenced(text):
             if "<<" in body:
-                bad.append(f"{p.relative_to(LITE)}: a heredoc in a ``` {info} block")
+                bad.append(f"{p.relative_to(LITE)}: a heredoc or here-string in a ``` {info} block")
+            # The neighbours of a heredoc: any shell command that builds a file from text it was handed.
+            for builder in ("printf", "tee ", "cat >", 'echo "$', "echo '"):
+                if builder in body:
+                    bad.append(f"{p.relative_to(LITE)}: `{builder.strip()}` builds a file from text in a block")
         if re.search(r"/tmp/(?!kube-noob\.XXXXXX)", text.replace("${TMPDIR:-/tmp}/kube-noob.XXXXXX", "")):
             bad.append(f"{p.relative_to(LITE)}: a fixed path under /tmp")
         if "KN_EOF" in text:

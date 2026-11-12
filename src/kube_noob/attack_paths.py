@@ -484,6 +484,10 @@ def _entries(inv: Inventory) -> list[Entry]:
                     )
                 )
     for s in inv.of("Service"):
+        if not isinstance(s.get("spec") or {}, dict):
+            # A spec that is not a mapping is not "not exposed": it was not read (G276).
+            inv.not_read.append(f"{_ref(s)}: spec is not a mapping, so whether it is exposed was not read")
+            continue
         exp = _service_exposure(s)
         if exp:
             label, weight, evidence, fix = exp
