@@ -2628,7 +2628,7 @@ def _s026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             yield r.finding(
                 d,
                 ("data", str(key)),
-                f"ConfigMap key '{key}' {why}; a ConfigMap is not secret (readable with the view role, not "
+                f"ConfigMap key {_quoted(key, 160)} {why}; a ConfigMap is not secret (readable with the view role, not "
                 "encrypted at rest). Move it to a Secret.",
             )
 
@@ -4258,12 +4258,20 @@ def _s037(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 
 #: Shells whose script may start a control-plane binary. Such a container is RECOGNISED and then declined: the
 #: flags are in a script kube-noob does not execute, so neither a finding nor a pass can be read from it.
-_SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh"})
+_SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"})
 #: Distributions that run the API server and etcd inside one binary of their own, configured through that
 #: binary's flags (`--kube-apiserver-arg`, `--etcd-arg`) and configuration file.
 _EMBEDDING = frozenset({"k3s", "rke2", "k0s"})
 #: The subcommand of each that runs the control plane.
 _EMBEDDING_SERVER = {"k3s": "server", "rke2": "server", "k0s": "controller"}
+#: Programs shipped beside a binary, in its image, that are not the server: `etcdctl snapshot save` in the etcd
+#: image is a backup job, read and recognised as not etcd.
+_SIBLINGS = {"etcd": frozenset({"etcdctl", "etcdutl"})}
+#: GNU and busybox `env` options that take the next token as their value.
+_ENV_VALUE_OPTIONS = frozenset({"-u", "--unset", "-C", "--chdir"})
+_ENV_FLAG_OPTIONS = frozenset({"-", "-i", "--ignore-environment", "-0", "--null", "-v", "--debug"})
+#: How many `env` / `busybox` prefixes are stripped before the command they start is looked at.
+_LAUNCHER_DEPTH = 8
 #: How much of one shell script is searched for the binary. A script longer than this is declined unread.
 _SCRIPT_SCAN = 65_536
 _SCRIPT_START = r"(?:^|[\s;&|()`'\"])"
@@ -4302,6 +4310,67 @@ def _in_script(binary: str, text: str) -> bool:
     return any(p.search(text) for p in pats)
 
 
+def _names(binary: str, token: str) -> bool:
+    """Is ``token`` the binary as one argv word (`kube-apiserver`, `/usr/local/bin/etcd`)? A token with a space
+    in it is a script or a sentence, and `tar czf b /var/lib/etcd` ends in `/etcd` without naming the program."""
+    return _basename(token) == binary and not any(ch.isspace() for ch in token)
+
+
+def _is_hint(token: str, hints: frozenset[str]) -> bool:
+    """A flag token naming one of the binary's own flags (`_` read as `-`, as kube-apiserver reads it)."""
+    return token.startswith("-") and token.lstrip("-").partition("=")[0].replace("_", "-") in hints
+
+
+def _after_launchers(argv: list[str]) -> list[str] | None:
+    """The argv a chain of `env ...` and `busybox APPLET` prefixes finally runs, or None when it cannot be read.
+
+    `env` takes options (`-i`, `-u NAME`, `-C DIR`, `--`) and `NAME=VALUE` assignments before the command; `-S`
+    splits a string into a command line of its own, and an option not listed here may take a value, so both
+    are unreadable rather than guessed. `busybox sh` is the `sh` applet. An `env` with no command prints the
+    environment and starts nothing: an empty list.
+    """
+    for _ in range(_LAUNCHER_DEPTH):
+        if not argv:
+            return argv
+        head = _basename(argv[0])
+        if head == "busybox" and len(argv) > 1:
+            argv = argv[1:]
+            continue
+        if head != "env":
+            return argv
+        i = 1
+        while i < len(argv):
+            t = argv[i]
+            if t == "--":
+                i += 1
+                break
+            if t in _ENV_VALUE_OPTIONS:
+                i += 2
+            elif t in _ENV_FLAG_OPTIONS or t.startswith(("--unset=", "--chdir=")) or (t[:2] in {"-u", "-C"} and t[2:]):
+                i += 1
+            elif t.startswith("-"):
+                return None  # -S / --split-string, or an option whose argument handling is not read here
+            elif "=" in t:
+                i += 1  # NAME=VALUE
+            else:
+                break
+        argv = argv[i:]
+    return None
+
+
+def _shell_reads_inline(argv: list[str]) -> bool:
+    """Does this shell argv run an inline `-c` script (True), rather than a script file or stdin (False)?"""
+    i = 1
+    while i < len(argv):
+        t = argv[i]
+        if t == "--" or not t.startswith(("-", "+")) or t in {"-", "+"}:
+            return False
+        if t.startswith("-") and not t.startswith("--") and "c" in t[1:]:
+            return True
+        i += 2 if t in {"-o", "+o", "-O", "+O"} else 1
+    return False
+
+
 @dataclass(frozen=True)
 class _Launch:
     """How a container runs a control-plane binary: its flags when they can be read, else why they cannot."""
@@ -4310,6 +4379,8 @@ class _Launch:
     #: How many argv tokens come before the flags (the binary, or `hyperkube` and the binary).
     skip: int = 0
     declined: str = ""
+    #: The container MAY run the binary -- its image, flags or a mention say so -- through something not read.
+    maybe: bool = False
 
 
 def _launch(c: dict[str, Any], binary: str, hints: frozenset[str], env_prefix: str | None) -> _Launch | None:
@@ -4317,11 +4388,17 @@ def _launch(c: dict[str, Any], binary: str, hints: frozenset[str], env_prefix: s
 
     Recognition is by what the container executes, never by its name or a label. Read directly: `command[0]` is
     the binary (any directory), or `hyperkube` followed by it. Recognised and DECLINED, with the reason: a shell
-    whose script runs it; a wrapper (`tini`, `go-runner`, `env`, anything else) with the binary later in argv,
-    whose argument handling is not read; `hyperkube apiserver`; `k3s server` and `rke2 server`, which embed it;
-    no `command` at all, when the image is the binary's or the args or `env_prefix` variables are its settings (the
-    image's entrypoint is not in the manifest); and a command or args that are not a list of strings. Declining
-    every one of these is the point: before G272's review each of them was silent, evaluated and clean.
+    -- directly, as `busybox sh` or after `env` -- whose script runs it; a wrapper (`tini`, `go-runner`, `env`,
+    anything else) with the binary later in argv, whose argument handling is not read; `hyperkube apiserver`;
+    `k3s server` and `rke2 server`, which embed it; no `command` at all, when the image is the binary's or the
+    args or `env_prefix` variables are its settings (the image's entrypoint is not in the manifest); and a
+    command or args that are not a list of strings.
+
+    And any OTHER readable command -- `/scripts/start.sh`, `s6-svscan`, `/pause`, `python3 -c`, `sh <file>`, an
+    inline script that runs a second script -- when there is evidence it starts the binary: the image is the
+    binary's, an argument is one of its flags, or an argument names it. The second review found each of those
+    silent, and beside one clean API server the bundle then read clean (G272). Without such evidence the
+    container is not recognised: declining every application container would bury the decline that matters.
     """
     command, args = c.get("command"), c.get("args")
 
@@ -4346,85 +4423,127 @@ def _launch(c: dict[str, Any], binary: str, hints: frozenset[str], env_prefix: s
             return _Launch(tuple(argv[1:]), 1)
         if head == "hyperkube" and len(argv) > 1 and argv[1] == binary:
             return _Launch(tuple(argv[2:]), 2)
-        if head in _SHELLS:
-            if any(_in_script(binary, t) for t in argv[1:]):
-                return _Launch(declined="from a shell script, whose flags are not read")
-            return None
         if head == "hyperkube" and binary == "kube-apiserver" and len(argv) > 1 and argv[1] == "apiserver":
             return _Launch(declined="through hyperkube's 'apiserver' alias, which is not read")
-        if head in _EMBEDDING and len(argv) > 1 and argv[1] == _EMBEDDING_SERVER[head]:
-            return _Launch(
-                declined=f"inside {head} {argv[1]}, which configures it through its own flags and configuration "
-                "file, which are not read"
-            )
-        if any(_basename(t) == binary for t in argv[1:]):
+        if head in _EMBEDDING:
+            if len(argv) > 1 and argv[1] == _EMBEDDING_SERVER[head]:
+                return _Launch(
+                    declined=f"inside {head} {argv[1]}, which configures it through its own flags and "
+                    "configuration file, which are not read"
+                )
+            return None  # read: another subcommand (`k3s agent`, `k3s kubectl`), which runs no control plane
+        if head in _SIBLINGS.get(binary, ()):
+            return None  # read: the binary's own client (`etcdctl`), not its server
+        mentioned = any(_names(binary, t) or _in_script(binary, t) for t in argv)
+        evidence = image_hit or mentioned or any(_is_hint(t, hints) for t in argv)
+        inner = _after_launchers(argv)
+        if inner and _basename(inner[0]) in _SHELLS:
+            if any(_in_script(binary, t) for t in inner[1:]):
+                return _Launch(declined="from a shell script, whose flags are not read")
+            if not evidence:
+                return None  # an inline script that does not run it, or a script file with nothing pointing at it
+            if not _shell_reads_inline(inner):
+                return _Launch(declined="from a script file the shell runs, which is not read", maybe=True)
+        elif inner and inner is not argv and _names(binary, inner[0]):
             return _Launch(declined=f"through {_quoted(head, 80)}, whose handling of the arguments is not read")
+        if any(_names(binary, t) for t in argv[1:]):
+            return _Launch(declined=f"through {_quoted(head, 80)}, whose handling of the arguments is not read")
+        if evidence:
+            why = (
+                f"its image is {binary}'s"
+                if image_hit
+                else f"an argument names {binary}"
+                if mentioned
+                else f"its arguments carry {binary}'s flags"
+            )
+            return _Launch(
+                declined=f"through {_quoted(head, 80)}, an entrypoint kube-noob does not read, while {why}",
+                maybe=True,
+            )
         return None
     if command is None:
         env = c.get("env")
         named = [str(e.get("name") or "") for e in env if isinstance(e, dict)] if isinstance(env, list) else []
-        flagged = any(t.startswith("-") and t.lstrip("-").partition("=")[0] in hints for t in texts)
+        flagged = any(_is_hint(t, hints) for t in texts)
         settings = env_prefix is not None and any(n.startswith(env_prefix) for n in named)
         if image_hit or flagged or settings:
             return _Launch(
                 declined="with no command, so it runs its image's entrypoint, which the manifest does not state"
             )
         return None
-    if image_hit or any(_basename(t) == binary or _in_script(binary, t) for t in texts):
+    if image_hit or any(_names(binary, t) or _in_script(binary, t) for t in texts):
         return _Launch(declined="with a command or args that are not a list of strings, which the API server refuses")
     return None
 
 
-_HELP = frozenset({"version", "help", "h"})
-
-
-def _asks_version_or_help(tokens: tuple[str, ...]) -> bool:
-    """`--version`, `--help` or `-h`: the binary prints and exits, so this container is not a server."""
-    for t in tokens:
-        if t == "--":
-            return False
-        if not t.startswith("-"):
-            continue
-        name, eq, value = t.lstrip("-").partition("=")
-        if name in _HELP and (not eq or value not in _GO_FALSE):
-            return True
-    return False
-
-
 def _flag_values(
-    tokens: tuple[str, ...] | list[str], names: frozenset[str], bools: frozenset[str], single_dash: bool
+    tokens: tuple[str, ...] | list[str],
+    names: frozenset[str],
+    bools: frozenset[str],
+    single_dash: bool,
+    *,
+    pflag: bool = False,
 ) -> tuple[dict[str, list[tuple[str, int]]], str | None]:
     """Every value given for each flag in ``names``, in order, with the index of its token -- or why not.
 
     pflag (kube-apiserver) reads `--name` and one-letter `-x` shorthands; Go's `flag` package (etcd) reads `-name`
-    too. A boolean given bare is true and never consumes the next token; any other flag given without `=` takes
-    the next token whatever it looks like, as both parsers do. So when a flag kube-noob does not know is given
-    without `=` and followed by a token that starts with `-`, whether that next flag is real or swallowed as a
-    value depends on a flag table this rule does not carry: declined, in both directions (G272). Also declined:
-    a known value flag with no value or with a flag as its value, an argument that is not a flag (a subcommand,
-    or a value whose flag is not known), and anything after `--`.
+    too (``single_dash``). A known boolean (``bools``) given bare is true and never consumes the next token; any
+    other flag given without `=` takes the next token whatever it looks like, as both parsers do. So when a flag
+    kube-noob does not know is given without `=` and followed by a token that starts with `-`, whether that next
+    flag is real or swallowed as a value depends on a flag table this rule does not carry: declined, in both
+    directions (G272). Also declined: a known value flag with no value or with a flag as its value, an argument
+    that is not a flag (a subcommand, or a value whose flag is not known), anything after `--`, and syntax both
+    parsers refuse (`---x`, `--=x`, `-=x`).
+
+    With ``pflag``: `_` in a flag name is `-` (component-base's cli.Run sets WordSepNormalizeFunc, so
+    `--authorization_mode` IS `--authorization-mode`); `-h` is `--help` (a boolean) and `-v` is klog's verbosity
+    (it takes a value, attached or as the next token). Without it -- Go's `flag` package -- `-h` and `-help` stop
+    the parse there with ErrHelp, so nothing after them is read, as etcd does not read it.
     """
     out: dict[str, list[tuple[str, int]]] = {}
     i, n = 0, len(tokens)
     while i < n:
         t = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < n else None
         if t == "--":
             if i + 1 < n:
                 return out, f"passes {_quoted(tokens[i + 1], 80)} after '--', as an argument rather than a flag"
             break
+        if t.startswith(("---", "--=", "-=")):
+            return out, f"has {_quoted(t, 80)}, which its flag parser refuses as bad syntax, so it does not start"
         if t.startswith("--"):
             body, long = t[2:], True
         elif t.startswith("-") and len(t) > 1:
             body, long = t[1:], single_dash
+            if pflag and t[1] == "h":
+                out.setdefault("help", []).append((t[3:] if t[2:3] == "=" else "true", i))
+                i += 1
+                continue
+            if pflag and t[1] == "v":
+                if len(t) == 2:
+                    if nxt is None or nxt.startswith("-"):
+                        return out, f"gives -v no value before {_quoted(nxt, 80) if nxt else 'the end'}"
+                    i += 1
+                i += 1
+                continue
         else:
             return out, f"has an argument {_quoted(t, 80)} that is not a flag (a subcommand, or a stray value)"
         name, eq, value = body.partition("=")
-        nxt = tokens[i + 1] if i + 1 < n else None
+        if pflag:
+            name = name.replace("_", "-")
+        elif "_" in name:
+            # Go's flag package has no normaliser and etcd defines no flag with `_` in it: an undefined flag,
+            # which ends the parse with an error, so the server does not start (G272).
+            return out, f"has {_quoted(t, 80)}, a flag Go's flag parser does not define, so it does not start"
+        if long and not pflag and name in {"h", "help"}:
+            out.setdefault("help", []).append(("true", i))
+            break  # Go's flag package returns ErrHelp here and reads nothing further
         if eq:
             if long and name in names:
                 out.setdefault(name, []).append((value, i))
         elif long and name in bools:
-            out.setdefault(name, []).append(("true", i))
+            if name in names:
+                out.setdefault(name, []).append(("true", i))
         elif long and name in names:
             if nxt is None or nxt.startswith("-"):
                 return out, f"gives --{name} no value before {_quoted(nxt, 80) if nxt else 'the end'}"
@@ -4439,6 +4558,30 @@ def _flag_values(
             i += 1  # its value, or a positional the binary refuses; either way not one of these flags
         i += 1
     return out, None
+
+
+def _exits_at_once(flags: dict[str, list[tuple[str, int]]], pflag: bool) -> bool | str:
+    """True when `--help` or `--version` makes the binary print and exit (not a server), False when it serves,
+    or why that cannot be read.
+
+    Only values at real flag positions count: `--etcd-prefix --version` gives --etcd-prefix the value, and that
+    shape is declined by `_flag_values` before this is asked (G272). kube-apiserver's --version (component-base
+    verflag) prints for `true` and `raw`, serves for `false` and for `vX.Y.Z` (which sets the reported version),
+    and refuses anything else; the last occurrence wins. etcd's -version is a Go boolean; its -h/-help is not a
+    defined flag, so Go's parser stops with ErrHelp wherever it appears.
+    """
+    helps = flags.get("help", [])
+    if helps and not pflag:
+        return True
+    verdict: bool | str = False
+    for name, values in (("help", helps), ("version", flags.get("version", []))):
+        for value, _ in values:
+            sets_version = pflag and name == "version" and (value == "raw" or value.startswith("v"))
+            if not sets_version and _go_bool(value) is None:
+                return f"sets --{name}={_quoted(value, 60)}, a value its flag parser refuses, so it does not start"
+        if values and (values[-1][0] == "raw" or _go_bool(values[-1][0])):
+            verdict = True
+    return verdict
 
 
 #: strconv.ParseBool, which both pflag and Go's flag package use for a boolean flag's value.
@@ -4471,6 +4614,52 @@ ANONYMOUS_AUTH_DEFAULT = "true"
 APISERVER_DEFAULTS_CHECKED = "every Kubernetes release from v1.6.0 to v1.37.0 and master at fba15ecefa95"
 _APISERVER_DEFAULTS_THROUGH = (1, 38)
 _APISERVER_FLAGS = frozenset({"anonymous-auth", "authorization-mode", "authorization-config", "authentication-config"})
+#: The flags `--authorization-config` may not be given with (AreLegacyFlagsSet, pkg/kubeapiserver/options/
+#: authorization.go at v1.34.0): the API server refuses the combination, even with an empty --authorization-mode.
+_AUTHZ_LEGACY_FLAGS = (
+    "authorization-mode",
+    "authorization-webhook-config-file",
+    "authorization-webhook-version",
+    "authorization-webhook-cache-authorized-ttl",
+    "authorization-webhook-cache-unauthorized-ttl",
+)
+_APISERVER_READ = _APISERVER_FLAGS | {*_AUTHZ_LEGACY_FLAGS, "authorization-policy-file", "help", "version"}
+#: kube-apiserver's boolean flags at v1.34.0 (every BoolVar its option sets register, plus cobra's --help and
+#: component-base's --version, which pflag reads bare as true), so a bare one is read as true rather than as a
+#: flag that might swallow the next. A flag this list lacks still declines when bare before another flag.
+_APISERVER_BOOLS = frozenset(
+    {
+        "aggregator-reject-forwarding-redirect",
+        "allow-privileged",
+        "anonymous-auth",
+        "audit-log-batch-throttle-enable",
+        "audit-log-compress",
+        "audit-log-truncate-enabled",
+        "audit-webhook-batch-throttle-enable",
+        "audit-webhook-truncate-enabled",
+        "contention-profiling",
+        "disable-http2-serving",
+        "emulation-forward-compatible",
+        "enable-aggregator-routing",
+        "enable-bootstrap-token-auth",
+        "enable-garbage-collector",
+        "enable-logs-handler",
+        "enable-priority-and-fairness",
+        "encryption-provider-config-automatic-reload",
+        "help",
+        "log-json-split-stream",
+        "log-text-split-stream",
+        "permit-address-sharing",
+        "permit-port-sharing",
+        "profiling",
+        "runtime-config-emulation-forward-compatible",
+        "service-account-extend-token-expiration",
+        "service-account-lookup",
+        "shutdown-send-retry-after",
+        "version",
+        "watch-cache",
+    }
+)
 #: The authorization modes kube-apiserver accepts (pkg/kubeapiserver/authorizer/modes/modes.go at fba15ecefa95,
 #: AuthorizationModeChoices). Any other value, including one with spaces around it, makes it refuse to start.
 AUTHORIZATION_MODES = frozenset({"AlwaysAllow", "AlwaysDeny", "ABAC", "Webhook", "RBAC", "Node"})
@@ -4496,6 +4685,45 @@ def _authorization_modes(values: list[str]) -> tuple[list[str], str]:
             f"names {_quoted(','.join(unknown), 80)} in --authorization-mode, which kube-apiserver does not accept, "
             "so it refuses to start with these arguments"
         )
+    return modes, ""
+
+
+def _last(flags: dict[str, list[tuple[str, int]]], name: str) -> str:
+    """The value pflag keeps for a string flag: the last one given ("" when absent)."""
+    values = flags.get(name)
+    return values[-1][0] if values else ""
+
+
+def _refused_authorization(flags: dict[str, list[tuple[str, int]]]) -> tuple[list[str], str]:
+    """(the authorizer chain, "") -- or ([], why the API server refuses these arguments and does not start).
+
+    BuiltInAuthorizationOptions.Validate (pkg/kubeapiserver/options/authorization.go at v1.34.0), after Complete
+    has filled an empty chain with AlwaysAllow: --authorization-config with any legacy flag; a mode it does not
+    know; a mode twice; ABAC without --authorization-policy-file or Webhook without
+    --authorization-webhook-config-file; either file without its mode. Each of these was read as a decided
+    authorizer before the second review (G272); a server that does not start has no authorizer to report.
+    """
+    refused = "a combination the API server refuses, so it does not start with these arguments"
+    if _last(flags, "authorization-config"):
+        legacy = next((f for f in _AUTHZ_LEGACY_FLAGS if flags.get(f)), None)
+        if legacy:
+            return [], f"names --authorization-config together with --{legacy}, {refused}"
+        return [], ""
+    modes, bad = _authorization_modes([v for v, _ in flags.get("authorization-mode", [])])
+    if bad:
+        return [], bad
+    chain = modes or ["AlwaysAllow"]
+    policy, webhook = _last(flags, "authorization-policy-file"), _last(flags, "authorization-webhook-config-file")
+    if len(set(chain)) != len(chain):
+        return [], f"lists an authorization mode more than once ({_quoted(','.join(chain), 80)}), {refused}"
+    if "ABAC" in chain and not policy:
+        return [], f"names ABAC in --authorization-mode without --authorization-policy-file, {refused}"
+    if "Webhook" in chain and not webhook:
+        return [], f"names Webhook in --authorization-mode without --authorization-webhook-config-file, {refused}"
+    if policy and "ABAC" not in chain:
+        return [], f"names --authorization-policy-file without the ABAC mode, {refused}"
+    if webhook and "Webhook" not in chain:
+        return [], f"names --authorization-webhook-config-file without the Webhook mode, {refused}"
     return modes, ""
 
 
@@ -4543,35 +4771,51 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     recognised = False
     for d, _pt, c in _containers(ctx):
         launch = _launch(c.container, "kube-apiserver", _APISERVER_HINTS, None)
-        if launch is None or (not launch.declined and _asks_version_or_help(launch.tokens)):
+        if launch is None:
             continue
+        flags: dict[str, list[tuple[str, int]]] = {}
+        problem: str | None = None
+        exits: bool | str = False
+        if not launch.declined and not any("$(" in t for t in launch.tokens):
+            # --version and --help are read only where pflag would read them as flags: `--etcd-prefix --version`
+            # gives --etcd-prefix the value, and an ambiguous argv is declined below, not taken as a job (G272).
+            flags, problem = _flag_values(launch.tokens, _APISERVER_READ, _APISERVER_BOOLS, False, pflag=True)
+            if problem is None:
+                exits = _exits_at_once(flags, pflag=True)
+                if exits is True:
+                    continue
         recognised = True
         where, ref = _where(d, c)
+        runs = "may run" if launch.maybe else "runs"
         if ctx.is_openshift:
             ctx.cannot_decide(
                 r.rule_id,
-                f"{where} runs kube-apiserver on {ctx.platform}, where the control plane is operator-managed and is "
-                "configured through the platform's own configuration rather than by these arguments (on ROSA with "
-                "HCP it runs outside the cluster altogether)",
+                f"{where} {runs} kube-apiserver on {ctx.platform}, where the control plane is operator-managed and "
+                "is configured through the platform's own configuration rather than by these arguments (on ROSA "
+                "with HCP it runs outside the cluster altogether)",
                 ref,
             )
             continue
         if launch.declined:
-            ctx.cannot_decide(r.rule_id, f"{where} starts kube-apiserver {launch.declined}", ref)
+            starts = "may start" if launch.maybe else "starts"
+            ctx.cannot_decide(r.rule_id, f"{where} {starts} kube-apiserver {launch.declined}", ref)
             continue
         if any("$(" in t for t in launch.tokens):
             ctx.cannot_decide(
                 r.rule_id, f"{where} passes an argument through $(VAR) expansion, whose value is not read", ref
             )
             continue
-        flags, problem = _flag_values(launch.tokens, _APISERVER_FLAGS, frozenset({"anonymous-auth"}), False)
-        if problem:
-            ctx.cannot_decide(r.rule_id, f"{where} {problem}", ref)
+        if problem or isinstance(exits, str):
+            ctx.cannot_decide(r.rule_id, f"{where} {problem or exits}", ref)
+            continue
+        modes, refused = _refused_authorization(flags)
+        if refused:
+            ctx.cannot_decide(r.rule_id, f"{where} {refused}", ref)
             continue
         skip = launch.skip
         # --- authorization ---
         always_allow = False
-        if flags.get("authorization-config"):
+        if _last(flags, "authorization-config"):
             ctx.cannot_decide(
                 r.rule_id,
                 f"{where} names --authorization-config, which replaces --authorization-mode and is a file on the "
@@ -4580,11 +4824,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             )
         else:
             given = flags.get("authorization-mode", [])
-            modes, bad = _authorization_modes([v for v, _ in given])
-            if bad:
-                ctx.cannot_decide(r.rule_id, f"{where} {bad}", ref)
-                always_allow = True  # undecided authorizer: do not read anonymous as if it were Node,RBAC
-            elif not modes:
+            if not modes:
                 # Absent, or given empty (`--authorization-mode=`): either way the slice is empty, and upstream's
                 # Complete() fills an empty slice with AlwaysAllow when there is no --authorization-config.
                 always_allow = True
@@ -4605,8 +4845,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     "earlier authorizer denies is allowed, and RBAC and Node only allow or abstain, so an "
                     "authenticated client can do anything.",
                 )
-        # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it; not read while the
-        # authorizer itself is undecided, because AlwaysAllow there would turn it off) ---
+        # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it) ---
         if always_allow:
             continue
         given_anon = flags.get("anonymous-auth", [])
@@ -4626,7 +4865,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     "those names.",
                     severity=Severity.MEDIUM,
                 )
-        elif flags.get("authentication-config"):
+        elif _last(flags, "authentication-config"):
             ctx.cannot_decide(
                 r.rule_id,
                 f"{where} names --authentication-config without --anonymous-auth: the file, which is not in the "
@@ -4665,9 +4904,79 @@ _ETCD_CERT_SETTINGS = (
     ("client", "client-cert-auth", "trusted-ca-file", Severity.CRITICAL),
     ("peer", "peer-client-cert-auth", "peer-trusted-ca-file", Severity.HIGH),
 )
-_ETCD_BOOLS = frozenset({"client-cert-auth", "peer-client-cert-auth"})
-_ETCD_FLAGS = frozenset({*_ETCD_URL_DEFAULTS, *_ETCD_BOOLS, "trusted-ca-file", "peer-trusted-ca-file", "config-file"})
-_ETCD_HINTS = _ETCD_FLAGS | {"etcd-arg"}
+#: Per side: the auto-TLS switch and the certificate pair that overrides it. embed.Config ClientSelfCert and
+#: PeerSelfCert (server/embed/config.go, release-3.5): with the switch on and NEITHER file given
+#: (TLSInfo.Empty), the TLSInfo is replaced by transport.SelfCert's, which sets neither ClientCertAuth nor
+#: TrustedCAFile -- so --client-cert-auth and --trusted-ca-file are dropped and ServerConfig leaves
+#: tls.NoClientCert. With either file given etcd logs "ignoring ... auto TLS since certs given" (G272).
+_ETCD_AUTO_TLS = {
+    "client": ("auto-tls", "cert-file", "key-file"),
+    "peer": ("peer-auto-tls", "peer-cert-file", "peer-key-file"),
+}
+_ETCD_BOOLS = frozenset({"client-cert-auth", "peer-client-cert-auth", "auto-tls", "peer-auto-tls"})
+_ETCD_FLAGS = frozenset(
+    {
+        *_ETCD_URL_DEFAULTS,
+        *_ETCD_BOOLS,
+        "trusted-ca-file",
+        "peer-trusted-ca-file",
+        "cert-file",
+        "key-file",
+        "peer-cert-file",
+        "peer-key-file",
+        "config-file",
+    }
+)
+_ETCD_READ = _ETCD_FLAGS | {"version"}
+#: Every `fs.BoolVar` etcdmain registers (server/etcdmain/config.go, release-3.5), so a bare one is read as true
+#: rather than as a flag that might swallow the next; Go's flag package never gives a boolean the next token.
+_ETCD_KNOWN_BOOLS = frozenset(
+    {
+        "auto-tls",
+        "client-cert-auth",
+        "enable-grpc-gateway",
+        "enable-log-rotation",
+        "enable-pprof",
+        "enable-v2",
+        "experimental-compact-hash-check-enabled",
+        "experimental-enable-distributed-tracing",
+        "experimental-enable-lease-checkpoint",
+        "experimental-enable-lease-checkpoint-persist",
+        "experimental-initial-corrupt-check",
+        "experimental-memory-mlock",
+        "experimental-peer-skip-client-san-verification",
+        "experimental-stop-grpc-service-on-defrag",
+        "experimental-txn-mode-write-with-shared-buffer",
+        "force-new-cluster",
+        "initial-election-tick-advance",
+        "peer-auto-tls",
+        "peer-client-cert-auth",
+        "pre-vote",
+        "socket-reuse-address",
+        "socket-reuse-port",
+        "strict-reconfig-check",
+        "unsafe-no-fsync",
+        "version",
+    }
+)
+#: Flags only etcd takes, which mark an unread entrypoint as possibly etcd. Not --config-file, --cert-file or
+#: --key-file: half the programs in a cluster take those.
+_ETCD_HINTS = frozenset(
+    {
+        *_ETCD_URL_DEFAULTS,
+        "client-cert-auth",
+        "peer-client-cert-auth",
+        "peer-trusted-ca-file",
+        "peer-cert-file",
+        "peer-key-file",
+        "auto-tls",
+        "peer-auto-tls",
+        "initial-cluster",
+        "initial-cluster-state",
+        "initial-cluster-token",
+        "etcd-arg",
+    }
+)
 
 
 def _etcd_env(name: str) -> str:
@@ -4740,14 +5049,27 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     recognised = False
     for d, _pt, c in _containers(ctx):
         launch = _launch(c.container, "etcd", _ETCD_HINTS, "ETCD_")
-        if launch is None or (not launch.declined and _asks_version_or_help(launch.tokens)):
+        if launch is None:
             continue
+        flags: dict[str, list[tuple[str, int]]] = {}
+        problem: str | None = None
+        exits: bool | str = False
+        if not launch.declined and not any("$(" in t for t in launch.tokens):
+            flags, problem = _flag_values(launch.tokens, _ETCD_READ, _ETCD_KNOWN_BOOLS, single_dash=True)
+            if problem is None:
+                exits = _exits_at_once(flags, pflag=False)
+                if exits is True:
+                    continue
         recognised = True
         where, ref = _where(d, c)
         if launch.declined:
-            ctx.cannot_decide(r.rule_id, f"{where} starts etcd {launch.declined}", ref)
+            starts = "may start" if launch.maybe else "starts"
+            ctx.cannot_decide(r.rule_id, f"{where} {starts} etcd {launch.declined}", ref)
             continue
-        findings, reasons = _etcd_findings(r, d, c, where, launch.tokens, launch.skip)
+        if isinstance(exits, str):
+            ctx.cannot_decide(r.rule_id, f"{where} {exits}", ref)
+            continue
+        findings, reasons = _etcd_findings(r, d, c, where, launch.tokens, launch.skip, flags, problem)
         for why in reasons:
             ctx.cannot_decide(r.rule_id, f"{where}: {why}", ref)
         yield from findings
@@ -4756,14 +5078,21 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 
 
 def _etcd_findings(
-    r: Rule, d: Document, c: ContainerRef, where: str, tokens: tuple[str, ...], skip: int
+    r: Rule,
+    d: Document,
+    c: ContainerRef,
+    where: str,
+    tokens: tuple[str, ...],
+    skip: int,
+    flags: dict[str, list[tuple[str, int]]],
+    problem: str | None,
 ) -> tuple[list[Finding], list[str]]:
-    """What one etcd container decides, and why it could not decide the rest."""
+    """What one etcd container decides, and why it could not decide the rest (``flags`` and ``problem`` are
+    `_flag_values` over ``tokens``, already read to tell a server from a `--version` job)."""
     if c.container.get("envFrom"):
         return [], ["envFrom can set any ETCD_* variable, ETCD_CONFIG_FILE included, and is not read"]
     if any("$(" in t for t in tokens):
         return [], ["it passes an argument through $(VAR) expansion, whose value is not read"]
-    flags, problem = _flag_values(tokens, _ETCD_FLAGS, _ETCD_BOOLS, single_dash=True)
     if problem:
         return [], [f"it {problem}"]
     env: dict[str, tuple[Any, int]] = {}
@@ -4836,11 +5165,32 @@ def _etcd_findings(
     for side, switch, ca, sev in _ETCD_CERT_SETTINGS:
         if not exposed[side]:
             continue  # only loopback, a socket, plaintext (already reported) or an undecided listener
+        auto_flag, cert_flag, key_flag = _ETCD_AUTO_TLS[side]
         try:
             value, path = setting(switch)
             ca_value, _ = setting(ca)
+            auto_value, auto_path = setting(auto_flag)
+            cert_value, _ = setting(cert_flag)
+            key_value, _ = setting(key_flag)
         except _Undecidable as why:
             reasons.append(str(why))
+            continue
+        auto = False if auto_value is None else _go_bool(auto_value)
+        if auto is None:
+            reasons.append(f"--{auto_flag} is {_quoted(auto_value, 60)}, which is not a boolean")
+            continue
+        if auto and not cert_value and not key_value:
+            out.append(
+                r.finding(
+                    d,
+                    auto_path if auto_path is not None else (*c.path, "command", 0),
+                    f"{where} turns on --{auto_flag} with no --{cert_flag} or --{key_flag}, so etcd serves its {side} "
+                    f"side with a generated self-signed certificate and drops --{switch} and --{ca} with it "
+                    "(embed.Config SelfCert): any "
+                    f"{side} that can reach the port is accepted without a certificate.",
+                    severity=sev,
+                )
+            )
             continue
         parsed = False if value is None else _go_bool(value)
         if parsed is None:
@@ -4927,6 +5277,15 @@ def _s040(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             f"({', '.join(sorted(ENCRYPTION_ON | {'identity'}))})",
         )
         return
+    if kind == "KMS" and not (isinstance(enc, dict) and isinstance(enc.get("kms"), dict) and enc["kms"]):
+        # openshift/api: "kms config is required when encryption type is KMS" -- an object the API server
+        # refuses says nothing about what the cluster encrypts with.
+        ctx.cannot_decide(
+            r.rule_id,
+            f"{_shown(doc.ref(), 160)} sets spec.encryption.type to KMS with no spec.encryption.kms configuration, "
+            "which the API server refuses",
+        )
+        return
     if kind in ENCRYPTION_ON:
         return
     said = "is identity" if kind == "identity" else "is not set, which openshift/api defines as identity"
@@ -5010,10 +5369,17 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         ldap = p.get("ldap")
         insecure = ldap.get("insecure", False) if isinstance(ldap, dict) else None
         url = ldap.get("url") if isinstance(ldap, dict) else None
-        if not isinstance(ldap, dict) or not isinstance(insecure, bool) or not isinstance(url, str):
-            ctx.cannot_decide(
-                r.rule_id, f"{ref} LDAP identity provider '{name}' has no readable ldap.url and ldap.insecure"
-            )
+        problem = (
+            "has no ldap mapping"
+            if not isinstance(ldap, dict)
+            else f"sets ldap.insecure to {_quoted(insecure, 60)}, which is not a boolean"
+            if not isinstance(insecure, bool)
+            else "has no readable ldap.url"
+            if not isinstance(url, str)
+            else ""
+        )
+        if problem or not isinstance(url, str):
+            ctx.cannot_decide(r.rule_id, f"{ref} LDAP identity provider '{name}' {problem}")
             continue
         if not insecure:
             continue

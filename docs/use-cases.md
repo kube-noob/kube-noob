@@ -1116,9 +1116,11 @@ Five rules read the settings that decide whether the cluster's own components ve
 (an absent `caBundle` is not a finding: the API server then uses its system trust roots, and OpenShift's service CA
 fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the AlwaysAllow authorizer and anonymous
 authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
-certificates switched off (a trusted CA file switches them on too, as etcd reads it). Both recognise the component
-by the binary the container runs, never by its name or a label, and an absent flag is the upstream default, named
-in the finding with the releases it was checked at:
+certificates switched off (a trusted CA file switches them on too, as etcd reads it; `--auto-tls` with no
+`--cert-file` or `--key-file` switches them off again, because etcd then replaces its TLS settings with a generated
+certificate's). Both recognise the component by the binary the container runs, never by its name or a label;
+kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
+absent flag is the upstream default, named in the finding with the releases it was checked at:
 anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
 `--authorization-mode` nor `--authorization-config` authorizes everything. On OpenShift, `KN-S040` reports
 encryption at rest switched off on the same `APIServer` object `KN-S035` reads, and `KN-S041` an LDAP identity
@@ -1126,17 +1128,25 @@ provider with `insecure: true` and an `ldap://` URL.
 
 Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
 `--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
-`envFrom` can set any `ETCD_*` variable; a shell script, a wrapper such as `tini` or `go-runner`, k3s, rke2 or
-k0s, or an image entrypoint that runs the binary is not executed; a `$(VAR)` anywhere in argv is not expanded; a
-flag kube-noob does not know, given without `=` before another flag, may swallow it; an encryption type or
-identity provider type openshift/api does not define is not guessed at. On ROSA with HCP the API server, etcd
+`envFrom` can set any `ETCD_*` variable; a shell script (directly, as `busybox sh` or after `env`), a wrapper such
+as `tini` or `go-runner`, k3s, rke2 or k0s, or an image entrypoint that runs the binary is not executed; nor is any
+other entrypoint -- a script file, `s6-svscan`, `/pause`, `python3 -c` -- when the image is the binary's, an
+argument is one of its flags or an argument names it; a `$(VAR)` anywhere in argv is not expanded; a flag
+kube-noob does not know, given without `=` before another flag, may swallow it (so `--version` or `-h` there is
+not read as one); an authorization-mode combination the API server refuses to start with, and a `KMS` encryption
+type with no `kms` block, are not read as a setting; an encryption type or identity provider type openshift/api
+does not define is not guessed at. On ROSA with HCP the API server, etcd
 and the OAuth server are configured from the `HostedCluster` on the management cluster, on the rest of the
 OpenShift family the API server is operator-managed, and off OpenShift the OpenShift objects are not read (the
-reason names `--platform openshift`). In each case the rule is left out of the evaluated list, its controls count
-it as not evaluated, and the report states why -- naming every declined object, up to a cap -- in the text view,
-the JSON (`declined`), the SARIF notifications, the MCP result and the gate's JSON, SARIF, Markdown and HTML. An
+reason names `--platform openshift`). In each case the rule is left out of the evaluated list and the report states why -- naming every declined
+object, up to a cap -- in the text view, the JSON (`declined`), the SARIF notifications, the MCP result and the
+gate's JSON, SARIF, Markdown and HTML. When the rule found nothing anywhere, its controls count it as not
+evaluated and `controlSummary.notEvaluatedRules` names it. When it found something on one object and declined on
+another, the finding is reported and counted under its controls as a finding, and the decline is still stated in
+`assumptions` and `declined`; it is not in `notEvaluatedRules`, which lists rules that reached no verdict at all. An
 input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
-"not evaluated:" line still name it.
+"not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
+`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale.
 
 ```bash
 kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33

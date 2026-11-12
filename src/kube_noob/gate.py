@@ -802,8 +802,12 @@ def _annotation(level: str, finding: dict[str, Any]) -> str:
 
     def esc(text: str, *, prop: bool = False) -> str:
         # A raw newline ends the command and an unescaped % corrupts the next escape. In a property, a comma or a
-        # colon ends the property list, so those go too.
-        out = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        # colon ends the property list, so those go too. Before any of that, every line of the text is made
+        # visible: a ConfigMap key in a KN-S026 message carried a raw ESC sequence into the runner's log (G272).
+        from kube_noob.sanitize import visible
+
+        shown = "\n".join(visible(part) for part in str(text).replace("\r\n", "\n").split("\n"))
+        out = shown.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         # In a property a comma ends the property and a colon ends the property LIST, so both go -- every colon,
         # not just a pair of them: a value ending in ":" produced `title=x:::[KN-X] ...`, and the runner then cut
         # the title and moved the colon into the message.
@@ -966,13 +970,21 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
     from kube_noob.cli import not_evaluated_line
 
+    # Two sections, not one: "assumed 1.35" is how the audit read the input, and a rule that declined is what it
+    # did not read. Under one "Not evaluated in full" heading the version assumption read as a declined rule
+    # (G272). A decline is recognised by the rule id the report's `declined` map names, not by its wording.
+    declined = tuple(f"{rid} was not evaluated" for rid in report.get("declined") or {})
     caveats = [str(a) for a in report.get("assumptions") or []]
+    gaps = [a for a in caveats if declined and a.startswith(declined)]
+    assumed = [a for a in caveats if not (declined and a.startswith(declined))]
     if line := not_evaluated_line(report.get("controlSummary") or {}):
-        caveats.append(line)
-    if caveats:
-        shown = caveats[:MD_CAVEATS]
-        more = [f"- and {len(caveats) - MD_CAVEATS} more in the JSON report"] if len(caveats) > MD_CAVEATS else []
-        lines += ["### Not evaluated in full", "", *[f"- {_cell(a, 1200)}" for a in shown], *more, ""]
+        gaps.append(line)
+    for heading, items in (("### Assumptions", assumed), ("### Not evaluated in full", gaps)):
+        if not items:
+            continue
+        shown = items[:MD_CAVEATS]
+        more = [f"- and {len(items) - MD_CAVEATS} more in the JSON report"] if len(items) > MD_CAVEATS else []
+        lines += [heading, "", *[f"- {_cell(a, 1200)}" for a in shown], *more, ""]
     return "\n".join(lines)
 
 

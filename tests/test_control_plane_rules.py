@@ -382,7 +382,12 @@ def test_encryption_absent_or_identity_is_reported(spec: dict[str, Any] | None) 
 
 @pytest.mark.parametrize("kind", ["aescbc", "aesgcm", "KMS"])
 def test_an_encryption_type_openshift_defines_is_clean(kind: str) -> None:
-    assert _clean(_report(_cluster_apiserver({"encryption": {"type": kind}}), "openshift", "4.20"), "KN-S040")
+    # KMS without a kms block is refused by the API server ("kms config is required when encryption type is
+    # KMS"), and declines: tests/test_control_plane_review2.py holds that shape.
+    enc: dict[str, object] = {"type": kind}
+    if kind == "KMS":
+        enc["kms"] = {"type": "AWS", "aws": {"keyARN": "arn:aws:kms:us-east-1:1:key/x", "region": "us-east-1"}}
+    assert _clean(_report(_cluster_apiserver({"encryption": enc}), "openshift", "4.20"), "KN-S040")
 
 
 def test_an_unrecognised_encryption_type_declines() -> None:

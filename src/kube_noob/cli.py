@@ -448,9 +448,14 @@ def _print_report(rep: dict[str, Any]) -> None:
         where = f"{f['file']}:{f['line']}" if f.get("file") and f.get("line") else ""
         if not where:
             where = f.get("file") or (f"L{f['line']}" if f.get("line") else "")
-        print(f"[{f['severity'].upper():8}] {f['ruleId']:9} {_one_line(f['resource'])} {where} {f['path']}")
+        # The path and the file name are the input's text too: a ConfigMap key with a newline in it is a path
+        # (`data.<key>`), and it forged a whole finding line before the second review (G272).
+        print(
+            f"[{f['severity'].upper():8}] {f['ruleId']:9} {_one_line(f['resource'])} {_one_line(where)} "
+            f"{_one_line(f['path'])}"
+        )
         print(f"           {_one_line(f['message'])}")
-        print(f"           fix: {f['remediation']}")
+        print(f"           fix: {_one_line(f['remediation'])}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
     # Only controls that HAVE findings: the list also holds clean and not-evaluated controls, and printing those
@@ -482,8 +487,14 @@ def _print_exceptions(rep: dict[str, Any]) -> None:
     for f in rep.get("excepted", []):
         x = f["exception"]
         print(f"  excepted {f['ruleId']} {f['resource']} by {x['id']} (owner {x['owner']}, until {x['expires']})")
+    undecided = set(ex.get("unusedNotEvaluated") or [])
     for eid in ex.get("unused", []):
-        print(f"  unused {eid}: covers no finding; delete it if the object is gone")
+        if eid in undecided:
+            # Its rule declined on this input (an object it could not read, or none of its kind), so "covers no
+            # finding" is not evidence the exception is stale (G272).
+            print(f"  unused {_one_line(eid)}: covers no finding, but its rule was not evaluated in full on this input")
+        else:
+            print(f"  unused {_one_line(eid)}: covers no finding; delete it if the object is gone")
     if not ex["gate"]:
         print("gate: failed (an exception is expired or refused)")
 
