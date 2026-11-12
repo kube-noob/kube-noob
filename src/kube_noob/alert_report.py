@@ -488,12 +488,22 @@ def _str(value: Any) -> str:
     return " ".join(sanitize.clean(str(value))[0].split()) if value is not None else ""
 
 
+def _d(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _l(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def render_text(body: dict[str, Any], receipt: dict[str, Any] | None = None) -> str:
-    """The report for a terminal: the summary, what was not included, the caveats, then each alert."""
-    s = body.get("summary") or {}
+    """The report for a terminal: the summary, what was not included, the caveats, then each alert. Every field is
+    read with its type checked, so a body read back from disk in an unexpected shape prints what it can rather than
+    raising (the CLI's only other outcome would be a traceback and exit 1)."""
+    s = _d(body.get("summary"))
     lines = [f"Alert evidence report: {_str(s.get('alerts', 0))} alert(s)"]
     if receipt:
-        if receipt.get("stored"):
+        if receipt.get("stored") is True:
             stored = "stored"
         else:
             stored = f"not stored ({_str(receipt.get('notStoredReason', ''))})"
@@ -501,26 +511,25 @@ def render_text(body: dict[str, Any], receipt: dict[str, Any] | None = None) -> 
         seconds = receipt.get("durationSeconds")
         if isinstance(seconds, int | float) and not isinstance(seconds, bool):
             lines.append(f"receipt to report: {seconds:.3f}s")
-    counts = ", ".join(f"{_str(k)} {_str(v)}" for k, v in (s.get("byVerdict") or {}).items())
+    counts = ", ".join(f"{_str(k)} {_str(v)}" for k, v in _d(s.get("byVerdict")).items())
     lines.append(f"verdicts: {counts}")
-    versions = s.get("versions") or []
+    versions = _l(s.get("versions"))
     lines.append(
         f"versions: {', '.join(_str(v) for v in versions)}" if versions else "version: not named by the payload"
     )
-    for item in body.get("notIncluded") or []:
-        indices = item.get("indices")
+    for item in map(_d, _l(body.get("notIncluded"))):
+        indices = _l(item.get("indices"))
         where = f" [alerts {', '.join(_str(i) for i in indices)}]" if indices else ""
         lines.append(
             f"not included: {_str(item.get('count'))} {_str(item.get('what'))} ({_str(item.get('why'))}){where}"
         )
     if body.get("untrusted"):
-        lines.append(f"untrusted text neutralised: {len(body.get('injectionSignals') or [])} signal(s)")
+        lines.append(f"untrusted text neutralised: {len(_l(body.get('injectionSignals')))} signal(s)")
     lines.append("caveats:")
-    lines += [f"  - {_str(c)}" for c in body.get("caveats") or []]
-    for a in body.get("alerts") or []:
+    lines += [f"  - {_str(c)}" for c in _l(body.get("caveats"))]
+    for a in map(_d, _l(body.get("alerts"))):
         lines.append("")
-        labels = a.get("labels") or {}
-        where = ", ".join(f"{_str(k)} {_str(v)}" for k, v in labels.items())
+        where = ", ".join(f"{_str(k)} {_str(v)}" for k, v in _d(a.get("labels")).items())
         head = f"[{_str(a.get('index'))}] {_str(a.get('alertname'))} {_str(a.get('state'))}"
         lines.append(head + (f" ({where})" if where else ""))
         if a.get("summary"):
@@ -531,23 +540,24 @@ def render_text(body: dict[str, Any], receipt: dict[str, Any] | None = None) -> 
             continue
         if a.get("verdict") in {"resolved", "not-evaluated"}:
             continue
-        sig = a.get("signals") or {}
-        names = ", ".join(f"{_str(x.get('kind'))}:{_str(x.get('name'))}" for x in sig.get("items") or [])
+        names = ", ".join(
+            f"{_str(_d(x).get('kind'))}:{_str(_d(x).get('name'))}" for x in _l(_d(a.get("signals")).get("items"))
+        )
         lines.append(f"    signals: {names or 'none'}")
         for name in DETAIL_KEYS:
-            section = a.get(name) or {}
+            section = _d(a.get(name))
             if section.get("note"):
                 lines.append(f"    {name}: {_str(section.get('status'))}: {_str(section['note'])}")
-            for note in section.get("notes") or []:
+            for note in _l(section.get("notes")):
                 lines.append(f"    {name} note: {_str(note)}")
-        for p in (a.get("diagnosis") or {}).get("playbooks") or []:
+        for p in map(_d, _l(_d(a.get("diagnosis")).get("playbooks"))):
             lines.append(f"    playbook {_str(p.get('id'))} ({_str(p.get('confidence'))}): {_str(p.get('title'))}")
             if p.get("likelyCause"):
                 lines.append(f"      likely cause: {_str(p['likelyCause'])}")
-        for m in (a.get("knownIssues") or {}).get("matches") or []:
+        for m in map(_d, _l(_d(a.get("knownIssues")).get("matches"))):
             lines.append(f"    known issue {_str(m.get('id'))}: {_str(m.get('status') or m.get('summary') or '')}")
-        for m in (a.get("memory") or {}).get("matches") or []:
+        for m in map(_d, _l(_d(a.get("memory")).get("matches"))):
             lines.append(f"    memory {_str(m.get('citation') or m.get('id'))}: {_str(m.get('symptom') or '')}")
-        for st in (a.get("nextSteps") or {}).get("readOnly") or []:
+        for st in map(_d, _l(_d(a.get("nextSteps")).get("readOnly"))):
             lines.append(f"    read-only: {_str(st.get('command') or st.get('instruction'))}")
     return "\n".join(lines)

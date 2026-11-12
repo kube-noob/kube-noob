@@ -232,7 +232,8 @@ class AlertReportStore:
     # -- reading -------------------------------------------------------------------------------------------------
     def _read(self, dfd: int, name: str, cap: int) -> Any:
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+            # O_NONBLOCK: a FIFO planted at a report's name would otherwise block this open until a writer came.
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
         except FileNotFoundError:
             raise KeyError(name) from None
         except OSError as exc:
@@ -332,12 +333,25 @@ def _is_record(data: Any, report_id: str) -> bool:
         return False
     alerts, missing = report.get("alerts"), report.get("notIncluded")
     # One row per alert, and the verdict counts add up to them: a record whose rows went missing is not a report.
-    if not (isinstance(alerts, list) and alerts and all(isinstance(a, dict) for a in alerts)):
+    if not (isinstance(alerts, list) and alerts and all(_is_row(a) for a in alerts)):
         return False
     if len(alerts) != summary["alerts"] or sum(summary["byVerdict"].values()) != summary["alerts"]:
         return False
     # notIncluded is legitimately empty: nothing was withheld.
     return isinstance(missing, list) and all(isinstance(m, dict) for m in missing)
+
+
+def _is_row(row: Any) -> bool:
+    """An alert's row keeps at least these four, of these types, whatever the size cap took (alert_report._minimal)."""
+    from kube_noob.alert_report import VERDICTS
+
+    return (
+        isinstance(row, dict)
+        and _is_count(row.get("index"))
+        and isinstance(row.get("alertname"), str)
+        and isinstance(row.get("state"), str)
+        and row.get("verdict") in VERDICTS
+    )
 
 
 def _is_summary(row: Any, report_id: str) -> bool:

@@ -673,3 +673,101 @@ def test_operations_states_alertmanagers_retry_rule_as_its_source_does() -> None
     ops = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
     assert "413 and Alertmanager retries it" not in ops
     assert "4xx" in ops and "notify/util.go" in ops
+
+
+# --- neighbours of the reviewed shapes (class 21) --------------------------------------------------------------------
+
+
+def test_a_fifo_at_a_reports_name_is_refused_without_blocking(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    (rid,) = _ids(1)
+    store.save(_record(rid), NOW)
+    root = tmp_path / "data" / "alert-reports"
+    for name in (f"{rid}.json", f"{rid}.summary.json"):
+        (root / name).unlink()
+        os.mkfifo(root / name)
+    done: list[Any] = []
+
+    def read() -> None:
+        try:
+            store.get(rid)
+        except alert_store.StoreUnavailable as exc:
+            done.append(exc)
+        done.append(store.newest(5))
+
+    worker = threading.Thread(target=read, daemon=True)
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "opening a FIFO for reading blocked until a writer came"
+    assert isinstance(done[0], alert_store.StoreUnavailable) and "unreadable" in done[1]["reports"][0]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"index": "0", "alertname": "A", "state": "firing", "verdict": "diagnosed"},
+        {"index": 0, "alertname": 5, "state": "firing", "verdict": "diagnosed"},
+        {"index": 0, "alertname": "A", "state": "firing", "verdict": "healthy"},
+    ],
+)
+def test_a_row_of_the_wrong_shape_inside_a_stored_record_is_refused(tmp_path: Path, row: dict[str, Any]) -> None:
+    store = _store(tmp_path)
+    (rid,) = _ids(1)
+    report = {
+        "summary": {"alerts": 1, "alertnames": ["A"], "byVerdict": {"diagnosed": 1}},
+        "alerts": [row],
+        "notIncluded": [],
+        "caveats": ["c"],
+    }
+    store.save(_record(rid, report), NOW)
+    with pytest.raises(alert_store.StoreUnavailable):
+        store.get(rid)
+
+
+def test_odd_section_types_in_a_row_never_crash_the_text_view() -> None:
+    body = {
+        "summary": {"alerts": 1, "byVerdict": {"diagnosed": 1}, "versions": "4.21"},
+        "notIncluded": [{"count": 1, "indices": "zz"}, "x"],
+        "caveats": "c",
+        "alerts": [
+            {
+                "index": 0,
+                "alertname": "A",
+                "state": "firing",
+                "verdict": "diagnosed",
+                "labels": ["x"],
+                "signals": 5,
+                "diagnosis": {"playbooks": "x", "note": 3},
+                "knownIssues": {"matches": [5, "y"]},
+                "memory": {"matches": None, "notes": "n"},
+                "nextSteps": {"readOnly": [5, {"command": 7}]},
+            },
+            "not a row",
+        ],
+    }
+    text = alert_report.render_text(body, {"stored": "yes", "durationSeconds": "x"})
+    assert "[0] A firing" in text
+
+
+@pytest.mark.parametrize("where", ["summary", "alertname", "commonLabels"])
+def test_a_lone_surrogate_anywhere_in_an_alert_is_dropped(tmp_path: Path, where: str) -> None:
+    alert = {"status": "firing", "labels": {"alertname": "KubePodCrashLooping"}, "annotations": {"summary": "s"}}
+    text = json.dumps({"alerts": [alert], "commonLabels": {"namespace": "prod"}})
+    marker = {"summary": '"summary": "s"', "alertname": '"KubePodCrashLooping"', "commonLabels": '"prod"'}[where]
+    text = text.replace(marker, marker[:-1] + '\\ud800"')
+    # A second, ordinary alert: with only the damaged one, an alertname that is not a name leaves no payload at all.
+    doc = json.loads(text)
+    doc["alerts"].append(_alert("etcdMembersDown"))
+    body = _report(tmp_path, json.dumps(doc))
+    assert body["summary"]["alerts"] == 2
+    assert "\ud800" not in json.dumps(body, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["HTTPS://evil.example/x", "ftp://evil.example/x", "s3://bucket-x/key", "http://[::1]:9/x"],
+)
+def test_every_scheme_url_shape_is_removed(tmp_path: Path, url: str) -> None:
+    alert = _alert("KubePodCrashLooping", ann={"summary": f"see {url} now"}, namespace="shop")
+    text = json.dumps(_report(tmp_path, _payload(alert)))
+    assert url not in text and "[url removed]" in text
