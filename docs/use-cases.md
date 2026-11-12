@@ -455,6 +455,44 @@ From an MCP client, `kubenoob_operator_inventory` takes the objects as YAML, `ku
 reads the cluster when cluster access is on, and `kubenoob_analyze_must_gather` and `kube-noob must-gather
 analyze` return the same inventory as `operatorInventory`.
 
+### Do the release notes report a problem with an operator I run?
+
+`operators issues` takes the same inputs as `operators inventory`, through the same reading code, and for each
+installed operator lists the issues in the bundled OpenShift release notes (4.20 to 4.22, as of the date it prints)
+that name the operator's product, for the release the cluster runs: the issue id and link, known or fixed, the
+OpenShift release of the fix, the release-notes file it came from and the corpus date. The release comes from
+`--openshift-version`, else the must-gather's ClusterVersion, else the live one.
+
+What it can say is limited by what the release notes hold, and it says so. They key issues by OpenShift release and
+text, not by operator or operator version, so the match goes through a table of the names the notes use for each
+package (13 packages today, each name checked to occur in the notes). An operator with no table entry is listed as
+`no-alias` -- not matched, which is not the same as no issue -- and one whose package the inventory could not read is
+`package-unknown`, never guessed from its CSV's name. A fix is stated as an OpenShift release, and an operator
+OpenShift ships carries a version of the form `4.21.0-<build>` that OLM updates on its own schedule, so whether the
+installed operator has the fix is always `not-determined`, with the reason. A cluster release outside 4.20-4.22 is
+not determined for every operator; an unknown release searches all three and the answer is incomplete. An inventory
+that is `partial` makes this answer incomplete too, and `--require-complete` exits 5 on anything but a complete one.
+
+```bash
+kube-noob operators issues --must-gather must-gather.tar.gz
+kube-noob operators issues -f olm.yaml --openshift-version 4.21.9 --format json
+kube-noob --cluster-enabled operators issues --live --require-complete
+```
+
+```text
+operator known issues (manifests): assessed -- 2 of 3 operator(s) named in the OpenShift 4.21 release notes as of 2026-10-27; 0 named in none; 1 operator(s) have no alias
+  openshift-ptp/ptp-operator.v4.21.0-202602100915  package ptp-operator  version 4.21.0-202602100915 (derived from the name)  named: the OpenShift 4.21 release notes name this operator in 2 issue(s)
+      OCPBUGS-73795 [fixed, OpenShift 4.21] listed as fixed in OpenShift 4.21.4
+        named as 'PTP Operator'; fix in the installed operator: not-determined (the release notes state the fix as an OpenShift release (4.21.4), not a version of ptp-operator: ...)
+  openshift-sriov-network-operator/sriov-network-operator.v4.21.0-202602050101  ...  no-alias: not matched against the release notes (no alias): ...
+caveat: 1 operator(s) have no alias and were not matched against the release notes; that is not the same as having no reported issue
+```
+
+From an MCP client, `kubenoob_operator_known_issues` takes the objects as YAML and an `openshift_version`,
+`kubenoob_cluster_operator_known_issues` reads the cluster (and its ClusterVersion) when cluster access is on, and
+`kubenoob_analyze_must_gather` and `kube-noob must-gather analyze` carry the answer as `operatorKnownIssues`, with
+at most five issues per operator and the total beside them.
+
 ### Why was this denied?
 
 `policy explain` reads a denial and explains it policy by policy: Kyverno, OPA Gatekeeper, ValidatingAdmissionPolicy,

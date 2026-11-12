@@ -609,6 +609,42 @@ class ClusterOperatorInventoryIn(_In):
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
 
 
+_OCP_VERSION_FIELD = Field(
+    None,
+    max_length=40,
+    pattern=r"^\d{1,3}\.\d{1,3}(\.\d{1,5})?$",
+    description="The cluster's OpenShift version (4.21 or 4.21.9): only that release's notes are searched. Without "
+    "it every indexed release is searched and the answer says it was not narrowed.",
+)
+
+
+class OperatorKnownIssuesIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="OLM objects as YAML, as for operator_inventory (`oc get csv,sub -A -o yaml` output works). Secret "
+        "objects are dropped unread.",
+    )
+    openshift_version: str | None = _OCP_VERSION_FIELD
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+
+
+class ClusterOperatorKnownIssuesIn(_In):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: every namespace). With namespaces the answer is partial and says so.",
+    )
+    openshift_version: str | None = Field(
+        None,
+        max_length=40,
+        pattern=r"^\d{1,3}\.\d{1,3}(\.\d{1,5})?$",
+        description="Overrides the version read from the cluster's ClusterVersion.",
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+
+
 class BuildDiagnoseIn(_In):
     log: str = Field(
         ...,
@@ -1512,6 +1548,38 @@ class Toolkit:
 
         return operators.inventory(operators.collect_live(get_backend(self.settings), list(p.namespaces)), top=p.top)
 
+    def operator_known_issues(self, p: OperatorKnownIssuesIn) -> dict[str, Any]:
+        """Which OLM operators in the objects the OpenShift release notes name in a reported issue."""
+        from kube_noob import operator_issues, operators
+
+        out = operator_issues.assess(
+            operators.from_manifests(p.manifests),
+            openshift_version=p.openshift_version,
+            version_from="argument" if p.openshift_version else None,
+            top=p.top,
+            data_dir=self.settings.data_dir,
+        )
+        self._observe([f"operator-issues:{out['verdict']}"])
+        return out
+
+    def cluster_operator_known_issues(self, p: ClusterOperatorKnownIssuesIn) -> dict[str, Any]:
+        from kube_noob import operator_issues, operators
+
+        backend = get_backend(self.settings)
+        collected = operators.collect_live(backend, list(p.namespaces))
+        version, note, source = p.openshift_version, "", "argument"
+        if version is None:
+            version, note = operator_issues.live_openshift_version(backend)
+            source = "live ClusterVersion"
+        return operator_issues.assess(
+            collected,
+            openshift_version=version,
+            version_from=source if version else None,
+            version_note=note,
+            top=p.top,
+            data_dir=self.settings.data_dir,
+        )
+
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
         memory for the error lines."""
@@ -1645,10 +1713,14 @@ class Toolkit:
         out["findings"] = rep["findings"][: p.top]
         if p.case_draft:
             out["caseDraft"] = mg_report.case_draft(rep)
-        from kube_noob import operators
+        from kube_noob import operator_issues, operators
         from kube_noob.mustgather import operators as mg_operators
 
-        out["operatorInventory"] = operators.inventory(mg_operators.collect(bundle))
+        olm = mg_operators.collect(bundle)
+        out["operatorInventory"] = operators.inventory(olm)
+        out["operatorKnownIssues"] = operator_issues.for_must_gather(
+            olm, rep["cluster"].get("version"), self.settings.data_dir
+        )
         self._observe([f"signal:{s['kind']}:{s['name']}" for s in rep["signals"][:20]])
         return out
 
@@ -2244,6 +2316,19 @@ class Toolkit:
                 self.operator_inventory,
             ),
             ToolSpec(
+                "operator_known_issues",
+                "Which installed operators the release notes name in a reported issue",
+                "For each OLM operator the objects describe (as operator_inventory reads them), the issues in the "
+                "bundled OpenShift release notes that name its product, for the cluster's release (openshift_version): "
+                "id, link, known or fixed, the OpenShift release of the fix, the release-notes source and the corpus "
+                "date. Matching goes through a table of the names the notes use per package: an operator with no "
+                "entry is 'no-alias', never clean, and a release outside the index is not determined. A fix is "
+                "stated as an OpenShift release, so whether the installed operator carries it is always not "
+                "determined. Secret objects are dropped unread.",
+                OperatorKnownIssuesIn,
+                self.operator_known_issues,
+            ),
+            ToolSpec(
                 "build_diagnose",
                 "Diagnose a failed build log",
                 "Read a failed GitHub Actions, Jenkins, Tekton or OpenShift build log: the failing step (and why it is "
@@ -2458,6 +2543,17 @@ class Toolkit:
                     "inventory is not determined. Neither is reported as zero operators.",
                     ClusterOperatorInventoryIn,
                     self.cluster_operator_inventory,
+                    open_world=True,
+                ),
+                ToolSpec(
+                    "cluster_operator_known_issues",
+                    "Installed operators named in reported issues (live, read-only)",
+                    "Read ClusterServiceVersions, Subscriptions and the ClusterVersion (never Secrets) and match the "
+                    "installed operators against the OpenShift release notes like operator_known_issues, for the "
+                    "release the cluster runs. A ClusterVersion that cannot be read leaves the release unknown, "
+                    "which the answer says; it is never read as no issues.",
+                    ClusterOperatorKnownIssuesIn,
+                    self.cluster_operator_known_issues,
                     open_world=True,
                 ),
                 ToolSpec(

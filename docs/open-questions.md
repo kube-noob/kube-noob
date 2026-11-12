@@ -66,7 +66,7 @@ outputs validated against the vendored OASIS schema. E2 (installed-operator inve
 | **N2** | Must-gather node configuration | A standard must-gather carries every rendered `MachineConfig`: `kubelet.conf`, kernel arguments, `fips`, CRI-O config, signature policy |
 | **N8** | API-server configuration from a must-gather | TLS profile, audit policy, effective arguments. Field stability across 4.x needs a real bundle first |
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |
-| **R5** | Operator and add-on vulnerability surface | E2 shipped: each inventoried operator has a `package` and a labelled `version` to match against the known-issue corpus, which ships |
+| **R5** | Operator and add-on vulnerability surface | Shipped as a name join (G278): the corpus keys issues by OpenShift release and text, not operator version, so `operators issues` lists the release-note issues naming each operator for the cluster's release and never decides whether the installed version has the fix. Open: a source that states operator fix versions (the local Jira copy's components and fix versions, or Red Hat's per-operator errata), which would let a version comparison be built honestly |
 | **R6** | Admission sees pod specs inside operator CRDs -- policies half | The webhook runs the audit and finds them; the generated policies do not. Needs a kind job |
 | **P10** | Host-networked pods selected by policies the spec says cannot select them | Found red-teaming P4. Changes shared v1alpha1 primitives, so deliberately not folded in |
 | **M6** | `net verify`: policy says allowed, packets say dropped | The roadmap calls this "the insurance on the policy wedge". Needs an OVN cluster to validate |

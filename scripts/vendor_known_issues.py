@@ -72,10 +72,20 @@ def check() -> int:
         if len(raw) >= 256 * 1024:
             bad.append(f"{f.name}: {len(raw)} bytes")
         json.loads(raw.decode("utf-8"))
+    # The operator alias table (kube_noob.operator_issues.ALIASES) names products as the release notes write them. A
+    # regenerated corpus that no longer uses a name would leave that operator matched against nothing while it reads
+    # as "named in none", so a dead or ambiguous name fails here, next to the data that killed it.
+    from kube_noob import known_issues, operator_issues
+
+    issues, _ = known_issues._read_parts(sorted(OUT.glob("*.json")))
+    bad += [f"operator alias: {p}" for p in operator_issues.alias_problems(issues)]
     if bad:
         print("\n".join(bad))
         return 1
-    print(f"{len(list(OUT.glob('*.json')))} known-issue files, each under 256 KiB and valid JSON")
+    print(
+        f"{len(list(OUT.glob('*.json')))} known-issue files, each under 256 KiB and valid JSON; every operator alias "
+        "name is used by them"
+    )
     return 0
 
 
