@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 
 from kube_noob import __version__, sanitize
+from kube_noob.audit.controls import coverage_line, grouped_reasons
 from kube_noob.audit.model import Severity
 
 MAX_FILES = 2_000
@@ -748,6 +749,12 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         for f in rep["findings"]
     ]
     notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    # The coverage record, one notification per reason: a consumer of the SARIF alone can see that the Service
+    # rules never ran rather than passed (G281). Grouped, so a Deployment-only file is a few lines, not seventy.
+    notes += [
+        {"level": "warning", "message": {"text": f"not evaluated, {why}: {', '.join(ids)}"}}
+        for why, ids in grouped_reasons(rep.get("controlSummary") or {})
+    ]
     notes += [
         {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
         for u in rep.get("unreadable") or []
@@ -923,6 +930,11 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     ]
     if report["excepted"]:
         lines += [f"{report['excepted']} finding(s) accepted by the exception list.", ""]
+    summary = report.get("controlSummary")
+    if isinstance(summary, dict) and (line := coverage_line(summary)):
+        # The gate's own coverage record, in the summary a reviewer reads: a clean gate over a Deployment-only
+        # change must not read as "every Service rule passed" (G281, G221).
+        lines += [line, ""]
     c = report.get("code")
     if c:
         shipped = "" if c["notShipped"] is None else f", {c['notShipped']} in files no image ships"

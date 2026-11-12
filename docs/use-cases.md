@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 153 312 to
-81 899 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 153 921 to
+82 508 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -736,16 +736,20 @@ the gate, `coverage` in a posture snapshot, the columns of `ksi`. Per NIST contr
 `excepted`, `withheld`, `clean` and `notEvaluated`, because a control with no finding is either one every rule
 checked or one nothing looked at, and an assessor cannot tell which from a zero.
 
-`clean` means a rule had something of its kind to look at and found nothing. A rule whose subject kinds are not
-in the input is `notEvaluated`, with the reason `no Service in the input` -- a file with one ConfigMap is not
-"no privileged container, no wildcard RBAC, no NodePort", it is nine per-document validations evaluated and
-84 rules waiting for their kind. The record names them: `rulesNotEvaluated` lists every unevaluated rule with
-its reason (an absent kind; a stage you left out; `does not apply on kubernetes` for an OpenShift rule; a guard's
-own words, such as `part of a namespace was passed, so the namespace's NetworkPolicies were not passed`), each
-control row lists its own under `notEvaluatedRules`, and a rule that reads several kinds and got only some of
-them is evaluated on those and listed under `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The text
-view groups the same list by reason and prints the same count, so the two cannot disagree. The exit code does
-not change: an absent kind is not a finding and not an unreadable file.
+`clean` means a rule had something of its kind to look at and found nothing. Every rule declares what it is
+about -- a Service, a Role or ClusterRole, a pod spec, a NetworkPolicy and a pod spec together -- matched with
+its API group, so a Knative `Service` or an ACM `Subscription` is not the subject of a rule written for the
+core or OLM one. A rule whose subject is not in the input does not run and is `notEvaluated`, with the reason
+`no Service in the input` (`no operators.coreos.com Subscription in the input` for a kind outside the core
+group) -- a file with one ConfigMap is not "no privileged container, no wildcard RBAC, no NodePort", it is 11
+rules evaluated (the per-document validations and the two ConfigMap rules) and 82 waiting for their kind. The
+record names them: `rulesNotEvaluated` lists every unevaluated rule with its reason (an absent kind; a stage
+you left out; `does not apply on kubernetes` for an OpenShift rule; a guard's own words, such as `part of a
+namespace was passed, so the namespace's NetworkPolicies were not passed`), each control row lists its own
+under `notEvaluatedRules`, and a rule that reads a kind beside its subject names it when absent under
+`rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The text view groups the same list by reason and
+prints the same count, so the two cannot disagree; the SARIF carries one notification per reason, and the gate's
+summary one line. The exit code does not change: an absent kind is not a finding and not an unreadable file.
 
 ```bash
 kube-noob audit -f k8s/ --format json | jq '.controlSummary.rulesNotEvaluated'

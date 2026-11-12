@@ -5,35 +5,47 @@
 - **A rule about a kind that was not in the input counted as evaluated and clean (G281).** The coverage record
   -- `controlSummary` in `audit`, `audit_manifests` and the gate, `coverage` in a posture snapshot, the KSI
   crosswalk's columns -- recorded a rule as evaluated when its check ran, whatever it ran over. `kube-noob audit
-  -f examples/kube-noob-exceptions.yaml` therefore recorded 92 of 93 rules as evaluated and 91 as checked-and-clean
-  on a file holding one ExceptionList: no Pod was "no privileged container", no Role was "no wildcard grant", no
-  Service was "no NodePort", and the OSCAL document built from it reported those controls `satisfied`. Five rules
-  gated on the platform did the same: an OpenShift-only rule read as checked-and-clean on every Kubernetes bundle.
-  This is the absence-read-as-pass the project exists to refuse, in the record that is supposed to be the
-  refusal.
+  -f examples/kube-noob-exceptions.yaml` therefore recorded 87 of 93 rules as evaluated on a file holding one
+  ExceptionList (the other six had declined on the partial bundle): no Pod was "no privileged container", no Role
+  was "no wildcard grant", no Service was "no NodePort", and the OSCAL document built from a Deployment-only
+  directory reported 15 controls `satisfied` and excluded none. Five rules gated on the platform did the same: an
+  OpenShift-only rule read as checked-and-clean on every Kubernetes bundle. This is the absence-read-as-pass the
+  project exists to refuse, in the record that is supposed to be the refusal.
 
-  The engine now records what each rule asked for (`by_kind`, `workloads`) and whether any of it was there. A rule
-  none of whose subjects were in the input is `notEvaluated` with the reason `no Service in the input` (`no pod
-  spec in the input (no Pod, Deployment, ...)` for the workload rules; `does not apply on kubernetes: ...` for a
-  platform gate), and every rule that declined now carries its own reason (`part of a namespace was passed, so
-  the namespace's NetworkPolicies were not passed`; `no registry allowlist is configured`). The kinds of one
-  `by_kind` call are one subject, so a rule that takes any replicated workload kind is evaluated when one is
-  there; a rule that reads several subjects runs on the ones present and names the rest under
-  `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The record carries the reasons in every embedding:
-  `controlSummary.rulesNotEvaluated` and per-control `notEvaluatedRules` in the audit (JSON, YAML, and grouped by
-  reason in the text view, with the count the JSON has), the MCP `audit_manifests` and `fedramp_ksi` results, the
-  gate's JSON, the OSCAL selection remarks, a posture snapshot's `coverage.notEvaluated` (with "could not be read
-  from the cluster" added when the kind is in `notRead`), and the posture report's `controlStanding` in JSON,
-  Markdown and HTML. A snapshot from 0.9.2 carries no reasons and keeps its older shape; a diff between one and a
-  new snapshot reports nothing new, fixed or regressed, because findings did not move. The exit code is unchanged:
-  an absent kind is not a finding and not unreadable evidence.
+  Every rule now declares what it is about (`subjects=` on `@rule`: a kind, alternatives such as `Role` or
+  `ClusterRole`, the pod-spec kinds, or every object for the per-document validations), and a rule whose subject
+  is not in the input does not run: it is `notEvaluated` with the reason `no Service in the input`, whatever
+  else it could have read. A kind counts only in the API group the rules know it in, so an ACM or Knative
+  `Subscription`, a Knative `Service` or somebody else's `MachineConfigPool` is not the subject
+  (`no operators.coreos.com Subscription in the input`), and `by_kind` and `workloads` apply the same rule. A
+  rule that needs two subjects (a Service and a pod spec; a NetworkPolicy and a pod spec; a PodDisruptionBudget
+  and a replicated workload) needs both; a rule that reads a kind beside its subject names it when absent under
+  `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`), and KN-N001 still fires on a whole namespace whose
+  workloads no NetworkPolicy selects. Every rule that declines carries its own reason (`part of a namespace was
+  passed, so the namespace's NetworkPolicies were not passed`; `does not apply on kubernetes: ...`), and a rule
+  that declined on one object and reported on another is evaluated, with the decline kept as a note rather than
+  listed as both fired and not evaluated. Subject labels are sorted, so the record is the same bytes under any
+  `PYTHONHASHSEED`.
 
-  Measured on `examples/`, rules evaluated before and after: `insecure-deployment.yaml` and `exercise-answer.yaml`
-  92 to 57 (78 to 43 clean; 31 rules now name the kind they waited for, 10 ran without one of theirs);
-  `netpol-shop.yaml` 92 to 57 (76 to 41 clean); `netpol-admin-tiers.yaml` 91 to 57 (75 to 41 clean);
-  `kube-noob-exceptions.yaml`, `blueprint.yaml` and `problems.yaml` 92 to 9 (91 to 8 clean: the per-document
-  validations are the only rules with a subject there). G210's boundary "a bundle with no admin policy is
-  evaluated and clean" is reversed: nothing to decide is not a failure to decide, and it is not a pass either.
+  The reasons are in every embedding: `controlSummary.rulesNotEvaluated` and per-control `notEvaluatedRules` in
+  the audit (JSON, YAML, and grouped by reason in the text view, with the count the JSON has), the MCP
+  `audit_manifests` and `fedramp_ksi` results, `audit --format sarif` (one `toolExecutionNotification` per
+  reason, beside the assumptions G269 put there), the gate's JSON, Markdown summary and HTML page (one coverage
+  line: `45 rules evaluated, 48 not evaluated: no Service in the input (6); ...`), the OSCAL selection remarks,
+  a posture snapshot's `coverage.notEvaluated` (with the resource named when the cluster refused it), the
+  posture report's `controlStanding` in JSON, Markdown and HTML, and the KSI page, which labelled every such
+  rule "Declined to decide" and now says "Not evaluated" with the reasons. An OSCAL deliverable now lists under
+  `exclude-controls` every control whose rules only read kinds the input lacks -- 9 of 30 on a Deployment-only
+  directory -- and reports fewer controls `satisfied` (6, where 0.9.2 reported 15). A snapshot from 0.9.2 carries
+  no reasons and keeps its older shape; a diff between one and a new snapshot reports nothing new, fixed or
+  regressed. The exit code is unchanged: an absent kind is not a finding and not unreadable evidence.
+
+  Measured with the command named, `kube-noob audit -f <file>` (one file, so the partial-bundle guards also
+  apply), rules evaluated before and after: `examples/exercise-answer.yaml` and `insecure-deployment.yaml` 87 to
+  48; `netpol-shop.yaml` 87 to 45; `netpol-admin-tiers.yaml` 86 to 45; `kube-noob-exceptions.yaml` 87 to 9, with
+  all 84 others naming the kind they waited for. (`blueprint.yaml` and `problems.yaml` are not manifests and the
+  command refuses them.) G210's boundary "a bundle with no admin policy is evaluated and clean" is reversed:
+  nothing to decide is not a failure to decide, and it is not a pass either.
 
 - **Which operators are installed was a question kube-noob could only half answer, and an input it had not fully read would have answered it anyway (E2, G270).** The must-gather analyser kept a name, a namespace and a phase per ClusterServiceVersion and folded every CSV of the same name into one (that summary, `cluster.operators` in `must-gather analyze`, is unchanged), and there was no way to ask a cluster or a set of manifests at all. `kube-noob operators inventory` (`-f`, `--must-gather`, `--live`), the `operator_inventory` and `cluster_operator_inventory` tools, and `operatorInventory` in `must-gather analyze` (text and JSON) and in `analyze_must_gather` now say, per operator: package, version and where the version came from (`spec.version`, the CSV's `olm.package` property, or `derived-from-name`, labelled), catalog, channel, approval mode, namespace, the namespaces it serves, phase (unknown when absent or not one OLM defines, and counted as not Succeeded), a pending upgrade and a Manual approval waiting.
 

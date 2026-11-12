@@ -16,6 +16,7 @@ from typing import Any
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
 from kube_noob.audit.podspec import (
+    EMBEDDED_POD_SPEC_GROUPS,
     EMBEDDED_POD_SPEC_PATHS,
     LONG_RUNNING_EMBEDDED_KINDS,
     LONG_RUNNING_KINDS,
@@ -55,22 +56,75 @@ from kube_noob.yamlio import Document, PathT, fmt_path, get_path, locator
 ADMIN_TIER_KINDS = (ANP_KIND, BANP_KIND)
 
 #: The subject `AuditContext.workloads` stands for in the coverage record: not one kind but every kind that
-#: carries a pod spec. Not a Kubernetes kind name, so it can never collide with one a rule asks `by_kind` for.
+#: carries a pod spec. Not a Kubernetes kind name, so it can never collide with one a rule declares.
 WORKLOAD_SUBJECT = "pod spec"
 WORKLOAD_KINDS: tuple[str, ...] = (*POD_SPEC_PATHS, *EMBEDDED_POD_SPEC_PATHS)
+#: The subject of a rule that reads every document (the per-object validations): present whenever there is one.
+ANY_OBJECT = "any object"
+#: `subjects=` shorthands, sorted so the reason a record shows does not depend on set iteration order (D3).
+REPLICATED: tuple[str, ...] = tuple(sorted(REPLICATED_KINDS))
+LONG_RUNNING: tuple[str, ...] = tuple(sorted(LONG_RUNNING_KINDS))
+
+#: The API group(s) each kind a rule may ask for is served in. A `kind` is matched WITH its group (class 3): an
+#: ACM or Knative `Subscription`, a Knative `Service`, a `MachineConfigPool` from somebody else's CRD are not
+#: the objects the rules know, and counting one as the subject made KN-S034 evaluated and clean on a bundle
+#: holding no OLM Subscription at all. Groups come from the vendored catalog where it serves the kind, and from
+#: the published CRD groups the rules already read for the rest (G281).
+_EXTRA_GROUPS: dict[str, frozenset[str]] = {
+    "APIServer": frozenset({"config.openshift.io"}),
+    ANP_KIND: frozenset({"policy.networking.k8s.io"}),
+    BANP_KIND: frozenset({"policy.networking.k8s.io"}),
+    "ReplicationController": frozenset({""}),
+    "ResourceClaim": frozenset({"resource.k8s.io"}),
+    "ResourceClaimTemplate": frozenset({"resource.k8s.io"}),
+    "Subscription": frozenset({"operators.coreos.com"}),
+    **EMBEDDED_POD_SPEC_GROUPS,
+}
+SUBJECT_GROUPS: dict[str, frozenset[str]] = {
+    **{kind: frozenset(api_group(v) for v in versions) for kind, versions in KIND_API_VERSIONS.items()},
+    **_EXTRA_GROUPS,
+}
+
+
+def kind_in_group(doc: Document, kind: str) -> bool:
+    """Whether ``doc`` is a ``kind`` of the group the rules know it in, not merely a document called that."""
+    groups = SUBJECT_GROUPS.get(kind)
+    if groups is None:
+        raise ValueError(f"{kind!r} is not a kind the audit rules know the API group of; add it to SUBJECT_GROUPS")
+    return doc.kind == kind and api_group(doc.api_version) in groups
 
 
 def _join_or(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
 
-def subject_reason(absent: list[str]) -> str:
-    """The record's reason for a rule none of whose subjects were in the input: "no Service in the input".
+def subject_label(subject: tuple[str, ...]) -> str:
+    """One subject as the record names it: "Service", "rbac.authorization.k8s.io ClusterRole or Role".
 
-    ``absent`` is one label per subject the rule asked for, as `by_kind` wrote it: "Role or ClusterRole" for
-    one call that takes either. Built from the kinds the RULE asked for, never from what the input called
-    itself, so an input-derived string cannot forge a reason (class 7). The pod-spec subject spells out the
-    kinds it stands for, because "no pod spec" alone would send a reader looking for a kind of that name.
+    Kinds are sorted, so the label is the same bytes whatever order the declaration (or a frozenset) gave
+    them. The group is written once when the alternatives share it and the kinds are not core; a core kind
+    is written bare, as `kubectl` prints it.
+    """
+    kinds = sorted(subject)
+    plain = [k for k in kinds if k not in (WORKLOAD_SUBJECT, ANY_OBJECT)]
+    special = [k for k in kinds if k not in plain]
+    groups = {g for k in plain for g in SUBJECT_GROUPS[k]}
+    if not plain:
+        return _join_or(special)
+    if groups == {""}:
+        return _join_or(plain + special)
+    if len(groups) == 1:
+        return f"{next(iter(groups))} {_join_or(plain)}" + (f" or {_join_or(special)}" if special else "")
+    return _join_or([f"{'/'.join(sorted(SUBJECT_GROUPS[k])) or 'core'} {k}" for k in plain] + special)
+
+
+def subject_reason(absent: list[str]) -> str:
+    """The record's reason for a rule whose subject was not in the input: "no Service in the input".
+
+    ``absent`` is one label per missing subject (`subject_label`). Built from the kinds the RULE declared,
+    never from what the input called itself, so an input-derived string cannot forge a reason (class 7). The
+    pod-spec subject spells out the kinds it stands for, because "no pod spec" alone would send a reader
+    looking for a kind of that name.
     """
     why = "no " + " and no ".join(absent) + " in the input"
     if WORKLOAD_SUBJECT in absent:
@@ -104,15 +158,13 @@ class AuditContext:
     undecided: set[str] = field(default_factory=set)
     #: Why each rule in `undecided` declined, in the rule's own words, for the coverage record (G281).
     declined: dict[str, str] = field(default_factory=dict)
-    #: Rules that asked for kinds and found none of them: nothing to evaluate, so not evaluated, and not clean.
-    #: The value is the reason the record shows: "no Service in the input". Filled by `run_rules` from what the
-    #: rule asked `by_kind` and `workloads` for, so no rule has to declare its subjects twice (G281).
+    #: Rules whose declared subject was not in the input: nothing to evaluate, so not evaluated, and not
+    #: clean. The value is the reason the record shows: "no Service in the input" (G281).
     no_subject: dict[str, str] = field(default_factory=dict)
-    #: Rules that ran, with the subject kinds they asked for and did not get: "KN-S014 without ServiceAccount".
+    #: Rules that ran, with the declared `context` kinds they did not get: "KN-S014 without ServiceAccount".
     absent_subjects: dict[str, list[str]] = field(default_factory=dict)
-    # The rule whose check is running, and what it has asked for so far. `run_rules` owns both.
-    _current: str | None = field(default=None, repr=False)
-    _asked: dict[str, bool] = field(default_factory=dict, repr=False)
+    #: Rules that declined on part of the input and reported a finding on the rest: evaluated, with the note.
+    partly_declined: dict[str, str] = field(default_factory=dict)
     _has_workloads: bool | None = field(default=None, repr=False)
 
     def cannot_decide(self, rule_id: str, why: str = "") -> None:
@@ -128,6 +180,18 @@ class AuditContext:
         self.undecided.add(rule_id)
         self.declined[rule_id] = f"does not apply on {self.platform}: {why}"
 
+    def has_subject(self, subject: tuple[str, ...]) -> bool:
+        """Whether any kind of ``subject`` (group-matched) is in the input; `ANY_OBJECT` needs one document."""
+        if ANY_OBJECT in subject and self.docs:
+            return True
+        if WORKLOAD_SUBJECT in subject:
+            if self._has_workloads is None:
+                self._has_workloads = any(True for _ in self.workloads())
+            if self._has_workloads:
+                return True
+        plain = [k for k in subject if k not in (ANY_OBJECT, WORKLOAD_SUBJECT)]
+        return any(kind_in_group(d, k) for k in plain for d in self.docs)
+
     @property
     def is_openshift(self) -> bool:
         return self.platform in OPENSHIFT_FAMILY
@@ -137,58 +201,21 @@ class AuditContext:
         return self.platform in ROSA_FAMILY
 
     def by_kind(self, *kinds: str) -> list[Document]:
-        found = [d for d in self.docs if d.kind in kinds]
-        if self._current is not None:
-            # The kinds of ONE call are one subject: a rule that asks for every replicated workload kind at
-            # once is evaluated when any of them is there, and "without StatefulSet" would be noise. Kinds
-            # asked for in separate calls are separate subjects, and a missing one is named.
-            label = _join_or(list(kinds))
-            # True once any call found the subject; a second call for a kind that is there does not unfind it.
-            self._asked[label] = self._asked.get(label, False) or bool(found)
-        return found
+        """The documents of these kinds IN THE GROUP the rules know them in (`SUBJECT_GROUPS`), in input order."""
+        return [d for d in self.docs if any(kind_in_group(d, k) for k in kinds)]
 
     def workloads(self) -> Iterator[tuple[Document, PodTemplate]]:
         """Every pod spec in the bundle, including the ones embedded in an operator's own kind.
 
         One object can yield several: a RayCluster has a head and a template per worker group, an
         InferenceService up to three components. Before this read them, every pod-level rule returned nothing
-        for those kinds and the bundle came back clean (G229).
+        for those kinds and the bundle came back clean (G229). A kind of another API group is not read: its
+        schema is somebody else's (G231, class 3).
         """
-        if self._current is not None:
-            if self._has_workloads is None:
-                self._has_workloads = any(pod_templates(d) for d in self.docs)
-            self._asked[WORKLOAD_SUBJECT] = self._asked.get(WORKLOAD_SUBJECT, False) or self._has_workloads
-        return self._workloads()
-
-    def _workloads(self) -> Iterator[tuple[Document, PodTemplate]]:
         for d in self.docs:
+            if d.kind in SUBJECT_GROUPS and not kind_in_group(d, d.kind):
+                continue
             yield from ((d, pt) for pt in pod_templates(d))
-
-    def begin_rule(self, rule_id: str) -> None:
-        self._current, self._asked = rule_id, {}
-
-    def end_rule(self, rule_id: str, *, fired: bool = False) -> str | None:
-        """Record what the rule asked for; the reason it had no subject at all, or None when it had one.
-
-        A rule that asked for nothing (the per-document validations read every object) evaluated every
-        document there is. A rule that asked and found none of it did not evaluate anything: no Pod in the
-        input is not "pod security clean" (G281). A rule that found some of what it asked for ran on those,
-        and the kinds it did not get are recorded beside it rather than silently folded into "evaluated".
-        A rule that reported a finding looked at something, whatever it asked for, and is evaluated.
-        """
-        asked, self._current, self._asked = self._asked, None, {}
-        absent = [k for k in asked if not asked[k]]
-        if not asked or not absent:
-            return None
-        if len(absent) == len(asked) and not fired:
-            why = subject_reason(absent)
-            self.no_subject[rule_id] = why
-            # The guard that declined and the subject that is missing are one fact: there was nothing to decide.
-            self.undecided.discard(rule_id)
-            self.declined.pop(rule_id, None)
-            return why
-        self.absent_subjects[rule_id] = sorted(absent)
-        return None
 
     def ns(self, doc: Document) -> str:
         return doc.namespace or "<default>"
@@ -205,6 +232,14 @@ class Rule:
     description: str
     citations: tuple[str, ...] = ()
     stackrox_policies: tuple[str, ...] = ()
+    #: What the rule is ABOUT, declared, never inferred: each entry is one subject (a kind, or a tuple of
+    #: alternative kinds), and every subject must be in the input for the rule to be evaluated at all. A rule
+    #: whose subject is absent is `notEvaluated` with the subject named, whatever else it could have read:
+    #: no Pod in the input is not "pod security clean" (G281).
+    subjects: tuple[tuple[str, ...], ...] = ()
+    #: Kinds the rule reads BESIDE its subject and can run without: named in the record when absent
+    #: ("KN-S014 without ServiceAccount"), so a reader knows which half of the check had nothing to see.
+    context: tuple[str, ...] = ()
     check: Callable[[AuditContext, Rule], Iterable[Finding]] | None = field(default=None, compare=False)
 
     def finding(
@@ -262,14 +297,36 @@ def rule(
     description: str,
     citations: tuple[str, ...] = (),
     stackrox: tuple[str, ...] = (),
+    *,
+    subjects: tuple[str | tuple[str, ...], ...],
+    context: tuple[str, ...] = (),
 ) -> Callable[[Callable[[AuditContext, Rule], Iterable[Finding]]], Callable[[AuditContext, Rule], Iterable[Finding]]]:
+    """``subjects`` is required: a rule with no declared subject is a rule the record cannot account for."""
+    declared = tuple((s,) if isinstance(s, str) else tuple(s) for s in subjects)
+    if not declared or any(not sub for sub in declared):
+        raise RuntimeError(f"{rule_id} declares no subject")
+    for kind in (*(k for sub in declared for k in sub), *context):
+        if kind not in SUBJECT_GROUPS and kind not in (WORKLOAD_SUBJECT, ANY_OBJECT):
+            raise RuntimeError(f"{rule_id} declares {kind!r}, which is not in SUBJECT_GROUPS")
+
     def deco(
         fn: Callable[[AuditContext, Rule], Iterable[Finding]],
     ) -> Callable[[AuditContext, Rule], Iterable[Finding]]:
         if rule_id in RULES:
             raise RuntimeError(f"duplicate rule id {rule_id}")
         RULES[rule_id] = Rule(
-            rule_id, title, stage, category, severity, remediation, description, citations, stackrox, fn
+            rule_id,
+            title,
+            stage,
+            category,
+            severity,
+            remediation,
+            description,
+            citations,
+            stackrox,
+            declared,
+            context,
+            fn,
         )
         return fn
 
@@ -520,6 +577,7 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
     Severity.HIGH,
     "Every object needs apiVersion, kind and metadata.name (or metadata.generateName).",
     "kubectl/oc reject objects without these identity fields.",
+    subjects=(ANY_OBJECT,),
 )
 def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -546,6 +604,7 @@ def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A kind sent to an API group/version that does not serve it fails with 'no matches for kind'. "
     "Classic example: Route is route.openshift.io/v1, not apps.openshift.io/v1 (that group serves DeploymentConfig).",
     ("k8s-deprecation-guide", "ocp-routes"),
+    subjects=(ANY_OBJECT,),
 )
 def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -575,6 +634,7 @@ def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "HTTPRoute, DeploymentConfig -> Deployment, SCC -> Pod Security Admission labels).",
     "Groups such as route.openshift.io or security.openshift.io do not exist on vanilla Kubernetes.",
     ("ocp-routes", "k8s-pss"),
+    subjects=(ANY_OBJECT,),
 )
 def _v003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.is_openshift:
@@ -598,6 +658,7 @@ def _v003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     Severity.MEDIUM,
     "Install the add-on (or its CRDs) before applying, or remove the object.",
     "Some API groups are present by default on OpenShift but need an operator/CRDs on vanilla Kubernetes.",
+    subjects=(ANY_OBJECT,),
 )
 def _v004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -624,6 +685,7 @@ def _v004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Migrate to the replacement apiVersion (see message); `kube-noob fix` performs mechanical migrations.",
     "Removed APIs are rejected by the API server; the object will not apply.",
     ("k8s-deprecation-guide",),
+    subjects=(ANY_OBJECT,),
 )
 def _v005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -648,6 +710,7 @@ def _v005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Migrate before the removal release.",
     "Deprecated APIs still work but will be removed.",
     ("k8s-deprecation-guide",),
+    subjects=(ANY_OBJECT,),
 )
 def _v006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -670,6 +733,7 @@ def _v006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Use apps/v1 Deployment (with image triggers via the image.openshift.io/triggers annotation if needed).",
     "DeploymentConfig (apps.openshift.io/v1) is deprecated since OpenShift 4.14.",
     ("ocp-deploymentconfig-deprecation",),
+    subjects=("DeploymentConfig",),
 )
 def _v008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_openshift:
@@ -695,6 +759,7 @@ def _v008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Use lowercase alphanumerics, '-' and '.', starting and ending with an alphanumeric, max 253 chars "
     "(63 for Services, Namespaces and labels).",
     "The API server rejects invalid object names.",
+    subjects=(ANY_OBJECT,),
 )
 def _v009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -721,6 +786,7 @@ def _v009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Make spec.selector.matchLabels a subset of spec.template.metadata.labels.",
     "apps/v1 rejects workloads whose selector does not select their own template ('selector does not match "
     "template labels').",
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _v010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -746,6 +812,7 @@ def _v010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     Severity.MEDIUM,
     "Align Service spec.selector with the pod template labels of the workload it fronts.",
     "A Service whose selector matches no pods has no endpoints; Routes/Ingresses in front of it return 503.",
+    subjects=("Service", WORKLOAD_SUBJECT),
 )
 def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     workloads = list(ctx.workloads())
@@ -787,6 +854,7 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     Severity.HIGH,
     "Declare the named containerPort or use the numeric port.",
     "A named targetPort that no selected container exposes results in a Service without ready endpoints.",
+    subjects=("Service", WORKLOAD_SUBJECT),
 )
 def _v012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     workloads = list(ctx.workloads())
@@ -828,6 +896,7 @@ def _v012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Point the Service at a port these containers declare, or declare the one it points at.",
     "A numeric targetPort outside the ports the selected containers declare is usually a typo, though Kubernetes "
     "does not require the declaration.",
+    subjects=("Service", WORKLOAD_SUBJECT),
 )
 def _v023(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     """The numeric half of KN-V012, and it has to be weaker.
@@ -896,6 +965,7 @@ def _v023(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     Severity.HIGH,
     "Remove or rename the duplicate; the later object silently overwrites the earlier one on apply.",
     "Two objects with the same kind, namespace and name collide.",
+    subjects=(ANY_OBJECT,),
 )
 def _v014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     seen: dict[tuple[str, str, str], Document] = {}
@@ -919,6 +989,7 @@ def _v014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "OVN-Kubernetes accepts a single EgressFirewall per namespace and it must be named 'default'; other names "
     "are rejected/ignored.",
     ("ocp-egressfirewall",),
+    subjects=("EgressFirewall",),
 )
 def _v015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     per_ns: dict[str, int] = {}
@@ -946,6 +1017,7 @@ def _v015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "None or Redirect only; certificates are not allowed with passthrough.",
     "The router rejects Routes with invalid TLS settings.",
     ("ocp-routes",),
+    subjects=("Route",),
 )
 def _v016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Route"):
@@ -983,6 +1055,7 @@ def _v016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "(HyperShift applies node configuration from the management side via NodePool config), and Red Hat's guidance "
     "is not to rely on customer-owned MachineConfig changes on ROSA.",
     ("rosa-hcp-architecture",),
+    subjects=(("MachineConfig", "MachineConfigPool"),),
 )
 def _v017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_rosa:
@@ -1001,6 +1074,7 @@ def _v017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Remove the duplicate key and merge its fields into a single mapping.",
     "YAML parsers keep the last value silently, so the object you review is not the one you wrote; kubectl's strict "
     "field validation (the default) rejects duplicate fields outright.",
+    subjects=(ANY_OBJECT,),
 )
 def _v018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
@@ -1027,6 +1101,7 @@ _RETIRED = (
     "ingress-nginx stopped receiving releases and bug fixes when the project was archived on 2026-03-24, so every "
     "later vulnerability stays unfixed; the project itself asks users to identify a Gateway API implementation.",
     ("ingress-nginx-retired",),
+    subjects=("Ingress",),
 )
 def _v019(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Ingress"):
@@ -1098,6 +1173,7 @@ def _declared_pod_claims(pt: PodTemplate) -> list[str]:
     "A container's resources.claims entry refers to a pod-level claim by name, so a name the Pod never declares "
     "resolves to nothing. The API server refuses the object, and a typo here reads at a glance as a device "
     "request that was made.",
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _v020(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt, c in _resource_containers(ctx):
@@ -1130,6 +1206,7 @@ def _v020(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "resourceClaimTemplateName (give this Pod its own, created from a ResourceClaimTemplate).",
     "A spec.resourceClaims entry has to name exactly one source. With neither there is no device to allocate, "
     "and with both which one applies is undefined; the API server refuses the object either way.",
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _v021(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -1213,6 +1290,8 @@ _FLATTENED_GROUP_VERSION = "resource.k8s.io/v1beta1"
     "A pod-level claim names a ResourceClaim or a ResourceClaimTemplate in the Pod's own namespace. If no such "
     "object exists the Pod is admitted and then stays Pending, so the failure arrives after the deploy rather "
     "than during it.",
+    subjects=(WORKLOAD_SUBJECT,),
+    context=("ResourceClaim", "ResourceClaimTemplate"),
 )
 def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
@@ -1271,6 +1350,8 @@ def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A request with adminAccess ignores every ordinary claim to the device with respect to access modes and "
     "resource allocations, so the workload reaches devices another tenant holds exclusively. It is the DRA "
     "equivalent of a privileged container, and the only thing standing between it and any namespace is a label.",
+    subjects=(("ResourceClaim", "ResourceClaimTemplate"),),
+    context=("Namespace",),
 )
 def _s031(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     in_bundle: set[str] = set()
@@ -1334,6 +1415,7 @@ def _s031(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Pod-level resources carries no claims: the API server forbids the field outright, whatever names are in "
     "it. The schema accepts it, because PodSpec.resources really does have a claims property, so nothing before "
     "apply says the object will be refused.",
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _v022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -1368,6 +1450,8 @@ def _v022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Without a quota one namespace can take the cluster's schedulable capacity, and without a LimitRange a "
     "container that declares no limits inherits none. A ClusterResourceQuota or a cluster-wide default can "
     "supply either, and no manifest in the namespace shows that, so this is advisory.",
+    subjects=(WORKLOAD_SUBJECT, "Namespace"),
+    context=("ClusterResourceQuota", "LimitRange", "ResourceQuota"),
 )
 def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
@@ -1433,6 +1517,7 @@ def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "every node in the pool keeps the OS, kubelet and container runtime it has -- including their unpatched "
     "flaws -- until the pool is unpaused. Pausing is a legitimate maintenance step; leaving it paused is how a "
     "cluster silently stops receiving them.",
+    subjects=("MachineConfigPool",),
 )
 def _s033(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("MachineConfigPool"):
@@ -1462,6 +1547,7 @@ def _s033(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "An OLM Subscription with automatic approval installs whatever the channel publishes next, with no review "
     "of what changed, and the field is Automatic unless it explicitly says Manual -- so omitting it chooses "
     "automatic upgrades rather than deferring the decision.",
+    subjects=("Subscription",),
 )
 def _s034(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Subscription"):
@@ -1517,6 +1603,7 @@ def platform_owned_namespace(ctx: AuditContext, name: str) -> bool:
     "Pod Security admission is configured per namespace by a label. Without it the namespace runs at whatever "
     "the cluster's AdmissionConfiguration default is, which is privileged on a default install -- so the "
     "namespace enforces nothing, and no manifest in it will say so.",
+    subjects=("Namespace",),
 )
 def _s032(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     seen: set[str] = set()
@@ -1647,6 +1734,7 @@ def _resource_containers(ctx: AuditContext) -> Iterator[tuple[Document, PodTempl
     "rejected unless the ServiceAccount is granted the 'privileged' SCC.",
     ("k8s-pss", "ocp-scc"),
     ("Privileged Container",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -1667,6 +1755,7 @@ def _s001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "true; clusters upgraded from 4.10 or earlier may still admit pods under the legacy 'restricted' SCC.",
     ("k8s-pss", "ocp-scc"),
     ("Container with privilege escalation allowed",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -1698,6 +1787,7 @@ def _s002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "arbitrary non-root UID, so images must also work as a random UID in group 0.",
     ("k8s-pss", "ocp-scc"),
     ("Docker CIS 4.1: Ensure That a User for the Container Has Been Created",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt, c in _containers(ctx):
@@ -1733,6 +1823,7 @@ def _s003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "namespace's openshift.io/sa.scc.uid-range / supplemental-groups annotations are rejected ('unable to validate "
     "against any security context constraint').",
     ("ocp-scc",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_openshift:
@@ -1771,6 +1862,7 @@ def _s004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Capabilities like SYS_ADMIN or NET_ADMIN are near-root and enable container escapes.",
     ("k8s-pss",),
     ("CAP_SYS_ADMIN capability added",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -1801,6 +1893,7 @@ def _s005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "legacy 'restricted' SCC (clusters upgraded from <=4.10) does not.",
     ("k8s-pss", "ocp-scc"),
     ("Drop All Capabilities",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -1821,6 +1914,7 @@ def _s006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A read-only root filesystem blocks tampering and many post-exploitation techniques.",
     ("k8s-pss",),
     ("Container using read-write root filesystem",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -1841,6 +1935,7 @@ def _s007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "v1.27.2 ran without any seccomp filter.",
     ("k8s-pss", "ocp-scc", "k8s-cve-2023-2431"),
     ("Docker CIS 5.21: Ensure the default seccomp profile is not disabled",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -1896,6 +1991,7 @@ def _s008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         "Docker CIS 5.15: Ensure that the host's process namespace is not shared",
         "Docker CIS 5.16: Ensure that the host's IPC namespace is not shared",
     ),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -1915,6 +2011,7 @@ def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "node takeover.",
     ("k8s-pss",),
     ("Mounting Sensitive Host Directories", "Mount Container Runtime Socket"),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -1940,6 +2037,7 @@ def _s010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Expose the container through a Service instead of hostPort.",
     "hostPort binds directly on the node, bypasses NetworkPolicy expectations and limits scheduling.",
     ("k8s-pss",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2036,6 +2134,7 @@ def _registry_allowed(image: str, allowed: tuple[str, ...]) -> bool:
     "is the step every other supply-chain control depends on: a signature, an SBOM and a scan all describe an "
     "artifact somebody chose to trust.",
     ("k8s-images",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s036(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.allowed_registries:
@@ -2075,6 +2174,7 @@ def _s036(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "':latest' or untagged images change underneath you, break rollbacks and defeat image scanning/signing.",
     ("k8s-images",),
     ("Latest tag",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2112,6 +2212,7 @@ def _s012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Literal credentials in manifests leak through Git history, `oc get -o yaml`, logs and audit trails.",
     ("k8s-secrets-good-practices",),
     ("Environment Variable Contains Secret",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2158,6 +2259,8 @@ def _s013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A mounted token turns any RCE into authenticated Kubernetes API access.",
     ("k8s-rbac-good-practices",),
     ("Pod Service Account Token Automatically Mounted",),
+    subjects=(WORKLOAD_SUBJECT,),
+    context=("ServiceAccount",),
 )
 def _s014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     sa_opt_out = {
@@ -2188,6 +2291,7 @@ def _rules_of(d: Document) -> list[tuple[int, dict[str, Any]]]:
     "Enumerate the exact apiGroups, resources and verbs needed.",
     "Wildcards grant every current and future resource/verb, including secrets and escalation paths.",
     ("k8s-rbac-good-practices",),
+    subjects=(("ClusterRole", "Role"),),
 )
 def _s015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Role", "ClusterRole"):
@@ -2206,6 +2310,7 @@ def _s015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Bind a narrowly scoped Role instead; cluster-admin should only be held by break-glass identities.",
     "cluster-admin is full control of the cluster.",
     ("k8s-rbac-good-practices",),
+    subjects=(("ClusterRoleBinding", "RoleBinding"),),
 )
 def _s016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("ClusterRoleBinding", "RoleBinding"):
@@ -2256,6 +2361,7 @@ def _writes(rr: dict[str, Any], resource: str) -> bool:
     "access to StatefulSets too, CVE-2026-2270 (kube-controller-manager up to v1.34.11, v1.35.8, v1.36.4 and "
     "v1.37.0) let a namespace user create pods in other namespaces.",
     ("k8s-rbac-good-practices", "k8s-cve-2026-2270", "k8s-rbac-bootstrap-policy"),
+    subjects=(("ClusterRole", "Role"),),
 )
 def _s017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Role", "ClusterRole"):
@@ -2347,6 +2453,7 @@ def _s017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "ROSA) or Sealed Secrets; never commit base64 'data' to Git.",
     "base64 is an encoding, not encryption.",
     ("k8s-secrets-good-practices",),
+    subjects=("Secret",),
 )
 def _s018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Secret"):
@@ -2368,6 +2475,7 @@ def _s018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "namespaces, host directories or RunAsAny UIDs.",
     "A permissive SCC bound to a ServiceAccount defeats OpenShift's default pod isolation.",
     ("ocp-scc",),
+    subjects=("SecurityContextConstraints",),
 )
 def _s019(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("SecurityContextConstraints"):
@@ -2400,6 +2508,7 @@ def _s019(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Remove securityContext.procMount: Unmasked.",
     "Unmasked /proc exposes host kernel interfaces.",
     ("k8s-pss",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s020(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2422,6 +2531,7 @@ def _s020(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "enabled by a namespace label `pod-security.kubernetes.io/enforce-version: v1.34` or later, so on such a "
     "namespace the pod is refused at admission rather than merely questionable.",
     ("k8s-pss",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s029(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     # The field paths KEP-4940 names, for containers and initContainers alike. `_containers` already yields both.
@@ -2464,6 +2574,7 @@ def _s029(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "let a user who can create a pod run commands outside the container through a gitRepo volume, and "
     "CVE-2025-1767 (every version, no fix) lets a pod read local git repositories on the node through one.",
     ("k8s-cve-2024-10220", "k8s-cve-2025-1767", "k8s-volumes-gitrepo"),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s021(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     target = parse_minor(ctx.k8s_version)
@@ -2517,6 +2628,7 @@ _SYSCTL_META = ("+", "=")
     "node; OpenShift's container runtime is CRI-O, and the GitHub advisory names an admission webhook that denies "
     "pods with a '+' in a sysctl value as the mitigation.",
     ("ghsa-cve-2022-0811",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -2551,6 +2663,7 @@ _PROC_DIR = re.compile(r"^/proc(?:/|\Z)")
     "leaked file descriptor: a container breakout to the host filesystem. The advisory's mitigation is to permit "
     "only a process.cwd of / and to deny working directories under /proc.",
     ("ghsa-cve-2024-21626",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s023(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2581,6 +2694,7 @@ def _s023(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "CVE-2026-24513 and CVE-2026-24514 in v1.13.7/v1.14.3; CVE-2026-3288 in v1.13.8/v1.14.4/v1.15.0; CVE-2026-4342 "
     "in v1.13.9/v1.14.5/v1.15.1).",
     tuple(dict.fromkeys(c for a in INGRESS_NGINX_ADVISORIES for c in a.citations)) + ("ingress-nginx-retired",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s024(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _containers(ctx):
@@ -2655,6 +2769,7 @@ def _targets_windows(pt: PodTemplate) -> bool:
     "environment variable; the feed names pod create events with embedded PowerShell commands as the sign of "
     "exploitation. A subPath is a path inside the volume and never needs these characters.",
     ("k8s-cve-2023-3676", "k8s-fix-cve-2023-3676"),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _s025(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt, c in _containers(ctx):
@@ -2705,6 +2820,7 @@ _CM_LINE = re.compile(CONFIGMAP_CREDENTIAL_LINE)
     "credential. Flags a key that names a credential with a literal value, a URL with a password, a private key, an "
     "access key id or a token in any value, and a password=... or token: ... line in a config file value.",
     ("k8s-configmap", "k8s-secrets-good-practices", "k8s-rbac-bootstrap-policy"),
+    subjects=("ConfigMap",),
 )
 def _s026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("ConfigMap"):
@@ -2742,6 +2858,7 @@ def _s026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "the exposure of a non-expiring token in a readable API object is acceptable. Anyone who can read Secrets in the "
     "namespace can act as that ServiceAccount until the Secret is deleted.",
     ("k8s-secret-sa-token", "k8s-rbac-good-practices"),
+    subjects=("Secret",),
 )
 def _s027(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Secret"):
@@ -2782,6 +2899,7 @@ RBAC_DEFAULTS_LABEL = ("kubernetes.io/bootstrapping", "rbac-defaults")
     "system:serviceaccounts every ServiceAccount of every namespace. The built-in bindings (system: names, label "
     "kubernetes.io/bootstrapping: rbac-defaults) are left alone.",
     ("k8s-rbac-good-practices", "k8s-rbac-subjects"),
+    subjects=(("ClusterRoleBinding", "RoleBinding"),),
 )
 def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     key, value = RBAC_DEFAULTS_LABEL
@@ -2826,6 +2944,8 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Without NetworkPolicy every pod in the cluster can reach these pods (lateral movement).",
     ("k8s-networkpolicy",),
     ("Deployments should have at least one ingress Network Policy",),
+    subjects=(WORKLOAD_SUBJECT,),
+    context=("NetworkPolicy",),
 )
 def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
@@ -2853,6 +2973,7 @@ def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Add spec.tls with termination: edge (or reencrypt/passthrough) and insecureEdgeTerminationPolicy: Redirect.",
     "Plain-HTTP Routes expose credentials and session cookies to anyone on the path.",
     ("ocp-routes",),
+    subjects=("Route",),
 )
 def _n002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Route"):
@@ -2877,6 +2998,7 @@ def _n002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Add spec.tls with a certificate Secret (cert-manager can issue it).",
     "Plain-HTTP ingress exposes traffic in transit.",
     ("k8s-networkpolicy",),
+    subjects=("Ingress",),
 )
 def _n003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Ingress"):
@@ -2908,6 +3030,7 @@ INTERNAL_LB_ANNOTATIONS: dict[str, frozenset[str]] = {
     "A public cloud load balancer without source ranges is reachable from anywhere.",
     ("k8s-service-lb",),
     ("Deployments with externally exposed endpoints",),
+    subjects=("Service",),
 )
 def _n004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Service"):
@@ -2941,6 +3064,7 @@ def _n004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Prefer ClusterIP + Route/Ingress; NodePorts open a port on every node.",
     "NodePorts widen the attack surface.",
     ("k8s-service-lb",),
+    subjects=("Service",),
 )
 def _n005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Service"):
@@ -2961,6 +3085,7 @@ _ANY_CIDR = {"0.0.0.0/0", "::/0"}
     "EgressFirewall rules are evaluated in order and the first match wins, so an early catch-all Deny makes every "
     "later Allow dead code.",
     ("ocp-egressfirewall",),
+    subjects=("EgressFirewall",),
 )
 def _n006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("EgressFirewall"):
@@ -2990,6 +3115,7 @@ def _n006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Restrict 'from' to specific namespaceSelector/podSelector peers and ports.",
     "An ingress rule of {} admits traffic from every pod and every external source.",
     ("k8s-networkpolicy",),
+    subjects=("NetworkPolicy",),
 )
 def _n007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("NetworkPolicy"):
@@ -3040,6 +3166,7 @@ def _n007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "provider, an Ingress controller, or the Gateway API, which it recommends for new deployments. So this is "
     "worth fixing on a schedule rather than only on principle.",
     ("k8s-cve-2020-8554", "k8s-kep-5707", "k8s-admission-deny-external-ips"),
+    subjects=("Service",),
 )
 def _n008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Service"):
@@ -3091,6 +3218,7 @@ def _annotation_cves(short: str) -> str:
         "k8s-cve-2026-3288",
         "ingress-nginx-retired",
     ),
+    subjects=("Ingress",),
 )
 def _n009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Ingress"):
@@ -3152,6 +3280,7 @@ def _n009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         "k8s-cve-2022-4886",
         "ingress-nginx-annotations-risk",
     ),
+    subjects=("ConfigMap",),
 )
 def _n010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("ConfigMap"):
@@ -3213,6 +3342,7 @@ def ingress_names_no_class(d: Document) -> bool:
     "served by the cluster's default IngressClass, which may be ingress-nginx (not on OpenShift, whose router serves "
     "it).",
     ("k8s-cve-2026-24512", "ingress-nginx-configmap", "ingress-nginx-retired"),
+    subjects=("Ingress",),
 )
 def _n011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Ingress"):
@@ -3256,6 +3386,7 @@ def _selects_something(selector: dict[str, Any]) -> bool:
     "(often a label typo) protects nothing, while the namespace still looks covered (KN-N001 passes): the pods it "
     "was written for accept traffic from every pod.",
     ("k8s-networkpolicy",),
+    subjects=("NetworkPolicy", WORKLOAD_SUBJECT),
 )
 def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     by_ns: dict[str, list[PodTemplate]] = {}
@@ -3349,6 +3480,7 @@ def _egress_allows_dns(spec: dict[str, Any]) -> bool:
     "names. The pods keep running and every outbound connection fails on lookup, which reads as an application "
     "outage rather than as a policy change.",
     ("k8s-networkpolicy",),
+    subjects=("NetworkPolicy", WORKLOAD_SUBJECT),
 )
 def _n013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
@@ -3407,6 +3539,7 @@ def _n013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "the rules into NetworkPolicies.",
     "An AdminNetworkPolicy or BaselineAdminNetworkPolicy a CNI stopped enforcing is in the cluster and decides "
     "nothing: Calico removed support in 3.32 without reporting an error.",
+    subjects=(ADMIN_TIER_KINDS,),
 )
 def _n014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     """The inert-policy case as a finding a gate can fail on.
@@ -3461,6 +3594,7 @@ def _n014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "unreachable, which is also when a bad object is most likely to be admitted. The API default is Fail, so "
     "Ignore is a decision rather than an oversight.",
     ("k8s-admission-webhook-failure-policy",),
+    subjects=(("MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"),),
 )
 def _s030(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
@@ -3531,6 +3665,7 @@ def _pvc_like(ctx: AuditContext) -> Iterator[tuple[Document, PathT, dict[str, An
     "ReadWriteOnce.",
     "The provisioner cannot satisfy RWX, so the PVC stays Pending (ProvisioningFailed).",
     ("k8s-pv-access-modes", "aws-ebs-csi", "aws-efs-csi", "odf-access-modes"),
+    subjects=(("PersistentVolumeClaim", "StatefulSet"),),
 )
 def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, path, spec in _pvc_like(ctx):
@@ -3607,6 +3742,7 @@ def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A RWO volume attaches to one node. Extra replicas or surge pods scheduled elsewhere hang in "
     "ContainerCreating with 'Multi-Attach error for volume'.",
     ("k8s-pv-access-modes",),
+    subjects=(("Deployment", "DeploymentConfig"), "PersistentVolumeClaim"),
 )
 def _st002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     pvcs = {(ctx.ns(d), d.name): d.data.get("spec", {}) for d in ctx.by_kind("PersistentVolumeClaim")}
@@ -3649,6 +3785,7 @@ def _st002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Set volumeBindingMode: WaitForFirstConsumer so the volume is created in the zone the pod is scheduled to.",
     "Immediate binding may create the volume in a zone where the pod cannot run, leaving it Pending.",
     ("k8s-storageclass-binding",),
+    subjects=("StorageClass",),
 )
 def _st003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("StorageClass"):
@@ -3667,6 +3804,7 @@ def _st003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Set parameters.provisioningMode: efs-ap and parameters.fileSystemId: fs-xxxxxxxx (plus directoryPerms).",
     "Dynamic provisioning with the AWS EFS CSI driver uses access points and needs the file system id.",
     ("aws-efs-csi", "rosa-efs"),
+    subjects=("StorageClass",),
 )
 def _st004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("StorageClass"):
@@ -3687,6 +3825,7 @@ def _st004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Set spec.resources.requests.storage (e.g. 10Gi).",
     "The API server rejects PersistentVolumeClaims without a storage request.",
     ("k8s-pv-access-modes",),
+    subjects=(("PersistentVolumeClaim", "StatefulSet"),),
 )
 def _st005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, path, spec in _pvc_like(ctx):
@@ -3721,6 +3860,7 @@ CSI_SUBDIR_TRAVERSAL: dict[str, tuple[str, str, str]] = {
     "made the driver delete directories outside the share; the advisories say to look for traversal sequences in the "
     "volumeHandle of PersistentVolumes using these drivers.",
     ("k8s-cve-2023-5528", "k8s-cve-2026-3864", "k8s-cve-2026-3865"),
+    subjects=("PersistentVolume",),
 )
 def _st006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("PersistentVolume"):
@@ -3775,6 +3915,7 @@ def _long_running_containers(ctx: AuditContext) -> Iterator[tuple[Document, PodT
     "Without readiness, Services route to pods that are still starting or degraded, and rollouts cannot detect "
     "bad versions.",
     ("k8s-probes",),
+    subjects=(LONG_RUNNING,),
 )
 def _c001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _long_running_containers(ctx):
@@ -3791,6 +3932,7 @@ def _c001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Add a livenessProbe that checks the process itself (not its dependencies); use a startupProbe for slow starts.",
     "Deadlocked processes are never restarted without liveness.",
     ("k8s-probes",),
+    subjects=(LONG_RUNNING,),
 )
 def _c002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _long_running_containers(ctx):
@@ -3808,6 +3950,7 @@ def _c002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "for slow boots.",
     "Aggressive liveness turns a slow dependency or GC pause into a restart storm (red-team: cascading failure).",
     ("k8s-probes",),
+    subjects=(LONG_RUNNING,),
 )
 def _c003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _long_running_containers(ctx):
@@ -3838,6 +3981,7 @@ def _c003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "compute utilization.",
     ("k8s-resources",),
     ("No CPU request or memory limit specified",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _c004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _resource_containers(ctx):
@@ -3857,6 +4001,7 @@ def _c004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "An unbounded container can exhaust node memory and trigger node-level OOM kills of other workloads.",
     ("k8s-resources",),
     ("No CPU request or memory limit specified",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _c005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _resource_containers(ctx):
@@ -3873,6 +4018,7 @@ def _c005(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Make every request <= its limit.",
     "The API server rejects containers whose request is greater than the limit.",
     ("k8s-resources",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _c006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, _pt, c in _resource_containers(ctx):
@@ -3900,6 +4046,8 @@ def _c006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Run at least 2 replicas (3 across zones for production) with a PodDisruptionBudget.",
     "One replica means downtime on every node drain, upgrade or node failure.",
     ("k8s-pdb",),
+    subjects=(REPLICATED,),
+    context=("HorizontalPodAutoscaler",),
 )
 def _c007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind(*REPLICATED_KINDS):
@@ -3933,6 +4081,8 @@ def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str]) -> list[Do
     "Add a PodDisruptionBudget with maxUnavailable: 1 for replicated workloads.",
     "Without a PDB a node drain may evict all replicas at once.",
     ("k8s-pdb",),
+    subjects=(REPLICATED,),
+    context=("PodDisruptionBudget",),
 )
 def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
@@ -3956,6 +4106,7 @@ def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "A PDB that allows zero disruptions blocks node drains, so cluster upgrades (including managed ROSA "
     "upgrades) stall on this node.",
     ("k8s-pdb",),
+    subjects=("PodDisruptionBudget", REPLICATED),
 )
 def _c009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -3977,6 +4128,7 @@ def _c009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Add topologySpreadConstraints on topology.kubernetes.io/zone (and kubernetes.io/hostname) or pod anti-affinity.",
     "Replicas may all land on one node or zone; a single failure takes the app down.",
     ("k8s-topology-spread",),
+    subjects=(REPLICATED,),
 )
 def _c010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -3997,6 +4149,7 @@ def _c010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Allow time for graceful shutdown (default 30s) and handle SIGTERM.",
     "A zero grace period kills in-flight requests and can corrupt state.",
     ("k8s-probes",),
+    subjects=(WORKLOAD_SUBJECT,),
 )
 def _c011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
@@ -4013,6 +4166,7 @@ def _c011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Set CPU requests on every container of the target workload.",
     "Utilization-based HPA divides usage by the request; missing requests leave the HPA at <unknown>.",
     ("k8s-resources",),
+    subjects=("HorizontalPodAutoscaler", WORKLOAD_SUBJECT),
 )
 def _c012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for h in ctx.by_kind("HorizontalPodAutoscaler"):
@@ -4050,6 +4204,7 @@ def _pull_secret_names(spec: object) -> list[str]:
     "imagePullSecrets name Secrets in the pod's own namespace (LocalObjectReference): kubelet never looks in another "
     "namespace, reports FailedToRetrieveImagePullSecret and the pull fails with ImagePullBackOff.",
     ("k8s-images",),
+    subjects=("Secret", (WORKLOAD_SUBJECT, "ServiceAccount")),
 )
 def _c013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     secrets: dict[str, set[str]] = {}
@@ -4090,6 +4245,7 @@ def _c013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "thrashing or flapping while the HPA is active, for example down to 2 replicas in the middle of a traffic peak. "
     "A target whose replica count is 0 deactivates an HPA whose minReplicas is above 0.",
     ("k8s-hpa-replicas",),
+    subjects=("HorizontalPodAutoscaler", REPLICATED),
 )
 def _c014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for h in ctx.by_kind("HorizontalPodAutoscaler"):
@@ -4143,6 +4299,7 @@ APISERVER_GROUP = "config.openshift.io"
     "An OpenShift cluster can be configured to log no API requests at all, or -- less visibly -- to log none of "
     "the requests made by one group, through a customRules entry that overrides a healthy-looking top-level "
     "profile.",
+    subjects=("APIServer",),
 )
 def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     """Audit configuration, read as settings rather than inferred from the absence of a log.
@@ -4218,13 +4375,24 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
     for r in RULES.values():
         if stages is not None and r.stage not in stages:
             continue
-        if r.check is not None:
-            ctx.begin_rule(r.rule_id)
-            before = len(findings)
-            findings.extend(r.check(ctx, r))
-            # A rule that asked for kinds and got none of them has nothing to be clean about: it goes to
-            # `ctx.no_subject` with the kinds named, whatever its guard did (G281).
-            no_subject = ctx.end_rule(r.rule_id, fired=len(findings) > before)
-            if evaluated is not None and no_subject is None and r.rule_id not in ctx.undecided:
-                evaluated.append(r.rule_id)
+        if r.check is None:
+            continue
+        # The declared subject first: a rule whose subject is not in the input has nothing to evaluate and does
+        # not run, whatever else it could have read (G281). The check runs only over a subject that is there.
+        absent = [subject_label(sub) for sub in r.subjects if not ctx.has_subject(sub)]
+        if absent:
+            ctx.no_subject[r.rule_id] = subject_reason(absent)
+            continue
+        before = len(findings)
+        findings.extend(r.check(ctx, r))
+        missing = [subject_label((k,)) for k in r.context if not ctx.has_subject((k,))]
+        if missing:
+            ctx.absent_subjects[r.rule_id] = missing
+        if len(findings) > before and r.rule_id in ctx.undecided:
+            # It declined on one object and reported on another: it RAN. A rule in both `firedRules` and
+            # `notEvaluated` was two records of one run (D4). The decline is kept as a note, not as a verdict.
+            ctx.undecided.discard(r.rule_id)
+            ctx.partly_declined[r.rule_id] = ctx.declined.pop(r.rule_id)
+        if evaluated is not None and r.rule_id not in ctx.undecided:
+            evaluated.append(r.rule_id)
     return findings

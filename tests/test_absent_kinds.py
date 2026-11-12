@@ -84,9 +84,11 @@ def test_no_pod_in_the_input_is_not_pod_security_clean() -> None:
 def test_the_reason_names_the_absent_kind() -> None:
     rep = analyze(CONFIGMAP, "kubernetes", None)
     assert rep.not_evaluated["KN-N004"] == "no Service in the input"
-    assert rep.not_evaluated["KN-S015"] == "no Role or ClusterRole in the input"
+    assert rep.not_evaluated["KN-S015"] == "no rbac.authorization.k8s.io ClusterRole or Role in the input"
     assert rep.not_evaluated["KN-S001"].startswith("no pod spec in the input (no Pod, Deployment, ")
-    assert rep.not_evaluated["KN-N014"] == "no AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+    assert rep.not_evaluated["KN-N014"] == (
+        "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+    )
 
 
 def test_every_rule_is_evaluated_declined_or_without_a_subject_and_never_two_of_them() -> None:
@@ -320,7 +322,9 @@ def test_a_kind_the_cluster_refused_is_named_as_not_read_in_the_reason() -> None
         not_read=["roles in prod: forbidden (403)"],
     )
     reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
-    assert reasons["KN-S015"] == "no Role or ClusterRole in the input (roles could not be read from the cluster)"
+    assert reasons["KN-S015"] == (
+        "no rbac.authorization.k8s.io ClusterRole or Role in the input (roles could not be read from the cluster)"
+    )
 
 
 def test_a_diff_against_a_snapshot_from_before_this_fix_reports_nothing_regressed() -> None:
@@ -353,3 +357,218 @@ def test_no_input_derived_text_reaches_a_reason() -> None:
     everything = json.dumps(rep.as_dict()["controlSummary"])
     assert "\\u202e" not in everything and "Pod" + chr(0x202E) + "Secret" not in everything
     assert rep.not_evaluated["KN-S018"] == "no Secret in the input"
+
+
+# ---------------------------------------------------------------------------
+# Review round two: declared subjects, groups, hash seeds, a rule that both declined and fired
+# ---------------------------------------------------------------------------
+
+NAMESPACE = "apiVersion: v1\nkind: Namespace\nmetadata: {name: prod}\n"
+DEP_ONLY = {"KN-V011", "KN-V012", "KN-V023", "KN-N012", "KN-N013", "KN-C009", "KN-S031"}
+
+
+def test_a_rule_that_reads_context_first_is_still_not_evaluated_without_its_subject() -> None:
+    """The reviewer's shape: workloads read first, the subject (Service, NetworkPolicy, PDB, claim) second.
+
+    The first version inferred the subject from what the rule asked for and called these "evaluated without
+    Service": a Deployment-only file was "every Service selects a pod" clean. Subjects are declared now.
+    """
+    rep = analyze(DEPLOYMENT, "kubernetes", None)
+    for rid in sorted(DEP_ONLY):
+        assert rid not in rep.evaluated_rules, rid
+        assert rid in rep.not_evaluated, rid
+        assert rid not in rep.absent_subjects, rid
+    assert rep.not_evaluated["KN-V011"] == "no Service in the input"
+    assert rep.not_evaluated["KN-N012"] == "no networking.k8s.io NetworkPolicy in the input"
+    assert rep.not_evaluated["KN-C009"] == "no policy PodDisruptionBudget in the input"
+    assert rep.not_evaluated["KN-S031"] == "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input"
+    # And the other way round: a Service with no pod spec is not "every targetPort names a container port".
+    svc = analyze(SERVICE, "kubernetes", None)
+    for rid in ("KN-V011", "KN-V012", "KN-V023"):
+        assert rid not in svc.evaluated_rules, rid
+        assert svc.not_evaluated[rid].startswith("no pod spec in the input"), rid
+    both = analyze(DEPLOYMENT + "---\n" + SERVICE, "kubernetes", None)
+    assert {"KN-V011", "KN-V012", "KN-V023"} <= set(both.evaluated_rules)
+
+
+def test_a_workload_with_no_network_policy_still_fires_on_a_whole_namespace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """KN-N001's subject is the namespace's workloads; the NetworkPolicy is what it looks FOR, not what it is about."""
+    rep = analyze(NAMESPACE + "---\n" + DEPLOYMENT, "kubernetes", None, partial_bundle=False)
+    assert "KN-N001" in rep.fired_rules and "KN-N001" in rep.evaluated_rules
+    assert rep.absent_subjects["KN-N001"] == ["networking.k8s.io NetworkPolicy"]
+    d = tmp_path / "ns"
+    d.mkdir()
+    (d / "ns.yaml").write_text(NAMESPACE, encoding="utf-8")
+    (d / "deployment.yaml").write_text(DEPLOYMENT, encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    assert code == 0
+    assert any(f["ruleId"] == "KN-N001" for f in json.loads(out)["findings"])
+
+
+def test_every_rule_declares_its_subject_and_every_kind_it_asks_for_has_a_group() -> None:
+    import re
+
+    from kube_noob.audit.rules import ANY_OBJECT, SUBJECT_GROUPS, WORKLOAD_SUBJECT
+
+    for rid, r in RULES.items():
+        assert r.subjects, rid
+        for sub in r.subjects:
+            for k in sub:
+                assert k in SUBJECT_GROUPS or k in (ANY_OBJECT, WORKLOAD_SUBJECT), (rid, k)
+    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
+    asked = set(re.findall(r"by_kind\(([^)]*)\)", src))
+    for call in asked:
+        for kind in re.findall(r'"([A-Za-z]+)"', call):
+            assert kind in SUBJECT_GROUPS, kind
+
+
+@pytest.mark.parametrize(
+    ("doc", "rule", "why"),
+    [
+        (
+            "apiVersion: apps.open-cluster-management.io/v1\nkind: Subscription\nmetadata: {name: a, namespace: a}\n"
+            "spec: {channel: x/y}\n",
+            "KN-S034",
+            "no operators.coreos.com Subscription in the input",
+        ),
+        (
+            "apiVersion: example.com/v1\nkind: MachineConfigPool\nmetadata: {name: worker}\nspec: {paused: true}\n",
+            "KN-S033",
+            "no machineconfiguration.openshift.io MachineConfigPool in the input",
+        ),
+        (
+            "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: s, namespace: a}\n"
+            "spec: {template: {spec: {containers: [{image: x}]}}}\n",
+            "KN-N004",
+            "no Service in the input",
+        ),
+    ],
+)
+def test_a_kind_of_another_api_group_is_not_the_subject(doc: str, rule: str, why: str) -> None:
+    rep = analyze(doc + "---\n" + CONFIGMAP, "openshift", "4.20")
+    assert rule not in rep.evaluated_rules and rule not in rep.fired_rules
+    assert rep.not_evaluated[rule] == why
+    docs = load_documents(doc)
+    ctx = build_context(docs, "openshift", "4.20")
+    assert ctx.by_kind(docs[0].kind) == [], "by_kind returned a document of another group"
+
+
+def test_the_record_is_the_same_bytes_under_different_hash_seeds(tmp_path: Path) -> None:
+    """A subject built from a frozenset gave a reason whose kind order followed PYTHONHASHSEED (D3)."""
+    import os
+    import subprocess
+    import sys
+
+    f = tmp_path / "dep.yaml"
+    f.write_text(DEPLOYMENT + "---\n" + CONFIGMAP, encoding="utf-8")
+    script = (
+        "import json, sys; from kube_noob.audit.engine import analyze; "
+        "r = analyze(open(sys.argv[1]).read(), 'kubernetes', None).as_dict(); "
+        "sys.stdout.write(json.dumps(r['controlSummary'], sort_keys=True))"
+    )
+    outs = []
+    for seed in ("1", "2"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        res = subprocess.run(
+            [sys.executable, "-c", script, str(f)], capture_output=True, text=True, env=env, check=True
+        )
+        outs.append(res.stdout)
+    assert outs[0] == outs[1]
+    assert "DeploymentConfig" in outs[0] and "HorizontalPodAutoscaler" in outs[0]
+
+
+MIXED = """
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata: {name: i, namespace: ns, labels: {app: m}}
+spec:
+  predictor:
+    containers:
+      - {name: p, image: x}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s-undecided, namespace: ns}
+spec:
+  selector: {runtime: kserve-sklearn}
+  ports: [{port: 80}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: other}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - {name: web, image: x}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: s-wrong, namespace: other}
+spec:
+  selector: {app: nothing}
+  ports: [{port: 80}]
+"""
+
+
+def test_a_rule_that_declined_on_one_object_and_fired_on_another_is_evaluated_not_both() -> None:
+    """KN-V011 declines on the kserve Service and fires on the other: it ran. It is in `firedRules`, and so
+    it is not in `notEvaluated` -- a posture snapshot carried it in both lists (D4). The decline stays as a note."""
+    import datetime as dt
+
+    from kube_noob import drift
+
+    rep = analyze(MIXED, "kubernetes", None)
+    assert "KN-V011" in rep.fired_rules and "KN-V011" in rep.evaluated_rules
+    assert "KN-V011" not in rep.not_evaluated
+    assert any("KN-V011" in a and "declined" in a for a in rep.assumptions), rep.assumptions
+    snap = drift.snapshot(_objects(MIXED), source="manifests", taken_at=dt.datetime(2026, 11, 12, tzinfo=dt.UTC))
+    listed = {r["ruleId"] for r in snap["coverage"]["notEvaluated"]}
+    assert "KN-V011" in snap["coverage"]["firedRules"] and "KN-V011" not in listed
+    assert not listed & set(snap["coverage"]["firedRules"])
+    assert not listed & set(snap["coverage"]["evaluatedRules"])
+
+
+def test_the_gate_summary_text_and_html_carry_a_coverage_line() -> None:
+    """A clean gate over a Deployment-only change must not read as "every Service rule passed" (D7, G221)."""
+    from kube_noob import gate, report_html
+
+    out = gate.run([gate.Source(uri="dep.yaml", text=DEPLOYMENT, lines=DEPLOYMENT.count("\n"))], fail_on="never")
+    md = gate.markdown(out)
+    assert "rules evaluated, " in md and "not evaluated: no Service in the input (" in md
+    page = report_html.render(out)
+    assert "Not evaluated" in page and "no Service in the input (" in page
+
+
+def test_the_ksi_html_says_not_evaluated_and_why() -> None:
+    """The KSI page called every unevaluated rule "Declined to decide" and gave no reason (D6)."""
+    from kube_noob import report_html
+    from kube_noob.config import Settings
+    from kube_noob.toolkit import Toolkit
+
+    kit = Toolkit(Settings())
+    spec = next(s for s in kit.specs() if s.name == "fedramp_ksi")
+    page = report_html.render(spec.fn(spec.model(manifests=CONFIGMAP)))
+    assert "Declined to decide" not in page
+    assert "Not evaluated: " in page
+    assert "no Service in the input" in page and "KN-N004" in page
+
+
+def test_a_snapshot_names_the_resource_for_a_grouped_kind_the_cluster_refused() -> None:
+    import datetime as dt
+
+    from kube_noob import drift
+
+    when = dt.datetime(2026, 11, 12, 3, 0, tzinfo=dt.UTC)
+    snap = drift.snapshot(
+        _objects(CONFIGMAP), source="live", taken_at=when, not_read=["networkpolicies in prod: forbidden"]
+    )
+    reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
+    assert reasons["KN-N007"] == (
+        "no networking.k8s.io NetworkPolicy in the input (networkpolicies could not be read from the cluster)"
+    )

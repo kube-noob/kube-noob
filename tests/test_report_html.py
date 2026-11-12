@@ -450,14 +450,21 @@ def test_a_finding_keeps_its_anchor_when_the_list_order_changes() -> None:
 def test_controls_with_nothing_to_report_fold_away_and_open_again_in_print(tmp_path: Path) -> None:
     """Thirty rows of which eight say anything is the shape that hid `notEvaluated` in the first place. What
     is folded is not hidden evidence: the printed PDF must not be a subset of the page a colleague opened."""
-    page = report_html.render(_series(tmp_path / "ok", days=2))
+    report = _series(tmp_path / "ok", days=2)
+    standing = report["controlStanding"]["controls"]
+    quiet = [c["id"] for c in standing if c["clean"] and not (c["findings"] or c["notEvaluated"] or c.get("withheld"))]
+    if not quiet:
+        # Since G281 every control of this fixture has a rule whose kind the bundle lacks, so none is quiet by
+        # itself; the fold is exercised on a control whose rules are all evaluated and clean.
+        row = next(c for c in standing if not c["findings"] and not c.get("withheld"))
+        row["clean"], row["notEvaluated"] = row["clean"] + row["notEvaluated"], 0
+        row.pop("notEvaluatedRules", None)
+        quiet = [row["id"]]
+    page = report_html.render(report)
     assert '<details class="quiet">' in page
     assert "with nothing to report" in page
     assert "details.quiet > div { display: block !important; }" in page
     folded = page[page.index('<details class="quiet">') :]
-    standing = _series(tmp_path / "ok2", days=2)["controlStanding"]["controls"]
-    quiet = [c["id"] for c in standing if c["clean"] and not (c["findings"] or c["notEvaluated"] or c.get("withheld"))]
-    assert quiet, "the fixture has a control with every rule evaluated and clean"
     assert all(cid in folded for cid in quiet), "the folded rows are present in the document, not dropped"
 
 

@@ -87,12 +87,20 @@ def test_what_a_partial_audit_did_not_evaluate_is_in_the_document(
     pod = tmp_path / "pod.yaml"
     pod.write_text(POD, encoding="utf-8")
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "json", "--fail-on", "never")
-    assumptions = json.loads(out)["assumptions"]
+    report = json.loads(out)
+    assumptions = report["assumptions"]
     assert assumptions, "this input is expected to make the audit record an assumption"
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "sarif", "--fail-on", "never")
     invocation = json.loads(out)["runs"][0]["invocations"][0]
     notes = [n["message"]["text"] for n in invocation["toolExecutionNotifications"]]
-    assert notes == assumptions
+    # The assumptions first, then the coverage record's reasons, one notification per reason group (G281):
+    # the rules that never ran because their kind was not in the file are in the document, not only in JSON.
+    from kube_noob.audit.controls import grouped_reasons
+
+    expected = [f"not evaluated, {why}: {', '.join(ids)}" for why, ids in grouped_reasons(report["controlSummary"])]
+    assert expected, "a one-Pod file leaves rules without a subject"
+    assert notes == assumptions + expected
+    assert any(n.startswith("not evaluated, no Service in the input: ") for n in notes)
     assert all(n["level"] == "warning" for n in invocation["toolExecutionNotifications"])
     assert invocation["executionSuccessful"] is True
 

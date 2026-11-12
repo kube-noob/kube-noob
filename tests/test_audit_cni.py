@@ -112,7 +112,9 @@ def test_a_bundle_with_no_admin_policy_is_not_evaluated_and_says_why() -> None:
     report = analyze(NETPOL, platform="kubernetes", cni="calico:3.32")
     assert [f for f in report.findings if f.rule_id == RULE] == []
     assert RULE not in report.evaluated_rules
-    assert report.not_evaluated[RULE] == "no AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+    assert report.not_evaluated[RULE] == (
+        "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+    )
 
 
 def test_a_coarse_version_declines_to_decide() -> None:

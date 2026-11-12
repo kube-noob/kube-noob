@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kube_noob import charts
+from kube_noob.audit.controls import coverage_line, grouped_reasons
 
 #: Rows past this are summarised rather than listed: a 4,000-row table is not a report anybody reads, and the
 #: count says how many are missing rather than letting the table end silently.
@@ -486,6 +487,11 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
             items.append(("Skipped", _esc(entry), ""))
     for note in report.get("notes") or []:
         items.append(("Note", str(note), ""))
+    # The gate's coverage record: the rules that had nothing of their kind to read, so a clean gate over a
+    # Deployment-only change is not read as "every Service rule passed" (G281, G221).
+    summary = report.get("controlSummary")
+    if isinstance(summary, dict) and (line := coverage_line(summary)):
+        items.append(("Not evaluated", _esc(line), "Pass the kinds named and those rules are evaluated."))
     if not items:
         return []
     out = [
@@ -859,12 +865,9 @@ def _not_evaluated_reasons(standing: dict[str, Any]) -> list[str]:
         return []
     out: list[str] = []
     if skipped:
-        by_reason: dict[str, list[str]] = {}
-        for row in skipped:
-            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
         out.append(f"<h3>Why {len(skipped)} {_plural(len(skipped), 'rule')} reached no verdict</h3><ul>")
-        for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-            out.append(f'<li>{_esc(why)}: <span class="mono">{_esc(", ".join(sorted(ids)))}</span></li>')
+        for why, ids in grouped_reasons(standing):
+            out.append(f'<li>{_esc(why)}: <span class="mono">{_esc(", ".join(ids))}</span></li>')
         out.append("</ul>")
     if without:
         out.append("<ul>")
@@ -951,9 +954,11 @@ def _ksi_sections(report: dict[str, Any], sec: Sections) -> list[str]:
             if r.get("notEvaluatedRules"):
                 more = f" and {r['moreNotEvaluated']} more" if r.get("moreNotEvaluated") else ""
                 out.append(
-                    f'<p class="note">Declined to decide: <span class="mono">'
+                    f'<p class="note">Not evaluated: <span class="mono">'
                     f"{_esc(', '.join(r['notEvaluatedRules']))}</span>{_esc(more)}.</p>"
                 )
+    # The reasons behind every "Not evaluated" above, once, from the crosswalk's own record (G281).
+    out += _not_evaluated_reasons(report)
     return out
 
 

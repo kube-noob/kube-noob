@@ -362,7 +362,8 @@ def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str]) -> list[
 def _names_kind(why: str, kind: str) -> bool:
     """Whether a reason built by `subject_reason` names this kind as absent (whole token, not a substring)."""
     body = why.split(" in the input", 1)[0].removeprefix("no ")
-    return kind in {t.strip() for t in re.split(r",\s*| or | and no ", body)}
+    # A label is "<group> Kind" for a kind outside the core group; the kind is its last word.
+    return kind in {t.strip().rsplit(" ", 1)[-1] for t in re.split(r",\s*| or | and no ", body)}
 
 
 def _kinds_not_read(not_read: Iterable[str]) -> set[str]:
@@ -678,16 +679,12 @@ def markdown(report: dict[str, Any]) -> str:
         if skipped:
             # The `Not evaluated` column, explained: the same grouping the CLI prints, so a reader of the
             # Markdown is not sent to the JSON to learn that no Service was in the input (G281).
-            by_reason: dict[str, list[str]] = {}
-            for row in skipped:
-                by_reason.setdefault(str(row.get("why") or ""), []).append(str(row.get("ruleId")))
+            from kube_noob.audit.controls import grouped_reasons
+
             lines += [
                 f"**{len(skipped)} rule(s) were not evaluated**, counted under `Not evaluated` above:",
                 "",
-                *[
-                    f"- {why}: {', '.join(sorted(ids))}"
-                    for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-                ],
+                *[f"- {why}: {', '.join(ids)}" for why, ids in grouped_reasons(standing)],
                 "",
             ]
         for row in standing.get("rulesEvaluatedWithout") or []:

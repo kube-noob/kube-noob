@@ -35,7 +35,6 @@ def test_bad_bundle_kubernetes_findings() -> None:
         "KN-S016",
         "KN-S018",
         "KN-ST001",
-        "KN-N002",
         "KN-N004",
         "KN-N006",
         "KN-C006",
@@ -43,6 +42,10 @@ def test_bad_bundle_kubernetes_findings() -> None:
     }
     missing = expected - ids(r)
     assert not missing, missing
+    # The fixture's Route is in `apps.openshift.io`, which KN-V002 reports; it is not a `route.openshift.io` Route,
+    # so the Route rules have no subject here rather than a finding on a kind of another group (G281, class 3).
+    assert "KN-N002" not in ids(r)
+    assert r.not_evaluated["KN-N002"] == "no route.openshift.io Route in the input"
     assert r.max_severity() is Severity.CRITICAL
     assert r.score() == 0.0
     sock = [f for f in r.findings if f.rule_id == "KN-S010"]

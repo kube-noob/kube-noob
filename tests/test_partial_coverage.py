@@ -15,8 +15,10 @@ from kube_noob.audit.engine import analyze
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = (ROOT / "examples" / "insecure-deployment.yaml").read_text(encoding="utf-8")
 
-# The rules whose partial-bundle guard returns before they evaluate anything.
-GUARDED = ("KN-N001", "KN-N013", "KN-C008", "KN-C015")
+# The rules whose partial-bundle guard returns before they evaluate anything, and whose subject this bundle
+# carries. KN-N013 is guarded too, but its subject is a NetworkPolicy and this bundle has none, so since G281 it is
+# `notEvaluated` for that reason on the whole bundle and the partial one alike.
+GUARDED = ("KN-N001", "KN-C008", "KN-C015")
 
 
 def _controls(partial: bool) -> dict[str, dict]:
@@ -37,21 +39,21 @@ def test_the_skipped_rule_moves_to_not_evaluated_rather_than_clean() -> None:
     # SC-7 is KN-N001's control, and the complete bundle genuinely has a finding for it.
     assert whole["SC-7"]["findings"] == 1
     assert part["SC-7"]["findings"] == 0
-    # KN-N001 and KN-N013 both map to SC-7, and both are guarded, so exactly two rules move.
+    # KN-N001 maps to SC-7 and is guarded, so exactly one rule moves.
     from kube_noob.audit.controls import RULE_CONTROLS
 
     guarded_here = [r for r in GUARDED if "SC-7" in RULE_CONTROLS[r]]
     # Since G281 the bucket also holds the SC-7 rules whose kind this bundle lacks (no Ingress, no Route, no
     # EgressFirewall), on the whole bundle and the partial one alike; the guard moves exactly the two guarded
     # rules on top of those, and each is named with the guard's own reason.
-    assert part["SC-7"]["notEvaluated"] - whole["SC-7"]["notEvaluated"] == len(guarded_here) == 2, part["SC-7"]
+    assert part["SC-7"]["notEvaluated"] - whole["SC-7"]["notEvaluated"] == len(guarded_here) == 1, part["SC-7"]
     assert set(guarded_here) <= set(part["SC-7"]["notEvaluatedRules"])
     assert not set(guarded_here) & set(whole["SC-7"].get("notEvaluatedRules", []))
     # Nothing was invented: the rules that did run are the same ones, and the total is conserved.
     assert sum(part["SC-7"][k] for k in ("findings", "clean", "notEvaluated")) == sum(
         whole["SC-7"][k] for k in ("findings", "clean", "notEvaluated")
     )
-    assert part["SC-7"]["clean"] < whole["SC-7"]["clean"], "a rule that was counted clean must have moved out"
+    assert part["SC-7"]["clean"] == whole["SC-7"]["clean"], "the guarded rule moved from findings, not from clean"
 
 
 def test_the_buckets_still_account_for_every_rule_on_a_partial_bundle() -> None:

@@ -413,17 +413,13 @@ def _coverage_lines(summary: dict[str, Any]) -> list[str]:
     skipped = summary.get("rulesNotEvaluated")
     if not isinstance(skipped, list):
         return []
-    from kube_noob.audit.controls import RULE_CONTROLS
+    from kube_noob.audit.controls import RULE_CONTROLS, grouped_reasons
 
-    by_reason: dict[str, list[str]] = {}
-    for row in skipped:
-        if isinstance(row, dict) and row.get("ruleId"):
-            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
-    total = sum(len(v) for v in by_reason.values())
+    groups = grouped_reasons(summary)
+    total = sum(len(ids) for _, ids in groups)
     # Rules that ran, whether clean, withheld or fired: every rule the record does not list as not evaluated.
     lines = [f"rules: {len(RULE_CONTROLS) - total} evaluated, {total} not evaluated"]
-    for why in sorted(by_reason, key=lambda w: (-len(by_reason[w]), w)):
-        ids = sorted(by_reason[why])
+    for why, ids in groups:
         lines.append(f"  not evaluated, {why}: {', '.join(ids)}")
     for row in summary.get("rulesEvaluatedWithout") or []:
         if isinstance(row, dict) and row.get("ruleId"):

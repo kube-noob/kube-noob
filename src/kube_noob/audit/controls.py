@@ -26,6 +26,37 @@ def rules_not_evaluated(reasons: Mapping[str, str], rule_ids: Sequence[str]) -> 
     return [{"ruleId": rid, "why": reasons.get(rid) or NO_REASON_RECORDED} for rid in sorted(set(rule_ids))]
 
 
+def grouped_reasons(summary: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """``rulesNotEvaluated`` grouped by reason, largest group first then by reason text: for every renderer.
+
+    One place, so the text view, the Markdown, the HTML, the SARIF notification and the OSCAL remark print the
+    same groups in the same order. The pod-spec reason carries its list of kinds once per group, not once per
+    rule, which is why grouping is the shape every surface wants.
+    """
+    by_reason: dict[str, list[str]] = {}
+    for row in summary.get("rulesNotEvaluated") or []:
+        if isinstance(row, dict) and row.get("ruleId"):
+            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
+    return [(why, sorted(ids)) for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+
+
+def coverage_line(summary: Mapping[str, Any], top: int = 3) -> str:
+    """One sentence for a summary: "52 rules evaluated, 41 not evaluated: no Service in the input (3); ...".
+
+    Empty when the summary carries no reasons, so a record without them adds no sentence rather than a wrong one.
+    """
+    groups = grouped_reasons(summary)
+    if not isinstance(summary.get("rulesNotEvaluated"), list):
+        return ""
+    total = sum(len(ids) for _, ids in groups)
+    head = f"{len(RULE_CONTROLS) - total} rules evaluated, {total} not evaluated"
+    if not groups:
+        return head + "."
+    shown = "; ".join(f"{why} ({len(ids)})" for why, ids in groups[:top])
+    rest = len(groups) - top
+    return f"{head}: {shown}" + (f"; and {rest} more reason(s)" if rest > 0 else "") + "."
+
+
 def rules_evaluated_without(absent: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
     """Rules that ran on part of what they read, with the kinds they asked for and did not get."""
     return [{"ruleId": rid, "absent": sorted(absent[rid])} for rid in sorted(absent) if absent[rid]]

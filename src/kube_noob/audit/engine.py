@@ -133,6 +133,8 @@ def analyze(
     }
     report.not_evaluated = dict(sorted(not_evaluated.items()))
     report.absent_subjects = dict(sorted(ctx.absent_subjects.items()))
+    for rid, why in sorted(ctx.partly_declined.items()):
+        report.assumptions.append(f"{rid} reported findings and declined to decide on part of this input: {why}.")
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that
