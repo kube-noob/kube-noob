@@ -151,6 +151,7 @@ EXECUTORS = frozenset(
         "expect",
         "at",
         "batch",
+        "crontab",
         "pwsh",
         "powershell",
         "osascript",
@@ -198,6 +199,58 @@ DEPLOYERS: dict[str, frozenset[str]] = {
     "eksctl": frozenset({"get", "version", "info", "help", "utils"}),
     "ansible-playbook": frozenset({"--check", "--syntax-check", "--list-tasks", "--list-hosts"}),
     "kustomize-controller": frozenset(),
+    # Tools that create, change or delete whole clusters. Reading subcommands pass (and `list`/`get` one level down,
+    # `k3d cluster list`); the rest is not determined, by name.
+    "kind": frozenset({"get", "version", "help", "export", "completion", "build"}),
+    "minikube": frozenset(
+        {
+            "status",
+            "profile",
+            "ip",
+            "version",
+            "logs",
+            "dashboard",
+            "docker-env",
+            "podman-env",
+            "update-context",
+            "service",
+            "help",
+            "completion",
+            "config",
+        }
+    ),
+    "k3d": frozenset({"version", "help", "completion"}),
+    "kops": frozenset({"get", "version", "export", "validate", "toolbox", "help", "completion"}),
+    "clusterctl": frozenset({"describe", "version", "generate", "get", "help", "completion", "config"}),
+    "talosctl": frozenset(
+        {
+            "get",
+            "list",
+            "ls",
+            "logs",
+            "version",
+            "dmesg",
+            "read",
+            "health",
+            "dashboard",
+            "config",
+            "kubeconfig",
+            "help",
+            "completion",
+            "containers",
+            "stats",
+            "processes",
+            "services",
+            "time",
+            "events",
+            "memory",
+            "mounts",
+        }
+    ),
+    "openshift-install": frozenset({"version", "explain", "wait-for", "gather", "help", "completion"}),
+    "crc": frozenset({"status", "version", "console", "ip", "oc-env", "podman-env", "config", "help", "completion"}),
+    "microk8s": frozenset({"status", "inspect", "version", "config", "help"}),
+    "k0s": frozenset({"version", "status", "kubeconfig", "help", "completion"}),
 }
 #: Words that open or close a shell construct rather than name a program.
 KEYWORDS = frozenset(
@@ -901,6 +954,12 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
         while cmd.words and cmd.words[0].text in KEYWORDS and not cmd.words[0].dynamic:
             del cmd.words[0]
         _assignments(cmd, line)
+        if cmd.words and any(
+            _kube_tail(_SPLIT_COMMAND_TEXT.split(v.text)) for v in cmd.values.values() if not v.dynamic
+        ):
+            name = next(k for k, v in cmd.values.items() if _kube_tail(_SPLIT_COMMAND_TEXT.split(v.text)))
+            line.opaque.append(f"{_show(name)} is set to a kube command for the program that follows")
+            return
         if cmd.words and cmd.words[0].text == "--" and not cmd.words[0].dynamic:
             del cmd.words[0]  # `timeout 30 -- kubectl ...`: the end of a wrapper's options
             continue
@@ -924,11 +983,29 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
         if first.dynamic or first.glob:
             line.opaque.append(f"the command word {_show(first.raw)} is only known when the line runs")
             return
+        if any(c.isspace() for c in first.text) and (MENTION.search(first.text) or _kube_tail(first.text.split())):
+            # `'kubectl delete ns prod'`: one quoted word; the shell looks for a program of that whole name.
+            line.opaque.append(f"the command word {_show(first.raw)} is a quoted kube command")
+            return
         tool = program(first.text)
         if tool in _WRAPPERS:
             if tool == "command" and len(cmd.words) > 1 and cmd.words[1].text in {"-v", "-V"}:
                 return  # `command -v kubectl` asks where it is
-            _drop(cmd, _skip_options(cmd, 1, _WRAPPERS[tool]), tool)
+            end = _skip_options(cmd, 1, _WRAPPERS[tool])
+            if tool in {"sudo", "doas"} and _runs_a_shell(cmd.words[1:end]):
+                # `sudo -s CMD`, `sudo -i CMD`, `--shell`, `--login`, `doas -s`: the rest is run by a shell, as with
+                # `sh -c`, so a quoted `'kubectl delete ns prod'` is a command line, not a program name.
+                rest = cmd.words[end:]
+                if any(w.dynamic for w in rest):
+                    line.opaque.append(f"{tool} runs a shell on a value only known when the line runs")
+                    return
+                if rest:
+                    _nested(" ".join(w.text for w in rest), cmd, line, depth, read_script, f"{tool} shell")
+                return
+            _drop(cmd, end, tool)
+            continue
+        if tool == "corepack" and len(cmd.words) > 1 and not cmd.words[1].text.startswith("-"):
+            _drop(cmd, 1, "corepack")  # `corepack pnpm run x` runs pnpm
             continue
         if tool == "env":
             i = 1
@@ -937,9 +1014,10 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
                 if t in {"-u", "--unset", "-C", "--chdir"}:
                     i += 2
                 elif t in {"-S", "--split-string"} or t.startswith("--split-string="):
-                    rest = t.split("=", 1)[1] if "=" in t else (cmd.words[i + 1].text if i + 1 < len(cmd.words) else "")
+                    nxt_word = cmd.words[i + 1].text if i + 1 < len(cmd.words) else ""
+                    split = t.split("=", 1)[1] if "=" in t else nxt_word
                     tail = cmd.words[i + 2 if "=" not in t else i + 1 :]
-                    _nested(rest + " " + " ".join(w.text for w in tail), cmd, line, depth, read_script, "env -S")
+                    _nested(split + " " + " ".join(w.text for w in tail), cmd, line, depth, read_script, "env -S")
                     return
                 elif t.startswith("-") and t != "-":
                     i += 1
@@ -961,13 +1039,8 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             _nested(" ".join(w.raw for w in cmd.words[i:]), cmd, line, depth, read_script, "watch", isolate=True)
             return
         if tool == "xargs":
-            i = _skip_options(
-                cmd, 1, frozenset({"-I", "-i", "-n", "-P", "-d", "-E", "-L", "-s", "-a", "--arg-file", "--delimiter"})
-            )
-            _drop(cmd, i, "xargs")
-            cmd.args_from_stdin = True
-            if not cmd.words:
-                cmd.words = [Word("echo", False, "echo")]
+            if not _xargs(cmd, line, read_script):
+                return
             continue
         if tool in SHELLS:
             _shell(cmd, line, depth, read_script)
@@ -1030,6 +1103,23 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
         if tool == "git":
             if any(w.text == "-c" or w.text.startswith(("-c", "--config-env")) for w in cmd.words[1:3]):
                 _mention_check(cmd, line, "git -c")  # an alias or a pager in -c runs a command
+            _git(cmd, line)
+            line.commands.append(cmd)
+            return
+        if tool == "docker" and len(cmd.words) > 1 and cmd.words[1].text == "compose":
+            _runner(Command(words=cmd.words[1:], cwd=cmd.cwd), line, depth, read_script, "docker-compose")
+            _opaque_check(cmd, line, tool, read_script, executor=True)
+            line.commands.append(cmd)
+            return
+        if tool in RUNNERS:
+            before = len(line.opaque)
+            _runner(cmd, line, depth, read_script, tool)
+            if len(line.opaque) == before:
+                _opaque_check(cmd, line, tool, read_script, executor=False)
+            line.commands.append(cmd)
+            return
+        if tool == "parallel":
+            _parallel(cmd, line, read_script)
             line.commands.append(cmd)
             return
         if tool in DATA_ONLY:
@@ -1037,7 +1127,7 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             return
         if tool in INTERPRETERS:
             _interpreter(cmd, line, tool, read_script)
-            _opaque_check(cmd, line, tool, read_script, executor=False, argv=False)
+            _opaque_check(cmd, line, tool, read_script, executor=False)
             line.commands.append(cmd)
             return
         if tool in EXECUTORS:
@@ -1067,6 +1157,13 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
 #: determined. (A reviewer's line of 250,000 spaces took a backtracking rule pattern 62 seconds.)
 MAX_MAKE_LINE = 4_096
 MAX_MAKE_INCLUDES = 16
+_MAKE_SELF = re.compile(r"\$[({]MAKE[)}]")
+#: A make variable reference without nesting (`$(VAR)`, `${VAR}`, `$(dir $@)`); a nested one stays and is opaque.
+_MAKE_VAR = re.compile(r"\$[({][^(){}$]{0,200}[)}]|\$[@<^?*%+|]")
+#: A make variable (or any reference) where a recipe names the program it runs.
+_MAKE_VAR_AS_COMMAND = re.compile(r"(?:^|[;&|(]\s{0,20}|\b(?:then|do|else)\s{1,20})[@+-]{0,3}\$[({]")
+#: Targets read before make is not determined (2,000 recipes read in under a second).
+MAX_MAKE_TARGETS = 5_000
 #: make's options that take a value as the next word (GNU make 4.4, `make --help`); -j and -l take one only when it
 #: is a number.
 _MAKE_VALUE_OPTIONS = frozenset(
@@ -1266,7 +1363,12 @@ def _make(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None
         if raw.startswith("\t") and current is not None:
             rules[current][1].append(raw[1:].lstrip("@-+ "))
             continue
-        if not raw.startswith("\t") and ("$(shell" in raw or "${shell" in raw or "!=" in raw) and _names_kube(raw):
+        if (
+            not raw.startswith("\t")
+            and ("$(shell" in raw or "${shell" in raw or "!=" in raw)
+            and _kube_tail(_SPLIT_COMMAND_TEXT.split(raw))
+        ):
+            # Run whenever the Makefile is read; `$(shell kubectl config current-context)` only reads.
             line.opaque.append(f"the Makefile runs a shell command whenever it is read: {_show(raw)}")
             return
         rule = _make_rule(raw)
@@ -1296,7 +1398,7 @@ def _make(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None
         return
     seen: set[str] = set()
     todo = targets or [first]
-    while todo and len(seen) < 50:
+    while todo and len(seen) < MAX_MAKE_TARGETS:
         t = todo.pop()
         if t in seen:
             continue
@@ -1310,14 +1412,23 @@ def _make(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None
             continue
         deps, recipe = rules[t]
         todo.extend(deps)
-        for r in recipe:
+        for written in recipe:
+            r = _MAKE_SELF.sub("make", written)  # `$(MAKE) -C sub` is make, read as such
             if "$(" in r or "${" in r:
-                line.opaque.append(f"make target {_show(t)} runs a recipe built from make variables: {_show(r)}")
-                continue
+                # A make variable is a value verify does not resolve. In a kube command, or as the program a recipe
+                # runs (`$(KUBECTL) apply`), that is not determined; as an argument of another program
+                # (`docker build -t app:$(REV) .`) it is a word, read as one.
+                if _names_kube(r) or _MAKE_VAR_AS_COMMAND.search(r):
+                    line.opaque.append(f"make target {_show(t)} runs a recipe built from make variables: {_show(r)}")
+                    continue
+                r = _MAKE_VAR.sub("MAKEVAR", r)
             saved = line.cwd
             line.cwd = directory
             _nested(r, cmd, line, depth, read_script, f"make {t}", isolate=True)
             line.cwd = saved
+    if todo:
+        # Not a silent stop: a target past the cap is a recipe verify did not read (D1, a 51st target deployed).
+        line.opaque.append(f"make: more than {MAX_MAKE_TARGETS:,} targets reachable; not all were read")
     if names_kube_values and not line.opaque:
         line.opaque.append(f"make is given a kube tool in the variable {_show(names_kube_values[0])}")
 
@@ -1453,36 +1564,69 @@ _KUSTOMIZE_SUBS = frozenset({"build", "edit", "create", "cfg", "fn", "localize",
 _SPLIT_COMMAND_TEXT = re.compile(r"[\s;&|()`'\"{}<>]+")
 
 
+#: The names kubectl is aliased to in the wild. Alone in another program's arguments they are not evidence; followed
+#: by one of kubectl's own subcommands they are kubectl.
+KUBECTL_ALIASES = frozenset({"k", "kc", "kctl"})
+_VERBISH = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,40}")
+#: A subcommand word the shell expands at run time: a parameter, a substitution, a glob, a brace or a tilde.
+_EXPANDS = re.compile(r"[$`*?\[{~]")
+
+
 def _kube_tail(tokens: list[str]) -> str | None:
-    """`TOOL SUB` when the tokens hold a kube tool followed by one of its subcommands that is not read-only -- a
-    command another program may run. The tool is recognised by name in any case or version (`KubeCtl`,
-    `kubectl1.30`, `helm3`, `/usr/local/bin/oc`, `nixpkgs#kubectl`); the `k` alias is not, because a lone `k` in
-    another program's arguments is not evidence."""
-    from kube_noob.debug.steps import classify_argv, kube_subcommand
+    """`TOOL SUB` when the tokens hold a kube command another program may run, else None.
+
+    The tool is recognised by name in any case or version (`KubeCtl`, `kubectl1.30`, `helm3`, `/usr/local/bin/oc`,
+    `nixpkgs#kubectl`), and `k`, `kc` or `kctl` when one of kubectl's subcommands follows. What follows is read the
+    way cobra reads it (steps.kube_root): an unknown root flag, a `--` before the subcommand, a subcommand only
+    known at run time (a parameter, a substitution, a glob or a brace), or a word-shaped subcommand kubectl does
+    not have (it then looks for a plugin of that name) all count, as does a known subcommand that is not
+    read-only. A tool named with nothing after it, or followed by a path or a number (`brew install helm`,
+    `pytest -k helm tests/`), does not: it is data."""
+    from kube_noob.debug.steps import classify_argv, kube_root
 
     for i, t in enumerate(tokens[:MAX_WORDS]):
         name = next(
             (p for p in (program(part) for part in re.split(r"[#=:@,]", t)) if p in KUBE_TOOLS and p != "k"), None
         )
+        alias = name is None and t in KUBECTL_ALIASES
+        if alias:
+            name = "kubectl"
         if name is None:
             continue
         rest = tokens[i + 1 : i + 1 + 64]
         while rest and rest[0] == "--":
             rest = rest[1:]
+        if not rest:
+            continue
         if name in {"kubectl", "oc", "kubecolor"}:
-            sub, subs = kube_subcommand(rest)[0], _KUBECTL_SUBS
+            sub, _, _, unknown = kube_root(rest)
+            if alias and sub not in _KUBECTL_SUBS:
+                continue
+            if unknown and sub:
+                return f"{name} {unknown[0]}"
+            subs = _KUBECTL_SUBS
         else:
             sub = next((r for r in rest if not r.startswith("-")), "")
             subs = _HELM_SUBS if name == "helm" else _KUSTOMIZE_SUBS
-        if sub in subs and classify_argv([name, *rest]) != "read":
+        if not sub:
+            continue
+        if sub == "--" or _EXPANDS.search(sub):
+            return f"{name} {sub}"
+        if sub in subs:
+            if classify_argv([name, *rest]) != "read":
+                return f"{name} {sub}"
+            continue
+        if _VERBISH.fullmatch(sub) and program(sub) not in KUBE_TOOLS and sub not in KUBECTL_ALIASES:
             return f"{name} {sub}"
     return None
 
 
-def _stdin_text(cmd: Command, read_script: ScriptReader | None) -> tuple[bool, str]:
+def _stdin_text(cmd: Command, read_script: ScriptReader | None, depth: int = 0) -> tuple[bool, str]:
     """What arrives on the command's standard input, when it is known from the line: a here-document or
-    here-string, a `< FILE` in the tree, or the output of `echo`/`printf` literals or of `cat` of files in the tree
-    piped into it. (False, "") when it is not known."""
+    here-string, a `< FILE` in the tree, or the output of `echo`/`printf` literals, of `cat` of files in the tree,
+    of `tee` and `cat` passing their own input on, and of `base64 -d` of known input. (False, "") when not known."""
+    if depth > 8:
+        return False, ""
     if cmd.stdin_kind in {"heredoc", "herestring"} and cmd.stdin is not None:
         return True, cmd.stdin
     if cmd.stdin_kind == "file" and cmd.stdin is not None:
@@ -1494,16 +1638,35 @@ def _stdin_text(cmd: Command, read_script: ScriptReader | None) -> tuple[bool, s
     if cmd.stdin_kind != "pipe" or src is None or not src.words:
         return False, ""
     if src.tool in {"echo", "printf"}:
+        if any(w.dynamic for w in src.words[1:]):
+            return False, ""
         return True, " ".join(w.text for w in src.words[1:]).replace("\\n", "\n")
+    files = [w for w in src.words[1:] if not w.text.startswith("-")]
+    if src.tool in {"cat", "tee"} and (src.tool == "tee" or not files):
+        return _stdin_text(src, read_script, depth + 1)  # passes its own input on
     if src.tool == "cat":
-        if src.stdin_kind in {"heredoc", "herestring"} and src.stdin is not None:
-            return True, src.stdin
-        files = [w for w in src.words[1:] if not w.text.startswith("-")]
         if files and read_script is not None and not any(w.dynamic or w.glob for w in files):
             texts = [read_script(w.text, src.cwd) for w in files[:16]]
             if all(t is not None for t in texts):
                 return True, "\n".join(t or "" for t in texts)
+        return False, ""
+    if src.tool == "base64" and any(w.text in {"-d", "--decode", "-D"} for w in src.words[1:]):
+        known, data = _stdin_text(src, read_script, depth + 1)
+        if not known:
+            return False, ""
+        import base64
+        import binascii
+
+        try:
+            return True, base64.b64decode("".join(data.split()), validate=False).decode("utf-8", "replace")
+        except (binascii.Error, ValueError):
+            return False, ""
     return False, ""
+
+
+#: Executors that run what they are given as a command line, where a value only known at run time is a command
+#: verify cannot see (`ssh host "$(cat cmds.txt)"`).
+_REMOTE_COMMAND = frozenset({"ssh", "su", "runuser", "at", "batch", "script", "expect", "osascript", "tmux", "screen"})
 
 
 def _opaque_check(
@@ -1511,8 +1674,9 @@ def _opaque_check(
 ) -> None:
     """A program the reader does not model is opaque. If its arguments hold a kube command, or its standard input
     is text that names a kube tool, the line is not determined: verify cannot tell what the program does with it.
-    An executor (ssh, at, docker ...) is held to more: any kube tool named in its arguments counts, and commands it
-    reads from a file verify could not open count too."""
+    An executor (ssh, at, docker ...) is held to more: any kube tool named in its arguments counts, a file in the
+    tree it is given that names one counts (`at -f cmds.txt`, `crontab cron.txt`, `docker run ... sh deploy.sh`),
+    commands it reads from a file verify could not open count, and so does a command only known at run time."""
     shown = _show(tool, 40)
     if argv:
         args = [w.text for w in cmd.words[1:]]
@@ -1531,12 +1695,417 @@ def _opaque_check(
                 "does with it"
             )
             return
+        if executor:
+            if tool in _REMOTE_COMMAND and any(w.dynamic for w in cmd.words[1:]):
+                line.opaque.append(f"{shown} runs a command only known when the line runs")
+                return
+            if tool == "minikube" and len(args) > 1 and args[0] == "ssh":
+                line.opaque.append("minikube ssh runs a command on a cluster node")
+                return
+            for w in cmd.words[1:17]:
+                if w.dynamic or w.glob or w.text.startswith("-") or read_script is None:
+                    continue
+                text = read_script(w.text.split("=", 1)[-1], cmd.cwd)
+                if text is not None and (MENTION.search(text) or _kube_tail(_SPLIT_COMMAND_TEXT.split(text))):
+                    line.opaque.append(f"{shown} is given {_show(w.text, 60)}, a file that names a kube tool")
+                    return
+            if tool in {"at", "batch", "crontab"} and _unread_file_argument(cmd, tool, read_script):
+                line.opaque.append(f"{shown} runs commands from a file verify could not read")
+                return
     known, text = _stdin_text(cmd, read_script)
     if known:
         if MENTION.search(text) or _kube_tail(_SPLIT_COMMAND_TEXT.split(text)):
             line.opaque.append(f"{shown} reads text that names a kube tool on its standard input")
     elif executor and cmd.stdin_kind == "file":
         line.opaque.append(f"{shown} reads its input from {_show(cmd.stdin or '', 60)}, which verify could not read")
+
+
+def _unread_file_argument(cmd: Command, tool: str, read_script: ScriptReader | None) -> bool:
+    """`at -f FILE`, `batch -f FILE` and `crontab FILE`: a file of commands that verify could not read."""
+    words = cmd.words[1:]
+    if tool == "crontab":
+        names = [w for w in words if not w.text.startswith("-")]
+        name = names[0] if names else None
+    else:
+        name = next((words[i + 1] for i, w in enumerate(words[:-1]) if w.text == "-f"), None)
+    if name is None or name.text == "-":
+        return False
+    return name.dynamic or read_script is None or read_script(name.text, cmd.cwd) is None
+
+
+def _runs_a_shell(options: list[Word]) -> bool:
+    """sudo's -s/--shell and -i/--login (alone or in a cluster, `-su`, `-iu`), and doas's -s, run the command
+    through a shell (sudo(8): "the command is passed to the shell for execution")."""
+    for w in options:
+        t = w.text
+        if t in {"--shell", "--login"}:
+            return True
+        if t.startswith("-") and not t.startswith("--"):
+            for c in t[1:]:
+                if c in "si":
+                    return True
+                if "-" + c in _WRAPPERS["sudo"]:
+                    break  # the rest of the cluster is that option's value
+    return False
+
+
+#: xargs options that take a value (GNU findutils xargs --help); -i/-e/-l take one only when attached.
+_XARGS_VALUE = frozenset(
+    {"-I", "-n", "-P", "-d", "-E", "-L", "-s", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs",
+     "--max-lines", "--max-chars", "--eof", "--process-slot-var"}
+)  # fmt: skip
+
+
+def _xargs(cmd: Command, line: Line, read_script: ScriptReader | None) -> bool:
+    """`xargs [options] COMMAND`: COMMAND is run with words read from its input (`-a FILE` or standard input).
+
+    When that input is known (a literal echo/printf/here-string, a file in the tree) and names a kube tool, the
+    command xargs builds is one verify cannot see: not determined. When it is not known, and the command is a shell,
+    eval, an interpreter, an executor or the replace string itself (`xargs -I{} {}`), not determined too. Otherwise
+    the command is read as usual, its arguments marked as arriving at run time. Returns whether to keep unwrapping."""
+    words = cmd.words
+    i = 1
+    replace: str | None = None
+    arg_file: Word | None = None
+    while i < len(words):
+        t = words[i].text
+        if t == "--":
+            i += 1
+            break
+        if not t.startswith("-") or t == "-":
+            break
+        name, eq, value = t.partition("=") if t.startswith("--") else (t, "", "")
+        if name in {"-I", "--replace"} or (t.startswith(("-I", "-i")) and not t.startswith("--")):
+            if name == "-I" and not eq:
+                replace = words[i + 1].text if i + 1 < len(words) else "{}"
+                i += 2
+                continue
+            replace = value or (t[2:] if t.startswith(("-I", "-i")) and len(t) > 2 else "{}")
+            i += 1
+            continue
+        if name in {"-a", "--arg-file"} or (t.startswith("-a") and len(t) > 2 and not t.startswith("--")):
+            if eq:
+                arg_file = Word(value, words[i].dynamic, value)
+                i += 1
+            elif len(t) > 2 and not t.startswith("--"):
+                arg_file = Word(t[2:], words[i].dynamic, t[2:])
+                i += 1
+            else:
+                arg_file = words[i + 1] if i + 1 < len(words) else None
+                i += 2
+            continue
+        i += (
+            2
+            if (name in _XARGS_VALUE and not eq and len(t) == len(name) and (len(t) == 2 or t.startswith("--")))
+            else 1
+        )
+    inner = words[i:] or [Word("echo", False, "echo")]
+    if arg_file is not None:
+        text = None if arg_file.dynamic or read_script is None else read_script(arg_file.text, cmd.cwd)
+        known, data = (text is not None), text or ""
+    else:
+        known, data = _stdin_text(cmd, read_script)
+    first = inner[0].text
+    runs_code = (
+        program(first) in SHELLS
+        or first in {"eval", "exec", "source", "."}
+        or program(first) in INTERPRETERS
+        or program(first) in EXECUTORS
+        or (replace is not None and replace in first)
+        or program(first) in _WRAPPERS
+        or program(first) in {"timeout", "nice", "env", "xargs", "parallel", "make"}
+    )
+    if known and (MENTION.search(data) or _kube_tail(_SPLIT_COMMAND_TEXT.split(data))):
+        line.opaque.append("xargs builds a command from input that names a kube tool")
+        return False
+    if not known and runs_code:
+        line.opaque.append(f"xargs runs {_show(first, 40)} on input verify cannot read")
+        return False
+    if replace is not None and replace in first:
+        line.opaque.append("xargs runs a program named by its input")
+        return False
+    _drop(cmd, i, "xargs")
+    cmd.args_from_stdin = True
+    if not cmd.words:
+        cmd.words = [Word("echo", False, "echo")]
+    return True
+
+
+def _parallel(cmd: Command, line: Line, read_script: ScriptReader | None) -> None:
+    """GNU parallel runs a command per input line, or each input line as a command when none is given. Inputs:
+    `::: ARGS`, `:::: FILES`, `-a FILE`/`--arg-file FILE`, else standard input. Input that names a kube tool, or that
+    verify cannot read while what runs is a shell or the input itself, is not determined."""
+    words = cmd.words[1:]
+    command: list[str] = []
+    inputs: list[str] = []
+    unknown = False
+    i = 0
+    mode = "command"
+    while i < len(words):
+        w = words[i]
+        t = w.text
+        if t in {":::", ":::+"}:
+            mode = "args"
+        elif t in {"::::", "::::+"}:
+            mode = "files"
+        elif mode == "args":
+            inputs.append(t)
+            unknown = unknown or w.dynamic
+        elif mode == "files" or t in {"-a", "--arg-file"} or t.startswith("--arg-file="):
+            if mode != "files":
+                if "=" in t:
+                    target = Word(t.split("=", 1)[1], w.dynamic, t)
+                else:
+                    target = words[i + 1] if i + 1 < len(words) else Word("", True, "")
+                    i += 1
+            else:
+                target = w
+            text = None if target.dynamic or read_script is None else read_script(target.text, cmd.cwd)
+            if text is None:
+                unknown = True
+            else:
+                inputs.append(text)
+        elif t in {"-j", "-S", "--sshlogin", "--jobs", "-d", "--delimiter", "-I", "--colsep", "-N"}:
+            i += 1
+        elif t.startswith("-") and not command:
+            pass
+        else:
+            command.append(t)
+        i += 1
+    if not inputs and not unknown:
+        known, data = _stdin_text(cmd, read_script)
+        if known:
+            inputs.append(data)
+        else:
+            unknown = True
+    text = "\n".join(inputs + command)
+    if MENTION.search(text) or _kube_tail(_SPLIT_COMMAND_TEXT.split(text)):
+        line.opaque.append("parallel runs commands from input or arguments that name a kube tool")
+    elif unknown and (not command or program(command[0]) in SHELLS or program(command[0]) in INTERPRETERS):
+        line.opaque.append("parallel runs commands from input verify cannot read")
+
+
+def _git(cmd: Command, line: Line) -> None:
+    """git is mostly data, but some of it runs a program: `bisect run CMD`, `rebase -x CMD`, `difftool -x CMD`,
+    `fetch --upload-pack CMD`, `filter-branch --tree-filter CMD`, `config alias.x '!CMD'`, `config core.pager CMD`,
+    and `diff --ext-diff` runs the diff program git's configuration names. A kube command in any of those, or an
+    external diff verify cannot see, is not determined. A commit message, a grep pattern and the like are data."""
+    words = [w.text for w in cmd.words[1:]]
+    sub = next((w for w in words if not w.startswith("-")), "")
+    if "--ext-diff" in words:
+        line.opaque.append("git --ext-diff runs the diff program git's configuration names, which verify cannot see")
+        return
+    if sub in {"commit", "tag", "notes", "grep", "log", "show", "shortlog", "status", "diff", "add", "rm", "mv"}:
+        return  # their arguments are messages, patterns and paths
+    found = _kube_tail(words)
+    if found is None:
+        spaced = [w for w in words if any(c.isspace() for c in w) or w.startswith("!")]
+        found = next((f for f in (_kube_tail(_SPLIT_COMMAND_TEXT.split(w.lstrip("!"))) for w in spaced) if f), None)
+    if found is None and sub == "config":
+        found = next((m.group(1) for w in words for m in [MENTION.search(w)] if m), None)
+    if found is not None:
+        line.opaque.append(f"git {_show(sub, 20)} is given `{_show(found, 40)}`, a command git runs")
+
+
+#: Programs that run a recipe from a project file, read like make when the file can be parsed, and otherwise not
+#: determined when the file names a kube tool; or that compile and run project code, which verify does not read.
+RUNNERS = frozenset(
+    {"just", "task", "go-task", "tox", "nox", "earthly", "pre-commit", "deno", "go", "cargo", "bazel", "bazelisk",
+     "docker-compose", "ansible", "vagrant", "devbox"}
+)  # fmt: skip
+_RUNNER_FILES = {
+    "just": ("justfile", "Justfile", ".justfile"),
+    "task": ("Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml"),
+    "go-task": ("Taskfile.yml", "Taskfile.yaml"),
+    "tox": ("tox.ini", "pyproject.toml", "setup.cfg"),
+    "nox": ("noxfile.py",),
+    "earthly": ("Earthfile",),
+    "pre-commit": (".pre-commit-config.yaml",),
+    "docker-compose": ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"),
+    "vagrant": ("Vagrantfile",),
+    "devbox": ("devbox.json",),
+}
+_RUNNER_LISTS = frozenset({"--list", "-l", "--summary", "--show", "--dump", "--version", "--help", "-h", "--list-all"})
+#: Code that starts a program, in the languages a project file or script is written in.
+_SPAWNS = re.compile(
+    r"subprocess|os\.system|os\.exec|os\.spawn|os\.popen|pty\.spawn|child_process|execSync|spawnSync|"
+    r"\"os/exec\"|exec\.Command|Command::new|ProcessBuilder|Runtime\.getRuntime|Deno\.Command|Deno\.run|"
+    r"\bsession\.run\b|\bsystem\(|\bpopen\(|\bexec\(|`[^`\n]{1,200}`"
+)
+
+
+def _runner(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None, tool: str) -> None:
+    words = [w.text for w in cmd.words[1:]]
+    sub = next((w for w in words if not w.startswith("-")), "")
+    shown = _show(tool, 20)
+    if tool == "go" and sub not in {"run", "generate", "test"}:
+        return  # build, vet, mod, fmt: compile or inspect without running the program
+    if tool == "go" and sub == "test":
+        return  # tests run project code, but `go test` is what every repository runs; stated in SECURITY.md
+    if tool == "go" or (tool == "cargo" and sub == "run") or (tool in {"bazel", "bazelisk"} and sub in {"run", "test"}):
+        line.opaque.append(f"{tool} {_show(sub, 20)} compiles and runs project code, which verify does not read")
+        return
+    if tool == "cargo":
+        return
+    if tool in {"bazel", "bazelisk"}:
+        return
+    if tool == "deno":
+        if sub == "task":
+            _deno_task(cmd, line, depth, read_script, words)
+        elif sub == "run" and not any(_kube_tail(words[i:]) for i in range(len(words))):
+            script = next((w for w in words[1:] if not w.startswith("-")), "")
+            text = read_script(script, cmd.cwd) if script and read_script is not None else None
+            if text is None or MENTION.search(text) or _SPAWNS.search(text):
+                line.opaque.append(f"deno run {_show(script)} may start programs verify cannot see")
+        return
+    if tool == "ansible":
+        module = next((words[i + 1] for i, w in enumerate(words[:-1]) if w in {"-m", "--module-name"}), "")
+        if re.search(r"k8s|kubernetes|helm|openshift|kubectl", module + " " + " ".join(words), re.I):
+            line.opaque.append(f"ansible runs the module {_show(module or 'shell')} against a cluster")
+        return
+    if tool == "pre-commit" and sub not in {"run", "try-repo", ""}:
+        return
+    if tool == "vagrant" and sub not in {"up", "provision", "reload", "resume"}:
+        return
+    if tool == "devbox" and sub not in {"run", "shell", "services"}:
+        return
+    if tool == "docker-compose" and sub not in {"run", "up", "exec", "start", "create"}:
+        return
+    text = None
+    name = ""
+    for name in _RUNNER_FILES.get(tool, ()):
+        text = read_script(name, cmd.cwd) if read_script is not None else None
+        if text is not None:
+            break
+    if text is None:
+        return  # no recipe file: the runner stops before it runs anything
+    if tool in {"just", "task", "go-task"} and set(words) & _RUNNER_LISTS:
+        return  # `just --list`, `task --list`: they print the recipes
+    if tool in {"just", "task", "go-task"}:
+        recipes = _just_recipes(text, words) if tool == "just" else _task_recipes(text, words)
+        if recipes is not None:
+            saved = line.cwd
+            for r in recipes:
+                _nested(r, cmd, line, depth, read_script, f"{tool} recipe", isolate=True)
+            line.cwd = saved
+            return
+    names = MENTION.search(text) or re.search(r"\.kube\b|kubeconfig|KUBECONFIG", text)
+    if names or (tool in {"nox", "vagrant"} and _SPAWNS.search(text)) or (tool == "earthly" and "LOCALLY" in text):
+        line.opaque.append(f"{shown} runs a recipe from {_show(name)}, which verify does not read")
+
+
+def _just_recipes(text: str, words: list[str]) -> list[str] | None:
+    """The lines of the requested just recipes (the first recipe by default) and of their dependencies, or None
+    when the justfile uses what this reader does not follow (variables, `set`, imports, shebang recipes)."""
+    recipes: dict[str, tuple[list[str], list[str]]] = {}
+    order: list[str] = []
+    current: str | None = None
+    for raw in text.splitlines()[:5000]:
+        if len(raw) > MAX_MAKE_LINE:
+            return None
+        if raw.startswith((" ", "\t")) and current is not None:
+            body = raw.strip().lstrip("@-")
+            if body.startswith("#!") or "{{" in body:
+                return None
+            recipes[current][1].append(body)
+            continue
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith(("set ", "import ", "mod ", "export ", "alias ")) or ":=" in stripped:
+            return None
+        rule = _make_rule(stripped)
+        if rule is None:
+            return None
+        names, after = rule
+        if not names:
+            return None
+        current = names[0].lstrip("@")
+        recipes[current] = ([d for d in after.split() if not d.startswith("#")], [])
+        order.append(current)
+    targets = [w for w in words if not w.startswith("-")] or order[:1]
+    out: list[str] = []
+    seen: set[str] = set()
+    todo = list(targets)
+    while todo:
+        t = todo.pop()
+        if t in seen:
+            continue
+        seen.add(t)
+        if t not in recipes:
+            return None if recipes else []
+        needs, steps = recipes[t]
+        todo.extend(needs)
+        out.extend(steps)
+    return out
+
+
+def _task_recipes(text: str, words: list[str]) -> list[str] | None:
+    """The `cmds` of the requested go-task tasks (`default` when none is named) and their `deps`, or None when the
+    Taskfile uses what this reader does not follow (includes, templates, a task given as a `task:` call)."""
+    from kube_noob.sanitize import safe_load_bounded
+
+    try:
+        doc = safe_load_bounded(text)
+    except Exception:  # noqa: BLE001 - an unreadable Taskfile is not read
+        return None
+    if not isinstance(doc, dict) or doc.get("includes") or not isinstance(doc.get("tasks"), dict):
+        return None
+    tasks = doc["tasks"]
+    targets = [w for w in words if not w.startswith("-") and "=" not in w] or ["default"]
+    out: list[str] = []
+    seen: set[str] = set()
+    todo = list(targets)
+    while todo:
+        t = todo.pop()
+        if t in seen:
+            continue
+        seen.add(t)
+        task = tasks.get(t)
+        if task is None:
+            return None if t != "default" else out
+        if isinstance(task, list):
+            task = {"cmds": task}
+        if isinstance(task, str):
+            task = {"cmds": [task]}
+        if not isinstance(task, dict):
+            return None
+        for d in task.get("deps") or []:
+            todo.append(d if isinstance(d, str) else str(d.get("task", "")) if isinstance(d, dict) else "")
+        for c in task.get("cmds") or []:
+            body = c if isinstance(c, str) else c.get("cmd") if isinstance(c, dict) else None
+            if isinstance(c, dict) and "task" in c:
+                todo.append(str(c["task"]))
+                continue
+            if not isinstance(body, str) or "{{" in body:
+                return None
+            out.append(body)
+    return out
+
+
+def _deno_task(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None, words: list[str]) -> None:
+    """`deno task NAME` runs deno.json's tasks.NAME (a shell line), like npm run."""
+    from kube_noob.sanitize import loads_bounded
+
+    name = next((w for w in words[1:] if not w.startswith("-")), "")
+    text = None
+    for f in ("deno.json", "deno.jsonc"):
+        text = read_script(f, cmd.cwd) if read_script is not None else None
+        if text is not None:
+            break
+    if text is None or not name:
+        return
+    try:
+        tasks = loads_bounded(text).get("tasks") or {}
+    except (ValueError, AttributeError):
+        if _names_kube(text):
+            line.opaque.append("deno.json names a kube tool and could not be read as JSON")
+        return
+    body = tasks.get(name) if isinstance(tasks, dict) else None
+    if isinstance(body, dict):
+        body = body.get("command")
+    if isinstance(body, str):
+        _nested(body, cmd, line, depth, read_script, f"deno task {name}", isolate=True)
 
 
 def _mention_check(cmd: Command, line: Line, tool: str) -> None:
@@ -1579,6 +2148,11 @@ def _interpreter(cmd: Command, line: Line, tool: str, read_script: ScriptReader 
         if m:
             line.opaque.append(
                 f"{tool} runs {_show(words[i].text)}, which names {m.group(1)}; verify does not follow {tool} programs"
+            )
+        elif text is not None and _SPAWNS.search(text):
+            # A program built at run time (`"kube" + "ctl"`) names nothing; starting one is what counts.
+            line.opaque.append(
+                f"{tool} runs {_show(words[i].text)}, which starts other programs; verify does not follow them"
             )
 
 

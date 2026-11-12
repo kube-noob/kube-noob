@@ -377,11 +377,23 @@ def _kill(pid: int) -> None:
 def _decode(data: bytes) -> tuple[int, str, str]:
     try:
         code, out, err = sanitize.loads_bounded(data)
-        if code in (0, 2) and isinstance(out, str) and isinstance(err, str):
+        if code in (0, 2) and isinstance(out, str) and isinstance(err, str) and _only_ask(out):
             return int(code), out, err
     except (ValueError, TypeError):
         pass
     return _block("kube-noob hook: the check gave no answer it could read; blocked.")
+
+
+def _only_ask(out: str) -> bool:
+    """The hook prints nothing, or a PreToolUse `ask`. Anything else on stdout (an `allow`, which would skip the
+    user's prompt) is not an answer this hook gives, whatever produced it."""
+    if not out.strip():
+        return True
+    try:
+        doc = sanitize.loads_bounded(out)
+        return set(doc) == {"hookSpecificOutput"} and doc["hookSpecificOutput"].get("permissionDecision") == "ask"
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return False
 
 
 def _write(stream: Any, text: str) -> bool:

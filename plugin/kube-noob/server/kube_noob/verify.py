@@ -26,6 +26,7 @@ change ADDS count, the way the admission webhook judges an UPDATE (G250).
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import os
 import posixpath
@@ -43,6 +44,7 @@ from kube_noob.debug.steps import (
     KUBE_CLIS,
     KUBE_GLOBAL_VALUE_FLAGS,
     classify_argv,
+    kube_root,
     kube_subcommand,
     runs_local_code,
 )
@@ -433,14 +435,60 @@ _SECURITY_KEYS = re.compile(
 #: Service account label and annotation keys that bind a cloud identity: EKS IRSA (eks.amazonaws.com/role-arn), GKE
 #: Workload Identity (iam.gke.io/gcp-service-account) and Azure Workload Identity (azure.workload.identity/*). Set on
 #: a service account, they give its pods that cloud role -- an escalation no manifest finding shows.
-_IDENTITY_KEYS = re.compile(r"^(eks\.amazonaws\.com/|iam\.gke\.io/|azure\.workload\.identity/)")
 #: `scheme://user:password@host` in an environment value: a credential in the pod spec, like DB_PASSWORD=...
-_URL_CREDENTIAL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z][A-Za-z0-9+.-]{0,20}://[^/\s:@]{1,256}:[^/\s@]{1,256}@")
-#: Environment variables that make a process load and run other code (the dynamic linker, Node, the JVM, Python).
-_CODE_LOADING_ENV = frozenset(
-    {"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PYTHONPATH",
-     "PYTHONSTARTUP", "BASH_ENV", "PERL5OPT", "RUBYOPT"}
-)  # fmt: skip
+_URL_CREDENTIAL = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.-]*=(?:[A-Za-z][A-Za-z0-9+.-]{0,20}://[^/\s:@]{0,256}:[^/\s@]{1,256}@"
+    r"|[^/\s:@=]{1,256}:[^/\s@]{1,256}@[A-Za-z]{0,10}\()"
+)
+#: Label and annotation keys whose value changes what a pod may do or who may reach it, with why -- one table for
+#: `label`, `annotate` and `patch` alike. Each is asked about: no manifest finding shows its effect.
+_ESCALATION_KEYS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^(eks\.amazonaws\.com/|iam\.gke\.io/|azure\.workload\.identity/|iam\.amazonaws\.com/role)"),
+        "binds a cloud identity, which gives the pods that cloud role; verify cannot see what the role allows",
+    ),
+    (
+        re.compile(
+            r"^(container\.apparmor\.security\.beta\.kubernetes\.io/|seccomp\.security\.alpha\.kubernetes\.io/)"
+        ),
+        "sets a pod's AppArmor or seccomp profile",
+    ),
+    (re.compile(r"^node-role\.kubernetes\.io/"), "gives a node a role (control-plane workloads schedule onto it)"),
+    (re.compile(r"^openshift\.io/scc$"), "names the SCC a pod is admitted under"),
+    (
+        re.compile(r"^kubernetes\.io/enforce-mountable-secrets$"),
+        "changes which secrets the service account's pods may mount",
+    ),
+    (
+        re.compile(r"^nginx\.ingress\.kubernetes\.io/(server|configuration|auth|stream|modsecurity)-snippet$"),
+        "puts configuration code into the ingress controller",
+    ),
+    (
+        re.compile(
+            r"^service\.beta\.kubernetes\.io/(aws-load-balancer-(internal|scheme)|azure-load-balancer-internal|"
+            r"oci-load-balancer-internal)|^networking\.gke\.io/load-balancer-type|^cloud\.google\.com/load-balancer-type"
+        ),
+        "changes whether the load balancer is reachable from outside",
+    ),
+    (
+        re.compile(
+            r"^(pod-security\.kubernetes\.io/|security\.openshift\.io/|openshift\.io/sa\.scc|openshift\.io/node-selector|"
+            r"scheduler\.alpha\.kubernetes\.io/|kube-noob\.io/)"
+        ),
+        "changes a Pod Security, SCC or scheduling setting",
+    ),
+)
+
+
+def _escalation(keys: list[str]) -> tuple[str, str] | None:
+    """The first key in ``keys`` that the escalation table names, with why."""
+    for k in keys:
+        for pattern, why in _ESCALATION_KEYS:
+            if pattern.match(k):
+                return k, why
+    return None
+
+
 _NODE_OR_NS = frozenset({"node", "nodes", "no", "namespace", "namespaces", "ns", "project", "projects"})
 _SINGLE_TARGET_BLOCKERS = frozenset({"-l", "--selector", "--all", "-A", "--all-namespaces", "--field-selector"})
 #: Programs this module knows do not write files (with no output redirection of their own). Anything else on the
@@ -603,7 +651,7 @@ def _redact(cmd: shell.Command) -> str:
         text = w.raw or w.text
         if secretish and "=" in text and text.startswith(("--from-literal", "--from-env-file", "--docker-password")):
             text = text.split("=", 1)[0] + "=..." if text.count("=") == 1 else "=".join(text.split("=")[:2]) + "=..."
-        elif _ENV_SECRET.match(w.text) or _URL_CREDENTIAL.match(w.text):
+        elif _ENV_SECRET.match(w.text) or _URL_CREDENTIAL.match(w.text) or _credential_assignment(w.text):
             text = w.text.split("=", 1)[0] + "=..."
         out.append(show(text, 120))
     return " ".join(out)
@@ -650,12 +698,44 @@ def plan(
         base = _base(tree, cmd.cwd)
         if tool in shell.DEPLOYERS:
             _deployer(cmd, tool, args, out, tree, base, inline_files, written)
+        elif tool in _CLOUD_CLUSTER_CLIS:
+            _cloud_cluster(cmd, tool, args, out)
         elif tool in shell.KUBE_TOOLS:
             _kube_command(cmd, line, tool, args, out, tree, base, stdin, inline_files, written, platform, version)
         why = _writes(cmd, "")
         if why:
             written.append(why)
     return out
+
+
+#: Cloud CLIs, the words that select their Kubernetes clusters, and the operations that only read or write the local
+#: kubeconfig. Any other operation on a cluster (create, delete, resize, update, upgrade, stop) is not determined.
+_CLOUD_CLUSTER_CLIS: dict[str, tuple[tuple[str, ...], frozenset[str]]] = {
+    "gcloud": (("container", "clusters"), frozenset({"list", "describe", "get-credentials", "check-autoscaling"})),
+    "aws": (("eks",), frozenset({"update-kubeconfig", "get-token", "wait"})),
+    "az": (
+        ("aks",),
+        frozenset({"show", "list", "get-credentials", "get-versions", "get-upgrades", "browse", "check-acr"}),
+    ),
+    "doctl": (("kubernetes", "cluster"), frozenset({"list", "get", "kubeconfig", "ls", "g"})),
+}
+
+
+def _cloud_cluster(cmd: shell.Command, tool: str, args: list[str], out: _Read) -> None:
+    """`gcloud container clusters OP`, `aws eks OP`, `az aks OP`, `doctl kubernetes cluster OP`: reading and
+    kubeconfig operations pass; the rest changes a cluster and is not determined."""
+    path, reads = _CLOUD_CLUSTER_CLIS[tool]
+    positional = [a for a in args if not a.startswith("-")]
+    if tool == "doctl" and positional[:1] == ["k8s"]:
+        positional = ["kubernetes", *positional[1:]]
+    if positional[: len(path)] != list(path):
+        return
+    op = positional[len(path)] if len(positional) > len(path) else ""
+    if op in reads or op.startswith(("describe-", "list-")) or op in {"", "help"}:
+        _entry(out, cmd, tool, "read-only")
+        return
+    shown = _entry(out, cmd, tool, "changes-state")
+    out.undetermined.append(f"{shown}: {frame(op, 40)} changes a cluster through {tool}, which verify does not model")
 
 
 def _entry(out: _Read, cmd: shell.Command, tool: str, cls: str) -> str:
@@ -680,8 +760,14 @@ def _deployer(
 ) -> None:
     """Other programs that deploy to a cluster: their reading subcommands pass; `kapp deploy -f FILE` is checked like
     `kubectl apply -f FILE`; everything else is not determined, by name."""
-    sub = next((a for a in args if not a.startswith("-")), "")
-    if sub in shell.DEPLOYERS[tool] or (tool == "ansible-playbook" and set(args) & shell.DEPLOYERS[tool]):
+    positional = [a for a in args if not a.startswith("-")]
+    sub = positional[0] if positional else ""
+    second = positional[1] if len(positional) > 1 else ""
+    if (
+        sub in shell.DEPLOYERS[tool]
+        or (tool == "ansible-playbook" and set(args) & shell.DEPLOYERS[tool])
+        or second in {"list", "ls", "get", "describe", "status", "show", "version", "info"}
+    ):
         _entry(out, cmd, tool, "read-only")
         return
     if tool == "kapp" and sub == "deploy":
@@ -763,6 +849,24 @@ def _kube_command(
     ):
         out.undetermined.append(f"{shown}: a kuberc file named on the line can alias any subcommand to any other")
         return
+    if name in KUBE_CLIS:
+        sub_found, _, sub_index, unknown_root = kube_root(args)
+        verb = cmd.words[1 + sub_index] if 0 <= sub_index < len(cmd.words) - 1 else None
+        if verb is not None and (verb.dynamic or verb.glob or shell._EXPANDS.search(verb.raw or "")):
+            out.undetermined.append(f"{shown}: the subcommand {frame(verb.raw, 40)} is only known when the line runs")
+            return
+        if unknown_root and sub_found:
+            out.undetermined.append(
+                f"{shown}: {frame(unknown_root[0], 40)} before the subcommand is not one of kubectl's root flags; "
+                "cobra takes the next word as its value, so what runs is not what it reads as"
+            )
+            return
+        if sub_found == "--":
+            out.undetermined.append(f"{shown}: `--` before the subcommand: kubectl finds no subcommand there")
+            return
+    if cmd.args_from_stdin and name in KUBE_CLIS | {"helm"} and (not sub or cls not in {"read-only", "local"}):
+        out.undetermined.append(f"{shown}: arguments arrive at run time ({', '.join(cmd.via)})")
+        return
     if cls in {"read-only", "local"}:
         return
     if base is None:
@@ -770,8 +874,6 @@ def _kube_command(
         return
     if "KUBECONFIG" in line.assignments or "KUBECONFIG" in cmd.assignments:
         out.undetermined.append(f"{shown}: KUBECONFIG is set on the line, which picks the cluster")
-    if cmd.args_from_stdin:
-        out.undetermined.append(f"{shown}: arguments arrive at run time ({', '.join(cmd.via)})")
     granted = _grants(cmd)
     out.deny.extend(f"{shown}: {g}" for g in granted)
     reads_files = name == "helm" or sub in {"apply", "create", "replace", "patch"} or tool == "kustomize"
@@ -974,7 +1076,15 @@ def _safe_patch(args: list[str]) -> bool:
 
 
 def _day2(
-    cmd: shell.Command, name: str, sub: str, args: list[str], cls: str, shown: str, out: _Read, probe: bool = False
+    cmd: shell.Command,
+    name: str,
+    sub: str,
+    args: list[str],
+    cls: str,
+    shown: str,
+    out: _Read,
+    probe: bool = False,
+    base: Path | None = None,
 ) -> bool:
     """A change that cannot add a finding: allowed, with its class shown. Returns whether this command is one.
 
@@ -996,16 +1106,12 @@ def _day2(
         objects = [p for p in pos if "=" not in p and not p.endswith("-")]
         keys = [p.split("=", 1)[0].rstrip("-") for p in pos if "=" in p or p.endswith("-")]
         kind = objects[0].split("/", 1)[0].lower() if objects else ""
-        security = [k for k in keys if _SECURITY_KEYS.match(k)]
-        identity = [k for k in keys if _IDENTITY_KEYS.match(k)]
-        if identity:
+        escalation = _escalation(keys)
+        if escalation:
             if not probe:
-                out.undetermined.append(
-                    f"{shown}: {frame(identity[0], 60)} binds a cloud identity to a service account, which gives its "
-                    "pods that cloud role; verify cannot see what the role allows"
-                )
+                out.undetermined.append(f"{shown}: {frame(escalation[0], 60)} {escalation[1]}")
             return not probe
-        ok = _single(objects) and kind not in _NODE_OR_NS and not security
+        ok = (_single(objects) or bool({"-f", "--filename"} & flags)) and kind not in _NODE_OR_NS
     elif sub == "delete":
         ok = (
             len(pos) >= 2
@@ -1014,32 +1120,37 @@ def _day2(
             and not any(a.startswith("--grace-period=0") for a in args)
         ) or (len(pos) >= 1 and all(p.lower().startswith(("pod/", "pods/", "po/")) for p in pos))
     elif sub == "create" and nxt in {"namespace", "ns", "configmap", "cm", "secret", "serviceaccount", "sa"}:
-        outside = _from_file_outside(cmd)
+        credential = _literal_credential(args)
+        if credential:
+            if not probe:
+                out.deny.append(
+                    f"{shown}: puts {frame(credential, 60)} on the command line, where shell history and the process "
+                    "list keep it (KN-S013: create the Secret from a file or from your secret store)"
+                )
+            return not probe
+        outside = _from_file_outside(cmd, base)
         if outside:
             if not probe:
-                out.undetermined.append(
-                    f"{shown}: copies {frame(outside, 60)} from your machine into the cluster (a file outside the "
-                    "working directory, or one only known when the line runs)"
-                )
+                out.undetermined.append(f"{shown}: copies {frame(outside, 60)} from your machine into the cluster")
             return not probe
         ok = len(pos) >= 2 or (nxt == "secret" and len(pos) >= 3)
     elif name == "oc" and sub == "new-project":
-        ok = len(pos) == 1
-    elif sub == "expose":
-        external = next((a for a in args if a == "--external-ip" or a.startswith("--external-ip=")), None)
-        route = name == "oc" and nxt.split("/", 1)[0].lower() in {"svc", "service", "services"}
-        if external or route:
+        if any(a == "--admin" or a.startswith("--admin=") for a in args):
+            if not probe:
+                out.undetermined.append(f"{shown}: --admin grants the admin role on the new project")
+            return not probe
+        if any(a in {"--node-selector=", "--node-selector"} for a in args):
             if not probe:
                 out.undetermined.append(
-                    f"{shown}: "
-                    + (
-                        "--external-ip sends traffic for that address to the service (CVE-2020-8554), which a "
-                        "manifest finding does not show"
-                        if external
-                        else "`oc expose svc` creates a Route, which makes the service reachable from outside the "
-                        "cluster"
-                    )
+                    f"{shown}: an empty --node-selector lets the project's pods run on any node, control plane included"
                 )
+            return not probe
+        ok = len(pos) == 1
+    elif sub == "expose":
+        why = _expose_reason(name, nxt, args)
+        if why:
+            if not probe:
+                out.undetermined.append(f"{shown}: {why}")
             return not probe
         ok = (
             _single(pos)
@@ -1048,17 +1159,25 @@ def _day2(
             and "LoadBalancer" not in args
         )
     elif sub == "patch" and not ({"-f", "--filename", "-k", "--kustomize", "--patch-file"} & flags):
+        escalation = _escalation(_patch_keys(args))
+        if escalation:
+            if not probe:
+                out.undetermined.append(f"{shown}: the patch sets {frame(escalation[0], 60)}, which {escalation[1]}")
+            return not probe
         ok = _single(pos) and _safe_patch(args)
     elif sub == "set" and nxt == "env":
-        literal = [p for p in pos[1:] if _ENV_SECRET.match(p) or _URL_CREDENTIAL.match(p)]
+        assigned, prefix, from_source = _env_assignments(args, idx)
+        literal = [a for a in assigned if _credential_assignment(a)]
         if literal and not probe:
             out.deny.append(
                 f"{shown}: sets {frame(literal[0].split('=', 1)[0], 60)} as a literal value in the pod spec"
-                + (" (a URL with a password in it)" if _URL_CREDENTIAL.match(literal[0]) else "")
+                + (" (a URL or DSN with a password in it)" if _URL_CREDENTIAL.match(literal[0]) else "")
                 + " (KN-S013: move it to a Secret and use --from=secret/NAME)"
             )
             return True
-        loader = [p for p in pos[1:] if p.split("=", 1)[0] in _CODE_LOADING_ENV and "=" in p]
+        loader = [a for a in assigned if _loads_code(a.split("=", 1)[0])]
+        if not loader and prefix and from_source and _loads_code_prefix(prefix):
+            loader = [f"{prefix}*"]
         if loader:
             if not probe:
                 out.undetermined.append(
@@ -1066,7 +1185,9 @@ def _day2(
                     "path or option verify does not read"
                 )
             return not probe
-        ok = _single(pos[1:3] if "/" not in (pos[1] if len(pos) > 1 else "") else pos[1:2])
+        ok = _single(pos[1:3] if "/" not in (pos[1] if len(pos) > 1 else "") else pos[1:2]) or bool(
+            {"-f", "--filename"} & flags
+        )
     if ok and not probe and cls not in {"read-only"}:
         out.not_evaluated.append(
             {
@@ -1078,18 +1199,22 @@ def _day2(
     return ok
 
 
-def _from_file_outside(cmd: shell.Command) -> str | None:
-    """The first `--from-file`/`--from-env-file` source of `create secret|configmap` that is not a file in the working
-    tree: an absolute path, a home-relative one, one that climbs out with `..`, or one only known at run time."""
+def _from_file_outside(cmd: shell.Command, base: Path | None = None) -> str | None:
+    """The first file `create secret|configmap` copies into the cluster from outside the working tree: a
+    `--from-file`, `--cert` or `--key` that is absolute, home-relative, climbs out with `..`, goes through a
+    symbolic link or is only known at run time -- or any `--from-env-file`, which copies an env file (usually
+    `.env`, with the credentials of this machine's environment) into the cluster."""
     words = cmd.words
     for i, w in enumerate(words):
         name, eq, value = w.text.partition("=")
-        if name not in {"--from-file", "--from-env-file"}:
+        if name not in {"--from-file", "--from-env-file", "--cert", "--key"}:
             continue
         source = w if eq else (words[i + 1] if i + 1 < len(words) else None)
         if source is None:
             continue
         text = value if eq else source.text
+        if name == "--from-env-file":
+            return text
         if name == "--from-file" and "=" in text:
             text = text.split("=", 1)[1]  # `--from-file=KEY=PATH`
         if source.dynamic or "$" in text:
@@ -1099,6 +1224,154 @@ def _from_file_outside(cmd: shell.Command) -> str | None:
         rel = posixpath.normpath(posixpath.join(cmd.cwd or ".", text)) if cmd.cwd is not None else ".."
         if rel == ".." or rel.startswith("../"):
             return text
+        if base is not None:
+            here = base
+            for part in PurePosixPath(posixpath.normpath(text)).parts:
+                here = here / part
+                if here.is_symlink():
+                    return text
+    return None
+
+
+#: Names of environment variables that hold a credential: a word of the name (split on `_` and `-`, any case) or a
+#: run of words. KN-S013 reports these as literal values in a manifest.
+_CREDENTIAL_WORDS = frozenset(
+    {"PASSWORD", "PASSWD", "PWD", "PASS", "PASSPHRASE", "SECRET", "TOKEN", "APIKEY", "AUTH", "CREDENTIAL",
+     "CREDENTIALS", "PRIVATEKEY", "ACCESSKEY", "SECRETKEY"}
+)  # fmt: skip
+_CREDENTIAL_PAIRS = frozenset({("API", "KEY"), ("PRIVATE", "KEY"), ("ACCESS", "KEY"), ("SECRET", "KEY")})
+
+
+#: Credential words that are found inside a longer name too (`PGPASSWORD`, `XPASSWORD` after a `--prefix`).
+_CREDENTIAL_INFIXES = ("PASSWORD", "PASSWD", "PASSPHRASE", "SECRET", "TOKEN", "APIKEY", "PRIVATEKEY", "ACCESSKEY")
+
+
+def _credential_name(name: str) -> bool:
+    up = name.upper()
+    parts = [p for p in re.split(r"[_\-.]", up) if p]
+    if any(infix in up.replace("_", "").replace("-", "") for infix in _CREDENTIAL_INFIXES):
+        return True
+    return any(p in _CREDENTIAL_WORDS for p in parts) or any(
+        (a, b) in _CREDENTIAL_PAIRS for a, b in itertools.pairwise(parts)
+    )
+
+
+def _credential_assignment(assignment: str) -> bool:
+    """`NAME=VALUE` with a credential's name and a value, or a URL or DSN with a password in it."""
+    name, eq, value = assignment.partition("=")
+    if not eq or not value:
+        return False
+    return _credential_name(name) or bool(_URL_CREDENTIAL.match(assignment))
+
+
+def _literal_credential(args: list[str]) -> str | None:
+    """A credential given literally to `create secret|configmap`: `--docker-password=...`, or `--from-literal` of a
+    key with a credential's name."""
+    for i, a in enumerate(args):
+        name, eq, value = a.partition("=")
+        if name == "--docker-password":
+            return name
+        if name == "--from-literal":
+            literal = value if eq else (args[i + 1] if i + 1 < len(args) else "")
+            if _credential_assignment(literal):
+                return literal.split("=", 1)[0]
+    return None
+
+
+def _env_assignments(args: list[str], idx: int) -> tuple[list[str], str, bool]:
+    """`set env`'s assignments, in every form kubectl takes (`K=V`, `--env=K=V`, `-e K=V`, `-e=K=V`), each with the
+    `--prefix` applied, the prefix, and whether values come from `--from` (a configmap or secret, unread here)."""
+    out: list[str] = []
+    prefix = ""
+    from_source = False
+    rest = args[idx + 2 :] if idx >= 0 else args
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        name, eq, value = a.partition("=")
+        if name in {"--env", "-e"}:
+            item = value if eq else (rest[i + 1] if i + 1 < len(rest) else "")
+            out.append(item)
+            i += 1 if eq else 2
+            continue
+        if name == "--prefix":
+            prefix = value if eq else (rest[i + 1] if i + 1 < len(rest) else "")
+            i += 1 if eq else 2
+            continue
+        if name == "--from":
+            from_source = True
+        elif not a.startswith("-") and eq and re.match(r"^[A-Za-z_][A-Za-z0-9_.\-]*$", name):
+            out.append(a)
+        i += 1
+    return [prefix + a for a in out], prefix, from_source
+
+
+#: Environment variables that make a process load and run other code: the dynamic linkers (glibc, macOS), glibc's
+#: iconv modules, Node, the JVM, .NET, Go's runtime switches, Python, Bash, Perl and Ruby. Matched in any case.
+_CODE_LOADING_ENV = frozenset(
+    {"LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "GCONV_PATH",
+     "NODE_OPTIONS", "NODE_PATH", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+     "DOTNET_STARTUP_HOOKS", "CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER_PATH", "CLR_ENABLE_PROFILING", "GODEBUG",
+     "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "BASH_ENV", "ENV", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB"}
+)  # fmt: skip
+
+
+def _loads_code(name: str) -> bool:
+    return name.upper() in _CODE_LOADING_ENV
+
+
+def _loads_code_prefix(prefix: str) -> bool:
+    up = prefix.upper()
+    return bool(up) and any(v.startswith(up) for v in _CODE_LOADING_ENV)
+
+
+def _patch_keys(args: list[str]) -> list[str]:
+    """The label and annotation keys a patch sets, on the object or its pod template, in any patch type."""
+    text = _patch_value(args)
+    if text is None:
+        return []
+    try:
+        patch = sanitize.loads_bounded(text)
+    except Exception:  # noqa: BLE001 - an unreadable patch is judged elsewhere
+        return []
+    keys: list[str] = []
+    if isinstance(patch, list):
+        for op in patch:
+            path = op.get("path") if isinstance(op, dict) else None
+            if not isinstance(path, str):
+                continue
+            parts = [p.replace("~1", "/").replace("~0", "~") for p in path.split("/")[1:]]
+            for n, part in enumerate(parts[:-1]):
+                if part in {"labels", "annotations"}:
+                    keys.append(parts[n + 1])
+            if parts and parts[-1] in {"labels", "annotations"} and isinstance(op.get("value"), dict):
+                keys.extend(str(k) for k in op["value"])
+    elif isinstance(patch, dict):
+
+        def walk(node: Any, depth: int) -> None:
+            if not isinstance(node, dict) or depth > 12:
+                return
+            for k, v in node.items():
+                if k in {"labels", "annotations"} and isinstance(v, dict):
+                    keys.extend(str(x) for x in v)
+                walk(v, depth + 1)
+
+        walk(patch, 0)
+    return keys
+
+
+def _expose_reason(name: str, target: str, args: list[str]) -> str | None:
+    """Why an `expose` is asked about: an address or a name outside the cluster, or a Route."""
+    flags = {a.split("=", 1)[0]: (a.split("=", 1)[1] if "=" in a else "") for a in args if a.startswith("--")}
+    kind = (flags.get("--type") or next((args[i + 1] for i, a in enumerate(args[:-1]) if a == "--type"), "")).lower()
+    if "--external-ip" in flags:
+        return "--external-ip sends traffic for that address to the service (CVE-2020-8554)"
+    if "--load-balancer-ip" in flags:
+        return "--load-balancer-ip asks for a load balancer at a fixed address, reachable from outside"
+    if kind == "externalname" or "--external-name" in flags:
+        return "an ExternalName service sends in-cluster traffic for its name to a host outside the cluster"
+    if name == "oc" and target.split("/", 1)[0].lower() in {"svc", "service", "services"}:
+        return "`oc expose svc` creates a Route, which makes the service reachable from outside the cluster"
     return None
 
 
@@ -1119,7 +1392,7 @@ def _kubectl(
     version: str | None,
 ) -> None:
     sub_index = kube_subcommand(args)[2]
-    if _day2(cmd, name, sub, args, cls, shown, out):
+    if _day2(cmd, name, sub, args, cls, shown, out, base=base):
         return
     if sub in {"create"} and sub_index + 1 < len(args) and not args[sub_index + 1].startswith("-"):
         if not granted:

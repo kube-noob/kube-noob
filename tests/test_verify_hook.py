@@ -162,6 +162,17 @@ def test_the_spawned_check_answers_and_is_killed_at_its_deadline(ws: Path, capsy
     assert "budget" in capsys.readouterr().err
 
 
+def test_a_child_that_answers_allow_is_blocked(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The parent accepts nothing on stdout but an `ask`: a child that printed `permissionDecision: allow` (which would
+    skip the user's own prompt) is blocked, however it came to print it."""
+    import io
+
+    allow = json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}})
+    monkeypatch.setattr(hook, "run", lambda *a, **k: (0, allow, ""))
+    stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
+    assert hook.main(stdin=stdin, env={}, options=OPTS, isolate="fork") == 2
+
+
 def test_an_answer_that_cannot_be_written_blocks(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An `ask` that hits a closed stdout never reached Claude Code; exit 2 is the only reading that does not pass."""
     import io

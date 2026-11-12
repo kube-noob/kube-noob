@@ -173,24 +173,53 @@ KUBE_CLIS = frozenset({"oc", "kubectl", "k", "kubecolor"})
 _DRY_RUN_CLIENT = frozenset({"client", "unchanged", "true"})
 
 
-def kube_subcommand(args: list[str]) -> tuple[str, str, int]:
-    """The subcommand, the first word after it that is not a flag, and the subcommand's index in ``args`` (-1 when
-    there is none). Global flags in front are skipped (`-n shop get pods`)."""
+#: kubectl's root flags that take no value: pflag bool flags, whose no-option default is "true", so cobra does not
+#: take the next word for them (cli-runtime config_flags.go: --insecure-skip-tls-verify, --disable-compression;
+#: kubectl cmd.go: --match-server-version, --warnings-as-errors; cobra's own --help/-h).
+KUBE_GLOBAL_BOOL_FLAGS = frozenset(
+    {"--insecure-skip-tls-verify", "--disable-compression", "--match-server-version", "--warnings-as-errors", "--help",
+     "-h"}
+)  # fmt: skip
+
+
+def kube_root(args: list[str]) -> tuple[str, str, int, list[str]]:
+    """How cobra finds kubectl's subcommand, and the root flags kubectl does not define.
+
+    cobra v1.10.2 command.go stripFlags (lines 674-710): before the subcommand, a `--flag` without `=` and a
+    two-letter `-f` take the NEXT WORD as their value unless the flag has a no-option default (a bool), whether or
+    not the root command defines the flag -- so `kubectl -f x apply` runs apply, `kubectl -o yaml delete ns prod`
+    runs delete, and `kubectl --log-file f delete ...` runs delete. `--` ends the search; a word after it is not a
+    subcommand cobra finds, so `kubectl -n prod -- delete ns prod` is returned as the subcommand `--` (not read).
+
+    Returns (subcommand, the first word after it that is not a flag, its index, unknown root flags)."""
     i = 0
+    unknown: list[str] = []
     while i < len(args):
         t = args[i]
         if t == "--":
-            break  # everything after `--` is an argument, never a flag or a subcommand kubectl looks for
-        if t in KUBE_GLOBAL_VALUE_FLAGS:
-            i += 2
-            continue
+            rest = args[i + 1 :]
+            return ("--", rest[0], i, unknown) if rest else ("", "", -1, unknown)
         if t.startswith("-") and t != "-":
-            i += 1
+            name = t.split("=", 1)[0]
+            attached = not name.startswith("--") and len(name) > 2 and name[:2] in KUBE_GLOBAL_VALUE_FLAGS
+            if name not in KUBE_GLOBAL_VALUE_FLAGS and name not in KUBE_GLOBAL_BOOL_FLAGS and not attached:
+                unknown.append(name)
+            takes = "=" not in t and (
+                (t.startswith("--") and name not in KUBE_GLOBAL_BOOL_FLAGS) or (len(t) == 2 and t != "-h")
+            )
+            i += 2 if takes else 1
             continue
         rest = args[i + 1 : args.index("--", i + 1) if "--" in args[i + 1 :] else len(args)]
         nxt = next((a for a in rest if not a.startswith("-")), "")
-        return t, nxt, i
-    return "", "", -1
+        return t, nxt, i, unknown
+    return "", "", -1, unknown
+
+
+def kube_subcommand(args: list[str]) -> tuple[str, str, int]:
+    """The subcommand, the first word after it that is not a flag, and the subcommand's index in ``args`` (-1 when
+    there is none), found the way cobra finds it (see kube_root)."""
+    sub, nxt, idx, _ = kube_root(args)
+    return sub, nxt, idx
 
 
 def dry_run(args: list[str]) -> str:

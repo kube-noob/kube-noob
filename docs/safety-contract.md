@@ -289,6 +289,7 @@ Where it is applied (found in the code):
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/hook.py` `_decode` calls `sanitize.loads_bounded`
+- `kube_noob/hook.py` `_only_ask` calls `sanitize.loads_bounded`
 - `kube_noob/hook.py` `_run` calls `sanitize.loads_bounded`
 - `kube_noob/hook.py` `write_settings` calls `sanitize.json_nesting_ok`
 - `kube_noob/hook.py` `write_settings` calls `sanitize.loads_bounded`
@@ -313,6 +314,7 @@ Where it is applied (found in the code):
 - `kube_noob/verify.py` `_kustomize` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/verify.py` `_patch` calls `sanitize.loads_bounded`
 - `kube_noob/verify.py` `_patch` calls `sanitize.safe_load_all_bounded`
+- `kube_noob/verify.py` `_patch_keys` calls `sanitize.loads_bounded`
 - `kube_noob/verify.py` `_safe_patch` calls `sanitize.loads_bounded`
 - `kube_noob/verify.py` `_transform` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/verify.py` `hook_message` calls `sanitize.clean`
