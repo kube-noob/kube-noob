@@ -1,6 +1,6 @@
 {
   "name": "kube-noob-skills",
-  "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS skills that run the kube-noob CLI you install yourself: audit and validate manifests, diagnose pasted events and logs, explain policy denials, check NetworkPolicy reachability, find reported OpenShift issues and grade exercises, offline. Each skill first checks that kube-noob is installed and says so when it is not, instead of guessing. The plugin is Markdown only: no MCP server, no script, no code.",
+  "description": "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS skills that run the kube-noob CLI you install yourself: audit and validate manifests, diagnose pasted events and logs, explain policy denials, check NetworkPolicy reachability, find reported OpenShift issues and grade exercises, offline. Each skill first checks that kube-noob is installed and says so when it is not, instead of guessing. The plugin is Markdown, this manifest and one icon: no MCP server, no script, no code. Needs kube-noob 0.9.3 or later.",
   "version": "0.9.2",
   "author": {
     "name": "kube-noob maintainers",

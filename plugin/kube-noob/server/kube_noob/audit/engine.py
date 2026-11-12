@@ -116,6 +116,18 @@ def analyze(
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
                 "audited."
             )
+    shapeless = [
+        f"document {d.index + 1}"
+        for d in docs
+        if isinstance(d.data, dict)
+        and (not isinstance(d.data.get("kind"), str | None) or not isinstance(d.data.get("apiVersion"), str | None))
+    ]
+    if shapeless:
+        # `kind: [Pod]` used to audit as nothing at all, score 100: no rule recognised the kind, so none fired (G276).
+        report.assumptions.append(
+            f"{len(shapeless)} document(s) have a kind or apiVersion that is not a string, so no rule could read "
+            f"them and they are NOT audited: {', '.join(shapeless[:10])}."
+        )
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
         return report

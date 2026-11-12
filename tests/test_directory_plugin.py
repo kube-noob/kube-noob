@@ -472,7 +472,6 @@ def _section(text: str, heading: str) -> str:
 
 def test_every_skill_looks_for_the_engine_the_same_way_before_it_answers() -> None:
     """The presence check is the guard against an absence read as a pass, so it is the same text in every skill."""
-    from kube_noob import __version__
 
     blocks = {
         p.parent.name: _section(p.read_text(), "## Run kube-noob first") for p in sorted(LITE.glob("skills/*/SKILL.md"))
@@ -481,7 +480,9 @@ def test_every_skill_looks_for_the_engine_the_same_way_before_it_answers() -> No
     block = next(iter(blocks.values()))
     assert "```bash\nkube-noob --version\n```" in block, "the presence check is one command the user can read"
     assert "kube-noob is not installed, so nothing has been audited" in block, "an absence must be said as one"
-    assert f"```\npipx install kube-noob=={__version__}\n```" in block, "one install command when nothing is there"
+    assert f"```\npipx install 'kube-noob>={MIN_ENGINE}'\n```" in block, "one install command when nothing is there"
+    assert "this kube-noob is older than these skills need, so nothing has been audited" in block
+    assert "```\npipx upgrade kube-noob\n```" in block
     assert "not checked by kube-noob" in block, "knowledge without a run has to be labelled as such"
 
 
@@ -493,23 +494,43 @@ def test_every_skill_says_how_to_read_what_kube_noob_returns() -> None:
             assert word in block, f"{p.relative_to(LITE)}: the reading guide never mentions `{word}`"
 
 
-def test_the_pinned_release_is_this_release_and_the_bump_script_moves_it() -> None:
-    """The install command and the version the skills were written for pin a release, and bump_version.py has to move
-    every one of them."""
-    from kube_noob import __version__
+# The first release with what the skills rely on: KUBE_NOOB_FOR_MODEL, exit 4 for a crash, `undecided`, one JSON
+# document from `helm-audit`, `fix -o` JSON. A fixed fact about the engine, so the bump script does not move it.
+MIN_ENGINE = "0.9.3"
+
+
+def test_the_skills_require_the_release_that_has_what_they_rely_on() -> None:
+    """Written for 0.9.2 they would have read an engine that cleans nothing and exits 1 on a crash (second review)."""
+    from packaging.version import Version
 
     sys.path.insert(0, str(ROOT / "scripts"))
     import bump_version
 
-    pinned: dict[str, set[str]] = {}
+    named: set[str] = set()
     for p in sorted(LITE.rglob("*.md")):
-        found = set(re.findall(r"kube-noob==(\d+\.\d+\.\d+)", p.read_text()))
-        if found:
-            pinned[p.relative_to(ROOT).as_posix()] = found
-    assert len(pinned) >= 7, "every skill names the release it was written for"
-    assert all(v == {__version__} for v in pinned.values()), f"stale pins: {pinned}"
-    untracked = sorted(set(pinned) - set(bump_version.TARGETS))
-    assert not untracked, f"bump_version.py would leave these behind: {untracked}"
+        text = p.read_text()
+        assert "kube-noob==" not in text, f"{p.relative_to(LITE)} pins one release; the skills need a minimum"
+        named |= set(re.findall(r"kube-noob>=(\d+\.\d+\.\d+)", text))
+        assert p.relative_to(ROOT).as_posix() not in bump_version.TARGETS
+    assert named == {MIN_ENGINE} and Version(MIN_ENGINE) > Version("0.9.2")
+
+
+def test_an_older_engine_is_named_as_older_and_not_read(tmp_path: Path) -> None:
+    """A fake 0.9.2 on the PATH: the rule the skills give, applied to what it prints, says it is too old."""
+    import subprocess
+
+    from packaging.version import Version
+
+    fake = tmp_path / "kube-noob"
+    fake.write_text("#!/bin/sh\necho 'kube-noob 0.9.2'\n")
+    fake.chmod(0o755)
+    printed = subprocess.run([str(fake), "--version"], capture_output=True, text=True, check=True).stdout
+    block = _section(_first_skill(), "## Run kube-noob first")
+    stated = re.search(r"need \*\*kube-noob (\d+\.\d+\.\d+) or later\*\*", block)
+    assert stated and stated.group(1) == MIN_ENGINE
+    assert Version(printed.split()[1]) < Version(stated.group(1))
+    assert "If the\nversion it printed is lower than 0.9.3" in block or "lower than 0.9.3" in block
+    assert "first key is not `forModel`" in block
 
 
 def test_no_skill_runs_a_command_as_it_loads() -> None:
@@ -622,7 +643,7 @@ def test_the_reading_guide_says_what_is_not_a_result() -> None:
         "killed",
         "`rm -f",
         "nothing was cleaned",
-        "not reported by this version",
+        "older than these skills need",
     ):
         assert words in guide or words in _section(_first_skill(), "## Run kube-noob first"), words
 
@@ -791,3 +812,31 @@ def test_each_table_row_matches_what_the_command_really_prints(
     assert not unnamed, f"{row.where}: `{row.command}` reports what it did not read in {unnamed}; the row omits them"
     if row.exit.startswith("always 0"):
         assert rc == 0, f"{row.where}: the row says always 0; `{row.command}` exited {rc}"
+
+
+def test_words_written_on_a_command_line_are_single_quoted_and_cannot_run(tmp_path: Path) -> None:
+    """Double quotes still expand `$(...)` and backticks, so a phrase in them could run a command (second review,
+    G276). Every argument a skill quotes is a `$KN` path in double quotes or a phrase in single quotes, and a
+    hostile phrase dropped into the documented form runs nothing."""
+    import subprocess
+
+    lines = [
+        line
+        for p in sorted(LITE.rglob("*.md"))
+        for info, body in _fenced(p.read_text())
+        for line in body.splitlines()
+        if "kube-noob " in line
+    ]
+    assert lines
+    for line in lines:
+        head = re.split(r" > | 2> |; ", line)[0]
+        for quoted in re.findall(r'"([^"]*)"', head):
+            assert quoted.startswith("$KN") or quoted.startswith("${TMPDIR"), f"double-quoted word in: {line}"
+    phrased = [ln for ln in lines if re.search(r"kube-noob (search|protocol) '", ln)]
+    assert phrased, "the search and protocol forms are what this test is about"
+    marker = tmp_path / "pwned"
+    for line in phrased:
+        hostile = re.sub(r"'[^']*'", f"'$(touch {marker})`touch {marker}`'", line, count=1)
+        shell = hostile.replace("kube-noob ", "true ", 1).replace("$KN", str(tmp_path))
+        subprocess.run(["bash", "-c", shell], check=False, capture_output=True)  # noqa: S607 -- the shell under test
+        assert not marker.exists(), f"a phrase ran as a command in: {line}"

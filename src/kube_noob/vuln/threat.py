@@ -299,7 +299,7 @@ def _is_store(obj: dict[str, Any]) -> bool:
         if isinstance(c.get("image"), str) and _DATA_IMAGES.search(c["image"]):
             return True
         for p in c.get("ports") or []:
-            if isinstance(p, dict) and p.get("containerPort") in _DATA_PORTS:
+            if isinstance(p, dict) and shape.scalar(p.get("containerPort"), f"{ref} containerPort") in _DATA_PORTS:
                 return True
     return False
 

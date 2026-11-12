@@ -201,6 +201,7 @@ def _ref(obj: dict[str, Any]) -> str:
     return f"{obj.get('kind')}/{ns}/{meta.get('name')}" if ns else f"{obj.get('kind')}/{meta.get('name')}"
 
 
+UNREADABLE_NAME = "<metadata not readable>"
 object_ref = _ref  # Kind/namespace/name (Kind/name without a namespace), as audit findings name resources
 
 
@@ -238,15 +239,14 @@ class Inventory:
         if not isinstance(obj, dict):
             return
         k = kind or str(obj.get("kind") or "")
-        if not isinstance(obj.get("metadata") or {}, dict) or not isinstance(obj.get("spec") or {}, dict):
-            # Every reader here takes metadata and spec as mappings; an object where either is not one is reported
-            # as not read and never enters the inventory, rather than crashing it or counting as absent (G276).
-            who = _ref(obj) if isinstance(obj.get("metadata") or {}, dict) else (k or "an object")
-            self.not_read.append(f"{who}: metadata or spec is not a mapping, so it was not read")
-            return
         if k == "Secret":
-            self.dropped_secrets += 1  # never analysed, never echoed
+            self.dropped_secrets += 1  # never analysed, never echoed -- whatever shape its fields have
             return
+        # Every reader here takes metadata and spec as mappings (G276). Metadata that is not one only costs the name:
+        # the object is still ranked, under a name that says so. A spec that is not one cannot be ranked at all.
+        meta_ok = isinstance(obj.get("metadata") or {}, dict)
+        if not meta_ok:
+            obj = {**obj, "metadata": {"name": UNREADABLE_NAME}}
         if k not in KINDS:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
             # One that carries a pod spec is different -- those pods can hold every capability this scan ranks,
@@ -257,6 +257,11 @@ class Inventory:
             if unread_pod_specs(Document(index=0, data=obj)):
                 self.not_read.append(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked")
             return
+        if not isinstance(obj.get("spec") or {}, dict):
+            self.not_read.append(f"{_ref(obj)}: spec is not a mapping, so it was not read")
+            return
+        if not meta_ok:
+            self.not_read.append(f"{_ref(obj)}: metadata is not a mapping, so it is ranked without its name")
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:
             raise ScanError(f"more than {MAX_OBJECTS} objects; scan fewer namespaces")
         obj = {**obj, "kind": k}
@@ -1042,6 +1047,8 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         "workloads": len({id(site.obj) for site in sites}),
         "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
         "notRead": sorted(set(inv.not_read))[:50],
+        # The list is capped; how many it leaves out is part of the answer (G276).
+        **({"notReadWithheld": len(set(inv.not_read)) - 50} if len(set(inv.not_read)) > 50 else {}),
         "secretsIgnored": inv.dropped_secrets,
         "limitations": limitations,
     }

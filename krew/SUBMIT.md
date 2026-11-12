@@ -7,6 +7,11 @@ needs the Kubernetes CLA signed by the person who opens it, and it names a publi
 Everything below was checked on 2026-11-12 against the sources named beside it. Where a source says nothing, this file
 says so instead of guessing.
 
+The Claude plugin directory submission waits for the same release: the directory plugin's skills need kube-noob
+0.9.3 or later (`KUBE_NOOB_FOR_MODEL`, exit 4 for a crash, `undecided`), and a user who installs from the listing
+before 0.9.3 is on PyPI is told to install a version that does not exist yet. Submit `plugin/kube-noob-skills` after
+publishing it.
+
 ## Submit after the next release, not v0.9.2
 
 krew's pre-submit checklist says: "Adopt an open source license, and add it to your plugin archive file" and "Make

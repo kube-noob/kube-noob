@@ -527,7 +527,13 @@ def fix_manifests(
         i
         for i, o in enumerate(objs)
         if isinstance(o, dict)
-        and (not isinstance(o.get("metadata") or {}, dict) or not isinstance(o.get("spec") or {}, dict))
+        and (
+            not isinstance(o.get("kind"), str | None)
+            or not isinstance(o.get("apiVersion"), str | None)
+            or not isinstance(o.get("metadata") or {}, dict)
+            # A spec only matters for a kind the fixer reads; a custom resource's CRD may allow any spec.
+            or (o.get("kind") in _SPEC_READ_KINDS and not isinstance(o.get("spec") or {}, dict))
+        )
     }
     readable = [o for i, o in enumerate(objs) if i not in unreadable]
     classes = dict(KNOWN_STORAGE_CLASSES)
@@ -547,7 +553,7 @@ def fix_manifests(
             continue
         if i in unreadable:
             fx.result.manual.append(
-                f"document {i + 1} ({o.get('kind')}): not fixed, because its metadata or spec is not a mapping."
+                f"document {i + 1}: not fixed, because its kind, apiVersion, metadata or spec has the wrong type."
             )
             continue
         # A fix that meets a field of a type it cannot use leaves the WHOLE document as it was and says so: half a
@@ -562,6 +568,29 @@ def fix_manifests(
     fx.result.documents = objs
     fx.result.manual = list(dict.fromkeys(fx.result.manual))
     return fx.result
+
+
+# The kinds whose spec some fix reads: a workload's pod template, and the objects fixed by kind below.
+_SPEC_READ_KINDS = frozenset(
+    {
+        "Pod",
+        "Deployment",
+        "StatefulSet",
+        "DaemonSet",
+        "ReplicaSet",
+        "Job",
+        "CronJob",
+        "DeploymentConfig",
+        "Route",
+        "PodDisruptionBudget",
+        "EgressFirewall",
+        "StorageClass",
+        "PersistentVolumeClaim",
+        "Ingress",
+        "HorizontalPodAutoscaler",
+        "NetworkPolicy",
+    }
+)
 
 
 def _fix_document(

@@ -47,10 +47,11 @@ you paste back.
 ## Getting kube-noob
 
 ```
-pipx install kube-noob==0.9.2
+pipx install 'kube-noob>=0.9.3'
 ```
 
-pipx installs that release from PyPI. Homebrew, uv and the container image are in
+The skills need kube-noob 0.9.3 or later, and say so when they meet an older one. pipx installs it
+from PyPI. Homebrew, uv and the container image are in
 [the install guide](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md).
 
 The full `kube-noob` plugin, from the project's own marketplace, gives Claude the same engine as MCP tools instead of

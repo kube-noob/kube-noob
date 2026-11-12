@@ -24,21 +24,6 @@ TARGETS: dict[str, tuple[str, ...]] = {
     ".claude-plugin/marketplace.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob-skills/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
-    # The directory plugin's skills pin the release they fall back to (`uvx --from kube-noob==<v>`) and the one they
-    # tell the user to install; a stale pin would run, and install, the previous release (G276).
-    "plugin/kube-noob-skills/README.md": (r"kube-noob==(?P<v>\d+\.\d+\.\d+)",),
-    **{
-        f"plugin/kube-noob-skills/skills/{skill}/SKILL.md": (r"kube-noob==(?P<v>\d+\.\d+\.\d+)",)
-        for skill in (
-            "helm-charts",
-            "kube-debugging",
-            "kube-master-controller",
-            "kubernetes-core",
-            "openshift-platform",
-            "rhacs-stackrox",
-            "rosa-hcp",
-        )
-    },
     "plugin/kube-noob/pyproject.toml": (r'^version = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/uv.lock": (r'^name = "kube-noob-plugin"\nversion = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/server/kube_noob/__init__.py": (r'__version__ = "(?P<v>[^"]+)"',),

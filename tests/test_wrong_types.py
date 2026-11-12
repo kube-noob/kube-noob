@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import os
 from collections.abc import Iterator
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -27,7 +28,12 @@ import yaml
 from kube_noob import cli
 
 ROOT = Path(__file__).resolve().parents[1]
-WRONG: list[Any] = [7, "x", None, [1], {"a": 1}, True, 1.5]
+# Every shape YAML can give a field, and the two floats arithmetic chokes on.
+WRONG: list[Any] = [7, "x", None, [1], {"a": 1}, True, 1.5, float("nan"), float("inf")]
+# KUBE_NOOB_EXHAUSTIVE_MUTATION=1: every field x every shape x every command (about 40,000 runs; the fuzz the
+# release is measured with). Unset (CI): every field x every shape through `audit`, and every field x one
+# shape, rotating, through the other six commands.
+EXHAUSTIVE = os.environ.get("KUBE_NOOB_EXHAUSTIVE_MUTATION") == "1"
 
 
 def _run(argv: list[str]) -> tuple[int, str, str]:
@@ -56,30 +62,28 @@ def _paths(node: Any, prefix: tuple[Any, ...] = ()) -> Iterator[tuple[Any, ...]]
             yield from _paths(v, (*prefix, i))
 
 
-def _mutations() -> Iterator[tuple[str, int, list[dict[str, Any]]]]:
-    """One mutation per distinct (kind, field path) across the rule fixtures -- the same field in two fixtures reaches
-    the same code -- tried with two of the seven wrong shapes, rotating, so every shape meets every kind of field
-    somewhere. Yields the label, the field's ordinal and the mutated documents."""
+def _mutations() -> Iterator[tuple[str, int, int, list[dict[str, Any]]]]:
+    """One mutation per distinct (kind, field path) across the rule fixtures and each wrong shape -- the same field in
+    two fixtures reaches the same code. `kind` and `apiVersion` are fields too. Yields the label, the field's ordinal,
+    the shape's ordinal and the mutated documents."""
     seen: set[tuple[Any, ...]] = set()
     for fx in sorted((ROOT / "tests" / "fixtures" / "rules").glob("*.yaml")):
         raw = yaml.safe_load(fx.read_text())
         docs = [d for part in ("bad", "good") for d in yaml.safe_load_all(raw.get(part) or "") if isinstance(d, dict)]
         for di, doc in enumerate(docs):
             for p in _paths(doc):
-                if p in {("apiVersion",), ("kind",)}:
-                    continue
                 key = (doc.get("kind"), tuple("[]" if isinstance(x, int) else x for x in p))
                 if key in seen:
                     continue
                 seen.add(key)
                 n = len(seen)
-                for value in (WRONG[n % len(WRONG)], WRONG[(n + 2) % len(WRONG)]):
+                for w, value in enumerate(WRONG):
                     mutated = copy.deepcopy(docs)
                     target: Any = mutated[di]
                     for k in p[:-1]:
                         target = target[k]
                     target[p[-1]] = value
-                    yield f"{fx.stem}:{'.'.join(map(str, p))}={value!r}", n, mutated
+                    yield f"{fx.stem}:{'.'.join(map(str, p))}={value!r}", n, w, mutated
 
 
 def test_the_reviewers_role_is_read_not_crashed_on(tmp_path: Path) -> None:
@@ -121,32 +125,36 @@ def _argv(command: str, path: Path, tmp: Path) -> list[str]:
     }[command] + ["--format", "json"]
 
 
-def test_wrong_typed_fields_never_exit_1_without_a_json_document(tmp_path: Path) -> None:
+def test_wrong_typed_fields_never_exit_1_without_a_json_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KUBE_NOOB_DEBUG makes `main` re-raise anything that is not a deliberate refusal, so a crash -- including a bare
+    KeyError or ValueError, which the CLI cannot tell from a refusal -- fails here instead of becoming exit 4."""
+    monkeypatch.setenv("KUBE_NOOB_DEBUG", "1")
     f = tmp_path / "m.yaml"
+    others = ["redteam", "validate", "vuln threat", "posture scan", "fix", "protocol"]
     bad: list[str] = []
     cases = 0
-    previous = -1
-    for label, n, docs in _mutations():
+    for label, n, w, docs in _mutations():
         f.write_text(yaml.safe_dump_all(docs))
-        commands = ["audit"]
-        if n != previous:  # the first of the two shapes for a field also goes through the other readers
-            commands += ["redteam", "validate", "vuln threat", "posture scan"]
-            if n % 4 == 0:
-                commands += ["fix", "protocol"]
-        previous = n
+        commands = (
+            ["audit", *others] if EXHAUSTIVE else ["audit"] + ([others[n % len(others)]] if w == n % len(WRONG) else [])
+        )
         for command in commands:
             cases += 1
-            rc, out, err = _run(_argv(command, f, tmp_path))
-            if rc not in (0, 1, 2, 4, 5):
+            try:
+                rc, out, _ = _run(_argv(command, f, tmp_path))
+            except Exception as exc:  # noqa: BLE001 -- the point: anything that escapes is a crash
+                bad.append(f"{command} {label}: {type(exc).__name__}: {str(exc)[:120]}")
+                continue
+            if rc not in (0, 1, 2, 3, 4, 5):
                 bad.append(f"{command} {label}: exit {rc}")
             elif rc in (0, 1):
                 try:
                     json.loads(out)
                 except ValueError:
                     bad.append(f"{command} {label}: exit {rc} with no JSON document")
-            if "internal error" in err:
-                bad.append(f"{command} {label}: {err.strip()[:160]}")
-    assert cases > 2000, f"{cases} cases: the mutation walk found too few fields; it is measuring nothing"
+    assert cases > 5000, f"{cases} cases: the mutation walk found too few fields; it is measuring nothing"
     assert not bad, f"{len(bad)} of {cases}:\n" + "\n".join(sorted(set(bad))[:60])
 
 
@@ -212,13 +220,13 @@ def test_an_object_whose_metadata_is_not_a_mapping_is_not_read_by_the_attack_pat
         rc, out, err = _run([*argv, "-f", str(f), "--format", "json"])
         doc = json.loads(out)
         assert rc == 0 and "internal error" not in err
-        assert any("metadata or spec is not a mapping" in n for n in doc.get("notRead", [])), (argv, doc.get("notRead"))
+        assert any("metadata is not a mapping" in n for n in doc.get("notRead", [])), (argv, doc.get("notRead"))
 
 
 @pytest.mark.parametrize(
     "mutation,why",
     [
-        (("metadata: {name: web, namespace: shop}", "metadata: 7"), "metadata or spec is not a mapping"),
+        (("metadata: {name: web, namespace: shop}", "metadata: 7"), "has the wrong type"),
         (("selector: {matchLabels: {app: web}}", "selector: 7"), "spec.selector is int"),
         (
             (
@@ -242,3 +250,121 @@ def test_fix_leaves_a_document_it_cannot_read_as_it_was(mutation: tuple[str, str
     report = json.loads(out)
     assert rc == 0 and "internal error" not in err
     assert any(why in m for m in report["manualFollowUps"]), report["manualFollowUps"]
+
+
+_PRIV = (
+    "apiVersion: apps/v1\nkind: Deployment\nmetadata: 7\nspec:\n  replicas: 1\n  selector: {matchLabels: {app: p}}\n"
+    "  template:\n    metadata: {labels: {app: p}}\n    spec:\n      hostNetwork: true\n"
+    "      containers: [{name: p, image: nginx, securityContext: {privileged: true}}]\n---\n"
+    "apiVersion: v1\nkind: Service\nmetadata: {name: p, namespace: default}\n"
+    "spec: {type: LoadBalancer, selector: {app: p}, ports: [{port: 80}]}\n"
+)
+
+
+def test_an_object_with_unreadable_metadata_is_still_ranked_under_a_name_that_says_so(tmp_path: Path) -> None:
+    """Refusing it left a privileged hostNetwork Deployment out, total 0, and `--fail-above` exited 0."""
+    f = tmp_path / "pa.yaml"
+    f.write_text(_PRIV)
+    rc, out, _ = _run(["posture", "scan", "-f", str(f), "--fail-above", "5", "--format", "json"])
+    doc = json.loads(out)
+    assert doc["total"] >= 1 and rc == 1, (rc, doc["total"])
+    assert any("<metadata not readable>" in n for n in doc["notRead"])
+
+
+def test_a_gate_that_could_not_read_an_object_does_not_pass(tmp_path: Path) -> None:
+    f = tmp_path / "s.yaml"
+    f.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: d, namespace: shop}\nspec: 7\n")
+    rc, out, err = _run(["posture", "scan", "-f", str(f), "--fail-above", "29", "--format", "json"])
+    assert rc == 5 and json.loads(out)["notRead"] and "incomplete" in err
+
+
+def test_a_secret_is_never_named_whatever_shape_its_spec_has(tmp_path: Path) -> None:
+    f = tmp_path / "s.yaml"
+    f.write_text("apiVersion: v1\nkind: Secret\nmetadata: {name: db-password-prod, namespace: shop}\nspec: 7\n")
+    _, out, _ = _run(["posture", "scan", "-f", str(f), "--format", "json"])
+    assert "db-password-prod" not in out and json.loads(out)["secretsIgnored"] == 1
+
+
+def test_a_custom_resource_whose_spec_is_not_a_mapping_is_not_reported_as_unread(tmp_path: Path) -> None:
+    """A CRD may allow any spec; a kind the scan does not model was never going to be read, so it is not news."""
+    f = tmp_path / "cr.yaml"
+    f.write_text("apiVersion: example.com/v1\nkind: Widget\nmetadata: {name: w, namespace: shop}\nspec: [1, 2]\n")
+    _, out, _ = _run(["posture", "scan", "-f", str(f), "--format", "json"])
+    assert json.loads(out)["notRead"] == []
+    _rc, out, _ = _run(["fix", "-f", str(f), "-o", str(tmp_path / "o.yaml"), "--format", "json"])
+    assert not json.loads(out)["manualFollowUps"]
+
+
+_POD = (
+    "apiVersion: v1\nkind: Pod\nmetadata: {name: p, namespace: shop}\n"
+    "spec:\n  containers:\n  - name: c\n    image: nginx\n"
+)
+
+
+@pytest.mark.parametrize(
+    "argv,text",
+    [
+        (
+            ["redteam"],
+            _DEPLOY.replace("volumes: 7", "volumes: [{name: d, persistentVolumeClaim: {claimName: data}}]")
+            + "---\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata: {name: data, namespace: shop}\n"
+            "spec: {accessModes: .inf}\n",
+        ),
+        (["audit"], _POD + "    resources: {requests: {memory: .nan}, limits: {memory: 1Gi}}\n"),
+        (
+            ["vuln", "threat"],
+            _DEPLOY.replace("volumes: 7\n", "").replace("image: nginx}", "image: nginx, ports: [{containerPort: [1]}]}")
+            + "---\napiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\n"
+            "spec: {type: LoadBalancer, selector: {app: web}, ports: [{port: 80}]}\n",
+        ),
+        (["fix"], _POD.replace("kind: Pod", "kind: [Pod]")),
+        # The whole document, not one field: the check added for a non-string `kind` read `.get` off it (G276 rerun).
+        (["audit"], "!!set {a, b}\n---\n" + _POD),
+        (["audit"], "1000000000000000000000\n---\n" + _POD),
+    ],
+    ids=["pvc-accessModes-inf", "memory-nan", "containerPort-list", "kind-list", "document-set", "document-int"],
+)
+def test_the_second_reviews_residual_sites_answer_instead_of_crashing(
+    argv: list[str], text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KUBE_NOOB_DEBUG", "1")
+    f = tmp_path / "in.yaml"
+    f.write_text(text)
+    extra = ["-o", str(tmp_path / "o.yaml")] if argv == ["fix"] else []
+    rc, out, _ = _run([*argv, "-f", str(f), *extra, "--format", "json"])
+    assert rc in (0, 1) and json.loads(out)
+
+
+def test_a_document_whose_kind_is_not_a_string_is_not_audited_as_clean(tmp_path: Path) -> None:
+    f = tmp_path / "k.yaml"
+    f.write_text(_POD.replace("kind: Pod", "kind: [Pod]") + "    securityContext: {privileged: true}\n")
+    _, out, _ = _run(["audit", "-f", str(f), "--format", "json"])
+    assert any("kind or apiVersion that is not a string" in a for a in json.loads(out)["assumptions"])
+
+
+def test_one_unreadable_object_does_not_blind_a_rule_for_its_siblings(tmp_path: Path) -> None:
+    """KN-S015 caught one Role with `resources: 1` and stopped, so the wildcard Role beside it went unreported."""
+    f = tmp_path / "roles.yaml"
+    f.write_text(
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata: {name: a-broken, namespace: shop}\n"
+        "rules: [{apiGroups: [''], resources: 1, verbs: [get]}]\n---\n"
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata: {name: b-wild, namespace: shop}\n"
+        "rules: [{apiGroups: ['*'], resources: ['*'], verbs: ['*']}]\n"
+    )
+    _, out, _ = _run(["audit", "-f", str(f), "--format", "json"])
+    doc = json.loads(out)
+    assert ("KN-S015", "Role/shop/b-wild") in {(x["ruleId"], x["resource"]) for x in doc["findings"]}
+    assert any("evaluated without Role/shop/a-broken" in a for a in doc["assumptions"])
+
+
+def test_the_withheld_part_of_a_long_not_read_list_is_counted(tmp_path: Path) -> None:
+    f = tmp_path / "many.yaml"
+    f.write_text(
+        "".join(
+            f"---\napiVersion: apps/v1\nkind: Deployment\nmetadata: {{name: d{i}, namespace: shop}}\nspec: 7\n"
+            for i in range(60)
+        )
+    )
+    _, out, _ = _run(["posture", "scan", "-f", str(f), "--format", "json"])
+    doc = json.loads(out)
+    assert len(doc["notRead"]) == 50 and doc["notReadWithheld"] == 10

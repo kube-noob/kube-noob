@@ -4082,6 +4082,36 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             )
 
 
+# What a rule raises when an object has a field of a type it cannot use. ArithmeticError: `.nan` and `.inf` reach
+# Decimal and float arithmetic (decimal.InvalidOperation, OverflowError and ZeroDivisionError are all one).
+_SHAPE_ERRORS = (TypeError, AttributeError, KeyError, IndexError, ValueError, ArithmeticError)
+
+
+def _without_unreadable(ctx: AuditContext, r: Rule) -> tuple[list[Finding], list[str]] | None:
+    """Run ``r`` without the documents it fails on by themselves: (its findings, the documents left out), or None when
+    no single document explains the failure or the rule still fails without them."""
+    from dataclasses import replace
+
+    def fresh(docs: list[Document]) -> AuditContext:
+        return replace(ctx, docs=docs, undecided=set(), unreadable_shapes={})
+
+    bad: list[Document] = []
+    for d in ctx.docs:
+        try:
+            list(r.check(fresh([d]), r))  # type: ignore[misc]
+        except _SHAPE_ERRORS:
+            bad.append(d)
+    if not bad or len(bad) == len(ctx.docs):
+        return None
+    left_out = {id(d) for d in bad}
+    rest = fresh([d for d in ctx.docs if id(d) not in left_out])
+    try:
+        found = list(r.check(rest, r))  # type: ignore[misc]
+    except _SHAPE_ERRORS:
+        return None
+    return found, [d.ref() for d in bad]
+
+
 def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: list[str] | None = None) -> list[Finding]:
     """Every rule in ``stages``, appending the ids that actually ran to ``evaluated`` when given.
 
@@ -4104,9 +4134,19 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             try:
                 for f in r.check(ctx, r):
                     produced.append(f)
-            except (TypeError, AttributeError, KeyError, IndexError, ValueError) as exc:
+            # ArithmeticError: `.nan` and `.inf` reach Decimal and float arithmetic (decimal.InvalidOperation,
+            # OverflowError, ZeroDivisionError are all ArithmeticError).
+            except _SHAPE_ERRORS as exc:
+                # One object the rule cannot read must not blind it for every other object (G276): find the
+                # objects it fails on alone and run it again without them. Their findings are kept, the rule stays
+                # undecided (it did not read everything) and the objects are named.
                 ctx.cannot_decide(r.rule_id)
-                ctx.unreadable_shapes[r.rule_id] = type(exc).__name__
+                retried = _without_unreadable(ctx, r)
+                if retried is None:
+                    ctx.unreadable_shapes[r.rule_id] = type(exc).__name__
+                else:
+                    produced, skipped = retried
+                    ctx.unreadable_shapes[r.rule_id] = f"{type(exc).__name__}; evaluated without {', '.join(skipped)}"
             findings.extend(produced)
             if evaluated is not None and r.rule_id not in ctx.undecided:
                 evaluated.append(r.rule_id)

@@ -26,16 +26,22 @@ the engine, once per session:
 kube-noob --version
 ```
 
-If that prints `kube-noob` and a version, that is the engine. These skills were written for the release
-`kube-noob==0.9.2`. If the version it printed is older, say so before any answer: a command or flag below may be missing, and a
-not-evaluated field the result does not carry is "not reported by this version", never "nothing was left out".
+If that prints `kube-noob` and a version, that is the engine. These skills need **kube-noob 0.9.3 or later**: older
+releases do not clean their output for a model, can exit 1 on a crash, and lack fields the tables below name. If the
+version it printed is lower than 0.9.3, or a result's first key is not `forModel`, do not read its output as an answer.
+Say exactly this: **this kube-noob is older than these skills need, so nothing has been audited**, and give the one
+command that upgrades it:
+
+```
+pipx upgrade kube-noob
+```
 
 If it does not print a version, say exactly this: **kube-noob is not installed, so nothing has been audited.** Then
 give the one command that installs it, and the install guide
 (https://github.com/kube-noob/kube-noob/blob/main/docs/install.md) for Homebrew and uv. Do not install it yourself.
 
 ```
-pipx install kube-noob==0.9.2
+pipx install 'kube-noob>=0.9.3'
 ```
 
 `kubectl noob` is not an engine: without `kube-noob` on the `PATH` it downloads one, so these skills do not use it.
@@ -60,6 +66,10 @@ before you use it, because a write that failed leaves nothing, and kube-noob giv
 ```bash
 test -s "$KN/input.txt" && echo written
 ```
+
+Words you put on a command line yourself (a search phrase, a short request, a one-line cause) go in single quotes and
+may not contain a quote, `$` or a backtick: inside double quotes the shell would still run `$(...)` and backticks.
+Anything longer, and anything the user wrote, goes in a file instead.
 
 When the work is done, or the user asks, remove the folder and everything pasted into it:
 
@@ -126,7 +136,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `search` | always 0; no results is "not in the local knowledge" | `results`, `howToCite` | |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings` | `assumptions`, `unreadable`, `controlSummary` |
+| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary` |
 | `learn tracks` | always 0 | `tracks` | |
 | `learn lesson` | always 0 | `content`, `keyPoints` | |
@@ -139,7 +149,7 @@ audit it before commenting and quote the rule ids and line numbers. For "is this
 the manifest against that version:
 
 ```bash
-kube-noob search "pvc pending access mode" --format json
+kube-noob search 'pvc pending access mode' --format json
 kube-noob audit -f "$KN/app.yaml" --platform kubernetes --version 1.33 --format json
 kube-noob validate -f "$KN/app.yaml" --platform kubernetes --version 1.35 --format json
 ```

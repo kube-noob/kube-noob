@@ -203,6 +203,7 @@ FIRST_KEYS = (
     "notes",
     "causeNote",
     "summary",
+    "redTeam",
 )
 # Set once per run in `main`, from the settings, when the mode is on.
 _MODEL_KNOWLEDGE: dict[str, str] = {}
@@ -226,6 +227,16 @@ def for_model(obj: Any) -> Any:
     out.update({k: cleaned[k] for k in FIRST_KEYS if k in cleaned})
     out.update({k: v for k, v in cleaned.items() if k not in out})
     return out
+
+
+def _debug() -> bool:
+    return os.environ.get("KUBE_NOOB_DEBUG", "").lower() in ("1", "true", "yes")
+
+
+def _is_validation_error(exc: BaseException) -> bool:
+    from pydantic import ValidationError
+
+    return isinstance(exc, ValidationError)
 
 
 def _error_line(line: str) -> str:
@@ -2222,6 +2233,11 @@ def main(argv: list[str] | None = None) -> int:
         print(_error_line(f"error: {exc}"), file=sys.stderr)
         return 2
     except (KubeNoobError, KeyError, ValueError) as exc:
+        # All three are exit 4. A KubeNoobError, and pydantic's ValidationError for an argument a model refused, is a
+        # deliberate refusal. A bare KeyError or ValueError can be either a refusal or a bug, and the CLI cannot tell
+        # which; under KUBE_NOOB_DEBUG it re-raises them, so a test or a fuzz can see the difference (G276).
+        if not isinstance(exc, KubeNoobError) and not _is_validation_error(exc) and _debug():
+            raise
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         print(_error_line(f"error: {msg}"), file=sys.stderr)
         return 4
@@ -2235,7 +2251,7 @@ def main(argv: list[str] | None = None) -> int:
         # CLI's "findings at or above --fail-on": a crash on a wrong-typed field read as a policy violation in a
         # pipeline and as an answer in the plugin's skills (G276). 4 is "a kube-noob error"; KUBE_NOOB_DEBUG=1
         # re-raises for the traceback.
-        if os.environ.get("KUBE_NOOB_DEBUG", "").lower() in ("1", "true", "yes"):
+        if _debug():
             raise
         detail = " ".join(str(exc).split())[:300]
         print(_error_line(f"error: internal error ({type(exc).__name__}): {detail}"), file=sys.stderr)
@@ -3361,7 +3377,16 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
-    return 1 if a.fail_above is not None and top_score > a.fail_above else 0
+    if a.fail_above is None:
+        return 0
+    if top_score > a.fail_above:
+        return 1
+    if out["notRead"]:
+        # A gate that read only part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
+        # privileged Deployment used to leave total 0 and exit 0.
+        print(f"incomplete: {len(out['notRead'])} object(s) not read; see notRead", file=sys.stderr)
+        return 5
+    return 0
 
 
 def _print_poll(result: dict[str, Any]) -> None:
