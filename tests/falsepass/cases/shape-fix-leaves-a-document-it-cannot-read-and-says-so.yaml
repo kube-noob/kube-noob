@@ -6,7 +6,20 @@ summary: '`fix` on the same file: `kind in {...}` on a list raised TypeError and
 provenance: plugin/directory-engine reviews one and two (G276)
 expected_on: plugin/directory-engine
 probe:
-  module: kube_noob.shape
+  json:
+    argv:
+    - redteam
+    - -f
+    - '{probes}/pod.yaml'
+    - --platform
+    - kubernetes
+    - --version
+    - '1.35'
+    - --format
+    - json
+    path: assumptions
+    value:
+      exists: true
 inputs: shape-kind-list
 cli:
   argv:

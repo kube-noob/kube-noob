@@ -7,7 +7,20 @@ summary: 'A privileged, hostNetwork pod whose `kind` is `[Pod]`: no rule could r
 provenance: plugin/directory-engine reviews one and two (G276)
 expected_on: plugin/directory-engine
 probe:
-  module: kube_noob.shape
+  json:
+    argv:
+    - redteam
+    - -f
+    - '{probes}/pod.yaml'
+    - --platform
+    - kubernetes
+    - --version
+    - '1.35'
+    - --format
+    - json
+    path: assumptions
+    value:
+      exists: true
 inputs: shape-kind-list
 cli:
   argv:

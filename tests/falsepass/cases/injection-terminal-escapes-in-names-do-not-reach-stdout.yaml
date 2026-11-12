@@ -8,8 +8,8 @@ provenance: fix/absent-vs-unread reviews one and two (G279)
 expected_on: fix/absent-vs-unread
 probe:
   grep:
-    file: src/kube_noob/debug/cluster.py
-    text: def classify_read_failure
+    file: src/kube_noob/cli.py
+    text: visible_lines(
 inputs: sanitize-escapes
 cli:
   argv:

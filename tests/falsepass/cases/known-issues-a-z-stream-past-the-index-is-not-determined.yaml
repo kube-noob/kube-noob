@@ -6,9 +6,17 @@ summary: 'A z-stream newer than the newest the notes reach (4.22.999 against an 
 provenance: ux/first-run reviews (G277), second review
 expected_on: ux/first-run
 probe:
-  grep:
-    file: src/kube_noob/known_issues.py
-    text: versionCoverage
+  json:
+    argv:
+    - known-issues
+    - etcd
+    - --version
+    - 4.21.0
+    - --format
+    - json
+    path: versionCoverage.status
+    value:
+      exists: true
 cli:
   argv:
   - known-issues

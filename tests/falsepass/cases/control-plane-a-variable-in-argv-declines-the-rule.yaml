@@ -6,9 +6,13 @@ summary: '`--authorization-mode=$(MODE)`: the value comes from an environment va
 provenance: rules/control-plane reviews one to four (G272)
 expected_on: rules/control-plane
 probe:
-  grep:
-    file: src/kube_noob/audit/rules.py
-    text: KN-S038
+  json:
+    argv:
+    - rules
+    - --format
+    - json
+    path: rules[*].ruleId
+    value: KN-S038
 inputs: cp-var
 cli:
   argv:

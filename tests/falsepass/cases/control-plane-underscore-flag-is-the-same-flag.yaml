@@ -7,9 +7,13 @@ summary: '`--authorization_mode=AlwaysAllow` beside `--authorization-mode=Node,R
 provenance: rules/control-plane reviews one to four (G272)
 expected_on: rules/control-plane
 probe:
-  grep:
-    file: src/kube_noob/audit/rules.py
-    text: KN-S038
+  json:
+    argv:
+    - rules
+    - --format
+    - json
+    path: rules[*].ruleId
+    value: KN-S038
 inputs: cp-underscore
 cli:
   argv:

@@ -1,18 +1,23 @@
-"""The false-pass benchmark: inputs that do not decide a verdict, and the pass each one used to be read as.
+"""The false-pass benchmark: for every input in its corpus, the pass that input must never be read as.
 
 Over two days of adversarial review (G270-G280) about 250 defects were found before merge, and most had one
 shape: an absence, an unknown, an unrecognised shape, a truncated input or a refused read was reported as clean,
 allowed, complete or none. The reproducers lived in scratch directories; this corpus keeps them. Each case under
 ``tests/falsepass/cases/`` names its input, the command line (and, where one exists, the MCP tool), the verdict
 class the input decides, and the FORBIDDEN outcome: the false pass as it was observed. The benchmark runs every
-case through the real CLI (a subprocess, ``-I``, no network, a fixed environment) and the in-process tool, and
-fails when a forbidden outcome appears or the expected one does not.
+case through the real CLI (a subprocess, ``-I``, a fixed environment with no proxy variable and the offline lock on,
+network absence asserted by that environment rather than enforced by a namespace) and the in-process tool, and
+fails when a forbidden outcome appears or the expected one does not. It holds for the inputs in the corpus and no
+other: a shape that is not here is not checked.
 
 A case whose fix is on a branch that has not merged carries ``expected_on`` and a ``probe`` that says what the
-merge brings (a module, a command, a string in a source file). While the probe is not satisfied the case is run,
-its outcome is recorded and printed, and it does not fail the suite; the day the branch merges the probe holds
-and the case enforces, with no edit to the corpus. A case is never weakened to pass: a defect this corpus knows
-about stays in it until the code answers it.
+merge brings, as something observable: a command the parser accepts, a key in the JSON of a tiny run, or -- for a
+renderer's output boundary, which no JSON shows -- the sanitiser call in the source. While the probe is not
+satisfied the case is run, its outcome is recorded and printed, and it does not fail the suite; the day the branch
+merges the probe holds and the case enforces, with no edit to the corpus. A test holds that a case whose branch is
+an ancestor of HEAD has a satisfied probe, so a case cannot wait forever after its merge (a squash merge is the
+residual gap: its branch head is never an ancestor, and the case is then only as good as its probe). A case is
+never weakened to pass: a defect this corpus knows about stays in it until the code answers it.
 
 ``scripts/false_pass_report.py`` prints the same corpus as the Markdown table in ``docs/false-pass-benchmark.md``.
 """
@@ -25,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -41,6 +47,22 @@ HERE = Path(__file__).resolve().parent
 CASES = HERE / "cases"
 INPUTS = HERE / "inputs"
 STUB_BIN = HERE / "bin"
+PROBES = HERE / "probes"
+
+#: Variables a case may not set: the harness owns them, because they decide what the run can reach.
+_ENV_OWNED = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "FALSEPASS_KUBECTL",
+        "KUBE_NOOB_CONFIG",
+        "KUBE_NOOB_CLUSTER_BACKEND",
+        "KUBE_NOOB_CLUSTER_ENABLED",
+        "KUBE_NOOB_OFFLINE",
+        "KUBE_NOOB_WEB_ENABLED",
+        "KUBE_NOOB_DATA_DIR",
+    }
+)
 
 #: The verdict classes a case may expect. ``error-exit-N`` is the one class checked by its name: N is the exit code.
 CLASSES = ("not-determined", "undetermined", "not-evaluated", "deny", "finding")
@@ -139,12 +161,16 @@ class Checks:
 
 @dataclass(frozen=True)
 class Probe:
-    """How the harness tells that the fix a case waits for has landed. One of: a module importable, a CLI command
-    accepted (``command``), or a string in a source file (``grep``)."""
+    """How the harness tells that the fix a case waits for has landed. One of: a CLI command accepted
+    (``command``), a value at a path in the JSON of a tiny run (``json``: argv, path, value; ``{probes}`` in argv is
+    ``tests/falsepass/probes``), a module importable (``module``), or a string in a source file (``grep``, for an
+    output boundary that no JSON shows)."""
 
     kind: str
     value: str
     file: str = ""
+    path: str = ""
+    wanted: Any = None
 
     @classmethod
     def read(cls, raw: Any, where: str) -> Probe:
@@ -159,6 +185,10 @@ class Probe:
             file, text = value["file"], value["text"]
             if isinstance(file, str) and isinstance(text, str) and text:
                 return cls("grep", text, file)
+        if kind == "json" and isinstance(value, dict) and set(value) == {"argv", "path", "value"}:
+            argv, path = value["argv"], value["path"]
+            if isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv) and isinstance(path, str):
+                return cls("json", " ".join(argv), path=path, wanted=value["value"])
         raise CaseError(f"{where}: probe {kind!r} is not one the harness knows")
 
     def satisfied(self) -> bool:
@@ -170,16 +200,26 @@ class Probe:
         if self.kind == "grep":
             path = ROOT / self.file
             return path.is_file() and self.value in path.read_text("utf-8")
-        # command: argparse exits 2 for a subcommand it does not know, and prints usage for --help on one it does.
-        proc = subprocess.run(
-            [sys.executable, "-I", "-m", "kube_noob.cli", *self.value.split(), "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=TIMEOUT_SECONDS,
-            env=fixed_env(ROOT),
-        )
-        return proc.returncode == 0
+        with tempfile.TemporaryDirectory() as home:
+            argv = self.value.split() + (["--help"] if self.kind == "command" else [])
+            argv = [a.replace("{probes}", str(PROBES)) for a in argv]
+            # command: argparse exits 2 for a subcommand it does not know, and prints usage for --help on one it does.
+            proc = subprocess.run(
+                [sys.executable, "-I", "-m", "kube_noob.cli", *argv],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=TIMEOUT_SECONDS,
+                env=fixed_env(Path(home)),
+                cwd=home,
+            )
+        if self.kind == "command":
+            return proc.returncode == 0
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return False
+        return any(_matches(v, self.wanted) for v in resolve(data, self.path))
 
 
 @dataclass(frozen=True)
@@ -266,6 +306,9 @@ def load_case(path: Path) -> Case:
     env = cli.get("env", {})
     if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
         raise CaseError(f"{where}: cli.env must map strings to strings")
+    owned = sorted(set(env) & _ENV_OWNED)
+    if owned:
+        raise CaseError(f"{where}: cli.env may not set {owned}; the harness decides what a run can reach")
     kubectl = cli.get("kubectl")
     if kubectl is not None and (inputs is None or not (INPUTS / inputs / kubectl).is_dir()):
         raise CaseError(f"{where}: cli.kubectl must name a scenario directory inside the case's inputs")
@@ -280,6 +323,8 @@ def load_case(path: Path) -> Case:
         raise CaseError(f"{where}: forbid.what must say, in words, what the false pass looked like")
     if error_exit and tuple(expect.exit) != (int(error_exit.group(1)),):
         raise CaseError(f"{where}: verdict {verdict} must expect exactly exit {error_exit.group(1)}")
+    if error_exit and not (expect.stderr or expect.text):
+        raise CaseError(f"{where}: verdict {verdict} must also assert the refusal's words (stderr or text)")
     if not error_exit and not (expect.json or expect.json_any or expect.json_one_of or expect.text or expect.stderr):
         raise CaseError(f"{where}: verdict {verdict} must be asserted in the output, not only by exit code")
     mcp = raw.get("mcp")
@@ -432,10 +477,15 @@ GENERATORS = {
 
 
 def fixed_env(home: Path, extra: dict[str, str] | None = None, kubectl_dir: Path | None = None) -> dict[str, str]:
-    """The environment every case runs in: no KUBE_NOOB_* variable from the shell, no config file, no data dir
-    with notes in it, no proxy, the offline lock on, and -- for a live case -- a stub kubectl first on PATH."""
+    """The environment every case runs in: no KUBE_NOOB_* variable from the shell, an empty config file (so neither a
+    user nor the system config is read), no data dir with notes in it, no proxy variable, the offline lock on, and
+    -- for a live case -- a stub kubectl first on PATH. Network absence is asserted by this environment and the
+    offline lock, not enforced by a network namespace."""
     env = {k: v for k, v in os.environ.items() if k in _ENV_KEEP}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "no-config.yaml").touch()
     env["HOME"] = str(home)
+    env["KUBE_NOOB_CONFIG"] = str(home / "no-config.yaml")
     env["XDG_CONFIG_HOME"] = str(home / "cfg")
     env["XDG_DATA_HOME"] = str(home / "data")
     env["KUBE_NOOB_DATA_DIR"] = str(home / "data")
@@ -593,6 +643,10 @@ def resolve(data: Any, path: str) -> list[Any]:
 
 
 def _matches(value: Any, wanted: Any) -> bool:
+    if isinstance(wanted, dict) and set(wanted) == {"exists"}:
+        return bool(wanted["exists"])
+    if isinstance(wanted, dict) and set(wanted) == {"gt"}:
+        return isinstance(value, int | float) and not isinstance(value, bool) and value > wanted["gt"]
     if isinstance(wanted, dict) and set(wanted) == {"in"}:
         return value in wanted["in"]
     if isinstance(wanted, dict) and set(wanted) == {"contains"}:
@@ -672,8 +726,8 @@ def evaluate(case: Case, work: Path, python: str = sys.executable, *, mcp: bool 
         problems.append(f"CLI: {first.stderr}")
         return Outcome(case, case.enforced, problems, first.seconds, False)
     second = run_cli(case, inputs, work / "home2", python)
-    if first.stdout != second.stdout or first.exit != second.exit:
-        problems.append("CLI: two runs of the same input gave different bytes or exit codes")
+    if first.stdout != second.stdout or first.stderr != second.stderr or first.exit != second.exit:
+        problems.append("CLI: two runs of the same input gave different stdout, stderr or exit codes")
     if _wants_json(case) and first.json is None:
         problems.append("CLI: stdout is not JSON: " + _show(first.stdout[:SHOWN]))
     problems += ["CLI: " + p for p in violations(case.forbid, first, first.json, first.stdout, first.stderr, True)]

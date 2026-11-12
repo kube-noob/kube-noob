@@ -1,5 +1,6 @@
 """The false-pass benchmark (G282): every input in ``tests/falsepass/cases`` is run through the real CLI and the
-in-process tool, and the suite fails when a command reports a pass on input that does not decide it.
+in-process tool, and the suite fails when, for one of those inputs, a command reports the pass the case forbids.
+It holds for the corpus and nothing else: an input that is not here is not checked.
 
 A reviewer found about 250 defects over two days, and most had one shape: an absence, an unknown, an
 unrecognised shape, a truncated input or a refused read was reported as clean, allowed, complete or none. Those
@@ -145,6 +146,70 @@ def test_a_case_waiting_for_a_branch_is_not_enforced_until_its_probe_holds(priva
     assert not _write_case(private_corpus, "self-w", body).enforced
     body["probe"] = {"command": ["operators", "inventory"]}
     assert _write_case(private_corpus, "self-v", body).enforced
+    tiny = ["operators", "inventory", "-f", "{probes}/csvs-without-subscriptions.yaml", "--format", "json"]
+    body["probe"] = {"json": {"argv": tiny, "path": "counts.operators", "value": 2}}
+    assert _write_case(private_corpus, "self-u", body).enforced
+    body["probe"] = {"json": {"argv": tiny, "path": "counts.operators", "value": 99}}
+    assert not _write_case(private_corpus, "self-t", body).enforced
+    body["probe"] = {"json": {"argv": tiny, "path": "noSuchKey", "value": {"exists": True}}}
+    assert not _write_case(private_corpus, "self-s", body).enforced
+    body["probe"] = {"json": {"argv": ["no-such-command"], "path": "a", "value": 1}}
+    assert not _write_case(private_corpus, "self-r", body).enforced
+
+
+def test_a_waiting_case_whose_branch_has_merged_has_a_satisfied_probe() -> None:
+    """A probe that never holds would leave a case waiting forever after its merge -- a skipped input reading as
+    complete, aimed at the benchmark. When the branch a case waits for is an ancestor of HEAD, the probe must hold.
+    A squash merge leaves no ancestor, so this cannot see every merge: it is the residual gap the doc names.
+    ``expected_on: main`` is a known-failing case with no branch to wait for and is exempt."""
+    import shutil
+
+    if shutil.which("git") is None or not (ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
+    stale: list[str] = []
+    for case in CASES:
+        if case.expected_on in (None, "main") or case.probe is None:
+            continue
+        for ref in (f"origin/{case.expected_on}", case.expected_on):
+            known = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", ref],  # noqa: S607
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+            )
+            if known.returncode == 0:
+                break
+        else:
+            continue  # the branch is not in this clone (deleted after its merge, or never fetched)
+        merged = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ref, "HEAD"],  # noqa: S607
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if merged.returncode == 0 and not case.probe.satisfied():
+            stale.append(f"{case.id}: {case.expected_on} is merged and the probe {case.probe} does not hold")
+    assert stale == [], "\n".join(stale)
+
+
+def test_the_stderr_of_two_runs_is_compared_too(private_corpus: Path) -> None:
+    """Five cases assert on stderr, so a verdict that differs only there between two runs must be caught."""
+    body = _complete_inventory_case()
+    body["cli"]["argv"] = ["operators", "inventory", "-f", "{inputs}/ops.yaml", "--format", "json"]
+    case = _write_case(private_corpus, "self-x", body)
+    first = fp.run_cli(case, fp._materialise(case, private_corpus / "w"), private_corpus / "h1")
+    assert first.stderr == "" and first.exit == 0
+    assert fp.violations(fp.Checks(stderr=("x",)), first, None, "", "y", True) == []
+    assert fp.violations(fp.Checks(stderr=("y",)), first, None, "", "y", True) == ["forbidden stderr 'y'"]
+
+
+def test_the_cli_leg_reads_no_config_file_and_no_proxy(private_corpus: Path) -> None:
+    env = fp.fixed_env(private_corpus / "home")
+    assert (private_corpus / "home" / "no-config.yaml").read_bytes() == b""
+    assert env["KUBE_NOOB_CONFIG"] == str(private_corpus / "home" / "no-config.yaml")
+    assert env["KUBE_NOOB_OFFLINE"] == "1"
+    assert not any(k.upper().endswith("_PROXY") for k in env), sorted(env)
+    assert not any(k.startswith("KUBE_NOOB_") and k not in fp._ENV_OWNED | {"KUBE_NOOB_LEARNING_ENABLED"} for k in env)
 
 
 @pytest.mark.parametrize(
@@ -166,6 +231,10 @@ def test_a_case_waiting_for_a_branch_is_not_enforced_until_its_probe_holds(priva
         (lambda b: b.update(mcp={"tool": "x", "args": {}}), "mcp.expect and mcp.forbid"),
         (lambda b: b.update(cli={"argv": []}), "cli.argv is required"),
         (lambda b: b.update(cli={"argv": ["audit"], "kubectl": "nope"}), "cli.kubectl must name a scenario"),
+        (lambda b: b.update(cli={"argv": ["audit"], "env": {"PATH": "/x"}}), "may not set"),
+        (lambda b: b.update(cli={"argv": ["audit"], "env": {"KUBE_NOOB_CLUSTER_BACKEND": "oc"}}), "may not set"),
+        (lambda b: b.update(verdict="error-exit-2", expect={"exit": [2]}), "assert the refusal's words"),
+        (lambda b: b.update(expected_on="a/b", probe={"json": {"argv": ["x"], "path": "a"}}), "not one the harness"),
     ],
 )
 def test_a_malformed_case_file_is_refused(private_corpus: Path, edit: Any, message: str) -> None:
@@ -194,6 +263,8 @@ def test_json_paths_resolve_lists_and_missing_steps_yield_nothing() -> None:
     assert fp.resolve(data, "e[*]") == []
     assert fp.resolve(data, "e") == [[]]
     assert fp.resolve(None, "a") == []
+    assert fp._matches(3, {"gt": 0}) and not fp._matches(0, {"gt": 0}) and not fp._matches(True, {"gt": 0})
+    assert fp._matches(None, {"exists": True}) and fp._matches("x", {"in": ["x"]})
 
 
 def test_the_stub_kubectl_answers_from_the_most_specific_file(tmp_path: Path) -> None:

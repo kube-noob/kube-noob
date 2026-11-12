@@ -1,0 +1,49 @@
+id: operators-installed-count-contradicts-subscription-not-read
+class: 13
+verdict: not-determined
+summary: 'Two CSVs in a typed list beside an empty SubscriptionList: every operator''s state is `subscription-not-read`
+  and `counts.notDetermined` says 2, yet `counts.installed` says 2 as well -- the headline number counts as installed
+  what the state beside it says could not be determined (50,000 of them on the over-cap input).'
+provenance: G282 review (Q5) on main at 68fdc3a; open on main, so it waits for the fix
+expected_on: main
+probe:
+  json:
+    argv:
+    - operators
+    - inventory
+    - -f
+    - '{probes}/csvs-without-subscriptions.yaml'
+    - --format
+    - json
+    path: counts.installed
+    value: 0
+inputs: operators-csvs-without-subscriptions
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/ops.yaml'
+  - --format
+  - json
+mcp:
+  tool: operator_inventory
+  args:
+    manifests: '{text:ops.yaml}'
+  expect:
+    json:
+      counts.installed: 0
+      operators[*].state: subscription-not-read
+  forbid:
+    json:
+      counts.installed:
+        gt: 0
+expect:
+  json:
+    counts.installed: 0
+    operators[*].state: subscription-not-read
+forbid:
+  what: counts.installed 2 beside two operators whose state is subscription-not-read
+  json:
+    counts.installed:
+      gt: 0

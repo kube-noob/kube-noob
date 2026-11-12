@@ -6,9 +6,17 @@ summary: 'The same diagnosis as a person reads it: the text view must say the kn
 provenance: ux/first-run reviews (G277)
 expected_on: ux/first-run
 probe:
-  grep:
-    file: src/kube_noob/known_issues.py
-    text: versionCoverage
+  json:
+    argv:
+    - known-issues
+    - etcd
+    - --version
+    - 4.21.0
+    - --format
+    - json
+    path: versionCoverage.status
+    value:
+      exists: true
 inputs: diagnose-crashloop
 cli:
   argv:

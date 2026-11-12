@@ -1244,13 +1244,17 @@ input or a refused read reported as clean, allowed, complete or none. Two days o
 ([false-pass-benchmark.md](false-pass-benchmark.md)): each case is the input, the command line (and the MCP tool
 where one exists), the verdict the input decides and the false pass as it was observed, and
 `tests/test_false_pass_benchmark.py` runs every case through the real CLI and the in-process tool and fails when
-the forbidden outcome appears. When you find one, add a case rather than only a fix: copy a neighbour under
-`tests/falsepass/cases/`, put the input under `tests/falsepass/inputs/<name>/` byte for byte (name anything that
-looks like an instruction `injection*`), write `expect` for the honest answer and `forbid` for what you saw, give
-it the defect class number and one line of provenance, run `pytest tests/test_false_pass_benchmark.py -k <name>`
-(it must fail before the fix and pass after), and regenerate the page with `python scripts/false_pass_report.py`.
-A case whose fix is on a branch that has not merged carries `expected_on` and a probe for what the merge brings;
-it is run and printed, and enforces on its own the day the branch merges.
+the forbidden outcome appears -- for the inputs in the corpus, and no other. When you find one, add a case rather
+than only a fix: copy a neighbour under `tests/falsepass/cases/`, put the input under
+`tests/falsepass/inputs/<name>/` byte for byte (the `injection*` naming rule that exempts a hostile fixture from
+the shipped-text check applies to `tests/fixtures`; the benchmark's inputs are not scanned, but keep the name so a
+reader knows what the file is), write `expect` for the honest answer and `forbid` for what you saw, give it the
+defect class number and one line of provenance, run `pytest tests/test_false_pass_benchmark.py -k <name>` (it must
+fail before the fix and pass after), and regenerate the page with `python scripts/false_pass_report.py`. A case
+whose fix is on a branch that has not merged carries `expected_on` and a probe for what the merge brings (a
+command the parser accepts, a key in the JSON of a tiny run); it is run and printed, and enforces on its own the
+day the branch merges. A false pass that is open on `main` with no branch fixing it is filed the same way with
+`expected_on: main`: known failing, printed as waiting, never weakened.
 
 ## Model builders
 

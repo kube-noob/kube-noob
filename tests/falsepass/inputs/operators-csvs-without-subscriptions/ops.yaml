@@ -1,0 +1,9 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersionList
+items:
+- metadata: {name: op1.v1.0.0, namespace: a}
+- metadata: {name: op2.v1.0.0, namespace: b}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: SubscriptionList
+items: []

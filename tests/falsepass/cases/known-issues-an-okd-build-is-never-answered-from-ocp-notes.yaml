@@ -7,9 +7,17 @@ summary: 'An OKD build string (`4.16.0-0.okd-2024-08-01`): the version was refus
 provenance: ux/first-run reviews (G277), second review
 expected_on: ux/first-run
 probe:
-  grep:
-    file: src/kube_noob/known_issues.py
-    text: versionCoverage
+  json:
+    argv:
+    - known-issues
+    - etcd
+    - --version
+    - 4.21.0
+    - --format
+    - json
+    path: versionCoverage.status
+    value:
+      exists: true
 cli:
   argv:
   - known-issues

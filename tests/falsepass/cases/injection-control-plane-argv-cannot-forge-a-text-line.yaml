@@ -7,9 +7,13 @@ summary: 'A container name and a flag value carrying a newline, a fake `[CRITICA
 provenance: rules/control-plane reviews one to four (G272), second review
 expected_on: rules/control-plane
 probe:
-  grep:
-    file: src/kube_noob/audit/rules.py
-    text: KN-S038
+  json:
+    argv:
+    - rules
+    - --format
+    - json
+    path: rules[*].ruleId
+    value: KN-S038
 inputs: cp-forged-line
 cli:
   argv:

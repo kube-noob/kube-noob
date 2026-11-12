@@ -97,7 +97,11 @@ thing. Which should be built first, and does proving the north-star claim matter
 **4. Where is the line on "an unknown must not read as a pass"?** Today it costs real usability: three-valued
 verdicts everywhere, a report that opens with what was *not* evaluated, a chart guard that refuses to skip. Is
 there a point where this becomes noise a reader learns to ignore -- and if so, what is the signal that it has
-been crossed?
+been crossed? The false-pass benchmark ([false-pass-benchmark.md](false-pass-benchmark.md)) holds the line as
+cases; one of them is open on `main` today and waits for nobody's branch:
+`operators-installed-count-contradicts-subscription-not-read` (`counts.installed` counts operators whose state
+beside it is `subscription-not-read`, G282 review Q5). It is a known-failing case, printed as waiting, never
+weakened; whoever fixes the count turns it on.
 
 **5. What is missing that is not on any list?** The last round produced 250 proposals and five survivors, which
 suggests the lists are not the constraint. If you were to kill one shipped feature to fund one unbuilt thing,
