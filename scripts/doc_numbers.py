@@ -297,9 +297,13 @@ def counted() -> dict[str, int]:
 
     from kube_noob.audit.controls import TITLES
     from kube_noob.audit.fedramp import BY_CONTROL, INDICATORS, indicator_rules
+
+    # The README's sentence is about red-team scenarios. This imported `kube_noob.demo.SCENARIOS` -- the demo
+    # walkthroughs -- which happened to number nine too, so the count was right by coincidence until a demo was
+    # added and the README was rewritten to say ten red-team scenarios (G280).
+    from kube_noob.audit.redteam import SCENARIOS
     from kube_noob.audit.rules import RULES
     from kube_noob.debug.playbooks import PLAYBOOKS
-    from kube_noob.demo import SCENARIOS
     from kube_noob.mustgather import analyse
 
     tracks = yaml.safe_load((ROOT / "src" / "kube_noob" / "data" / "curriculum.yaml").read_text())["tracks"]

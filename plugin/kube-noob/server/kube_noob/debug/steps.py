@@ -28,6 +28,13 @@ _KUBE_READ = {
     "status",
     "top",
     "wait",
+    # Print information and change nothing; the pre-action hook (G280) would otherwise block each of them, because
+    # a subcommand this table does not name is treated as a change.
+    "cluster-info",
+    "completion",
+    "help",
+    "options",
+    "projects",
 }
 _KUBE_EXEC = {"rsh", "exec", "debug", "port-forward", "attach", "proxy", "rsync", "cp"}
 # `oc adm policy scc-subject-review` / `scc-review` / `who-can` evaluate policy and never grant anything
@@ -118,6 +125,82 @@ def _segments(cmd: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+#: kubectl's global flags that take a value as the next word (kubernetes/cli-runtime
+#: pkg/genericclioptions/config_flags.go and kubernetes/kubectl pkg/cmd/cmd.go, master, read 2026-11-12). They may
+#: come before the subcommand: `kubectl -n shop get pods` reads, and was classified as a change.
+KUBE_GLOBAL_VALUE_FLAGS = frozenset(
+    {
+        "-n",
+        "--namespace",
+        "--context",
+        "--kubeconfig",
+        "--cluster",
+        "--user",
+        "-s",
+        "--server",
+        "--token",
+        "--as",
+        "--as-group",
+        "--as-uid",
+        "--as-user-extra",
+        "--certificate-authority",
+        "--client-certificate",
+        "--client-key",
+        "--tls-server-name",
+        "--request-timeout",
+        "--cache-dir",
+        "--proxy-url",
+        "--username",
+        "--password",
+        "-v",
+        "--v",
+        "--vmodule",
+        "--log-flush-frequency",
+        "--profile",
+        "--profile-output",
+    }
+)
+#: Names a kubectl runs under: the binary, the `k` alias the Kubernetes docs suggest
+#: (kubernetes.io/docs/reference/kubectl/quick-reference/, `alias k=kubectl`) and kubecolor, which passes its
+#: arguments to kubectl.
+KUBE_CLIS = frozenset({"oc", "kubectl", "k", "kubecolor"})
+#: `--dry-run` with no value means client (kubectl pkg/cmd/util/helpers.go GetDryRunStrategy: NoOptDefVal
+#: "unchanged" -> DryRunClient, and the deprecated boolean `true` -> DryRunClient). `server` still sends the request
+#: with dryRun=All, which kube-noob treats as the dry-run tier (D), so it stays a change.
+_DRY_RUN_CLIENT = frozenset({"client", "unchanged", "true"})
+
+
+def kube_subcommand(args: list[str]) -> tuple[str, str, int]:
+    """The subcommand, the first word after it that is not a flag, and the subcommand's index in ``args`` (-1 when
+    there is none). Global flags in front are skipped (`-n shop get pods`)."""
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t in KUBE_GLOBAL_VALUE_FLAGS:
+            i += 2
+            continue
+        if t.startswith("-") and t != "-":
+            i += 1
+            continue
+        nxt = next((a for a in args[i + 1 :] if not a.startswith("-")), "")
+        return t, nxt, i
+    return "", "", -1
+
+
+def dry_run(args: list[str]) -> str:
+    """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server" or "" (none)."""
+    for i, t in enumerate(args):
+        if t == "--dry-run":
+            nxt = args[i + 1] if i + 1 < len(args) else ""
+            if nxt in {"client", "server", "none"}:  # helm also takes `--dry-run server`
+                return "" if nxt == "none" else nxt
+            return "client"
+        if t.startswith("--dry-run="):
+            v = t.split("=", 1)[1].lower()
+            return "client" if v in _DRY_RUN_CLIENT else "server" if v == "server" else ""
+    return ""
+
+
 def _classify_segment(seg: str) -> StepKind:
     toks = seg.split()
     while toks and _ENV_ASSIGN.match(toks[0]):  # KUBECONFIG=... oc delete ...
@@ -126,17 +209,30 @@ def _classify_segment(seg: str) -> StepKind:
         toks = toks[1:]
         while toks and _ENV_ASSIGN.match(toks[0]):
             toks = toks[1:]
+    return classify_argv(toks)
+
+
+def classify_argv(toks: list[str]) -> StepKind:
+    """Classify one command given as its words: the program and its arguments, no shell syntax.
+
+    ``kube_noob.debug.shell`` produces these words from a whole shell line, seeing through quoting and wrappers;
+    ``classify_step`` produces them by splitting a step on white space. One decision table serves both."""
     if not toks:
         return "read"
     tool = toks[0].rsplit("/", 1)[-1]  # /usr/local/bin/oc -> oc
+    if tool.lower().endswith(".exe"):
+        tool = tool[:-4]
     rest = toks[1:]
     sub = rest[0] if rest else ""
     nxt = rest[1] if len(rest) > 1 else ""
     if tool == "xargs":  # `... | xargs oc delete pod` runs the command that follows
         args = [t for t in rest if not t.startswith("-")]
         return _classify_segment(" ".join(args)) if args else "exec"
-    if tool in {"oc", "kubectl"}:
-        if sub in _KUBE_READ:
+    if tool in KUBE_CLIS:
+        sub, nxt, _ = kube_subcommand(rest)
+        seg = " ".join(toks)
+        # diff sends server-side dry-run requests and stores nothing; kustomize renders a directory locally.
+        if sub in _KUBE_READ or sub in {"diff", "kustomize", ""}:  # "": `kubectl` alone prints its help
             return "read"
         if sub == "auth":
             return "read" if nxt in {"can-i", "whoami"} else "change"
@@ -155,11 +251,17 @@ def _classify_segment(seg: str) -> StepKind:
             ):
                 return "read"  # without --confirm, oc adm prune only lists what it would remove
             return "change"
+        if dry_run(rest) == "client":
+            return "read"  # apply, create, patch, delete ... --dry-run=client send nothing that is stored
         return "change"
     if tool == "helm":
         if sub == "repo":
             return "read" if nxt == "list" else "change"  # add, update and remove change the local repositories file
+        if sub in {"install", "upgrade"} and dry_run(rest) == "client":
+            return "read"  # helm renders and prints; nothing is installed
         return "read" if sub in _HELM_READ else "change"
+    if tool == "kustomize":
+        return "read" if sub in {"build", "cfg", "version", "help", ""} else "change"
     if tool == "rosa":
         return "read" if sub in _ROSA_READ else "change"
     if tool == "aws":  # aws <service> <operation>: describe-*, get-* and list-* only read

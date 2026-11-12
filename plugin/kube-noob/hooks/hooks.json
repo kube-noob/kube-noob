@@ -1,0 +1,30 @@
+{
+  "description": "kube-noob verify before a kubectl, oc or helm command changes a cluster. Off until you turn on verify_cluster_commands in /config.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": [
+              "run",
+              "--frozen",
+              "--exact",
+              "--isolated",
+              "--quiet",
+              "--project",
+              "${CLAUDE_PLUGIN_ROOT}",
+              "python",
+              "-I",
+              "-B",
+              "${CLAUDE_PLUGIN_ROOT}/hooks/kube_noob_hook.py"
+            ],
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -298,8 +298,13 @@ def run(
     # The gate already runs `analyze`, so it HAS the coverage record; it just never published it, and a
     # compliance document built from the gate could therefore only ever say not-satisfied (G201).
     coverage: dict[str, Any] = {}
+    assumptions: list[str] = []
     if sources:
         report = analyze(combined, platform, version, cni=cni)
+        # What the audit declined or could not read inside the files it was given (a pod spec in a kind with no
+        # reader, a group it does not know, an assumed version). The gate dropped these, so a gate that passed on a
+        # privileged container nobody read said nothing about it; `kube-noob verify` reads its verdict from here.
+        assumptions = list(report.assumptions)
         kept_rules: list[str] = []
         excepted_rules: list[str] = []
         kinds = set(_KIND.findall(combined))
@@ -422,6 +427,7 @@ def run(
             + " --mode enforce",
         },
         "knownIssues": known,
+        "assumptions": assumptions,
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
         "notRun": [
@@ -949,6 +955,8 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         lines.append("")
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
+    if report.get("assumptions"):
+        lines += ["### Assumed, or not evaluated", "", *[f"- {_cell(a, 600)}" for a in report["assumptions"]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
     return "\n".join(lines)
 

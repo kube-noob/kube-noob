@@ -337,6 +337,46 @@ def _posture(kit: Any, emit: Emit) -> None:
     emit(render_text(posture(locked)))
 
 
+def _verify(kit: Any, emit: Emit) -> None:
+    """The check before an action: an insecure change denied with its fix, the fixed one allowed, and a command
+    whose effect cannot be read from its text, not determined."""
+    from kube_noob import verify
+    from kube_noob.audit.fixer import fix_manifests
+
+    with tempfile.TemporaryDirectory(prefix="kube-noob-verify-") as tmp:
+        root = Path(tmp)
+        (root / "k8s").mkdir()
+        target = root / "k8s" / "web.yaml"
+        target.write_text(_example("verify-web.yaml"), encoding="utf-8")
+
+        def check(command: str) -> dict[str, Any]:
+            plan = verify.plan(command, cwd=root)
+            return verify.evaluate(plan.sources, command=plan, from_command=True, fail_on="medium")
+
+        first = "kubectl apply -f k8s/web.yaml -n shop"
+        _step(
+            emit,
+            "An agent is about to apply a Deployment with no securityContext",
+            f"kube-noob verify --command '{first}' --fail-on medium",
+        )
+        emit(verify.text(check(first)))
+        fixed = fix_manifests(target.read_text(encoding="utf-8"), platform="kubernetes", k8s_version="1.35")
+        target.write_text(fixed.yaml(), encoding="utf-8")
+        _step(
+            emit,
+            "Apply the mechanical fix it names, and check the same command again",
+            "kube-noob fix -f k8s/web.yaml --platform kubernetes -o k8s/web.yaml",
+        )
+        emit(verify.text(check(first)))
+        opaque = "kubectl apply -f https://example.com/web.yaml"
+        _step(
+            emit,
+            "A command whose effect is not in its text is never an allow",
+            f"kube-noob verify --command '{opaque}' --fail-on medium",
+        )
+        emit(verify.text(check(opaque)))
+
+
 SCENARIOS: dict[str, Scenario] = {
     s.name: s
     for s in (
@@ -356,6 +396,12 @@ SCENARIOS: dict[str, Scenario] = {
             _mustgather,
         ),
         Scenario("posture", "Show and lock the security posture", "security, platform admins", _posture),
+        Scenario(
+            "verify",
+            "Check a change before an agent applies it: deny, fix, allow",
+            "teams using coding agents",
+            _verify,
+        ),
     )
 }
 

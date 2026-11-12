@@ -103,6 +103,53 @@ class ManifestsIn(_In):
     version: str | None = Field(None, max_length=16, description="Platform version, e.g. '4.22' (OCP) or '1.35'.")
 
 
+class VerifyIn(_In):
+    """A change to check before it is applied: manifests, or the command line that would apply them."""
+
+    manifests: str | None = Field(
+        None, max_length=MAX_MANIFEST_CHARS, description="The proposed manifests (YAML), when the change is files."
+    )
+    command: str | None = Field(
+        None,
+        max_length=20_000,
+        description="The command line about to run (kubectl, oc, helm, kustomize; through sh -c, env, sudo, xargs "
+        "and the rest). Never run. The files it names are read only from `files`, never from disk.",
+    )
+    files: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=200,
+        description="The text of each file the command names, keyed by the path as the command writes it "
+        "(`k8s/deploy.yaml`). A named file missing here makes the verdict not-determined.",
+    )
+    stdin: str | None = Field(
+        None, max_length=MAX_MANIFEST_CHARS, description="What the command reads with -f - (if anything)."
+    )
+    against: str | None = Field(
+        None,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The current state of the same objects (YAML): only findings the change ADDS count.",
+    )
+    platform: PlatformT = Field("kubernetes", description="Target platform.")
+    version: str | None = Field(None, max_length=16, description="Platform version, e.g. '4.22' (OCP) or '1.35'.")
+    fail_on: Literal["info", "low", "medium", "high", "critical", "never"] = Field(
+        "high", description="Deny at this severity or above."
+    )
+    exceptions: str | None = Field(None, max_length=1_000_000, description="An exception list, as for audit.")
+
+    @field_validator("files")
+    @classmethod
+    def _files_bounded(cls, v: dict[str, str]) -> dict[str, str]:
+        if sum(len(k) + len(t) for k, t in v.items()) > MAX_MANIFEST_CHARS:
+            raise ValueError(f"files: more than {MAX_MANIFEST_CHARS:,} characters in all")
+        return v
+
+    @model_validator(mode="after")
+    def _one_change(self) -> VerifyIn:
+        if (self.manifests is None) == (self.command is None):
+            raise ValueError("pass the change as manifests or as a command, one of the two")
+        return self
+
+
 class KsiIn(_In):
     """The FedRAMP 20x KSI view. ``manifests`` is optional: without it this is the crosswalk itself."""
 
@@ -1150,6 +1197,35 @@ class Toolkit:
             "scenarios": [s.as_dict() for s in r.scenarios],
         }
 
+    def verify_change(self, p: VerifyIn) -> dict[str, Any]:
+        """``kube-noob verify`` for a caller that hands the files over: nothing is read from disk, nothing runs."""
+        from pathlib import Path as _Path
+
+        from kube_noob import verify
+        from kube_noob.gate import Source
+
+        common: dict[str, Any] = {
+            "platform": p.platform,
+            "version": p.version,
+            "fail_on": p.fail_on,
+            "exceptions": p.exceptions,
+        }
+        against = [verify._source("against", p.against)] if p.against else None
+        if p.command is not None:
+            plan = verify.plan(
+                p.command,
+                cwd=_Path("/nonexistent/kube-noob-verify"),  # nothing is resolved on disk: files come from `files`
+                stdin=p.stdin,
+                platform=p.platform,
+                version=p.version,
+                inline_files=dict(p.files),
+            )
+            return verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
+        try:
+            return verify.evaluate([Source("manifests", p.manifests or "")], against=against, **common)
+        except verify.VerifyError as exc:
+            raise ValueError(str(exc)) from exc
+
     def fix(self, p: FixIn) -> dict[str, Any]:
         k8s = k8s_version_for(p.platform, p.version)
         res = fix_manifests(p.manifests, platform=p.platform, k8s_version=k8s, harden=p.harden)
@@ -2017,6 +2093,20 @@ class Toolkit:
                 "about a third smaller.",
                 AuditIn,
                 self.audit,
+            ),
+            ToolSpec(
+                "verify_change",
+                "Verify a change before it is applied",
+                "Call this before running kubectl apply, oc apply, helm install/upgrade or kubectl patch. One "
+                "verdict: allow (everything it sends was read and adds nothing at or above fail_on), deny (it adds "
+                "such findings, or the command grants cluster-admin, the privileged SCC or wildcard RBAC), or "
+                "not-determined (a URL, -f - with no stdin, exec, a delete, a strategic-merge patch, a wrapper or "
+                "flag it does not model): treat not-determined as no, and ask the user. Give the command and the "
+                "text of every file it names in `files`; nothing is read from disk and nothing runs. Returns the "
+                "findings the change adds with file, line, rule and fix, the command's class, what was not "
+                "evaluated, and the `kube-noob fix` command when the mechanical fixer clears a failing rule.",
+                VerifyIn,
+                self.verify_change,
             ),
             ToolSpec(
                 "fedramp_ksi",

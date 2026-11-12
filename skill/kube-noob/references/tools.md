@@ -363,6 +363,20 @@ Validate manifests. Strict schema validation (Kubernetes 1.35 + OpenShift/OVN-K/
 - `platform` (string): Target platform.
 - `version` (null/string): Platform version, e.g. '4.22' (OCP) or '1.35'.
 
+## verify_change
+
+Verify a change before it is applied. Call this before running kubectl apply, oc apply, helm install/upgrade or kubectl patch. One verdict: allow (everything it sends was read and adds nothing at or above fail_on), deny (it adds such findings, or the command grants cluster-admin, the privileged SCC or wildcard RBAC), or not-determined (a URL, -f - with no stdin, exec, a delete, a strategic-merge patch, a wrapper or flag it does not model): treat not-determined as no, and ask the user. Give the command and the text of every file it names in `files`; nothing is read from disk and nothing runs. Returns the findings the change adds with file, line, rule and fix, the command's class, what was not evaluated, and the `kube-noob fix` command when the mechanical fixer clears a failing rule.
+
+- `against` (null/string): The current state of the same objects (YAML): only findings the change ADDS count.
+- `command` (null/string): The command line about to run (kubectl, oc, helm, kustomize; through sh -c, env, sudo, xargs and the rest). Never run. The files it names are read only from `files`, never from disk.
+- `exceptions` (null/string): An exception list, as for audit.
+- `fail_on` (string): Deny at this severity or above.
+- `files` (object): The text of each file the command names, keyed by the path as the command writes it (`k8s/deploy.yaml`). A named file missing here makes the verdict not-determined.
+- `manifests` (null/string): The proposed manifests (YAML), when the change is files.
+- `platform` (string): Target platform.
+- `stdin` (null/string): What the command reads with -f - (if anything).
+- `version` (null/string): Platform version, e.g. '4.22' (OCP) or '1.35'.
+
 ## vuln_report
 
 Assess scanner output: VEX, exploitation, reachability. Read Trivy or Grype JSON, CycloneDX or SPDX SBOMs, or an RHACS image scan into one finding per package, version and CVE (with the fix version); apply Red Hat VEX (a not-affected or already-fixed finding drops out, citing the statement); mark CISA KEV entries; and, with the manifests, rank by exposure, privileges and RBAC reach with each finding's attack path. SBOM packages are matched against Red Hat VEX. Local only.

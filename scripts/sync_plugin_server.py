@@ -40,6 +40,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = Path("plugin/kube-noob")
 VENDORED = PLUGIN / "server" / "kube_noob"
 ENTRY = "kube_noob.server.stdio"
+# The plugin's PreToolUse hook (hooks/hooks.json runs hooks/kube_noob_hook.py) imports kube_noob.hook, which reaches
+# kube_noob.verify and the gate's audit. Followed like the server, under the same guards: it renders no chart (helm
+# is guarded out) and reads nothing outside the working tree the hook input names.
+ENTRIES = (ENTRY, "kube_noob.hook")
 # Reached only through kube_noob.debug.cluster.get_backend after it checks that cluster access is enabled; the RHACS
 # Central reader (the only code that reads its API token), imported only by the rhacs_compare_live tool; and the
 # Containerfile and image audit, whose detectors spell out download-and-execute and credential patterns that a plugin
@@ -167,10 +171,10 @@ def _imports(module: str, path: Path) -> set[str]:
 
 
 def plugin_modules(root: Path = ROOT) -> set[str]:
-    """Every kube_noob module the stdio MCP server can import, minus the guarded cluster backends."""
+    """Every kube_noob module the stdio MCP server or the plugin's hook can import, minus the guarded ones."""
     files = _module_files(root / "src" / "kube_noob")
     seen: set[str] = set()
-    stack = [ENTRY]
+    stack = list(ENTRIES)
     while stack:
         mod = stack.pop()
         if mod in seen or mod in GUARDED_IMPORTS:

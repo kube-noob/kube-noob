@@ -1264,6 +1264,23 @@ def violations() -> list[str]:
         problems.append("tool results no longer pass through sanitize.result in tool_runner.call")
     if not _calls(ROOT / SRC / "server" / "mcp_app.py", "run_tool", "tool_runner", "call"):
         problems.append("MCP tool results no longer go through tool_runner.call in run_tool")
+    # The hook's settings write is the one local write of `kube_noob.hook`, and it is the atomic replace in
+    # write_settings. A second writer in that module would be a write this document does not list.
+    hook_src = ROOT / SRC / "hook.py"
+    if not _calls(hook_src, "write_settings", "os", "replace"):
+        problems.append("kube_noob.hook.write_settings no longer writes the settings file with an atomic os.replace")
+    tree = ast.parse(hook_src.read_text(encoding="utf-8"))
+    writers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr in {"replace", "write_text", "write_bytes", "rename", "fdopen"}
+    }
+    if writers - {"write_settings"}:
+        problems.append(f"kube_noob.hook writes files outside write_settings: {sorted(writers - {'write_settings'})}")
     return problems
 
 
@@ -1382,7 +1399,21 @@ def _tools_section(tool_rows: Sequence[Tool]) -> list[str]:
         "",
         *_table(("Tool", "Writes"), writers),
         "",
+        "### A CLI command that writes outside the data directory",
+        "",
+        "No MCP tool. Classified with the local-state writers above: it writes this machine only, never a cluster "
+        "or another system, and only when a person passes the flag. Read from `kube_noob.hook.SETTINGS_WRITE`; the "
+        "check above fails if the module writes a file anywhere but `write_settings`.",
+        "",
+        *_table(("Command", "Writes"), [(f"`{_hook_write()[0]}`", _cell(_hook_write()[1]))]),
+        "",
     ]
+
+
+def _hook_write() -> tuple[str, str]:
+    from kube_noob.hook import SETTINGS_WRITE
+
+    return SETTINGS_WRITE
 
 
 def _cluster_section(access: ClusterAccess) -> list[str]:

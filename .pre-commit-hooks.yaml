@@ -11,6 +11,18 @@
   files: \.(ya?ml)$
   require_serial: true
 
+- id: kube-noob-verify
+  name: kube-noob verify (fails on what it could not read, too)
+  description: >-
+    The same audit as the `kube-noob` hook, judged the way an agent's change is judged before it is applied:
+    a file it could not read, or a pod spec in a kind no rule reads, fails the commit (exit 5) instead of
+    passing it, and findings at or above high fail it (exit 1).
+  entry: kube-noob verify -f .
+  language: python
+  pass_filenames: false
+  files: \.(ya?ml)$
+  require_serial: true
+
 - id: kube-noob-changed
   name: kube-noob (changed files only)
     Audit only the staged manifests. Faster on a large repository. Rules that fire because another

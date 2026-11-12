@@ -56,7 +56,18 @@ def test_the_plugin_asks_the_user_for_nothing_and_reads_nothing_from_their_machi
     assert env["KUBE_NOOB_WEB_ENABLED"] == "false"
     assert env["KUBE_NOOB_CLUSTER_ENABLED"] == "false"
     assert env["KUBE_NOOB_LLM_PROVIDER"] == "none"
-    assert "userConfig" not in plugin, "the plugin needs nothing from the user; adding an option needs a reason here"
+    # The reason for the one set of options (G280): the plugin's PreToolUse hook blocks kubectl, oc and helm changes
+    # that `kube-noob verify` does not allow, and a plugin update must not start blocking anybody's commands on its
+    # own. So the hook is off until the user turns `verify_cluster_commands` on, and it needs the platform and
+    # version the check targets. A switch, a platform name and a version: no folder, no file, no credential.
+    options = plugin.get("userConfig", {})
+    assert set(options) <= {"verify_cluster_commands", "verify_platform", "verify_version"}, set(options)
+    assert options["verify_cluster_commands"] == {
+        **options["verify_cluster_commands"],
+        "type": "boolean",
+        "default": False,
+    }
+    assert all(o["type"] in {"boolean", "string"} and not o.get("sensitive") for o in options.values())
     excluded = (ROOT / "scripts" / "sync_plugin_server.py").read_text()
     assert '"kube_noob.mustgather"' in excluded, "the plugin must not ship the tool that reads the user's own files"
     assert not (ROOT / "plugin/kube-noob/server/kube_noob/mustgather").exists()

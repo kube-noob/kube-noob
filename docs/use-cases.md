@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 145 957 to
-74 544 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 122 findings over 21 rules, and the JSON goes from 155 771 to
+77 835 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1235,6 +1235,45 @@ The local MCP server does not run in chat on claude.ai. Upload `kube-noob-skill-
 code execution. Paste a describe, an event or a manifest: Claude runs `kn.py insight` or `kn.py audit_manifests` in
 its sandbox and cites the playbook, rule and issue ids kube-noob returns. The skill is always offline: no web lookups,
 no cluster, no model inside.
+
+### Before an agent applies a change
+
+A coding agent that is about to run `kubectl apply` can be made to pass one check first. `kube-noob verify` answers
+`allow`, `deny` or `not-determined` for the change, from the command line itself and the files it names, and never
+runs the command:
+
+```bash
+kube-noob verify --command 'kubectl apply -f k8s/ -n shop' --platform openshift --version 4.20
+kube-noob demo verify
+```
+
+A deny lists the findings the change adds at or above `--fail-on`, each with its file and line, the rule, a one-line
+fix and whether the generated admission policy would refuse it in enforce mode, and the `kube-noob fix` command when
+the mechanical fixer clears a failing rule (it runs the fixer to find out). `not-determined` is never an allow: a URL,
+`-f -` with nothing on stdin, `exec`, a delete, a strategic-merge patch, `--context`, a flag or wrapper verify does
+not model, a file outside the working directory or behind a link. It sees through `sh -c`, `bash -lc`, `eval` of a
+literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
+path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
+same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).
+The same check is the `verify_change` MCP tool, which takes the command and the text of the files it names.
+
+An agent will not always choose to call a checker, so make the harness do it. In Claude Code, a PreToolUse hook runs
+before every Bash command, passes the ones that change no cluster untouched, and blocks a kubectl, oc or helm change
+unless verify allows it (not-determined and the hook's own errors block too):
+
+```bash
+kube-noob hook install --claude-code --project --platform openshift --version 4.20
+kube-noob hook install --claude-code --project --platform openshift --version 4.20 --write
+```
+
+The first prints the settings to merge into `.claude/settings.json`; the second merges them (existing hooks kept,
+atomic, never through a link). The plugin (`kube-noob@kube-noob`) carries the same hook, off until you turn on its
+`verify_cluster_commands` option in `/config`. For a harness without hooks, run
+`kube-noob verify --command "$CMD"` before executing `$CMD` and refuse on a non-zero exit; for a repository, the
+`kube-noob-verify` pre-commit hook runs `kube-noob verify -f .`. A human who needs to run something the check refuses
+starts Claude Code with `KUBE_NOOB_HOOK=off` in its environment; a command the agent writes cannot set it. A hook on
+the client is not a security boundary against an agent with a shell (see [SECURITY.md](../SECURITY.md)): the
+[admission webhook](#every-finding-as-a-kubectl-warning-the-admission-webhook) is the control on the server.
 
 ## Model builders
 

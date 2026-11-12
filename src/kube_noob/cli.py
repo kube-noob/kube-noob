@@ -554,6 +554,69 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     return 0 if report["passed"] else 1
 
 
+def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import gate, verify
+    from kube_noob.audit.exceptions import ExceptionsError
+
+    if bool(a.file) == (a.change_command is not None):
+        raise ConfigError("pass the change as manifests (-f) or as a command line (--command), one of the two")
+    platform = a.platform or s.default_platform
+    common: dict[str, Any] = {
+        "platform": platform,
+        "version": a.pversion,
+        "fail_on": a.fail_on,
+        "exceptions": _read(a.exceptions) if a.exceptions else None,
+        "cni": a.cni,
+    }
+    try:
+        against = gate.collect(a.against, _read) if a.against else None
+        if a.change_command is not None:
+            plan = verify.plan(a.change_command, cwd=Path.cwd(), platform=platform, version=a.pversion)
+            result = verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
+        else:
+            result = verify.evaluate(gate.collect(a.file, _read), against=against, **common)
+    except (gate.GateError, verify.VerifyError, ExceptionsError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if a.format == "text":
+        _tprint(verify.text(result))
+    else:
+        _emit(result, fmt)
+    return verify.exit_code(result, a.allow_undetermined)
+
+
+def _hook_install(a: argparse.Namespace, fmt: str) -> int:
+    from kube_noob import hook
+
+    scope = a.scope or "project"
+    path = hook.settings_path(scope, Path.cwd(), Path.home())
+    options = hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on)
+    try:
+        flags = options.args()
+    except hook.InstallError as exc:
+        raise ConfigError(str(exc)) from exc
+    if not a.write:
+        out = {
+            "file": str(path),
+            "merge": hook.settings_snippet(options),
+            "write": f"kube-noob hook install --claude-code --{scope}{flags} --write",
+        }
+        if a.format == "text":
+            _tprint(f"Merge this into {path} (keep any hooks already there), or let kube-noob merge it:")
+            _tprint(f"  {out['write']}")
+            _tprint(json.dumps(out["merge"], indent=2))
+            _tprint("Needs Claude Code v2.1.295 or later for onFailure; the hook itself blocks with exit 2 on error.")
+        else:
+            _emit(out, fmt)
+        return 0
+    try:
+        changed = hook.write_settings(path, options)
+    except hook.InstallError as exc:
+        raise ConfigError(str(exc)) from exc
+    msg = f"added the kube-noob PreToolUse hook to {path}" if changed else f"{path} already has the hook; unchanged"
+    _tprint(msg) if a.format == "text" else _emit({"file": str(path), "changed": changed}, fmt)
+    return 0
+
+
 def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
     from kube_noob import toolkit as tk
     from kube_noob.build import containerfile as cf
@@ -1202,6 +1265,75 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="honour a CycloneDX report's own analysis (not_affected, resolved, false_positive); off by default: "
         "whoever wrote the report could otherwise clear its findings",
+    )
+
+    vf = sub.add_parser(
+        "verify",
+        help="Check a change BEFORE it is applied: manifests (-f) or a command (--command); allow, deny or "
+        "not-determined",
+        description="One verdict for a change: allow, deny (it adds findings at or above --fail-on, or a command "
+        "grants cluster-admin, the privileged SCC or wildcard RBAC) or not-determined (what it does cannot be read "
+        "from its text and the local files: a URL, -f - with no input, exec, a delete, a strategic-merge patch, a "
+        "flag or wrapper verify does not model). A command is never run: its files are read inside the working "
+        "directory, no link followed, no network. Uses the gate's own audit, so `verify -f X` and `gate -f X` "
+        "agree on every finding. Exit 0 allow, 1 deny, 5 not determined (0 with --allow-undetermined). Example: "
+        "kube-noob verify --command 'kubectl apply -f k8s/ -n shop'",
+    )
+    vf.add_argument("-f", "--file", action="append", default=[], help="proposed manifests: a file, a directory or -")
+    vf.add_argument(
+        "--command",
+        dest="change_command",
+        default=None,
+        help="the command line to check (kubectl, oc, helm, kustomize; through sh -c, env, sudo, xargs and the "
+        "rest). Its files are read relative to the current directory",
+    )
+    vf.add_argument(
+        "--against",
+        action="append",
+        default=[],
+        help="the current state of the same objects (a file or directory); only findings the change ADDS count",
+    )
+    vf.add_argument("--platform", choices=PLATFORMS)
+    vf.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
+    vf.add_argument("--fail-on", default="high", choices=["info", "low", "medium", "high", "critical", "never"])
+    vf.add_argument("--exceptions", default=None, help="exception list (kube-noob.io/v1 ExceptionList)")
+    vf.add_argument("--cni", default=None, help="the cluster's CNI as NAME or NAME:VERSION, as for `gate`")
+    vf.add_argument(
+        "--allow-undetermined",
+        action="store_true",
+        help="exit 0 instead of 5 when the verdict is not-determined (the reasons are still printed). Off by "
+        "default: a check before an action fails closed",
+    )
+    hk = sub.add_parser(
+        "hook",
+        help="Make a coding agent pass `kube-noob verify` before a command that changes a cluster",
+        description="`hook claude-code` is a Claude Code PreToolUse hook: it reads the hook JSON on stdin, passes "
+        "commands that start no cluster change, and blocks (exit 2) a kubectl, oc or helm change that verify does "
+        "not allow -- including not-determined, and its own errors. `hook install --claude-code` prints the "
+        "settings to add; with --write it merges them into the settings file. A client-side hook can be bypassed "
+        "by an agent with shell access; the admission webhook is the server-side control (SECURITY.md).",
+    )
+    hk_sub = hk.add_subparsers(dest="hook_cmd", required=True)
+    _patch(hk_sub, common)
+    hc = hk_sub.add_parser("claude-code", help="Answer one Claude Code PreToolUse call (hook JSON on stdin)")
+    hi = hk_sub.add_parser("install", help="Print (or with --write, merge) the settings that enable the hook")
+    for p_ in (hc, hi):
+        p_.add_argument("--platform", choices=PLATFORMS, default="kubernetes")
+        p_.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
+        p_.add_argument("--fail-on", default="high", choices=["info", "low", "medium", "high", "critical", "never"])
+    hi.add_argument("--claude-code", action="store_true", required=True, help="the harness: Claude Code")
+    scope = hi.add_mutually_exclusive_group()
+    scope.add_argument("--user", dest="scope", action="store_const", const="user", help="~/.claude/settings.json")
+    scope.add_argument(
+        "--project", dest="scope", action="store_const", const="project", help=".claude/settings.json (default)"
+    )
+    scope.add_argument(
+        "--local", dest="scope", action="store_const", const="local", help=".claude/settings.local.json (not committed)"
+    )
+    hi.add_argument(
+        "--write",
+        action="store_true",
+        help="merge the hook into that file (existing hooks kept, atomic, never through a symbolic link)",
     )
 
     bd = sub.add_parser(
@@ -2148,6 +2280,13 @@ def _settings(a: argparse.Namespace) -> Settings:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
+    if a.cmd == "hook" and a.hook_cmd == "claude-code":
+        # Before the configuration is read and outside the error handling below: the hook answers in Claude Code's
+        # protocol, where 2 blocks and every other non-zero code lets the command through. A configuration error
+        # mapped to 4 here would have been a pass.
+        from kube_noob import hook
+
+        return hook.main(options=hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on))
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
@@ -2813,6 +2952,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         else:
             _emit(rep, fmt)
         return 0 if not rep["failures"] else 1
+    if a.cmd == "verify":
+        return _verify_cmd(a, s, fmt)
+    if a.cmd == "hook":
+        return _hook_install(a, fmt)
     if a.cmd == "demo":
         from kube_noob import demo
 

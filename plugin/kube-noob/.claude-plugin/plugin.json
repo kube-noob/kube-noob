@@ -25,5 +25,25 @@
     "mcp",
     "learning"
   ],
-  "icon": "./.claude-plugin/icon.png"
+  "icon": "./.claude-plugin/icon.png",
+  "userConfig": {
+    "verify_cluster_commands": {
+      "type": "boolean",
+      "title": "Verify cluster changes before they run",
+      "description": "When on, a kubectl, oc or helm command that changes a cluster is checked by kube-noob verify first and blocked unless the answer is allow (not-determined blocks too). Read-only and other commands pass. Off by default.",
+      "default": false
+    },
+    "verify_platform": {
+      "type": "string",
+      "title": "Platform the check targets",
+      "description": "kubernetes, openshift, rosa-classic or rosa-hcp.",
+      "default": "kubernetes"
+    },
+    "verify_version": {
+      "type": "string",
+      "title": "Platform version the check targets",
+      "description": "For example 4.20 (OpenShift) or 1.33 (Kubernetes). Empty: the newest kube-noob knows.",
+      "default": ""
+    }
+  }
 }
