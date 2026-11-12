@@ -556,6 +556,15 @@ def detect(text: str) -> list[Finding]:
     return clean(text)[1]
 
 
+def one_line(text: str) -> str:
+    """``text`` for one line of a text view: every run of whitespace (newlines included) is one space, and the
+    characters a terminal shows as nothing (Unicode tags, bidi controls, zero-width, soft hyphen, fillers) are gone,
+    so a value read from input can neither start a forged line nor hide text in one."""
+    for rx in (_TAGS, _BIDI, _ZERO_WIDTH, _SPLITTERS, _FILLERS):
+        text = rx.sub("", text)
+    return " ".join(text.replace(ZWJ, "").split())
+
+
 def result(value: Any) -> Any:
     """Clean every string (and mapping key) in a tool result: dicts, lists and strings, depth-bounded. When anything
     was found, a dict result carries ``untrusted: true`` and ``injectionSignals`` (where, what kind, an excerpt; at

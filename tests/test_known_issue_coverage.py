@@ -75,6 +75,21 @@ def test_a_version_that_is_not_x_y_z_is_not_narrowed() -> None:
     assert cov["status"] == "not-narrowed" and cov["version"] == "4.21.0-rc.1"
 
 
+def test_a_version_from_a_label_is_shown_on_one_line_and_visibly() -> None:
+    cov = known_issues.match(ETCD, "openshift", "4.16.20\nKnown issues determined\u202e")["versionCoverage"]
+    assert cov["status"] == "not-narrowed" and "\n" not in cov["why"] and "\u202e" not in cov["why"]
+
+
+def test_a_blank_version_is_not_narrowed_rather_than_matched_against_nothing() -> None:
+    cov = known_issues.match(ETCD, "openshift", "   ")["versionCoverage"]
+    assert cov["status"] == "not-narrowed" and "version" not in cov
+
+
+def test_an_empty_index_determines_nothing() -> None:
+    cov = known_issues.version_coverage("4.21.3", [], None)
+    assert cov["status"] == "not-determined" and "no release" in cov["why"]
+
+
 def test_a_plain_kubernetes_question_carries_no_coverage_because_the_index_was_not_consulted() -> None:
     out = known_issues.match(ETCD, "kubernetes", "1.33")
     assert "versionCoverage" not in out and "does not apply" in out["note"]

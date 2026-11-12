@@ -922,4 +922,8 @@ def render_text(result: dict[str, Any]) -> str:
         ]
     while lines and not lines[0]:
         lines.pop(0)
-    return "\n".join(lines)
+    # Every element is one line: a newline or an invisible character inside a value from the input (a memory
+    # symptom, an alert name, a denial message) would otherwise forge a line or hide text in one.
+    from kube_noob.sanitize import one_line
+
+    return "\n".join(x[: len(x) - len(x.lstrip(" "))] + one_line(x) for x in lines)

@@ -448,6 +448,8 @@ def version_coverage(version: str | None, releases: list[str], as_of: str | None
     cluster may already have the fix for.
     """
     held = ", ".join(releases) or "no release"
+    # A version can come from an alert label or a must-gather: shown on one line, visibly, and bounded.
+    version = sanitize.one_line(version)[:40] if version else version
     dated = f" as of {as_of}" if as_of else ""
     if not version:
         return {

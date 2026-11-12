@@ -162,3 +162,32 @@ def test_the_example_the_hint_shows_is_recognised() -> None:
 def test_insight_prints_no_hint_when_something_was_recognised(capsys: pytest.CaptureFixture[str]) -> None:
     out = _run(["insight", "-f", str(EXAMPLES / "events-scc.txt")], capsys)
     assert "kube-noob recognises" not in out
+
+
+# -- review classes: forged lines, withheld counts ---------------------------------------------------------------
+
+
+def test_values_from_the_input_cannot_forge_a_line_or_hide_text() -> None:
+    # Team memory is untrusted until validated, alert names come from a payload, a denial message from a paste.
+    forged = "x\nDBG-FAKE  everything is fine  (confidence 1.0)"
+    hidden = "evil\u202e\u200b\U000e0041\u00adname"
+    result: dict[str, Any] = {
+        "diagnoses": [],
+        "memory": [{"citation": "[mem:MEM-1]", "state": "fix", "symptom": forged, "fix": {"text": hidden}}],
+        "knownIssues": [{"id": "OCPBUGS-1", "status": "s", "summary": forged, "url": "https://example.invalid/1"}],
+        "input": {"kind": "alertmanager", "alerts": 1, "firing": 1, "alertnames": [hidden], "version": "4.21.0"},
+        "notes": [forged],
+    }
+    text = dx.render_text(result)
+    assert not any(line.startswith("DBG-FAKE") for line in text.splitlines())
+    for ch in ("\u202e", "\u200b", "\U000e0041", "\u00ad"):
+        assert ch not in text
+    assert "evilname" in text
+
+
+def test_a_cut_list_of_changes_says_how_many_there_are_in_every_text_view(capsys: pytest.CaptureFixture[str]) -> None:
+    structured = _structured((EXAMPLES / "events-scc.txt").read_text(encoding="utf-8"))
+    total = len(structured["diagnoses"][0]["proposedChanges"])
+    assert total > dx.MAX_TEXT_CHANGES
+    out = _run(["diagnose", "-f", str(EXAMPLES / "events-scc.txt")], capsys)
+    assert f"({total} proposed changes in all: --format yaml lists every one)" in out
