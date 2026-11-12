@@ -65,12 +65,19 @@ def main() -> int:
         )
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
-        res = run(["kube-noob", "--cluster-enabled", "--format", "json", "posture", "scan", "--live"], env=env)
+        # As a gate: kind serves no KServe, Ray or OpenShift resources, and those 404s are absences, not refusals,
+        # so --fail-above 30 (the maximum score) must exit 0 here, not 5 (G276, third review).
+        res = run(
+            ["kube-noob", "--cluster-enabled", "--format", "json", "posture", "scan", "--live", "--fail-above", "30"],
+            env=env,
+        )
         if res.returncode != 0:
             print(f"::error title=posture scan::{_escape(res.stderr or res.stdout)}")
             return 1
         out = json.loads(res.stdout)
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    if out["refused"]:
+        problems.append(f"reads refused on a healthy cluster: {out['refused'][:3]}")
     summaries = [p["summary"] for p in out["paths"]]
     if not summaries or summaries[0] != PLANTED:
         problems.append(f"rank 1 is not the planted path: {summaries[:3]}")
@@ -91,7 +98,8 @@ def main() -> int:
     print(
         f"::notice title=posture kind::{len(calls)} read-only kubectl calls, none for Secrets; rank 1 "
         f"{_escape(summaries[0] if summaries else 'none')} (score {out['paths'][0]['score'] if out['paths'] else 0}); "
-        f"{out['total']} paths; not read: {_escape('; '.join(out['notRead'][:3]))}"
+        f"{out['total']} paths; exit {res.returncode} at --fail-above 30; "
+        f"not read: {_escape('; '.join(out['notRead'][:3]))}"
     )
     return 1 if problems else 0
 
