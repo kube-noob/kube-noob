@@ -1,0 +1,30 @@
+id: diagnose-text-view-carries-the-coverage-statement
+class: 6
+verdict: not-determined
+summary: 'The same diagnosis as a person reads it: the text view must say the known-issue lookup was not determined
+  for 4.16.20, not print the structured result''s caveat only in JSON.'
+provenance: ux/first-run reviews (G277)
+expected_on: ux/first-run
+probe:
+  grep:
+    file: src/kube_noob/known_issues.py
+    text: versionCoverage
+inputs: diagnose-crashloop
+cli:
+  argv:
+  - diagnose
+  - -f
+  - '{inputs}/events.txt'
+  - --platform
+  - openshift
+  - --version
+  - 4.16.20
+expect:
+  text:
+  - NOT DETERMINED
+  - '4.16'
+forbid:
+  what: None of the findings matches a known issue, or a YAML dump with no coverage line
+  text:
+  - None of the findings matches a known issue
+  - 'knownIssues: []'

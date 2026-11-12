@@ -1,0 +1,40 @@
+id: verify-eval-of-a-runtime-value-is-not-determined
+class: 22
+verdict: not-determined
+summary: '`eval` of a value only known when the line runs: the command word is built at run time, so what it does
+  is unreadable; it must not be allowed as ''not a cluster change''.'
+provenance: verify/pre-action review (G280)
+expected_on: verify/pre-action
+probe:
+  command:
+  - verify
+inputs: verify-ok
+cli:
+  argv:
+  - verify
+  - --command
+  - eval "$(cat run.sh)"
+  - --format
+  - json
+mcp:
+  tool: verify_change
+  args:
+    command: eval "$(cat run.sh)"
+    files: {}
+  expect:
+    json:
+      verdict: not-determined
+  forbid:
+    json:
+      verdict: allow
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+forbid:
+  what: allow, exit 0, for a command nobody can read
+  exit:
+  - 0
+  json:
+    verdict: allow

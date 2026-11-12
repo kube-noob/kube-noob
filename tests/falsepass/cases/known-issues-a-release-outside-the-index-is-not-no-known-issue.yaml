@@ -1,0 +1,48 @@
+id: known-issues-a-release-outside-the-index-is-not-no-known-issue
+class: 4
+verdict: not-determined
+summary: '`known-issues ''etcd leader changed'' --version 4.16.20` when the index holds 4.20-4.22: exit 0, `matches:
+  []` and a note naming the indexed releases, so a program read ''no reported issue'' for a release the index has
+  never seen.'
+provenance: ux/first-run reviews (G277)
+expected_on: ux/first-run
+probe:
+  grep:
+    file: src/kube_noob/known_issues.py
+    text: versionCoverage
+cli:
+  argv:
+  - known-issues
+  - etcd leader changed
+  - --version
+  - 4.16.20
+  - --format
+  - json
+mcp:
+  tool: known_issues
+  args:
+    text: etcd leader changed
+    version: 4.16.20
+  expect:
+    json:
+      versionCoverage.status: not-determined
+  forbid:
+    json:
+      versionCoverage.status: determined
+    json_any:
+      note:
+        contains: No reported issue
+expect:
+  json:
+    versionCoverage.status: not-determined
+  json_any:
+    versionCoverage.why:
+      contains: NOT DETERMINED
+forbid:
+  what: matches [] with a note naming the indexed releases, nothing a program reads saying the version is not one
+    of them
+  json:
+    versionCoverage.status: determined
+  json_any:
+    note:
+      contains: No reported issue

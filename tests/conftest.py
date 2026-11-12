@@ -16,7 +16,16 @@ def _escape(text: str, prop: bool = False) -> str:
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
-    """On GitHub Actions, print each failure as an error annotation (the runner's log host is not always readable)."""
+    """The false-pass benchmark's table (per defect class and per source branch: cases, enforced, waiting for a
+    merge, failed), when its cases ran; and on GitHub Actions each failure as an error annotation (the runner's log
+    host is not always readable)."""
+    from tests.falsepass import harness as falsepass
+
+    outcomes = terminalreporter.config.stash.get(falsepass.STASH_KEY, None)
+    if outcomes:
+        terminalreporter.ensure_newline()
+        for line in falsepass.summary_lines(outcomes):
+            terminalreporter.write_line(line)
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
     for report in terminalreporter.stats.get("failed", []) + terminalreporter.stats.get("error", []):

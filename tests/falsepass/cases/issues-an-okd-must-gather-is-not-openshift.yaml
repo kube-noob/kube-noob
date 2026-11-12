@@ -1,0 +1,35 @@
+id: issues-an-okd-must-gather-is-not-openshift
+class: 4
+verdict: not-determined
+summary: 'A must-gather whose ClusterVersion is `4.20.0-okd-scos.6`: OKD was read as OpenShift 4.20 and answered
+  from OpenShift Container Platform''s release notes, complete; OKD''s notes are not indexed, so the lookup is not
+  determined.'
+provenance: operators/known-issues reviews one and two (R5, G278), second review
+expected_on: operators/known-issues
+probe:
+  command:
+  - operators
+  - issues
+inputs: issues-mg-okd
+cli:
+  argv:
+  - operators
+  - issues
+  - --must-gather
+  - '{inputs}'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+    cluster.okd: true
+forbid:
+  what: complete, exit 0, OpenShift 4.20 issues listed for an OKD cluster
+  exit:
+  - 0
+  json:
+    complete: true
+    cluster.okd: false

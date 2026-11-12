@@ -1,0 +1,29 @@
+id: shape-an-access-mode-that-is-a-float-is-not-evaluated
+class: 21
+verdict: not-evaluated
+summary: 'A PersistentVolumeClaim with `accessModes: .inf` (YAML reads it as infinity): after the reviewed shapes
+  were fixed, this neighbour still crashed KN-ST001 with ''argument of type float is not iterable'', exit 1.'
+provenance: plugin/directory-engine reviews one and two (G276), fuzz rerun
+expected_on: plugin/directory-engine
+probe:
+  module: kube_noob.shape
+inputs: shape-pvc-inf
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/pvc.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_any:
+    assumptions[*]:
+      contains: KN-ST001
+forbid:
+  what: a traceback, exit 1
+  stderr:
+  - Traceback

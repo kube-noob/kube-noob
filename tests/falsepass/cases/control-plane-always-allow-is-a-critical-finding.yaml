@@ -1,0 +1,50 @@
+id: control-plane-always-allow-is-a-critical-finding
+class: 14
+verdict: finding
+summary: 'A kube-apiserver static Pod started with `--authorization-mode=AlwaysAllow`: no rule in the catalogue
+  read the control plane''s own flags, so the bundle audited clean on this point (score 100, exit 0 at --fail-on
+  critical).'
+provenance: rules/control-plane reviews one to four (G272)
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-always-allow
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+  - --fail-on
+  - critical
+mcp:
+  tool: audit_manifests
+  args:
+    manifests: '{text:d/kas.yaml}'
+    platform: kubernetes
+    version: '1.35'
+    partial_bundle: false
+  expect:
+    json_any:
+      findings[*].ruleId: KN-S038
+  forbid:
+    json:
+      summary.counts.critical: 0
+expect:
+  exit:
+  - 1
+  json_any:
+    findings[*].ruleId: KN-S038
+forbid:
+  what: 'no finding, critical 0, exit 0: the API server''s authorizer was never read'
+  exit:
+  - 0
+  json:
+    summary.counts.critical: 0

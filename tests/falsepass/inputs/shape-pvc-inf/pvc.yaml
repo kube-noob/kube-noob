@@ -1,0 +1,4 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data, namespace: shop}
+spec: {accessModes: .inf, resources: {requests: {storage: 1Gi}}}

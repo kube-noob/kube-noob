@@ -1,0 +1,38 @@
+id: policy-reach-live-forbidden-deployment-is-not-answered-by-a-pod
+class: 11
+verdict: error-exit-4
+summary: 'The Deployment named prometheus cannot be read (403) and a bare Pod of the same name can: the first-ranked
+  kind''s refusal fell through to the next kind, and `allowed` was answered about `monitoring/pod/prometheus`, an
+  object the caller did not name.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: deployment-forbidden
+expect:
+  exit:
+  - 4
+  stderr:
+  - name the kind
+forbid:
+  what: allowed, exit 0, about monitoring/pod/prometheus
+  exit:
+  - 0
+  json:
+    verdict: allowed

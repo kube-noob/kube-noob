@@ -1,0 +1,41 @@
+id: alerts-each-alert-is-narrowed-to-its-own-release
+class: 11
+verdict: not-evaluated
+summary: 'Two alerts, the first labelled 4.99.0 and the second 4.21.0: one payload-wide version was applied to both,
+  so both said ''narrowed to 4.99.0'' and none, and reversing their order gave both a 4.21 match -- the answer depended
+  on which alert came first.'
+provenance: alerts/evidence-report reviews one to three (I1, G274)
+expected_on: alerts/evidence-report
+probe:
+  command:
+  - alerts
+  - report
+inputs: alerts-two-versions
+cli:
+  argv:
+  - alerts
+  - report
+  - -f
+  - '{inputs}/payload.json'
+  - --format
+  - json
+mcp:
+  tool: alert_report
+  args:
+    payload: '{text:payload.json}'
+  expect:
+    json:
+      report.alerts[0].knownIssues.status: not-evaluated
+      report.alerts[1].knownIssues.version: 4.21.0
+  forbid:
+    json:
+      report.alerts[1].knownIssues.version: 4.99.0
+expect:
+  json:
+    report.alerts[0].knownIssues.status: not-evaluated
+    report.alerts[1].knownIssues.version: 4.21.0
+forbid:
+  what: both alerts narrowed to 4.99.0, the second one's own label ignored
+  json:
+    report.alerts[1].knownIssues.version: 4.99.0
+    report.alerts[1].knownIssues.status: not-evaluated

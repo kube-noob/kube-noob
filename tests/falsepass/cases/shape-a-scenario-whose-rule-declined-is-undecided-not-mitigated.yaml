@@ -1,0 +1,33 @@
+id: shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated
+class: 13
+verdict: not-evaluated
+summary: 'A PodDisruptionBudget with `selector: 7` beside a Deployment: the first version crashed `redteam`; the
+  fix made KN-C009 decline, and RT-UPGRADE-BLOCK, which reads only KN-C009, then called the upgrade path `mitigated`
+  on a rule that had not run.'
+provenance: plugin/directory-engine reviews one and two (G276)
+expected_on: plugin/directory-engine
+probe:
+  module: kube_noob.shape
+inputs: shape-pdb-selector-int
+cli:
+  argv:
+  - redteam
+  - -f
+  - '{inputs}/pdb.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_any:
+    scenarios[*].verdict: undecided
+    assumptions[*]:
+      contains: KN-C009
+forbid:
+  what: a traceback with exit 1, or RT-UPGRADE-BLOCK mitigated
+  stderr:
+  - Traceback
+  json_any:
+    scenarios[*].verdict: mitigated

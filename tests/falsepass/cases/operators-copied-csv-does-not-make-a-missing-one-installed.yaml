@@ -1,0 +1,33 @@
+id: operators-copied-csv-does-not-make-a-missing-one-installed
+class: 13
+verdict: not-determined
+summary: 'A Subscription in namespace x whose installedCSV exists only as an `olm.copiedFrom: x` copy in namespace
+  y, with no CSV in x: the copy created the group the Subscription joined, so the operator was `installed`, phase
+  Succeeded, counted among installed.'
+provenance: 'operators/inventory review before #55 (G270), defect 8'
+inputs: operators-copy-fabricates-installed
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  json_any:
+    operators[*].state:
+      in:
+      - csv-missing
+      - not-determined
+      - subscription-not-read
+      - csv-not-read
+  json:
+    counts.installed: 0
+forbid:
+  what: state installed, phase Succeeded, counts.installed 1
+  json:
+    counts.installed: 1
+  json_any:
+    operators[*].state: installed

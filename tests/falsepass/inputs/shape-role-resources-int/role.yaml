@@ -1,0 +1,4 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: a, namespace: shop}
+rules: [{apiGroups: [""], resources: 1, verbs: ["get"]}]

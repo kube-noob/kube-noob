@@ -1,0 +1,28 @@
+id: operators-files-cannot-show-a-namespace-has-no-subscription
+class: 14
+verdict: not-determined
+summary: 'CSVs in namespaces a and b and a Subscription only in a: a set of files cannot show that b has no Subscription,
+  yet bar was ''installed by hand, no Subscription names it'' and the verdict `listed`, ''every OLM object this
+  needs was read'', exit 0.'
+provenance: 'operators/inventory review before #55 (G270), defect 14'
+inputs: operators-sub-only-in-one-ns
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+forbid:
+  what: listed, complete, bar is no-subscription
+  exit:
+  - 0
+  json:
+    complete: true

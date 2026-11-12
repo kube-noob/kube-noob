@@ -1,0 +1,35 @@
+id: injection-terminal-escapes-in-names-do-not-reach-stdout
+class: 7
+verdict: finding
+summary: 'Names, annotations and images carrying ESC [2J (clear the screen), OSC 8 (a hidden link), OSC 52 (write
+  the clipboard), bidi overrides, the soft hyphen, the tag block and the Arabic letter mark: the text view passed
+  every one of them to the terminal.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: sanitize-escapes
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/m.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+expect:
+  text:
+  - KN-S001
+forbid:
+  what: ESC, OSC 8/52 payloads, U+202E, U+061C, U+00AD or U+E0041 in stdout
+  text:
+  - "\e"
+  - ‮
+  - ؜
+  - ­
+  - 󠁁
+  - evil.example
+  - ZWNobyBwd25k

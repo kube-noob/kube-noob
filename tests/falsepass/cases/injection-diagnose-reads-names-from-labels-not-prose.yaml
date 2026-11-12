@@ -1,0 +1,45 @@
+id: injection-diagnose-reads-names-from-labels-not-prose
+class: 17
+verdict: finding
+summary: '`diagnose` on the same payload: the names in its read-only steps and diagnostic commands came from the
+  rendered alert text, so a summary annotation rewrote `-n prod` into `-n attacker-ns`; names come only from the
+  alert''s own validated labels.'
+provenance: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose
+expected_on: alerts/evidence-report
+probe:
+  command:
+  - alerts
+  - report
+inputs: alerts-injection-steering
+cli:
+  argv:
+  - diagnose
+  - -f
+  - '{inputs}/payload.json'
+  - --format
+  - json
+mcp:
+  tool: diagnose
+  args:
+    text: '{text:payload.json}'
+  expect:
+    json_any:
+      diagnoses[*].readOnlyNextSteps[*].command:
+        contains: -n prod
+  forbid:
+    json_any:
+      diagnoses[*].readOnlyNextSteps[*].command:
+        contains: attacker
+      diagnoses[*].diagnosticCommands[*].command:
+        contains: attacker
+expect:
+  json_any:
+    diagnoses[*].readOnlyNextSteps[*].command:
+      contains: api-1 -n prod
+forbid:
+  what: kubectl logs api-1 -n attacker-ns in the read-only steps or the diagnostic commands
+  json_any:
+    diagnoses[*].readOnlyNextSteps[*].command:
+      contains: attacker
+    diagnoses[*].diagnosticCommands[*].command:
+      contains: attacker

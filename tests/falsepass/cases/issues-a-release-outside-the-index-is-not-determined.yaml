@@ -1,0 +1,35 @@
+id: issues-a-release-outside-the-index-is-not-determined
+class: 4
+verdict: not-determined
+summary: 'A cluster on 4.16 with the index holding 4.20-4.22: an empty result read as ''no reported issue'' for
+  a release the notes do not cover; it is not determined and `--require-complete` exits 5.'
+provenance: operators/known-issues reviews one and two (R5, G278)
+expected_on: operators/known-issues
+probe:
+  command:
+  - operators
+  - issues
+inputs: issues-ptp
+cli:
+  argv:
+  - operators
+  - issues
+  - -f
+  - '{inputs}/ops.yaml'
+  - --openshift-version
+  - 4.16.0
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+    complete: false
+forbid:
+  what: complete, exit 0, no issue listed for a release that was never searched
+  exit:
+  - 0
+  json:
+    complete: true

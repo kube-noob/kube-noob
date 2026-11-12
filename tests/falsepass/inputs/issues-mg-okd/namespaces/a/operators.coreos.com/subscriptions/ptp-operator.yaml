@@ -1,0 +1,5 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: ptp-operator, namespace: a}
+spec: {name: ptp-operator, source: redhat-operators, sourceNamespace: openshift-marketplace, channel: stable}
+status: {installedCSV: ptp-operator.v1.0.0, currentCSV: ptp-operator.v1.0.0}

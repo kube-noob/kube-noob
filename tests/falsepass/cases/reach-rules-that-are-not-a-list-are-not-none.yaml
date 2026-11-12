@@ -1,0 +1,53 @@
+id: reach-rules-that-are-not-a-list-are-not-none
+class: 4
+verdict: not-determined
+summary: 'A bound Role whose `rules:` is a mapping instead of a list: `_list` turned it into nothing, so the rbac
+  leg said `none` and even claimed ''no binding in the input names ServiceAccount/shop/web'' while RoleBinding/shop/odd
+  names it.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 10
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-malformed-rbac
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/m.yaml'
+  - --whole-bundle
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: deployment/web
+    namespace: shop
+    manifests: '{text:m.yaml}'
+    whole_bundle: true
+  expect:
+    json_any:
+      legs[*].status: not determined
+  forbid:
+    json:
+      legs[2].status: none
+expect:
+  exit:
+  - 5
+  json_any:
+    legs[*].status: not determined
+  json:
+    complete: false
+forbid:
+  what: rbac none, 'no binding in the input names' the account, complete
+  exit:
+  - 0
+  json:
+    legs[2].status: none
+    complete: true

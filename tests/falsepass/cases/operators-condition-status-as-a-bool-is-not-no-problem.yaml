@@ -1,0 +1,24 @@
+id: operators-condition-status-as-a-bool-is-not-no-problem
+class: 4
+verdict: not-determined
+summary: 'A Subscription whose `ResolutionFailed` condition has `status: true` (a YAML bool where the API writes
+  the string "True"): the value was compared as a string, matched nothing and the operator reported `problems: []`.'
+provenance: 'operators/inventory review before #55 (G270), defect 15'
+inputs: operators-condition-bool
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  json_any:
+    operators[*].problems[*]:
+      contains: ResolutionFailed
+forbid:
+  what: problems [] for a Subscription whose resolution failed
+  json:
+    operators[*].problems: []

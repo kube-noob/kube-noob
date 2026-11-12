@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: web
+      containers: [{name: c, image: i}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: web
+      hostPID: true
+      containers: [{name: c, image: i, securityContext: {privileged: true}}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    spec:
+      serviceAccountName: web
+      containers: [{name: c, image: i}]
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: {name: web-abc, namespace: shop, ownerReferences: [{kind: Deployment, name: web, controller: true}]}
+spec:
+  template:
+    spec:
+      serviceAccountName: web
+      containers: [{name: c, image: i}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: web-abc-xyz, namespace: shop, ownerReferences: [{kind: ReplicaSet, name: web-abc, controller: true}]}
+spec:
+  serviceAccountName: other-admin
+  hostNetwork: true
+  containers: [{name: c, image: i}, {name: injected, image: j, securityContext: {privileged: true}}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: nons}
+spec:
+  containers: [{name: c, image: i}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: web, namespace: shop}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: s, namespace: shop}
+stringData: {password: SUPERSECRETVALUE123}
+data: {k: U1VQRVJTRUNSRVRCQVNFNjQ=}

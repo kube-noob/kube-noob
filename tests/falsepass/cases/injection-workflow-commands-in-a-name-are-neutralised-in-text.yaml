@@ -1,0 +1,35 @@
+id: injection-workflow-commands-in-a-name-are-neutralised-in-text
+class: 7
+verdict: finding
+summary: 'A container name holding `\r::warning file=README.md,line=1::injected` and `::stop-commands::`: the audit''s
+  text view printed the name raw, so in a GitHub Actions step the input forged an annotation and stopped command
+  processing for the rest of the job (actions/runner reads `::name::` at the start of any line).'
+provenance: fix/absent-vs-unread reviews one and two (G279), CP3-Q3
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: sanitize-workflow-command
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/nl.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+expect:
+  text:
+  - KN-S001
+forbid:
+  what: a line starting with ::warning or ::stop-commands, or a raw carriage return, in stdout
+  text:
+  - '
+
+    ::warning'
+  - '
+
+    ::stop-commands'
+  - "\r"

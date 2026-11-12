@@ -1,0 +1,28 @@
+id: operators-csv-without-a-phase-is-not-succeeded
+class: 4
+verdict: not-determined
+summary: 'A CSV with no `status` at all, joined by its Subscription: the missing phase read as healthy (`installed`,
+  notSucceeded 0) and the text line showed no phase, so an operator whose state the input does not show was counted
+  as a good install.'
+provenance: 'operators/inventory review before #55 (G270), defect 12'
+inputs: operators-csv-no-status
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  json:
+    counts.notSucceeded: 1
+  json_any:
+    operators[*].notes[*]:
+      contains: phase is unknown
+forbid:
+  what: state installed, notSucceeded 0, no note, no phase shown
+  json:
+    counts.notSucceeded: 0
+    operators[*].notes: []

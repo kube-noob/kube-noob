@@ -1,0 +1,33 @@
+id: operators-mg-zero-byte-files-are-not-read
+class: 16
+verdict: not-determined
+summary: 'A must-gather whose only OLM files are 0-byte `clusterserviceversions.yaml` and `subscriptions.yaml`:
+  an empty file was counted as read with zero objects, so the answer was `listed -- 0 operators from OLM data, every
+  OLM object this needs was read`, exit 0.'
+provenance: 'operators/inventory review before #55 (G270), defect 5'
+inputs: operators-mg-zero-byte
+cli:
+  argv:
+  - operators
+  - inventory
+  - --must-gather
+  - '{inputs}/'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    verdict:
+      in:
+      - partial
+      - not-determined
+    complete: false
+forbid:
+  what: listed, 0 operators, every OLM object this needs was read, exit 0
+  exit:
+  - 0
+  json:
+    complete: true
+    verdict: listed

@@ -1,0 +1,34 @@
+id: issues-a-community-build-is-not-looked-up
+class: 15
+verdict: not-determined
+summary: 'The same package from `community-operators`: Red Hat''s release notes do not describe community builds,
+  yet the first version matched it and listed OpenShift''s bugs for it.'
+provenance: operators/known-issues reviews one and two (R5, G278)
+expected_on: operators/known-issues
+probe:
+  command:
+  - operators
+  - issues
+inputs: issues-community
+cli:
+  argv:
+  - operators
+  - issues
+  - -f
+  - '{inputs}/ops.yaml'
+  - --openshift-version
+  - 4.21.0
+  - --format
+  - json
+expect:
+  json:
+    allMatched: false
+    verdict: not-matched
+  json_any:
+    caveats[*]:
+      contains: community-operators
+forbid:
+  what: matched, allMatched true, OpenShift's issues listed for a community build
+  json:
+    allMatched: true
+    verdict: matched

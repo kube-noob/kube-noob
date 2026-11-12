@@ -1,0 +1,29 @@
+id: operators-live-csv-404-with-subscriptions-is-not-no-olm
+class: 3
+verdict: not-determined
+summary: 'The ClusterServiceVersion read says the server doesn''t have that resource type while the Subscription
+  read returns one object: a group that serves Subscriptions is served, so `no-olm`, complete, exit 0 -- with a
+  csv-not-read operator listed under it -- contradicted its own evidence.'
+provenance: 'operators/inventory review before #55 (G270), defect 2'
+inputs: operators-live
+cli:
+  argv:
+  - operators
+  - inventory
+  - --live
+  - --require-complete
+  - --format
+  - json
+  kubectl: csv404subok
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+forbid:
+  what: no-olm, complete, exit 0 beside one Subscription that was read
+  exit:
+  - 0
+  json:
+    verdict: no-olm
+    complete: true

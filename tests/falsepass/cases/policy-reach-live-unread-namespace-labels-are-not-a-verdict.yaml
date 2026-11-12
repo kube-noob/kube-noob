@@ -1,0 +1,57 @@
+id: policy-reach-live-unread-namespace-labels-are-not-a-verdict
+class: 1
+verdict: undetermined
+summary: 'The NetworkPolicy in shop admits ingress from namespaces labelled tier=platform and the labels of namespace
+  monitoring could not be read (403): the selector then matched nothing and the answer was `denied` -- a verdict
+  on labels nobody read; the reverse selector gives `allowed` the same way.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: ns-labels-forbidden
+mcp:
+  tool: cluster_check_traffic
+  args:
+    source: monitoring/prometheus
+    destination: shop/orders
+    port: 8080
+  expect:
+    json:
+      verdict: undetermined
+  forbid:
+    json:
+      verdict:
+        in:
+        - allowed
+        - denied
+expect:
+  exit:
+  - 1
+  json:
+    verdict: undetermined
+  json_any:
+    summary:
+      contains: labels of namespace monitoring could not be read
+forbid:
+  what: denied (or allowed), decided by labels that were never read
+  json:
+    verdict:
+      in:
+      - allowed
+      - denied

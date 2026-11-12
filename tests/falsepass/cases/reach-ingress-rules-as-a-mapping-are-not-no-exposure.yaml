@@ -1,0 +1,42 @@
+id: reach-ingress-rules-as-a-mapping-are-not-no-exposure
+class: 21
+verdict: not-determined
+summary: 'An Ingress whose `spec.rules` is a mapping rather than a list, pointing at the workload''s Service: after
+  the reviewed shapes were fixed, this neighbour still read as an Ingress with no rules, so the exposure leg said
+  the workload is not reached from outside.'
+provenance: posture/blast-radius fourth review (G273), neighbours of item 10
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-ingress-dict
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/i.yaml'
+  - --whole-bundle
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+  json_any:
+    legs[0].status:
+      in:
+      - not determined
+      - reached
+forbid:
+  what: 'exposure none: the malformed Ingress read as an Ingress that routes nothing'
+  exit:
+  - 0
+  json:
+    legs[0].status: none

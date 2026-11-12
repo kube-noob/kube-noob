@@ -1,0 +1,35 @@
+id: injection-control-plane-argv-cannot-forge-a-text-line
+class: 7
+verdict: finding
+summary: 'A container name and a flag value carrying a newline, a fake `[CRITICAL] KN-X999` line, terminal escapes,
+  a bidi override and a zero-width space: the audit''s text view printed them raw, so the input forged a finding
+  line and erased part of the screen.'
+provenance: rules/control-plane reviews one to four (G272), second review
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-forged-line
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+expect:
+  text:
+  - KN-S038
+forbid:
+  what: a forged [CRITICAL] KN-X999 line at column 0, a raw ESC and a bidi override in stdout
+  text:
+  - "\n  [CRITICAL] KN-X999"
+  - "\e"
+  - ‮
+  - ​
+  - '
+
+    note: KN-S038 passed'

@@ -1,0 +1,29 @@
+id: audit-sarif-carries-what-was-not-evaluated
+class: 6
+verdict: not-evaluated
+summary: '`audit --format sarif` on part of a namespace: SARIF is a list of results, so a partial audit and a clean
+  one differed only in length; the assumptions the JSON report carried (rules not evaluated because the bundle is
+  partial) were dropped by the format that replaces it.'
+provenance: audit --format sarif (G269), on main
+inputs: audit-partial-namespace
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/kas.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - sarif
+expect:
+  exit:
+  - 0
+  json_any:
+    runs[0].invocations[0].toolExecutionNotifications[*].message.text:
+      contains: were not evaluated
+forbid:
+  what: a SARIF document with results only and no notification about the rules that did not run
+  json:
+    runs[0].invocations: []

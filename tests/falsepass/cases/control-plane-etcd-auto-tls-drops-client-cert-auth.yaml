@@ -1,0 +1,37 @@
+id: control-plane-etcd-auto-tls-drops-client-cert-auth
+class: 21
+verdict: finding
+summary: 'etcd with `--auto-tls` and `--client-cert-auth=true` and no certificate files: etcd replaces its TLS settings
+  with a generated certificate''s and drops client-certificate checking with them (embed ClientSelfCert), so the
+  first version''s clean reading of `--client-cert-auth=true` was a false pass.'
+provenance: rules/control-plane reviews one to four (G272), second review
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-etcd-auto-tls
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+  - --fail-on
+  - high
+expect:
+  exit:
+  - 1
+  json_any:
+    findings[*].ruleId: KN-S039
+forbid:
+  what: 'clean: client-cert-auth=true read as client certificates on, exit 0'
+  exit:
+  - 0
+  json:
+    summary.counts.critical: 0

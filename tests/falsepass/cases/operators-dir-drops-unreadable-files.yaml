@@ -1,0 +1,19 @@
+id: operators-dir-drops-unreadable-files
+class: 1
+verdict: not-determined
+summary: >-
+  `operators inventory -f DIR` read the files it could parse and dropped the two it could not (one with bytes
+  that are not UTF-8, one with an unclosed mapping), then answered `listed`, `complete: true`, exit 0 under
+  `--require-complete`; `.json` and `.YAML` files were skipped without a word.
+provenance: operators/inventory review before #55 (G270), defect 1
+inputs: operators-dir-unreadable
+cli:
+  argv: [operators, inventory, -f, "{inputs}", --require-complete, --format, json]
+expect:
+  exit: [5]
+  json: {verdict: partial, complete: false}
+  json_any: {"unreadable[*].path": "b.yaml"}
+forbid:
+  what: "verdict listed, complete: true, exit 0 with the two files absent from the answer"
+  exit: [0]
+  json: {complete: true, verdict: listed}

@@ -1,0 +1,60 @@
+id: policy-reach-live-cni-body-that-is-not-json-is-undetermined
+class: 16
+verdict: undetermined
+summary: 'The Calico ClusterInformation read returns an HTML error page instead of JSON, beside an AdminNetworkPolicy
+  that denies: the parse failure surfaced as a bare JSON error (exit 4) with no verdict, where the honest answer
+  is `undetermined` naming the CNI read.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: cni-nonjson-anp
+mcp:
+  tool: cluster_check_traffic
+  args:
+    source: monitoring/prometheus
+    destination: shop/orders
+    port: 8080
+  expect:
+    json:
+      verdict: undetermined
+  forbid:
+    json:
+      verdict:
+        in:
+        - allowed
+        - denied
+expect:
+  exit:
+  - 1
+  json:
+    verdict: undetermined
+  json_any:
+    summary:
+      contains: CNI could not be read
+forbid:
+  what: exit 4 'Expecting value' with no verdict, or allowed/denied
+  exit:
+  - 0
+  - 4
+  json:
+    verdict:
+      in:
+      - allowed
+      - denied

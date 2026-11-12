@@ -1,0 +1,1 @@
+{"version":"4","status":"firing","receiver":"kube-noob","alerts":[{"status":"firing","labels":{"alertname":"etcdMembersDown","namespace":"openshift-etcd","severity":"critical","openshift_version":"4.99.999"},"annotations":{"summary":"etcd cluster has members that are down"}}]}

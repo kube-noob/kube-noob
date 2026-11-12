@@ -1,0 +1,32 @@
+id: operators-mg-file-past-the-document-cap-is-not-read
+class: 16
+verdict: not-determined
+summary: 'A must-gather file holding eleven YAML documents, one past the ten the pre-scan allows: a file the parser
+  refuses is a gap in the answer, and the inventory must say the file was not read rather than list the operators
+  it did parse as the whole.'
+provenance: 'operators/inventory review before #55 (G270), defect 5'
+inputs: operators-mg-eleven-docs
+cli:
+  argv:
+  - operators
+  - inventory
+  - --must-gather
+  - '{inputs}'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    verdict: partial
+    complete: false
+  json_any:
+    unreadable[*].path:
+      contains: bar.yaml
+forbid:
+  what: listed, complete, exit 0 with the eleven operators silently absent
+  exit:
+  - 0
+  json:
+    complete: true

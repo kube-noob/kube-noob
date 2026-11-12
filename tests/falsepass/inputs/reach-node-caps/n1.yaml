@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: web
+      containers:
+      - name: c
+        image: i
+        securityContext: {procMount: Unmasked, capabilities: {drop: [ALL], add: [NET_RAW, SYS_RAWIO, SYS_BOOT]}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: web, namespace: shop}

@@ -1,0 +1,31 @@
+id: diagnose-carries-the-known-issue-coverage-statement
+class: 6
+verdict: not-determined
+summary: '`diagnose` on a CrashLoopBackOff description with `--version 4.16.20`: `knownIssues: []` with no coverage
+  statement, so the sibling command that embeds the lookup read ''no known issue'' where `known-issues` itself would
+  have said the release is not indexed (G221 parity).'
+provenance: ux/first-run reviews (G277)
+expected_on: ux/first-run
+probe:
+  grep:
+    file: src/kube_noob/known_issues.py
+    text: versionCoverage
+inputs: diagnose-crashloop
+cli:
+  argv:
+  - diagnose
+  - -f
+  - '{inputs}/events.txt'
+  - --platform
+  - openshift
+  - --version
+  - 4.16.20
+  - --format
+  - json
+expect:
+  json:
+    knownIssuesCoverage.status: not-determined
+forbid:
+  what: knownIssues [] and no coverage statement
+  json:
+    knownIssuesCoverage.status: determined

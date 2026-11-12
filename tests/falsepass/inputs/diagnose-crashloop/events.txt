@@ -1,0 +1,16 @@
+Name:             orders-api-7c4b9d6f5-x2lqp
+Namespace:        shop
+Containers:
+  api:
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+    Restart Count:  6
+    Limits:
+      memory:  128Mi
+Events:
+  Type     Reason     Age                From     Message
+  ----     ------     ----               ----     -------
+  Warning  BackOff    30s (x25 over 6m)  kubelet  Back-off restarting failed container api in pod orders-api-7c4b9d6f5-x2lqp_shop

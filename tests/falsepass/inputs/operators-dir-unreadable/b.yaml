@@ -1,0 +1,5 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar.v2.0.0, namespace: b}
+status: {phase: Failed}
+ÿþ

@@ -1,0 +1,42 @@
+id: injection-invisible-characters-do-not-reach-the-inventory
+class: 7
+verdict: finding
+summary: 'A CSV whose display name and status message carry U+061C, a soft hyphen, a tag character, a bidi override
+  and a zero-width space: the hand-kept list of invisible code points missed them and they reached the text, JSON
+  and tool output, where a terminal or a model reads them as something else.'
+provenance: 'operators/inventory review before #55 (G270), defect 20'
+inputs: operators-invisible
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: operator_inventory
+  args:
+    manifests: '{text:all.yaml}'
+  expect:
+    json:
+      counts.notSucceeded: 1
+  forbid:
+    text:
+    - ؜
+    - ­
+    - 󠁁
+    - ‮
+    - ​
+expect:
+  json:
+    counts.notSucceeded: 1
+forbid:
+  what: the invisible characters survive into stdout
+  text:
+  - ؜
+  - ­
+  - 󠁁
+  - ‮
+  - ​

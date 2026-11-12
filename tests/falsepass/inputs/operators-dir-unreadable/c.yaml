@@ -1,0 +1,2 @@
+kind: ClusterServiceVersion
+metadata: {name: baz.v3.0.0, namespace: c

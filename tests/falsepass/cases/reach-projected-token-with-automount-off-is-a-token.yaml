@@ -1,0 +1,49 @@
+id: reach-projected-token-with-automount-off-is-a-token
+class: 4
+verdict: finding
+summary: 'automountServiceAccountToken: false beside a projected serviceAccountToken volume that is mounted, the
+  account bound to cluster-admin: the token leg read the flag alone and said `none`, so rbac and secrets were `none`
+  too and the answer was complete -- for a pod that holds a cluster-admin token.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 3
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-projected-token
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/p.yaml'
+  - --whole-bundle
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: deployment/web
+    namespace: shop
+    manifests: '{text:p.yaml}'
+    whole_bundle: true
+  expect:
+    json_any:
+      legs[*].status: reached
+  forbid:
+    json:
+      legs[1].status: none
+expect:
+  json_any:
+    legs[*].status: reached
+  json:
+    summary:
+      contains: full control
+forbid:
+  what: token none (automountServiceAccountToken=false), rbac none, secrets none, complete, exit 0
+  json:
+    legs[1].status: none

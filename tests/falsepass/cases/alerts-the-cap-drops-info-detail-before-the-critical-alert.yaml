@@ -1,0 +1,37 @@
+id: alerts-the-cap-drops-info-detail-before-the-critical-alert
+class: 2
+verdict: finding
+summary: '299 info alerts with long labels and one critical etcdMembersDown last, under the smallest report cap:
+  rows were cut in arrival order, so the critical alert vanished (heading included) while the header still said
+  300 alerts and `diagnosed: 300`.'
+provenance: alerts/evidence-report reviews one to three (I1, G274)
+expected_on: alerts/evidence-report
+probe:
+  command:
+  - alerts
+  - report
+generate: alerts-info-flood-then-critical
+cli:
+  argv:
+  - --config
+  - '{inputs}/kube-noob.yaml'
+  - alerts
+  - report
+  - -f
+  - '{inputs}/payload.json'
+  - --format
+  - json
+expect:
+  json:
+    report.summary.alerts: 300
+    report.alerts[299].alertname: etcdMembersDown
+    report.alerts[299].verdict: diagnosed
+  json_any:
+    report.alerts[299].diagnosis.status: found
+    report.notIncluded[*].what:
+      contains: alert detail
+forbid:
+  what: the critical alert missing from the rows, or kept with its detail cut while info rows keep theirs, with
+    notIncluded empty
+  json:
+    report.notIncluded: []

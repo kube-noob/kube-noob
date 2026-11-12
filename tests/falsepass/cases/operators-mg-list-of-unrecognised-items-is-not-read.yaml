@@ -1,0 +1,28 @@
+id: operators-mg-list-of-unrecognised-items-is-not-read
+class: 4
+verdict: not-determined
+summary: 'A `ClusterServiceVersionList` whose items are a nameless mapping, the number 7 and a Pod, beside a `SubscriptionList`
+  with `items: null`: every item was rejected and the file still counted as read, so the answer was `listed`, 0
+  operators, complete, exit 0.'
+provenance: 'operators/inventory review before #55 (G270), defect 5'
+inputs: operators-mg-odd-items
+cli:
+  argv:
+  - operators
+  - inventory
+  - --must-gather
+  - '{inputs}/'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+forbid:
+  what: listed, 0 operators, complete, exit 0
+  exit:
+  - 0
+  json:
+    complete: true

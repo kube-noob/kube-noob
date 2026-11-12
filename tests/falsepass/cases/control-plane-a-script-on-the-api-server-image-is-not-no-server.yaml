@@ -1,0 +1,31 @@
+id: control-plane-a-script-on-the-api-server-image-is-not-no-server
+class: 21
+verdict: not-evaluated
+summary: 'The kube-apiserver image started through `/scripts/start.sh`: a command kube-noob does not recognise was
+  silently ''not an API server'', so beside one clean API server the bundle read clean; the image says what it is,
+  and the rule must decline with the reason.'
+provenance: rules/control-plane reviews one to four (G272), second review
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-script
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_any:
+    declined.KN-S038.entries[*].resource: Pod/kube-system/kas
+forbid:
+  what: 'no assumption, no decline: the script was not a server and the rule read clean'
+  json:
+    assumptions: []

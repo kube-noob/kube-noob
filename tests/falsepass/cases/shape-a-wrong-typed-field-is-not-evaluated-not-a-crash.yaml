@@ -1,0 +1,46 @@
+id: shape-a-wrong-typed-field-is-not-evaluated-not-a-crash
+class: 16
+verdict: not-evaluated
+summary: 'A Role with `resources: 1`: the rule that reads it raised, nothing caught it, and Python''s exit status
+  1 -- this CLI''s ''findings at or above --fail-on'' -- went to the pipeline with a traceback, so a crash was read
+  as a policy violation.'
+provenance: plugin/directory-engine reviews one and two (G276)
+expected_on: plugin/directory-engine
+probe:
+  module: kube_noob.shape
+inputs: shape-role-resources-int
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/role.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+mcp:
+  tool: audit_manifests
+  args:
+    manifests: '{text:role.yaml}'
+    platform: kubernetes
+    version: '1.35'
+  expect:
+    json_any:
+      assumptions[*]:
+        contains: wrong type
+  forbid:
+    json_any:
+      error: TypeError
+expect:
+  exit:
+  - 0
+  - 1
+  json_any:
+    assumptions[*]:
+      contains: wrong type
+forbid:
+  what: a Python traceback and exit 1
+  stderr:
+  - Traceback

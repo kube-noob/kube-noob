@@ -1,0 +1,43 @@
+id: verify-a-url-is-not-determined
+class: 1
+verdict: not-determined
+summary: 'The change is a URL: verify reads no network, so what the file holds cannot be read; an allow here would
+  pass whatever the server returns at apply time.'
+provenance: verify/pre-action review (G280)
+expected_on: verify/pre-action
+probe:
+  command:
+  - verify
+inputs: verify-ok
+cli:
+  argv:
+  - verify
+  - --command
+  - kubectl apply -f https://example.com/install.yaml
+  - --format
+  - json
+mcp:
+  tool: verify_change
+  args:
+    command: kubectl apply -f https://example.com/install.yaml
+    files: {}
+  expect:
+    json:
+      verdict: not-determined
+  forbid:
+    json:
+      verdict: allow
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+  json_any:
+    notDetermined[*]:
+      contains: URL
+forbid:
+  what: allow, exit 0, for content nobody read
+  exit:
+  - 0
+  json:
+    verdict: allow

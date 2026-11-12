@@ -1,0 +1,29 @@
+id: issues-no-installed-operator-is-not-all-matched
+class: 13
+verdict: not-determined
+summary: 'Empty ClusterServiceVersion and Subscription lists: `allMatched` was true because zero not-matched is
+  vacuously all, so a gate on `.allMatched == true` passed a cluster whose operators were never read.'
+provenance: operators/known-issues reviews one and two (R5, G278), second review
+expected_on: operators/known-issues
+probe:
+  command:
+  - operators
+  - issues
+inputs: issues-no-operators
+cli:
+  argv:
+  - operators
+  - issues
+  - -f
+  - '{inputs}/ops.yaml'
+  - --openshift-version
+  - 4.21.0
+  - --format
+  - json
+expect:
+  json:
+    allMatched: false
+forbid:
+  what: allMatched true with nothing looked up
+  json:
+    allMatched: true

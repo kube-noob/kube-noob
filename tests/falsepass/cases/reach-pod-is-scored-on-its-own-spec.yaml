@@ -1,0 +1,53 @@
+id: reach-pod-is-scored-on-its-own-spec
+class: 11
+verdict: finding
+summary: '`posture reach pod/web-abc-xyz`: the Pod carries hostNetwork, a second privileged container and a different
+  ServiceAccount than the Deployment that owns it; the answer came from the owner''s benign spec -- `node none`,
+  `token none`, exit 0 -- and the running object''s own escape was never mentioned.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 2
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-pod-anchor
+cli:
+  argv:
+  - posture
+  - reach
+  - pod/web-abc-xyz
+  - -n
+  - shop
+  - -f
+  - '{inputs}/a1.yaml'
+  - --whole-bundle
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: pod/web-abc-xyz
+    namespace: shop
+    manifests: '{text:a1.yaml}'
+    whole_bundle: true
+  expect:
+    json_any:
+      legs[*].leg: node
+    json:
+      anchor.object: Pod/shop/web-abc-xyz
+  forbid:
+    json:
+      anchor.object: Deployment/shop/web
+expect:
+  json:
+    anchor.object: Pod/shop/web-abc-xyz
+  json_any:
+    legs[*].detail:
+      contains: hostNetwork
+forbid:
+  what: 'node none, token none, exit 0: the Deployment''s spec answered for the Pod'
+  json:
+    anchor.object: Deployment/shop/web
+  json_any:
+    legs[*].detail:
+      contains: no privileged container

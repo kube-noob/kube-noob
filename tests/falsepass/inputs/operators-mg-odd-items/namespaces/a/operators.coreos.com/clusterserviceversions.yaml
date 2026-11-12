@@ -1,0 +1,6 @@
+kind: ClusterServiceVersionList
+items:
+- metadata: {namespace: a}
+- 7
+- kind: Pod
+  metadata: {name: x}

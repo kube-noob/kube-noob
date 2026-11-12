@@ -1,0 +1,50 @@
+id: reach-node-leg-flags-what-the-audit-flags
+class: 9
+verdict: finding
+summary: 'A container with procMount Unmasked and capabilities SYS_RAWIO, SYS_BOOT, NET_RAW: `kube-noob audit` fires
+  KN-S020 and KN-S005 on it, while the node leg kept its own shorter capability list and said `node none | no privileged
+  container, hostPath volume, host namespace or near-root capability`, exit 0.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 5
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-node-caps
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/n1.yaml'
+  - --whole-bundle
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: deployment/web
+    namespace: shop
+    manifests: '{text:n1.yaml}'
+    whole_bundle: true
+  expect:
+    json_any:
+      legs[*].detail:
+        contains: SYS_RAWIO
+  forbid:
+    json_any:
+      legs[*].detail:
+        contains: no privileged container, hostPath volume, host namespace or near-root capability
+expect:
+  json_any:
+    legs[*].detail:
+      contains: SYS_RAWIO
+forbid:
+  what: node none with a private capability list shorter than the audit's
+  json_any:
+    legs[*].detail:
+      contains: no privileged container, hostPath volume, host namespace or near-root capability

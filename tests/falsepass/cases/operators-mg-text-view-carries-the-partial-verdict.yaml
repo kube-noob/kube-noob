@@ -1,0 +1,28 @@
+id: operators-mg-text-view-carries-the-partial-verdict
+class: 6
+verdict: not-determined
+summary: 'The text view of a partial must-gather inventory (one CSV file is a symbolic link ingest never follows):
+  the caveat and the file that was not read must be in the text a person reads, not only in the JSON a pipeline
+  parses (G221).'
+provenance: 'operators/inventory review before #55 (G270), defect 18'
+inputs: operators-mg-symlink
+cli:
+  argv:
+  - operators
+  - inventory
+  - --must-gather
+  - '{inputs}'
+  - --require-complete
+expect:
+  exit:
+  - 5
+  text:
+  - partial
+  - baz.v3.0.0.yaml
+  - could not be read
+forbid:
+  what: the text says every OLM object this needs was read while JSON says partial
+  exit:
+  - 0
+  text:
+  - every OLM object this needs was read

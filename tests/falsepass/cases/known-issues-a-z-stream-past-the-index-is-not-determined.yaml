@@ -1,0 +1,29 @@
+id: known-issues-a-z-stream-past-the-index-is-not-determined
+class: 4
+verdict: not-determined
+summary: 'A z-stream newer than the newest the notes reach (4.22.999 against an index through 4.22.x): the minor
+  is indexed, so the first version called the empty list an answer for a release whose notes it does not hold.'
+provenance: ux/first-run reviews (G277), second review
+expected_on: ux/first-run
+probe:
+  grep:
+    file: src/kube_noob/known_issues.py
+    text: versionCoverage
+cli:
+  argv:
+  - known-issues
+  - etcd leader changed
+  - --version
+  - 4.22.999
+  - --format
+  - json
+expect:
+  json:
+    versionCoverage.status: not-determined
+  json_any:
+    versionCoverage.why:
+      contains: 4.22.999
+forbid:
+  what: matches [] read as no known issue for a z-stream the index does not reach
+  json:
+    versionCoverage.status: determined

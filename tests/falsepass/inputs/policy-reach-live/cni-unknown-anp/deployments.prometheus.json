@@ -1,0 +1,1 @@
+{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "prometheus", "namespace": "monitoring"}, "spec": {"template": {"metadata": {"labels": {"app": "prometheus"}}, "spec": {"containers": [{"name": "c", "image": "prometheus:1"}]}}}}

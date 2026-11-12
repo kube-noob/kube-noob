@@ -1,0 +1,34 @@
+id: shape-fix-leaves-a-document-it-cannot-read-and-says-so
+class: 16
+verdict: not-evaluated
+summary: '`fix` on the same file: `kind in {...}` on a list raised TypeError and the command died with a traceback
+  (exit 1); a document the fixer cannot read must be left exactly as it was and listed under manualFollowUps.'
+provenance: plugin/directory-engine reviews one and two (G276)
+expected_on: plugin/directory-engine
+probe:
+  module: kube_noob.shape
+inputs: shape-kind-list
+cli:
+  argv:
+  - fix
+  - -f
+  - '{inputs}/k.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+expect:
+  exit:
+  - 0
+  text:
+  - 'kind:
+
+    - Pod'
+  stderr:
+  - 'document 1: not fixed'
+forbid:
+  what: a traceback, exit 1
+  stderr:
+  - Traceback
+  exit:
+  - 1

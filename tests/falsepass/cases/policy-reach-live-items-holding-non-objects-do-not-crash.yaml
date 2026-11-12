@@ -1,0 +1,52 @@
+id: policy-reach-live-items-holding-non-objects-do-not-crash
+class: 16
+verdict: undetermined
+summary: 'A NetworkPolicy list whose items are `null` and a string: the same crash with exit 1; a list with items
+  that are not policies is a failed read, never zero policies and never a traceback.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: np-nondict-items
+mcp:
+  tool: cluster_check_traffic
+  args:
+    source: monitoring/prometheus
+    destination: shop/orders
+    port: 8080
+  expect:
+    json:
+      verdict: undetermined
+  forbid:
+    json:
+      verdict:
+        in:
+        - allowed
+        - denied
+expect:
+  exit:
+  - 1
+  json:
+    verdict: undetermined
+forbid:
+  what: a Python traceback on stderr, exit 1 read as findings; or zero policies and allowed
+  stderr:
+  - Traceback
+  json:
+    verdict: allowed

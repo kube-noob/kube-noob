@@ -1,0 +1,1 @@
+Error from server (Forbidden): ingresses.networking.k8s.io is forbidden: User "u" cannot list resource "ingresses" in API group "networking.k8s.io" at the cluster scope

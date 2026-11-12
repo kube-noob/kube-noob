@@ -1,0 +1,1 @@
+{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "orders", "namespace": "shop"}, "spec": {"template": {"metadata": {"labels": {"app": "orders"}}, "spec": {"containers": [{"name": "c", "image": "orders:1", "ports": [{"containerPort": 8080}]}]}}}}

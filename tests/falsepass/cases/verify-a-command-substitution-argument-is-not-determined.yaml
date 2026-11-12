@@ -1,0 +1,43 @@
+id: verify-a-command-substitution-argument-is-not-determined
+class: 22
+verdict: not-determined
+summary: '`-f $(VAR)`: the file name is a command substitution that exists only when the line runs, so the manifests
+  cannot be read; `$(VAR)` must be read as one whole token, not as a file named `$(VAR)`.'
+provenance: verify/pre-action review (G280)
+expected_on: verify/pre-action
+probe:
+  command:
+  - verify
+inputs: verify-ok
+cli:
+  argv:
+  - verify
+  - --command
+  - kubectl apply -f $(VAR)
+  - --format
+  - json
+mcp:
+  tool: verify_change
+  args:
+    command: kubectl apply -f $(VAR)
+    files: {}
+  expect:
+    json:
+      verdict: not-determined
+  forbid:
+    json:
+      verdict: allow
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+  json_any:
+    notDetermined[*]:
+      contains: $(VAR)
+forbid:
+  what: allow, exit 0, for a file name that does not exist yet
+  exit:
+  - 0
+  json:
+    verdict: allow

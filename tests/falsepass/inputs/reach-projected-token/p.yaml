@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: adm
+      automountServiceAccountToken: false
+      volumes: [{name: t, projected: {sources: [{serviceAccountToken: {path: token}}]}}]
+      containers: [{name: c, image: i, volumeMounts: [{name: t, mountPath: /var/run/secrets/tokens}]}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: adm, namespace: shop}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: adm}
+subjects: [{kind: ServiceAccount, name: adm, namespace: shop}]
+roleRef: {kind: ClusterRole, name: cluster-admin}

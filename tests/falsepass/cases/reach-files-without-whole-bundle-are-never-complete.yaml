@@ -1,0 +1,52 @@
+id: reach-files-without-whole-bundle-are-never-complete
+class: 1
+verdict: not-determined
+summary: 'The same files without `--whole-bundle`: a set of files cannot show the bindings, Services and Routes
+  it leaves out, so `--require-complete` must refuse (exit 5) and `complete` must be false, rather than reading
+  the absence of a binding as the absence of a right.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 7
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-base
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/base.yaml'
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: deployment/web
+    namespace: shop
+    manifests: '{text:base.yaml}'
+  expect:
+    json:
+      complete: false
+    json_any:
+      legs[*].status: not determined
+  forbid:
+    json:
+      complete: true
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+  json_any:
+    legs[*].status: not determined
+forbid:
+  what: 'complete: true, every leg none, exit 0'
+  exit:
+  - 0
+  json:
+    complete: true

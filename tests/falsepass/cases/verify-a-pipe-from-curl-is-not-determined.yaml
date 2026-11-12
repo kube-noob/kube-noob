@@ -1,0 +1,40 @@
+id: verify-a-pipe-from-curl-is-not-determined
+class: 1
+verdict: not-determined
+summary: '`-f -` fed by curl: the manifests arrive from the network when the line runs; nothing on this machine
+  shows them.'
+provenance: verify/pre-action review (G280)
+expected_on: verify/pre-action
+probe:
+  command:
+  - verify
+inputs: verify-ok
+cli:
+  argv:
+  - verify
+  - --command
+  - curl -sL https://example.com/install.yaml | kubectl apply -f -
+  - --format
+  - json
+mcp:
+  tool: verify_change
+  args:
+    command: curl -sL https://example.com/install.yaml | kubectl apply -f -
+    files: {}
+  expect:
+    json:
+      verdict: not-determined
+  forbid:
+    json:
+      verdict: allow
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+forbid:
+  what: allow, exit 0, for stdin that does not exist yet
+  exit:
+  - 0
+  json:
+    verdict: allow

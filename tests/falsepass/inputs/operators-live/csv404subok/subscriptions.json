@@ -1,0 +1,1 @@
+{"kind":"SubscriptionList","items":[{"metadata":{"name":"foo","namespace":"a"},"spec":{"name":"foo","channel":"stable","source":"c","sourceNamespace":"m"},"status":{"installedCSV":"foo.v1.0.0","currentCSV":"foo.v1.0.0"}}]}

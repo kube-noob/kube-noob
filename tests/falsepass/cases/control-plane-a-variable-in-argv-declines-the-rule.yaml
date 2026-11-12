@@ -1,0 +1,45 @@
+id: control-plane-a-variable-in-argv-declines-the-rule
+class: 22
+verdict: not-evaluated
+summary: '`--authorization-mode=$(MODE)`: the value comes from an environment variable the manifest does not resolve,
+  so the authorizer is not readable; reading the literal text as ''not AlwaysAllow'' counted the rule clean.'
+provenance: rules/control-plane reviews one to four (G272)
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-var
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+mcp:
+  tool: audit_manifests
+  args:
+    manifests: '{text:d/kas.yaml}'
+    platform: kubernetes
+    version: '1.35'
+    partial_bundle: false
+  expect:
+    json_any:
+      declined.KN-S038.entries[*].resource: Pod/kube-system/kas
+  forbid:
+    json:
+      assumptions: []
+expect:
+  json_any:
+    declined.KN-S038.entries[*].resource: Pod/kube-system/kas
+    assumptions[*]:
+      contains: KN-S038 was not evaluated
+forbid:
+  what: 'no assumption, no decline: the rule counted clean on a value it could not read'
+  json:
+    assumptions: []

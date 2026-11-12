@@ -1,0 +1,57 @@
+id: policy-reach-live-unidentified-cni-does-not-apply-the-admin-tier
+class: 4
+verdict: undetermined
+summary: 'An AdminNetworkPolicy that denies the traffic, on a cluster whose CNI could not be identified (no Calico
+  ClusterInformation, no Cilium, no OVN-Kubernetes): ''no Calico'' was read as ''so OVN-Kubernetes'', the tier was
+  applied and the answer was `denied` on a CNI that may ignore it.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: cni-unknown-anp
+mcp:
+  tool: cluster_check_traffic
+  args:
+    source: monitoring/prometheus
+    destination: shop/orders
+    port: 8080
+  expect:
+    json:
+      verdict: undetermined
+  forbid:
+    json:
+      verdict:
+        in:
+        - allowed
+        - denied
+expect:
+  exit:
+  - 1
+  json:
+    verdict: undetermined
+  json_any:
+    summary:
+      contains: whether this CNI enforces that tier
+forbid:
+  what: 'denied: an AdminNetworkPolicy decided for a CNI nobody identified'
+  json:
+    verdict:
+      in:
+      - allowed
+      - denied

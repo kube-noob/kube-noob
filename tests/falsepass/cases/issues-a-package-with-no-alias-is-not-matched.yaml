@@ -1,0 +1,47 @@
+id: issues-a-package-with-no-alias-is-not-matched
+class: 15
+verdict: not-determined
+summary: 'An installed operator whose package has no entry in the name table: the first version counted it `assessed`
+  and passed `--require-complete`, so an operator the notes were never searched for read as having no reported issue.'
+provenance: operators/known-issues reviews one and two (R5, G278)
+expected_on: operators/known-issues
+probe:
+  command:
+  - operators
+  - issues
+inputs: issues-unlisted
+cli:
+  argv:
+  - operators
+  - issues
+  - -f
+  - '{inputs}/ops.yaml'
+  - --openshift-version
+  - 4.21.0
+  - --format
+  - json
+mcp:
+  tool: operator_known_issues
+  args:
+    manifests: '{text:ops.yaml}'
+    openshift_version: 4.21.0
+  expect:
+    json:
+      allMatched: false
+      verdict: not-matched
+  forbid:
+    json:
+      allMatched: true
+      verdict: matched
+expect:
+  json:
+    allMatched: false
+    verdict: not-matched
+  json_any:
+    caveats[*]:
+      contains: no alias
+forbid:
+  what: assessed / matched, allMatched true, exit 0 under --require-complete
+  json:
+    allMatched: true
+    verdict: matched

@@ -1,0 +1,37 @@
+id: control-plane-underscore-flag-is-the-same-flag
+class: 22
+verdict: finding
+summary: '`--authorization_mode=AlwaysAllow` beside `--authorization-mode=Node,RBAC`: kube-apiserver normalises
+  `_` to `-` in flag names, so the second one wins and the server allows everything, while the rule read only the
+  dashed spelling and reported Node,RBAC clean.'
+provenance: rules/control-plane reviews one to four (G272)
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-underscore
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+  - --fail-on
+  - critical
+expect:
+  exit:
+  - 1
+  json_any:
+    findings[*].ruleId: KN-S038
+forbid:
+  what: 'clean: Node,RBAC read, the underscore spelling ignored, exit 0'
+  exit:
+  - 0
+  json:
+    summary.counts.critical: 0

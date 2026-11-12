@@ -1,0 +1,36 @@
+id: reach-text-view-carries-the-limitation
+class: 6
+verdict: not-determined
+summary: 'The text view of a file-mode answer whose granting binding is absent: only json/yaml said ''a bundle that
+  carries some bindings cannot show the ones it leaves out''; text printed `rbac none` and Mermaid drew one edge,
+  so a reader of either saw a clean none.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 7
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-base
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/base.yaml'
+  - --require-complete
+expect:
+  exit:
+  - 5
+  text:
+  - not determined
+  - 'limitation:'
+  - cannot show
+forbid:
+  what: rbac none in text, exit 0, the limitation only in JSON
+  exit:
+  - 0
+  text:
+  - rbac      none

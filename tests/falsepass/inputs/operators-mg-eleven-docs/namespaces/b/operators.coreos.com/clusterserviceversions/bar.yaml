@@ -1,0 +1,75 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar0.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar1.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar2.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar3.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar4.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar5.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar6.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar7.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar8.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar9.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}
+
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: bar10.v2.0.0, namespace: b}
+spec: {version: 2.0.0}
+status: {phase: Succeeded}

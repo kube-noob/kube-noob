@@ -1,0 +1,37 @@
+id: reach-truncation-keeps-cluster-admin-and-privileged
+class: 2
+verdict: finding
+summary: 'A privileged Deployment whose ServiceAccount is bound to cluster-admin, under 130 RoleBindings to a Role
+  not in the input: nodes were kept by type then by id, so the cap cut every capability node, the summary (computed
+  after the cut) said ''reaches no capability'', the SA node itself was gone and every notDetermined.from was empty.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 1
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+generate: many-bindings-then-cluster-admin
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/bundle.yaml'
+  - --whole-bundle
+  - --format
+  - json
+expect:
+  json_any:
+    legs[*].status: reached
+  json:
+    summary:
+      contains: full control
+forbid:
+  what: '''reaches no capability'', 0 capability nodes kept, the cluster-admin binding and the privileged container
+    cut by the cap'
+  json:
+    summary:
+      contains: reaches no capability

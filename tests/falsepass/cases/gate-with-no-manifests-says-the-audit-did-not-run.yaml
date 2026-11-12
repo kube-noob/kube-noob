@@ -1,0 +1,31 @@
+id: gate-with-no-manifests-says-the-audit-did-not-run
+class: 14
+verdict: not-evaluated
+summary: 'A gate given a scanner report and no manifests (a renamed deploy/ directory, a glob that stopped matching):
+  it passed, exited 0 and rendered an empty ''Not run'' section, which positively asserts that nothing was left
+  out; the manifest audit must be named as not run.'
+provenance: tests/test_false_clean.py, the coverage-record review, on main
+inputs: gate-scanner-only
+cli:
+  argv:
+  - gate
+  - --scanner-report
+  - '{inputs}/trivy.json'
+  - --summary
+  - /dev/stdout
+  - --quiet
+expect:
+  text:
+  - '### Not run'
+  - 'manifest and chart audit: no manifests were read'
+forbid:
+  what: '''Not run'' with no manifest line, or no ''Not run'' section at all'
+  text:
+  - '### Not run
+
+
+    ### '
+  - '### Not run
+
+
+    - Containerfile'

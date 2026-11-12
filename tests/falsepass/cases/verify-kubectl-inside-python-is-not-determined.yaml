@@ -1,0 +1,42 @@
+id: verify-kubectl-inside-python-is-not-determined
+class: 22
+verdict: not-determined
+summary: 'kubectl named inside `python3 -c`: a kube tool reached through another interpreter is not followed, and
+  the line is not a plain program invocation; an allow would let any change through a one-line wrapper.'
+provenance: verify/pre-action review (G280)
+expected_on: verify/pre-action
+probe:
+  command:
+  - verify
+inputs: verify-ok
+cli:
+  argv:
+  - verify
+  - --command
+  - python3 -c "import os; os.system('kubectl apply -f {inputs}/ok.yaml')"
+  - --format
+  - json
+mcp:
+  tool: verify_change
+  args:
+    command: python3 -c "import os; os.system('kubectl apply -f ok.yaml')"
+    files:
+      ok.yaml: "apiVersion: v1\nkind: Pod\nmetadata: {name: ok, namespace: shop}\nspec:\n  containers: [{name: c,\
+        \ image: nginx}]\n"
+  expect:
+    json:
+      verdict: not-determined
+  forbid:
+    json:
+      verdict: allow
+expect:
+  exit:
+  - 5
+  json:
+    verdict: not-determined
+forbid:
+  what: allow, exit 0, for a wrapped apply
+  exit:
+  - 0
+  json:
+    verdict: allow

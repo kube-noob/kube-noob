@@ -1,0 +1,32 @@
+id: known-issues-an-okd-build-is-never-answered-from-ocp-notes
+class: 4
+verdict: not-determined
+summary: 'An OKD build string (`4.16.0-0.okd-2024-08-01`): the version was refused as too long or ''not narrowed''
+  and the lookup printed its old ''no known issue'' note; OKD is never answered from OpenShift Container Platform
+  release notes, so the statement is not-determined with the reason.'
+provenance: ux/first-run reviews (G277), second review
+expected_on: ux/first-run
+probe:
+  grep:
+    file: src/kube_noob/known_issues.py
+    text: versionCoverage
+cli:
+  argv:
+  - known-issues
+  - etcd leader changed
+  - --version
+  - 4.16.0-0.okd-2024-08-01
+  - --format
+  - json
+expect:
+  json:
+    versionCoverage.status: not-determined
+forbid:
+  what: exit 2 on the version string, or matches [] read as no known issue
+  exit:
+  - 2
+  json:
+    versionCoverage.status: determined
+  json_any:
+    note:
+      contains: No reported issue

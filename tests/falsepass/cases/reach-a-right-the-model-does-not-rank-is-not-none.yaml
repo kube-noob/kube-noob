@@ -1,0 +1,52 @@
+id: reach-a-right-the-model-does-not-rank-is-not-none
+class: 4
+verdict: finding
+summary: 'A bound Role granting `create` on `serviceaccounts/token` (mint a token for any account in the namespace):
+  the right matched no ranked capability, so the rbac leg said `none | bound by RoleBinding/shop/mint, to nothing
+  kube-noob ranks`, secrets `none`, complete.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 6
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-unranked-right
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - -f
+  - '{inputs}/r.yaml'
+  - --whole-bundle
+  - --require-complete
+  - --format
+  - json
+mcp:
+  tool: posture_reach
+  args:
+    workload: deployment/web
+    namespace: shop
+    manifests: '{text:r.yaml}'
+    whole_bundle: true
+  expect:
+    json_any:
+      legs[*].status:
+        in:
+        - reached
+        - not determined
+  forbid:
+    json:
+      legs[2].status: none
+expect:
+  json_any:
+    legs[*].status:
+      in:
+      - reached
+      - not determined
+forbid:
+  what: rbac none, to nothing kube-noob ranks; secrets none; complete; exit 0
+  json:
+    legs[2].status: none

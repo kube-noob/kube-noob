@@ -1,0 +1,30 @@
+id: operators-live-auth-plugin-not-found-is-not-no-olm
+class: 3
+verdict: not-determined
+summary: 'kubectl fails before any request with `exec: executable gke-gcloud-auth-plugin not found`: the words ''not
+  found'' in a client-side error were read as a 404 for the operators.coreos.com group, so a cluster nobody could
+  talk to was reported `no-olm -- not an OLM cluster`, complete, exit 0.'
+provenance: 'operators/inventory review before #55 (G270), defect 2'
+inputs: operators-live
+cli:
+  argv:
+  - operators
+  - inventory
+  - --live
+  - --require-complete
+  - --format
+  - json
+  kubectl: authplugin
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+    verdict: not-determined
+forbid:
+  what: no-olm, not an OLM cluster, complete, exit 0
+  exit:
+  - 0
+  json:
+    verdict: no-olm
+    complete: true

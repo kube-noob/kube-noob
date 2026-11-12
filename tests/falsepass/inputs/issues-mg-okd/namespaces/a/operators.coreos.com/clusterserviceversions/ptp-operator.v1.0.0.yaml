@@ -1,0 +1,5 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: ptp-operator.v1.0.0, namespace: a}
+spec: {version: 1.0.0}
+status: {phase: Succeeded}

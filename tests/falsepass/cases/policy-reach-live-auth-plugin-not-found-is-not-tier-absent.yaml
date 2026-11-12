@@ -1,0 +1,56 @@
+id: policy-reach-live-auth-plugin-not-found-is-not-tier-absent
+class: 3
+verdict: undetermined
+summary: 'kubectl cannot read ClusterNetworkPolicy because `gke-gcloud-auth-plugin` is not on PATH (the error says
+  ''not found''): the substring was read as ''the API is not served'', the tier Calico 3.32 enforces was dropped
+  and the traffic was `allowed`, exit 0.'
+provenance: fix/absent-vs-unread reviews one and two (G279)
+expected_on: fix/absent-vs-unread
+probe:
+  grep:
+    file: src/kube_noob/debug/cluster.py
+    text: def classify_read_failure
+inputs: policy-reach-live
+cli:
+  argv:
+  - policy
+  - reach
+  - --from
+  - monitoring/prometheus
+  - --to
+  - shop/orders
+  - --port
+  - '8080'
+  - --live
+  - --format
+  - json
+  kubectl: cnp-authplugin
+mcp:
+  tool: cluster_check_traffic
+  args:
+    source: monitoring/prometheus
+    destination: shop/orders
+    port: 8080
+  expect:
+    json:
+      verdict: undetermined
+  forbid:
+    json:
+      verdict:
+        in:
+        - allowed
+        - denied
+expect:
+  exit:
+  - 1
+  json:
+    verdict: undetermined
+  json_any:
+    summary:
+      contains: ClusterNetworkPolicy could not be read
+forbid:
+  what: 'allowed, exit 0: a failed read of an enforced tier read as the tier being absent'
+  exit:
+  - 0
+  json:
+    verdict: allowed

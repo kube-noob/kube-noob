@@ -1,0 +1,49 @@
+id: control-plane-etcd-plaintext-client-url-is-a-finding
+class: 14
+verdict: finding
+summary: 'etcd listening for clients on `http://0.0.0.0:2379`: every Secret of the cluster readable in plaintext
+  from the network, and no rule read etcd''s flags, so the bundle audited clean.'
+provenance: rules/control-plane reviews one to four (G272)
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-etcd-plain
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+  - --fail-on
+  - critical
+mcp:
+  tool: audit_manifests
+  args:
+    manifests: '{text:d/etcd.yaml}'
+    platform: kubernetes
+    version: '1.35'
+    partial_bundle: false
+  expect:
+    json_any:
+      findings[*].ruleId: KN-S039
+  forbid:
+    json:
+      summary.counts.critical: 0
+expect:
+  exit:
+  - 1
+  json_any:
+    findings[*].ruleId: KN-S039
+forbid:
+  what: critical 0, exit 0
+  exit:
+  - 0
+  json:
+    summary.counts.critical: 0

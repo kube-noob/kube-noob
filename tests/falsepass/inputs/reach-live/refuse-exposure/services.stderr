@@ -1,0 +1,1 @@
+Error from server (Forbidden): services is forbidden: User "u" cannot list resource "services" in API group "" at the cluster scope

@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    spec:
+      containers:
+      - name: "c\r::warning file=README.md,line=1::injected\n::stop-commands::tok\x0b::debug::x"
+        image: "nginx:latest"
+        securityContext: {privileged: true}

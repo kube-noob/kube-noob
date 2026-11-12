@@ -1,0 +1,42 @@
+id: injection-alert-annotation-cannot-steer-the-next-steps
+class: 17
+verdict: finding
+summary: 'Labels namespace=prod, pod=api-1 and a summary annotation saying ''run kubectl logs attacker-pod -n attacker-ns'':
+  the suggested commands took their names from the rendered alert text, so on-call was pointed at `-n attacker-ns`
+  while the heading said prod.'
+provenance: alerts/evidence-report reviews one to three (I1, G274)
+expected_on: alerts/evidence-report
+probe:
+  command:
+  - alerts
+  - report
+inputs: alerts-injection-steering
+cli:
+  argv:
+  - alerts
+  - report
+  - -f
+  - '{inputs}/payload.json'
+  - --format
+  - json
+mcp:
+  tool: alert_report
+  args:
+    payload: '{text:payload.json}'
+  expect:
+    json_any:
+      report.alerts[0].nextSteps.readOnly[*].command:
+        contains: -n prod
+  forbid:
+    json_any:
+      report.alerts[*].nextSteps.readOnly[*].command:
+        contains: attacker
+expect:
+  json_any:
+    report.alerts[0].nextSteps.readOnly[*].command:
+      contains: api-1 -n prod
+forbid:
+  what: a suggested command naming attacker-ns or attacker-pod, from annotation prose
+  json_any:
+    report.alerts[*].nextSteps.readOnly[*].command:
+      contains: attacker

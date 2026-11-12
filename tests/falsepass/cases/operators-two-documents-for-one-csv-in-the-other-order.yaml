@@ -1,0 +1,32 @@
+id: operators-two-documents-for-one-csv-in-the-other-order
+class: 5
+verdict: not-determined
+summary: 'The same two disagreeing documents with the Failed 6.6.6 one first: document order used to decide the
+  answer ([d1, d2] gave 1.0.0 Succeeded, [d2, d1] gave 6.6.6 Failed), so this order must give the same conflict,
+  not a different inventory.'
+provenance: 'operators/inventory review before #55 (G270), defect 16'
+inputs: operators-dup-disagree-reversed
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+  json_any:
+    operators[*].notes[*]:
+      contains: different objects of this name
+forbid:
+  what: listed, complete, one operator 1.0.0 Succeeded with no note, the Failed document gone
+  exit:
+  - 0
+  json:
+    complete: true
+    operators[*].notes: []

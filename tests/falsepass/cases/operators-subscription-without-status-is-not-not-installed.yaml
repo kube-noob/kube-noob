@@ -1,0 +1,27 @@
+id: operators-subscription-without-status-is-not-not-installed
+class: 4
+verdict: not-determined
+summary: 'A CSV and the Subscription that names its package, the Subscription without `status` (as it looks in git):
+  the absent status was read as ''not installed'', and the CSV as ''installed by hand, no Subscription names it''
+  -- two operators for one, both wrong.'
+provenance: 'operators/inventory review before #55 (G270), defect 10'
+inputs: operators-sub-no-status
+cli:
+  argv:
+  - operators
+  - inventory
+  - -f
+  - '{inputs}/all.yaml'
+  - --require-complete
+  - --format
+  - json
+expect:
+  json:
+    counts.notInstalled: 0
+forbid:
+  what: 'two operators: foo.v1.0.0 ''no-subscription'' and subscription foo ''not-installed'''
+  json:
+    counts.notInstalled: 1
+    counts.noSubscription: 1
+  json_any:
+    operators[*].state: not-installed

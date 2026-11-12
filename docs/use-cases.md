@@ -1236,6 +1236,22 @@ code execution. Paste a describe, an event or a manifest: Claude runs `kn.py ins
 its sandbox and cites the playbook, rule and issue ids kube-noob returns. The skill is always offline: no web lookups,
 no cluster, no model inside.
 
+## Contributors: when you find a false pass, keep it
+
+The defect this project exists to refuse has one shape: an absence, an unknown, an unrecognised shape, a truncated
+input or a refused read reported as clean, allowed, complete or none. Two days of adversarial review found about
+250 of them before merge, and their reproducers now live in `tests/falsepass/` as the false-pass benchmark
+([false-pass-benchmark.md](false-pass-benchmark.md)): each case is the input, the command line (and the MCP tool
+where one exists), the verdict the input decides and the false pass as it was observed, and
+`tests/test_false_pass_benchmark.py` runs every case through the real CLI and the in-process tool and fails when
+the forbidden outcome appears. When you find one, add a case rather than only a fix: copy a neighbour under
+`tests/falsepass/cases/`, put the input under `tests/falsepass/inputs/<name>/` byte for byte (name anything that
+looks like an instruction `injection*`), write `expect` for the honest answer and `forbid` for what you saw, give
+it the defect class number and one line of provenance, run `pytest tests/test_false_pass_benchmark.py -k <name>`
+(it must fail before the fix and pass after), and regenerate the page with `python scripts/false_pass_report.py`.
+A case whose fix is on a branch that has not merged carries `expected_on` and a probe for what the merge brings;
+it is run and printed, and enforces on its own the day the branch merges.
+
 ## Model builders
 
 Build the corpus, score answers with the deterministic reward and export datasets: see [training](training.md).

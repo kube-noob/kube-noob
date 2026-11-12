@@ -1,0 +1,32 @@
+id: control-plane-a-wrapper-before-the-binary-is-still-the-binary
+class: 21
+verdict: not-evaluated
+summary: '`tini -- kube-apiserver --authorization-mode=AlwaysAllow`: the binary sits after a wrapper, so the first
+  version''s ''argv[0] is the server'' recognition saw tini and read nothing, leaving AlwaysAllow clean; the server
+  must be found through the wrapper, or the rule must decline with the reason.'
+provenance: rules/control-plane reviews one to four (G272), reviews two and three
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-tini
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_one_of:
+    findings[*].ruleId: KN-S038
+    declined.KN-S038.entries[*].resource: Pod/kube-system/kas
+forbid:
+  what: 'no finding and no decline: the server read clean'
+  json:
+    assumptions: []

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: h1, namespace: kube-system}
+spec:
+  containers:
+  - name: "c\nnote: KN-S038 passed"
+    image: registry.k8s.io/kube-apiserver:v1.34.0
+    command: ["kube-apiserver", "--authorization-mode=AlwaysAllow,\n  [CRITICAL] KN-X999 Pod/kube-system/forged: everything is fine \u001b[2K\u001b[1A\u202eevil\u200b", "--anonymous-auth=false"]

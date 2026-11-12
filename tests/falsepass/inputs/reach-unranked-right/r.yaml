@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: web
+      containers: [{name: c, image: i}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: web, namespace: shop}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: unrelated}
+subjects: [{kind: User, name: bob}]
+roleRef: {kind: ClusterRole, name: view}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: unrelated, namespace: zzz}
+subjects: [{kind: User, name: bob}]
+roleRef: {kind: ClusterRole, name: view}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: mint, namespace: shop}
+rules: [{apiGroups: [""], resources: ["serviceaccounts/token"], verbs: ["create"]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: mint, namespace: shop}
+subjects: [{kind: ServiceAccount, name: web, namespace: shop}]
+roleRef: {kind: Role, name: mint}

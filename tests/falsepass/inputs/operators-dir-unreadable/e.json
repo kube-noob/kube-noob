@@ -1,0 +1,11 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata: {name: foo.v1.0.0, namespace: a}
+spec: {version: 1.0.0}
+status: {phase: Succeeded}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: foo, namespace: a}
+spec: {name: foo, source: redhat-operators, sourceNamespace: openshift-marketplace, channel: stable}
+status: {installedCSV: foo.v1.0.0, currentCSV: foo.v1.0.0}

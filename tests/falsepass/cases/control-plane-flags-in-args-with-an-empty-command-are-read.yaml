@@ -1,0 +1,32 @@
+id: control-plane-flags-in-args-with-an-empty-command-are-read
+class: 22
+verdict: not-evaluated
+summary: '`command: []` (the image''s entrypoint) with `--authorization-mode=AlwaysAllow` in `args` on a kube-apiserver
+  image: the first version read only `command`, so the same AlwaysAllow was clean when the flag sat in `args`; the
+  image names the server, so the rule finds it or declines, never reads clean.'
+provenance: rules/control-plane reviews one to four (G272)
+expected_on: rules/control-plane
+probe:
+  grep:
+    file: src/kube_noob/audit/rules.py
+    text: KN-S038
+inputs: cp-always-allow-split
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_one_of:
+    findings[*].ruleId: KN-S038
+    declined.KN-S038.entries[*].resource: Pod/kube-system/kas
+forbid:
+  what: 'no finding and no decline: the server read clean'
+  json:
+    assumptions: []

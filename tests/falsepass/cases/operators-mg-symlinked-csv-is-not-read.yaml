@@ -1,0 +1,32 @@
+id: operators-mg-symlinked-csv-is-not-read
+class: 1
+verdict: not-determined
+summary: 'A must-gather whose ClusterServiceVersion file for namespace c is a symbolic link: ingest never follows
+  links and skipped it, but the inventory consulted only the parser''s failures, so the skip was invisible and the
+  verdict stayed `listed`, `complete: true`, exit 0.'
+provenance: 'operators/inventory review before #55 (G270), defect 4'
+inputs: operators-mg-symlink
+cli:
+  argv:
+  - operators
+  - inventory
+  - --must-gather
+  - '{inputs}/'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    verdict: partial
+    complete: false
+  json_any:
+    unreadable[*].path:
+      contains: baz.v3.0.0.yaml
+forbid:
+  what: 'verdict listed, complete: true, exit 0'
+  exit:
+  - 0
+  json:
+    complete: true

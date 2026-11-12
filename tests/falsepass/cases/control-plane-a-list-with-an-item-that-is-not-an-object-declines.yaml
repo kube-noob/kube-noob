@@ -1,0 +1,27 @@
+id: control-plane-a-list-with-an-item-that-is-not-an-object-declines
+class: 4
+verdict: not-evaluated
+summary: 'A PodList whose first item is the number 7 and whose second is an AlwaysAllow API server: a list with
+  an item that is not a mapping is left whole and must be named as not read, not unwrapped around the bad item into
+  a clean bundle.'
+provenance: rules/control-plane reviews one to four (G272), fourth review; main already answers it
+inputs: cp-list-odd-item
+cli:
+  argv:
+  - audit
+  - -f
+  - '{inputs}/d'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_any:
+    assumptions[*]:
+      contains: NOT audited
+forbid:
+  what: 'assumptions []: the list read as nothing and the bundle as clean'
+  json:
+    assumptions: []

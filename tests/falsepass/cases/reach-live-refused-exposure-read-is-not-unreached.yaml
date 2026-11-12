@@ -1,0 +1,38 @@
+id: reach-live-refused-exposure-read-is-not-unreached
+class: 1
+verdict: not-determined
+summary: 'Live, with the Service, Route and Ingress lists refused (403): the summary said ''not reached by any exposure
+  in the input'', `complete: true`, `notDetermined: []`, and only a trailing ''not read:'' line hinted that nothing
+  about exposure had been read.'
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 9
+expected_on: posture/blast-radius
+probe:
+  command:
+  - posture
+  - reach
+inputs: reach-live
+cli:
+  argv:
+  - posture
+  - reach
+  - deployment/web
+  - -n
+  - shop
+  - --live
+  - --require-complete
+  - --format
+  - json
+  kubectl: refuse-exposure
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+  json_any:
+    legs[*].status: not determined
+forbid:
+  what: 'not reached by any exposure, complete: true, notDetermined [], exit 0'
+  exit:
+  - 0
+  json:
+    complete: true

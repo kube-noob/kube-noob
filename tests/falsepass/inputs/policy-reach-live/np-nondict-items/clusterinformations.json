@@ -1,0 +1,1 @@
+{"kind": "List", "apiVersion": "v1", "items": [{"apiVersion": "crd.projectcalico.org/v1", "kind": "ClusterInformation", "metadata": {"name": "default"}, "spec": {"calicoVersion": "v3.32.0", "variant": "Calico"}}]}
