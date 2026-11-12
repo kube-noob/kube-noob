@@ -2,7 +2,12 @@
 """Refresh the bundled index of reported OpenShift issues (src/kube_noob/data/known_issues/) from the release notes.
 
 Usage: python scripts/vendor_known_issues.py [--minors 4.20,4.21,4.22] [--workdir DIR]
-       python scripts/vendor_known_issues.py --check     exit 1 if a part is over the size limit or unreadable
+       python scripts/vendor_known_issues.py --check     exit 1 if a part is over the size limit or unreadable,
+                                                         a record has a field the loader does not know (a component
+                                                         or operator version would change what operators issues can
+                                                         join on), a record the loader would reject, or an operator
+                                                         alias name no record uses; prints how many records each
+                                                         alias term hits and which records two packages share
 
 Parses github.com/openshift/openshift-docs (branches enterprise-<minor>, Apache-2.0) with
 kube_noob.sources.release_notes and writes one JSON file per minor release and kind, split into parts under
@@ -65,6 +70,11 @@ def write_parts(records: list[dict], meta: dict) -> list[Path]:
     return written
 
 
+#: The fields a record has. kube_noob.operator_issues joins by name BECAUSE no record has a component, a package or
+#: an operator version (G278); a regeneration that adds one must change that join, not be ignored by it.
+RECORD_FIELDS = frozenset({"id", "ids", "kind", "minor", "version", "text", "source", "issued", "fixedIn"})
+
+
 def check() -> int:
     bad = []
     for f in sorted(OUT.glob("*.json")):
@@ -72,10 +82,28 @@ def check() -> int:
         if len(raw) >= 256 * 1024:
             bad.append(f"{f.name}: {len(raw)} bytes")
         json.loads(raw.decode("utf-8"))
+    # The operator alias table (kube_noob.operator_issues.ALIASES) names products as the release notes write them. A
+    # regenerated corpus that no longer uses a name would leave that operator matched against nothing while it reads
+    # as "named in none", so a dead or ambiguous name fails here, next to the data that killed it.
+    from kube_noob import known_issues, operator_issues
+
+    for f in sorted(OUT.glob("*.json")):
+        for n, r in enumerate(json.loads(f.read_text(encoding="utf-8")).get("records", []), start=1):
+            extra = sorted(set(r) - RECORD_FIELDS) if isinstance(r, dict) else ["<not an object>"]
+            if extra:
+                bad.append(f"{f.name} record {n}: fields the loader does not know: {', '.join(extra)}")
+    issues, meta = known_issues._read_parts(sorted(OUT.glob("*.json")))
+    bad += [f"rejected by the loader: {r}" for r in meta.get("_rejected", [])]
+    bad += [f"operator alias: {p}" for p in operator_issues.alias_problems(issues)]
+    for line in operator_issues.alias_report(issues):
+        print(line)
     if bad:
         print("\n".join(bad))
         return 1
-    print(f"{len(list(OUT.glob('*.json')))} known-issue files, each under 256 KiB and valid JSON")
+    print(
+        f"{len(list(OUT.glob('*.json')))} known-issue files, each under 256 KiB and valid JSON; every operator alias "
+        "name is used by them"
+    )
     return 0
 
 

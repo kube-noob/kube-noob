@@ -564,6 +564,7 @@ DRIVEN: dict[str, list[list[str]]] = {
     "posture scan": [["-f", "M"]],
     "posture snapshot": [["-f", "M", "-o", "OUT"]],
     "operators inventory": [["-f", "M"]],
+    "operators issues": [["-f", "M"]],
     "ksi": [["-f", "M"]],
     "build diagnose": [["-f", "EV"]],
 }

@@ -367,7 +367,14 @@ def _stderr_lines(failure: str | BaseException) -> list[str] | None:
     return lines
 
 
-def classify_read_failure(resource: str, failure: str | BaseException, name: str | None = None) -> ReadFailure:
+def classify_read_failure(
+    resource: str,
+    failure: str | BaseException,
+    name: str | None = None,
+    *,
+    group: str | None = None,
+    version: str | None = None,
+) -> ReadFailure:
     """Say what a backend's failed read means, recognising absence only in the exact words a backend uses for it.
 
     Pass the exception itself where there is one: it carries the full stderr (kubectl/oc) or the HTTP status and
@@ -380,6 +387,10 @@ def classify_read_failure(resource: str, failure: str | BaseException, name: str
     checked before the API server routes the request, so a 403 can hide an API that is not there just as well as
     one that is), recognised in the backend's own line, never in a name kube-noob echoed.
 
+    ``group`` and ``version``, when given, name the API the caller asked about (the ClusterVersion read is
+    ``config.openshift.io/v1``, R5): they must be the ones the resource is read under, or nothing is decided --
+    a caller asking about one API never gets an answer about another.
+
     Limitation: a resource in an :data:`AGGREGATED_GROUPS` group is never ``not-served``, because aggregated
     discovery can hide that group's failure from kubectl entirely.
     """
@@ -387,7 +398,10 @@ def classify_read_failure(resource: str, failure: str | BaseException, name: str
         plural, rdef = resolve_resource(resource)
     except ClusterAccessError:
         return "not-read"
-    group = rdef.group_version.split("/")[0] if "/" in rdef.group_version else ""
+    own_group, _, own_version = rdef.group_version.rpartition("/")
+    if (group is not None and group != own_group) or (version is not None and version != own_version):
+        return "not-read"
+    group = own_group
     aggregated = group in AGGREGATED_GROUPS
     status = getattr(failure, "status", None)
     if isinstance(status, int):  # the in-cluster client: decided by the status it received, not by text

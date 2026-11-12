@@ -505,15 +505,16 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     return from_sources([(label, [d.data for d in load_documents(text)])])
 
 
-def _not_served(resource: str, message: str | BaseException) -> bool:
-    """A 404 because the API group is not served, recognised only in the exact words the two backends write for
-    it: kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's "Not
-    found" for this group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does
-    not exist -- is a read that failed, which is not determined. The shapes live in one place for every live
+def _not_served(resource: str, message: str | BaseException, group: str = GROUP, version: str = "v1alpha1") -> bool:
+    """A 404 because the API is not served, recognised only in the exact words the two backends write for it:
+    kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's 404 for this
+    group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does not exist, a
+    get by name that 404s -- is a read that failed, which is not determined. ``group`` and ``version`` name the API
+    asked about (the ClusterVersion is ``config.openshift.io/v1``, R5); the shapes live in one place for every live
     reader, ``debug.cluster.classify_read_failure`` (G279)."""
     from kube_noob.debug.cluster import classify_read_failure
 
-    return classify_read_failure(resource, message) == "not-served"
+    return classify_read_failure(resource, message, group=group, version=version) == "not-served"
 
 
 def collect_live(backend: Any, namespaces: list[str]) -> Collected:
