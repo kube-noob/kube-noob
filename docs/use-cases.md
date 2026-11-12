@@ -817,14 +817,17 @@ offline lock only an in-cluster Central (`*.svc`).
 
 `posture scan` follows what is exposed (a Route, an Ingress, a LoadBalancer, NodePort or externalIPs Service) to the
 pods it reaches and what an attacker running code in them could do: take the node (a privileged container, a
-hostPath volume, the host's PID or network namespace, near-root capabilities) or use the pod's ServiceAccount token
-(read Secrets, exec into pods, create workloads that run as any ServiceAccount of the namespace, escalate, bind or
-impersonate, the kubelet API, or on OpenShift a privileged SCC plus the right to create pods). Each path scores
-exposure (internet 3, node network or a restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide
-above one namespace), lists every step with the field that proves it, and ends with a fix. A pod with
-`automountServiceAccountToken: false` has no token step; unexposed pods are not paths. It reads RBAC objects, never
-Secrets (Secret objects in a bundle are dropped unread). `--fail-above` makes it a CI gate. NetworkPolicies on the
-entry edge are not applied: check a path with `policy reach`.
+hostPath volume, the host's PID or network namespace, a capability the audit calls dangerous, an unmasked `/proc`, a
+Windows HostProcess pod) or use the pod's ServiceAccount token, automounted or projected by a volume (read Secrets,
+exec or attach, add ephemeral containers, create workloads that run as any ServiceAccount of the namespace, mint
+ServiceAccount tokens, escalate, bind or impersonate, the kubelet API, create PersistentVolumes, control admission
+webhooks, issue client certificates, or on OpenShift a privileged SCC plus the right to create pods -- the escalation
+rights the Kubernetes RBAC good-practices page names). Each path scores exposure (internet 3, node network or a
+restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide above one namespace), lists every step
+with the field that proves it, and ends with a fix. A pod with no token, automounted or projected, has no token
+step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret objects in a bundle are dropped
+unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate. NetworkPolicies
+on the entry edge are not applied: check a path with `policy reach`.
 
 A workload whose pod spec is embedded in a CRD is scored per component, named `Kind/namespace/name[component]`: a
 Ray head and each worker group separately, a KServe predictor, transformer and explainer separately. Where the
@@ -842,26 +845,32 @@ kube-noob --cluster-enabled posture scan --live -n shop -n payments
 
 `posture scan` starts at what is exposed. `posture reach` starts at the other end: the one workload a scanner just
 flagged or an incident is about, exposed or not. Name it as `Kind/name` with `-n`, or as `Kind/namespace/name` the way
-the scan prints it; a Pod name is resolved to the owner the scan scores when that owner is in the input (and when it
-is not, the error names the object to ask for instead of guessing). It answers with the ServiceAccount whose token
-the pods mount, each binding that names that account -- directly or through `system:serviceaccounts`,
-`system:serviceaccounts:<namespace>` or `system:authenticated` -- what each binding allows, the Secrets it may read by
-RBAC (by name, or every Secret of a namespace or of the cluster; contents are never read), the node when the pod spec
-can escape to it (privileged, a hostPath, a host namespace, near-root capabilities), and which namespaces or the whole
-cluster that covers. Every step names the object and field that prove it, and the paths `posture scan` ranks through
-the workload come along.
+the scan prints it. A Pod in the files is answered from its own spec, because the Pod is what runs, with its owner
+chain and anything about it that differs from its owner (another ServiceAccount, an injected privileged container);
+a Pod name that is not in the files gets an error naming the owner to ask for instead of a guess, and two objects
+with the same name are an error rather than a pick. The answer is five legs -- exposure, token, RBAC, Secrets, node --
+each `reached`, `none` or `not determined`: the ServiceAccount whose token the pods hold, each binding that names it
+(directly or through `system:serviceaccounts`, `system:serviceaccounts:<namespace>` or `system:authenticated`), what
+each binding allows, the Secrets it may read by RBAC or reach by creating a pod (by name, or every Secret of a
+namespace or of the cluster; contents are never read), the node when the pod spec can escape to it, and which
+namespaces or the whole cluster that covers. Every step names the object and field that prove it, and the paths
+`posture scan` ranks through the workload come along.
 
 What the input does not show is reported, not skipped: a ServiceAccount, Role or aggregated ClusterRole that is not
-in the files, no RoleBinding or ClusterRoleBinding at all, or a live list the account may not read, each becomes a
-`not determined` leg with the reason. `--require-complete` exits 5 while one is open; a name that matches nothing
-exits 2. `--format json` prints the graph (schema `kube-noob/blast-radius` v1: nodes, edges with their evidence, the
-not-determined legs, and how much was withheld if it hit its cap), and `--format mermaid` draws the same graph as a
-flowchart to paste into a pull request or a wiki page, with the undetermined legs dashed.
+in the files, a stand-in for `admin`, `edit` or `view`, a field that is not the shape the API requires, a bound rule
+kube-noob does not classify, a projected token for another audience, or a live list the account may not read --
+each becomes a `not determined` leg with the reason. A set of files cannot show the bindings, Services, Routes or
+Ingresses it leaves out, so for files `none` is only said of what the pod spec decides and the answer is never
+complete unless `--whole-bundle` asserts the files are everything that applies to the workload; `--require-complete`
+exits 5 until then, and a name that matches nothing exits 2. `--format json` prints the graph (schema
+`kube-noob/blast-radius` v1: nodes, edges with their evidence, the not-determined legs, and what was withheld when it
+hit its node, edge or byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
+request or a wiki page, with the undetermined legs dashed and the limitations as notes.
 
 ```bash
 kube-noob posture reach deployment/web -n shop -f k8s/
 kube-noob --format mermaid posture reach Deployment/shop/web -f k8s/ > web-reach.mmd
-kube-noob --format json posture reach pod/web-5d8f-x7k2q -n shop -f k8s/ --require-complete
+kube-noob --format json posture reach pod/web-5d8f-x7k2q -n shop -f k8s/ --whole-bundle --require-complete
 kube-noob --cluster-enabled posture reach deployment/web -n shop --live
 ```
 

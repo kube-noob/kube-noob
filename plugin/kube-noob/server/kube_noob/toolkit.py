@@ -616,6 +616,12 @@ class PostureReachIn(_ReachAnchor):
         max_length=MAX_MANIFEST_CHARS,
         description="The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.",
     )
+    whole_bundle: bool = Field(
+        False,
+        description="True only when the manifests are everything that applies to this workload (its RoleBindings, "
+        "the ClusterRoleBindings, its Services, Routes and Ingresses): an absence in them then counts as an answer. "
+        "Otherwise the answer is never complete, because files cannot show what they leave out.",
+    )
 
 
 class ClusterPostureReachIn(_ReachAnchor):
@@ -1517,25 +1523,22 @@ class Toolkit:
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
         return attack_paths.scan(inv, top=p.top)
 
-    @staticmethod
-    def _with_diagram(out: dict[str, Any], mermaid: bool) -> dict[str, Any]:
-        from kube_noob import blast_radius
-
-        return {**out, "mermaid": blast_radius.to_mermaid(out)} if mermaid else out
-
     def posture_reach(self, p: PostureReachIn) -> dict[str, Any]:
-        from kube_noob import blast_radius
+        from kube_noob import attack_paths, blast_radius
+        from kube_noob.yamlio import load_documents
 
-        out = blast_radius.reach_manifests(p.manifests, p.workload, p.namespace)
+        inv = attack_paths.Inventory.from_documents(d.data for d in load_documents(p.manifests))
+        out = blast_radius.reach_result(inv, p.workload, p.namespace, mermaid=p.mermaid, whole_bundle=p.whole_bundle)
         self._observe([f"posture-reach:{len(out['notDetermined'])}"])
-        return self._with_diagram(out, p.mermaid)
+        return out
 
     def cluster_posture_reach(self, p: ClusterPostureReachIn) -> dict[str, Any]:
         from kube_noob import attack_paths, blast_radius
 
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
-        out = blast_radius.reach(inv, p.workload, p.namespace, live=True, namespaces_read=list(p.namespaces))
-        return self._with_diagram(out, p.mermaid)
+        return blast_radius.reach_result(
+            inv, p.workload, p.namespace, mermaid=p.mermaid, live=True, namespaces_read=list(p.namespaces)
+        )
 
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
@@ -2244,8 +2247,9 @@ class Toolkit:
                 "posture_scan",
                 "Attack paths in manifests",
                 "Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a "
-                "compromised pod could do: node access (privileged, hostPath, host namespaces) or Kubernetes API "
-                "rights through its ServiceAccount token (read Secrets, exec, create workloads, escalate). Score = "
+                "compromised pod could do: node access (privileged, hostPath, host namespaces, dangerous capabilities) "
+                "or Kubernetes API rights through its ServiceAccount token, automounted or projected (read Secrets, "
+                "exec, create workloads, mint tokens, escalate, control webhooks). Score = "
                 "exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are "
                 "dropped unread.",
                 PostureScanIn,

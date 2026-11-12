@@ -1776,7 +1776,14 @@ def build_parser() -> argparse.ArgumentParser:
     prc.add_argument(
         "--require-complete",
         action="store_true",
-        help="exit 5 when a leg is not determined or the graph was truncated",
+        help="exit 5 unless the answer is complete: every leg determined, nothing truncated, and -- for files -- "
+        "--whole-bundle given, since a set of files cannot show the bindings and Services it leaves out",
+    )
+    prc.add_argument(
+        "--whole-bundle",
+        action="store_true",
+        help="with -f: assert the files are everything that applies to this workload (its RoleBindings, the "
+        "ClusterRoleBindings, its Services, Routes and Ingresses), so an absence in them counts as an answer",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -3265,6 +3272,8 @@ def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 raise ConfigError(
                     "--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled"
                 )
+            if a.whole_bundle:
+                raise ConfigError("--whole-bundle is for -f files; a live read says itself what it could not read")
             from kube_noob.debug.cluster import get_backend
 
             inv = ap.collect_live(get_backend(s), a.read_namespaces)
@@ -3274,7 +3283,9 @@ def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
             if a.read_namespaces:
                 raise ConfigError("--read-namespace works with --live; with -f every namespace in the files is read")
-            out = br.reach_manifests("\n---\n".join(_read(f) for f in a.file), a.workload, a.namespace)
+            out = br.reach_manifests(
+                "\n---\n".join(_read(f) for f in a.file), a.workload, a.namespace, whole_bundle=a.whole_bundle
+            )
     except (ap.ScanError, br.ReachError) as exc:
         raise ConfigError(str(exc)) from exc
     if a.format == "text":
@@ -3314,26 +3325,30 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         except ap.ScanError as exc:
             raise ConfigError(str(exc)) from exc
     if a.format == "text":
-        _tprint(out["summary"])
+        from kube_noob.blast_radius import flat
+
+        # Every field can carry a name or a path from the input, and a newline in one printed a forged row: one line
+        # each, as the blast radius prints them (G273).
+        _tprint(flat(out["summary"]))
         for path in out["paths"]:
             br = path["blastRadius"]
-            head = f"#{path['rank']}  score {path['score']}  {path['exposure']['kind']}"
-            _tprint(f"\n{head} -> {br['capability']} ({br['scope']})")
+            head = f"#{path['rank']}  score {path['score']}  {flat(path['exposure']['kind'])}"
+            _tprint(f"\n{head} -> {flat(br['capability'])} ({flat(br['scope'])})")
             for st in path["steps"]:
-                _tprint(f"    {st['from']} --{st['edge']}--> {st['to']}")
-                _tprint(f"        {st['evidence']}")
-            _tprint("    fix: " + "; or ".join(path["fix"]))
+                _tprint(f"    {flat(st['from'])} --{flat(st['edge'])}--> {flat(st['to'])}")
+                _tprint(f"        {flat(st['evidence'])}")
+            _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
-            _tprint("\nnot read: " + "; ".join(out["notRead"][:10]))
+            _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
         for note in (out.get("assumptions") or [])[:10]:
-            _tprint(f"assumed: {note}")
+            _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:
             _tprint(f"{out['secretsIgnored']} Secret object(s) in the input were ignored, unread.")
         # The input-specific limitations only. The three standing ones are documented; these name objects in THIS
         # scan whose exposure edge could not be traced, and a caveat that lives only in the JSON renderer is the
         # defect G221 was about -- the text reader is the one most likely to act on the number above.
         for line in out["limitations"][len(ap.STANDING_LIMITATIONS) :]:
-            _tprint("\nnote: " + line)
+            _tprint("\nnote: " + flat(line))
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0

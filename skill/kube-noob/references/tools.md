@@ -275,6 +275,7 @@ Blast radius of one workload in manifests. If this workload is compromised, what
 - `manifests`* (string): The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.
 - `mermaid` (boolean): Also return the graph as a Mermaid flowchart (text).
 - `namespace` (null/string): Default: default.
+- `whole_bundle` (boolean): True only when the manifests are everything that applies to this workload (its RoleBindings, the ClusterRoleBindings, its Services, Routes and Ingresses): an absence in them then counts as an answer. Otherwise the answer is never complete, because files cannot show what they leave out.
 - `workload`* (string): The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as posture_scan prints it (Deployment/shop/web). A Pod is resolved to the owner the scan scores.
 
 ## posture_report
@@ -285,7 +286,7 @@ Latest drift and policy report. The newest daily report in this install's data f
 
 ## posture_scan
 
-Attack paths in manifests. Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a compromised pod could do: node access (privileged, hostPath, host namespaces) or Kubernetes API rights through its ServiceAccount token (read Secrets, exec, create workloads, escalate). Score = exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are dropped unread.
+Attack paths in manifests. Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a compromised pod could do: node access (privileged, hostPath, host namespaces, dangerous capabilities) or Kubernetes API rights through its ServiceAccount token, automounted or projected (read Secrets, exec, create workloads, mint tokens, escalate, control webhooks). Score = exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are dropped unread.
 
 - `manifests`* (string): Routes, Ingresses, Services, workloads, ServiceAccounts and RBAC objects (YAML). Secret objects are dropped unread.
 - `top` (integer): How many ranked paths to return.

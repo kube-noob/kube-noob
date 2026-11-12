@@ -83,8 +83,17 @@ def test_a_workload_reaches_its_account_the_binding_and_the_secrets_with_the_sca
     # The exposed path is reported as the scan ranks it, and the leg list says what was found and what was not.
     assert graph["paths"][0]["summary"] == scan["paths"][0]["summary"]
     legs = {(leg["leg"], leg["status"]) for leg in graph["legs"]}
-    assert legs == {("token", "reached"), ("rbac", "reached"), ("secrets", "reached"), ("node", "none")}
-    assert graph["complete"] is True and graph["notDetermined"] == [] and graph["truncated"] is None
+    assert legs == {
+        ("exposure", "reached"),
+        ("token", "reached"),
+        ("rbac", "reached"),
+        ("secrets", "reached"),
+        ("node", "none"),
+    }
+    assert graph["notDetermined"] == [] and graph["truncated"] is None
+    # Files cannot show what they leave out: complete only when the caller asserts they are the whole bundle.
+    assert graph["complete"] is False and "--whole-bundle" in graph["completeness"]
+    assert _reach(SEEDED_DOCS, "deployment/web", "shop", whole_bundle=True)["complete"] is True
     assert "hunter2" not in json.dumps(graph), "Secret contents are never read"
 
 
@@ -95,7 +104,9 @@ def test_the_full_reference_the_scan_prints_is_accepted_and_names_must_agree() -
         _reach(SEEDED_DOCS, "Deployment/shop/web", "ops")
 
 
-def test_a_pod_name_resolves_to_the_owner_the_scan_scores() -> None:
+def test_a_pod_in_the_input_is_scored_on_its_own_spec_with_its_owner_chain_as_context() -> None:
+    """Defect 2: the Pod is what runs. An injected privileged sidecar, hostNetwork and another ServiceAccount on the
+    Pod were answered with the Deployment's benign template -- `node none`, `token none`, complete."""
     rs = {
         "apiVersion": "apps/v1",
         "kind": "ReplicaSet",
@@ -114,14 +125,58 @@ def test_a_pod_name_resolves_to_the_owner_the_scan_scores() -> None:
             "namespace": "shop",
             "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d8f", "controller": True}],
         },
-        "spec": {"serviceAccountName": "web-sa", "containers": [{"name": "w"}]},
+        "spec": {
+            "serviceAccountName": "web-sa",
+            "containers": [{"name": "w", "image": "registry.example.com/web:1.0.0"}],
+        },
     }
     graph = _reach([*SEEDED_DOCS, rs, pod], "pod/web-5d8f-x7k2q", "shop")
-    assert graph["anchor"]["resolved"] == ["Deployment/shop/web"]
+    assert graph["anchor"]["resolved"] == ["Pod/shop/web-5d8f-x7k2q"]
     assert graph["anchor"]["via"] == ["Pod/shop/web-5d8f-x7k2q", "ReplicaSet/shop/web-5d8f", "Deployment/shop/web"]
-    # An owner that is not in the input is not invented: the Pod is what the scan scores, so it is the anchor.
+    assert graph["anchor"]["ownerDiffers"] == [], "same account, same escape, same images: nothing to say"
+    # The shape the review found: the running Pod is not its template.
+    hostile = copy.deepcopy(pod)
+    hostile["spec"] = {
+        "serviceAccountName": "batch-sa",
+        "hostNetwork": True,
+        "containers": [
+            {"name": "w", "image": "registry.example.com/web:1.0.0"},
+            {"name": "injected", "image": "j", "securityContext": {"privileged": True}},
+        ],
+    }
+    got = _reach([*SEEDED_DOCS, rs, hostile], "pod/web-5d8f-x7k2q", "shop")
+    legs = {x["leg"]: x for x in got["legs"]}
+    assert (
+        legs["node"]["status"] == "reached"
+        and "container injected securityContext.privileged=true" in legs["node"]["detail"]
+    )
+    assert "spec.serviceAccountName=batch-sa" in legs["token"]["detail"]
+    differs = " | ".join(got["anchor"]["ownerDiffers"])
+    assert "the Pod batch-sa, Deployment/shop/web web-sa" in differs and "node escape" in differs
+    assert "differs from its owner" in got["summary"] and any("differs from its owner" in x for x in got["limitations"])
+    assert "the Pod differs from its owner" in br.render_text(got)
+    # An owner that is not in the input is not invented.
     orphan = _reach([*SEEDED_DOCS, pod], "pod/web-5d8f-x7k2q", "shop")
-    assert orphan["anchor"]["resolved"] == ["Pod/shop/web-5d8f-x7k2q"]
+    assert orphan["anchor"]["resolved"] == ["Pod/shop/web-5d8f-x7k2q"] and orphan["anchor"]["via"] == [
+        "Pod/shop/web-5d8f-x7k2q"
+    ]
+    # A ReplicaSet is a template, not what runs: it still resolves to the Deployment the scan scores.
+    assert _reach([*SEEDED_DOCS, rs], "rs/web-5d8f", "shop")["anchor"]["resolved"] == ["Deployment/shop/web"]
+    # An owner duplicated in the input (the review's a1.yaml): the Pod is still scored, the comparison is not made,
+    # and a ReplicaSet whose owner is ambiguous is refused rather than resolved to either.
+    twin = next(copy.deepcopy(d) for d in SEEDED_DOCS if d["kind"] == "Deployment" and d["metadata"]["name"] == "web")
+    twin["spec"]["template"]["spec"]["hostPID"] = True
+    dup = _reach([*SEEDED_DOCS, twin, rs, hostile], "pod/web-5d8f-x7k2q", "shop")
+    assert dup["anchor"]["via"][-1] == "Deployment/shop/web (ambiguous)"
+    # The ReplicaSet is unambiguous and is the Pod's direct owner, so the Pod is compared with it; the Deployment
+    # level is the ambiguity, and is said.
+    assert dup["anchor"]["ownerDiffers"][-1] == (
+        "2 different Deployment objects named shop/web are in the input, so the owner chain stops below them "
+        "and the Pod is not compared with either"
+    )
+    assert any("ReplicaSet/shop/web-5d8f" in d for d in dup["anchor"]["ownerDiffers"][:-1])
+    with pytest.raises(br.ReachError, match="2 different Deployment objects named shop/web"):
+        _reach([*SEEDED_DOCS, twin, rs], "rs/web-5d8f", "shop")
 
 
 def test_a_reference_that_matches_nothing_is_an_error_and_not_an_empty_blast_radius(
@@ -194,6 +249,7 @@ def test_a_bundle_without_bindings_does_not_read_as_an_account_without_rights() 
         [*_exposed("app", serviceAccountName="app-sa", automountServiceAccountToken=False), _sa()],
         "deployment/app",
         "shop",
+        whole_bundle=True,
     )
     assert off["notDetermined"] == [] and off["complete"] is True
     assert {(leg["leg"], leg["status"]) for leg in off["legs"]} >= {("token", "none"), ("rbac", "none")}
@@ -221,7 +277,7 @@ def test_an_aggregated_cluster_role_is_not_determined_beyond_what_the_input_carr
     part = _role("ClusterRole", "part", SECRET_READER)
     part["metadata"]["labels"] = {"team": "x"}
     some = _reach([*base, part], "deployment/app", "shop")
-    assert any("only the ones in the input are counted" in r for r in _undetermined(some))
+    assert any("1 in the input counted (ClusterRole/part)" in r for r in _undetermined(some))
     assert any(e["to"] == "secrets:namespace/shop" for e in _edges(some, "can read"))
 
 
@@ -429,12 +485,12 @@ def test_every_emitted_document_is_valid_against_its_schema() -> None:
 _LINE = re.compile(
     r"(flowchart LR"
     r"|  %% [ -~]*"
-    r"|  (n\d+|t0)\[\"[A-Za-z0-9 ./:_\-=,()'+*@!?#;]*\"\]"
+    r"|  (n\d+|t\d+)\[\"[A-Za-z0-9 ./:_\-=,()'+*@!?#;]*\"\]"
     r"|  n\d+ -->\|[a-z ]+\| n\d+"
     r"|  n\d+ -\. [a-z ]+ \.-> n\d+"
-    r"|  classDef (undetermined|truncated) [a-z0-9:;# -]+"
+    r"|  classDef (undetermined|note) [a-z0-9:;# -]+"
     r"|  class n\d+(,n\d+)* undetermined"
-    r"|  class t0 truncated)\Z"
+    r"|  class t\d+(,t\d+)* note)\Z"
 )
 _EDGE = re.compile(r"  (n\d+) (?:-->\|([a-z ]+)\||-\. ([a-z ]+) \.->) (n\d+)\Z")
 
@@ -521,7 +577,17 @@ def test_require_complete_exits_5_when_a_leg_is_not_determined(
     assert "not determined: ServiceAccount shop/app-sa is not in the input" in text
     assert main(["posture", "reach", "deployment/app", "-n", "shop", "-f", str(f), "--require-complete"]) == 5
     capsys.readouterr()
-    assert main(["posture", "reach", "deployment/web", "-n", "shop", "-f", str(SEEDED), "--require-complete"]) == 0
+    # Files alone are never complete: a set of files cannot show the bindings it leaves out. Asserting the bundle is
+    # whole is what lets a determined answer pass, and it does not hide a leg that is still open.
+    seeded = ["posture", "reach", "deployment/web", "-n", "shop", "-f", str(SEEDED), "--require-complete"]
+    assert main(seeded) == 5
+    capsys.readouterr()
+    assert main([*seeded, "--whole-bundle"]) == 0
+    capsys.readouterr()
+    assert (
+        main(["posture", "reach", "deployment/app", "-n", "shop", "-f", str(f), "--require-complete", "--whole-bundle"])
+        == 5
+    )
     capsys.readouterr()
 
 
@@ -554,3 +620,566 @@ def test_mcp_tools_file_and_live() -> None:
     assert "cluster_posture_reach" in {s.name for s in live.specs()}
     with pytest.raises(ValueError):
         tk.ClusterPostureReachIn(workload="deployment/web", namespaces=["Bad NS"])
+
+
+# --- the adversarial review of 4d7b00d: one test per defect ------------------------------------------------------
+#
+# Each base carries one unrelated RoleBinding and one unrelated ClusterRoleBinding, so "no binding of a kind is in
+# the input" is not what is under test.
+
+
+def _web(**pod: Any) -> list[dict[str, Any]]:
+    spec = {"serviceAccountName": "web", "containers": [{"name": "c", "image": "i"}], **pod}
+    return [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "web", "namespace": "shop"},
+            "spec": {"template": {"metadata": {"labels": {"app": "web"}}, "spec": spec}},
+        },
+        _sa("web"),
+        _binding("ClusterRoleBinding", "unrelated", "ClusterRole", "view", [{"kind": "User", "name": "bob"}]),
+        _binding("RoleBinding", "unrelated", "ClusterRole", "view", [{"kind": "User", "name": "bob"}], ns="zzz"),
+    ]
+
+
+WEB = {"kind": "ServiceAccount", "name": "web", "namespace": "shop"}
+
+
+def _leg(graph: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(x for x in graph["legs"] if x["leg"] == name)
+
+
+def _bound(rules: list[dict[str, Any]], kind: str = "Role", name: str = "r", ns: str = "shop") -> list[dict[str, Any]]:
+    binding_kind = "RoleBinding" if kind == "Role" else "ClusterRoleBinding"
+    return [_role(kind, name, rules, ns=ns), _binding(binding_kind, f"{name}-b", kind, name, [WEB], ns=ns)]
+
+
+def test_truncation_keeps_the_strongest_capabilities_and_the_summary_counts_the_whole_graph() -> None:
+    """Defect 1: 125 namespace grants filled the cap with bindings, the cluster-admin and privileged capabilities
+    were cut, and the summary -- computed after the cut -- said "reaches no capability"."""
+    priv = _web(containers=[{"name": "c", "image": "i", "securityContext": {"privileged": True}}])
+    admin = _binding("ClusterRoleBinding", "adm", "ClusterRole", "cluster-admin", [WEB])
+    many = [
+        doc
+        for i in range(125)
+        for doc in (
+            _role(
+                "Role",
+                f"r{i:03d}",
+                [{"apiGroups": [""], "resources": ["pods/exec"], "verbs": ["create"]}],
+                ns=f"ns{i:03d}",
+            ),
+            _binding(
+                "RoleBinding",
+                f"r{i:03d}-b",
+                "Role",
+                f"r{i:03d}",
+                [{"kind": "Group", "name": "system:serviceaccounts"}],
+                ns=f"ns{i:03d}",
+            ),
+        )
+    ]
+    graph = _reach([*priv, admin, *many], "deployment/web", "shop")
+    assert graph["truncated"] is not None
+    assert "top: full control (cluster)" in graph["summary"] and "no capability" not in graph["summary"]
+    kept = {n["label"] for n in graph["nodes"] if n["type"] == "capability"}
+    assert "full control (cluster)" in kept and "privileged container: full access to the node (node)" in kept
+    assert {e["kind"] for e in graph["edges"]} >= {"escapes through", "grants", "uses token of"}
+    ids = {n["id"] for n in graph["nodes"]}
+    for e in graph["edges"]:
+        assert e["from"] in ids and e["to"] in ids
+    # Every binding kept is needed by something kept: a capability it grants, a gap it carries or a Secret it reads.
+    needed = {e["from"] for e in graph["edges"] if e["kind"] in {"grants", "not determined", "can read"}}
+    assert all(n["id"] in needed for n in graph["nodes"] if n["type"] == "binding")
+    # The T1 shape: 130 gaps beside cluster-admin. The gaps do not crowd out the capability, nor the reverse.
+    gaps = [
+        _binding(
+            "RoleBinding",
+            f"g{i:03d}",
+            "Role",
+            "gone",
+            [{"kind": "Group", "name": "system:authenticated"}],
+            ns=f"ns{i:03d}",
+        )
+        for i in range(130)
+    ]
+    t1 = _reach([*priv, admin, *gaps], "deployment/web", "shop")
+    assert "top: full control (cluster)" in t1["summary"]
+    kept = {n["type"] for n in t1["nodes"]}
+    assert {"serviceaccount", "capability", "undetermined"} <= kept
+    assert all(x["from"] for x in t1["notDetermined"]), "every reason says where it hangs from"
+    assert t1["truncated"]["notDeterminedWithheld"] + len(t1["notDetermined"]) == 130
+
+
+def test_a_projected_service_account_token_is_a_token_even_with_automount_off() -> None:
+    """Defect 3: `automountServiceAccountToken: false` with a projected `serviceAccountToken` volume read as "no token,
+    no API rights", complete -- and the scan dropped the same paths."""
+    projected = {
+        "automountServiceAccountToken": False,
+        "containers": [
+            {"name": "c", "image": "i", "volumeMounts": [{"name": "t", "mountPath": "/var/run/secrets/tokens"}]}
+        ],
+        "volumes": [{"name": "t", "projected": {"sources": [{"serviceAccountToken": {"path": "token"}}]}}],
+    }
+    docs = [*_web(**projected), _binding("ClusterRoleBinding", "adm", "ClusterRole", "cluster-admin", [WEB])]
+    graph = _reach(docs, "deployment/web", "shop")
+    assert _leg(graph, "token")["status"] == "reached" and _leg(graph, "rbac")["status"] == "reached"
+    edge = _edges(graph, "uses token of")[0]
+    assert edge["evidence"]["field"] == "spec.template.spec.volumes[0].projected.sources[0].serviceAccountToken"
+    assert "projects its token" in edge["evidence"]["text"]
+    exposed = [
+        *docs,
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": "web", "namespace": "shop"},
+            "spec": {"type": "LoadBalancer", "selector": {"app": "web"}},
+        },
+    ]
+    scan = ap.scan(ap.Inventory.from_documents(copy.deepcopy(exposed)))
+    assert any(p["blastRadius"]["capability"] == "full control" for p in scan["paths"]), "posture scan sees it too"
+    # Declared but mounted by no container: no token in the pod.
+    unmounted = copy.deepcopy(projected)
+    unmounted["containers"][0].pop("volumeMounts")
+    assert _leg(_reach([*_web(**unmounted)], "deployment/web", "shop"), "token")["status"] == "none"
+    # Another audience: whether the API server accepts it is not in the input.
+    vault = copy.deepcopy(projected)
+    vault["volumes"][0]["projected"]["sources"][0]["serviceAccountToken"]["audience"] = "vault"
+    other = _reach([*_web(**vault)], "deployment/web", "shop")
+    assert _leg(other, "token")["status"] == "not determined"
+    assert any("audience vault" in r and "--api-audiences" in r for r in _undetermined(other))
+
+
+def test_duplicate_objects_are_an_ambiguity_not_a_pick() -> None:
+    """Defect 4: two Deployments named shop/web, or two ServiceAccounts shop/web that disagree, were settled by JSON
+    sort order: the privileged document was never mentioned."""
+    evil = copy.deepcopy(_web()[0])
+    evil["spec"]["template"]["spec"].update(
+        hostPID=True, containers=[{"name": "z", "image": "i", "securityContext": {"privileged": True}}]
+    )
+    with pytest.raises(br.ReachError, match="2 different Deployment objects named shop/web"):
+        _reach([*_web(), evil], "deployment/web", "shop")
+    # The same document twice is one object, not an ambiguity.
+    assert _reach([*_web(), copy.deepcopy(_web()[0])], "deployment/web", "shop")["anchor"]["resolved"]
+    quiet = _sa("web")
+    quiet["automountServiceAccountToken"] = False
+    admin = _binding("ClusterRoleBinding", "adm", "ClusterRole", "cluster-admin", [WEB])
+    graph = _reach([*_web(), quiet, admin], "deployment/web", "shop")
+    assert _leg(graph, "token")["status"] == "not determined"
+    assert any("2 ServiceAccount objects named shop/web" in r for r in _undetermined(graph))
+    assert _leg(graph, "rbac")["status"] == "reached", "the worst case is listed: the token is assumed mounted"
+    svc = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "web", "namespace": "shop"},
+        "spec": {"type": "LoadBalancer", "selector": {"app": "web"}},
+    }
+    scan = ap.scan(ap.Inventory.from_documents(copy.deepcopy([*_web(), quiet, admin, svc])))
+    assert any(p["blastRadius"]["capability"] == "full control" for p in scan["paths"]), "the scan takes the worst case"
+
+
+def test_the_node_leg_counts_what_the_audit_flags_and_says_what_it_checked() -> None:
+    """Defect 5: procMount Unmasked, NET_RAW / SYS_RAWIO / SYS_BOOT / MAC_ADMIN and a Windows HostProcess pod each
+    read `node none`, while `audit` fired on the same file."""
+    from kube_noob.audit.rules import DANGEROUS_CAPS
+
+    sc = {
+        "procMount": "Unmasked",
+        "capabilities": {"drop": ["ALL"], "add": ["NET_RAW", "SYS_RAWIO", "SYS_BOOT", "MAC_ADMIN"]},
+    }
+    graph = _reach(
+        _web(
+            securityContext={"windowsOptions": {"hostProcess": True}},
+            containers=[{"name": "c", "image": "i", "securityContext": sc}],
+        ),
+        "deployment/web",
+        "shop",
+    )
+    names = {n["label"] for n in graph["nodes"] if n["type"] == "capability"}
+    assert "unmasked /proc: host kernel interfaces (node)" in names
+    assert "dangerous capabilities ['MAC_ADMIN', 'NET_RAW', 'SYS_BOOT', 'SYS_RAWIO'] (node)" in names
+    assert "Windows HostProcess pod: privileged access to the host (node)" in names
+    container = _reach(
+        _web(containers=[{"name": "c", "image": "i", "securityContext": {"windowsOptions": {"hostProcess": True}}}]),
+        "deployment/web",
+        "shop",
+    )
+    assert _leg(container, "node")["status"] == "reached"
+    # One list: every capability the audit calls dangerous is counted here.
+    for cap in sorted(DANGEROUS_CAPS):
+        one = _reach(
+            _web(containers=[{"name": "c", "image": "i", "securityContext": {"capabilities": {"add": [cap]}}}]),
+            "deployment/web",
+            "shop",
+        )
+        assert _leg(one, "node")["status"] == "reached", cap
+    # hostPort is an exposure, not an escape, and the `none` detail lists what was checked rather than implying all.
+    port = _reach(
+        _web(containers=[{"name": "c", "image": "i", "ports": [{"containerPort": 80, "hostPort": 80}]}]),
+        "deployment/web",
+        "shop",
+    )
+    assert _leg(port, "node")["status"] == "none"
+    detail = _leg(port, "node")["detail"]
+    assert "procMount Unmasked" in detail and "hostProcess" in detail and "MAC_ADMIN" in detail
+    assert any("hostPort is not a node escape" in x for x in port["limitations"])
+    # Paths are what they resolve to, and an unnamed KServe `model:` container is named by its field.
+    etc = _reach(_web(volumes=[{"name": "h", "hostPath": {"path": "/etc/../"}}]), "deployment/web", "shop")
+    assert any(n["label"] == "host path /etc/../: node takeover (node)" and n["weight"] == 9 for n in etc["nodes"])
+    isvc = {
+        "apiVersion": "serving.kserve.io/v1beta1",
+        "kind": "InferenceService",
+        "metadata": {"name": "llm", "namespace": "ml"},
+        "spec": {"predictor": {"model": {"modelFormat": {"name": "x"}, "securityContext": {"privileged": True}}}},
+    }
+    model = _reach([isvc], "isvc/llm", "ml")
+    assert "container model securityContext.privileged=true" in json.dumps(
+        model
+    ) and "container None" not in json.dumps(model)
+
+
+def test_the_documented_escalation_rights_are_ranked() -> None:
+    """Defect 6, first half: rights the Kubernetes RBAC good-practices and authorization pages name as escalation
+    paths read `rbac none`. Each one is verified there and pinned in attack_paths._api_capabilities."""
+    cases = {
+        "mint tokens for its ServiceAccounts (serviceaccounts/token create)": (
+            [{"apiGroups": [""], "resources": ["serviceaccounts/token"], "verbs": ["create"]}],
+            "Role",
+        ),
+        "exec into pods": ([{"apiGroups": [""], "resources": ["pods/exec"], "verbs": ["get"]}], "Role"),
+        "add containers to running pods (pods/ephemeralcontainers)": (
+            [{"apiGroups": [""], "resources": ["pods/ephemeralcontainers"], "verbs": ["patch"]}],
+            "Role",
+        ),
+        "mint long-lived ServiceAccount tokens (create a service-account-token Secret)": (
+            [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]}],
+            "Role",
+        ),
+        "control admission webhooks (read and change every admitted object)": (
+            [
+                {
+                    "apiGroups": ["admissionregistration.k8s.io"],
+                    "resources": ["mutatingwebhookconfigurations"],
+                    "verbs": ["create"],
+                }
+            ],
+            "ClusterRole",
+        ),
+        "create PersistentVolumes (a hostPath on a node)": (
+            [{"apiGroups": [""], "resources": ["persistentvolumes"], "verbs": ["create"]}],
+            "ClusterRole",
+        ),
+        "issue client certificates (create and approve CertificateSigningRequests)": (
+            [
+                {
+                    "apiGroups": ["certificates.k8s.io"],
+                    "resources": ["certificatesigningrequests"],
+                    "verbs": ["create"],
+                },
+                {
+                    "apiGroups": ["certificates.k8s.io"],
+                    "resources": ["certificatesigningrequests/approval"],
+                    "verbs": ["update"],
+                },
+            ],
+            "ClusterRole",
+        ),
+    }
+    for name, (rules, kind) in cases.items():
+        graph = _reach([*_web(), *_bound(rules, kind=kind)], "deployment/web", "shop")
+        caps = {n["label"].rsplit(" (", 1)[0] for n in graph["nodes"] if n["type"] == "capability"}
+        assert name in caps, (name, caps)
+        assert _leg(graph, "rbac")["status"] == "reached", name
+
+
+def test_rights_the_model_does_not_rank_are_not_determined_not_none() -> None:
+    """Defect 6, second half: a bound rule that matched no capability made the leg `none`, complete. Unclassified is
+    an unknown, named and counted; a plain read is known and stays quiet."""
+    rules = [
+        {"apiGroups": [""], "resources": ["nodes"], "verbs": ["patch"]},
+        {"apiGroups": [""], "resources": ["secrets"], "verbs": ["update"]},
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]},
+    ]
+    files = _reach([*_web(), *_bound(rules, kind="ClusterRole")], "deployment/web", "shop")
+    assert _leg(files, "rbac")["status"] == "not determined"
+    graph = _reach([*_web(), *_bound(rules, kind="ClusterRole")], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(graph, "rbac")["status"] == "not determined" and graph["complete"] is False
+    reason = next(r for r in _undetermined(graph) if "not classify" in r)
+    assert reason.startswith("2 bound rule(s)")
+    assert (
+        "ClusterRole/r rules[0] (patch on nodes)" in reason and "ClusterRole/r rules[1] (update on secrets)" in reason
+    )
+    assert "configmaps" not in reason
+    reads = _reach([*_web(), *_bound(rules[2:])], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(reads, "rbac")["status"] == "none" and reads["complete"] is True
+    many = [{"apiGroups": ["x.io"], "resources": [f"r{i}"], "verbs": ["create"]} for i in range(15)]
+    capped = _reach([*_web(), *_bound(many)], "deployment/web", "shop")
+    assert any(r.startswith("15 bound rule(s)") and "and 5 more" in r for r in _undetermined(capped))
+
+
+def test_creating_workloads_or_impersonating_reaches_the_secrets_of_its_scope() -> None:
+    """Defect 6: `create pods` said `secrets none` beside "run as any ServiceAccount of the namespace"; a pod it
+    creates mounts any Secret there (Kubernetes authorization, "Escalation paths")."""
+    pods = _reach(
+        [*_web(), *_bound([{"apiGroups": [""], "resources": ["pods"], "verbs": ["create"]}])], "deployment/web", "shop"
+    )
+    assert _leg(pods, "secrets")["status"] == "reached"
+    assert "secrets:namespace/shop" in {e["to"] for e in _edges(pods, "can read")}
+    imp = _reach(
+        [
+            *_web(),
+            *_bound(
+                [{"apiGroups": [""], "resources": ["users", "groups"], "verbs": ["impersonate"]}], kind="ClusterRole"
+            ),
+        ],
+        "deployment/web",
+        "shop",
+    )
+    assert "secrets:cluster" in {e["to"] for e in _edges(imp, "can read")}
+
+
+def test_limitations_reach_the_text_and_the_diagram_and_files_are_never_complete(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Defect 7: the binding that grants is not in the files; text said `rbac none`, exit 0 under --require-complete,
+    and the Mermaid was one edge with no word that the files cannot show what they leave out."""
+    f = tmp_path / "base.yaml"
+    f.write_text(yaml.safe_dump_all(_web()), encoding="utf-8")
+    argv = ["posture", "reach", "deployment/web", "-n", "shop", "-f", str(f)]
+    assert main([*argv, "--require-complete"]) == 5
+    text = capsys.readouterr().out
+    assert "rbac      not determined" in text and "one outside them cannot be ruled out" in text
+    assert "limitation: File input: a set of files cannot show the bindings" in text
+    assert main(["--format", "mermaid", *argv]) == 0
+    diagram = capsys.readouterr().out
+    assert "File input: a set of files cannot show the bindings" in diagram and "not determined: " in diagram
+    assert re.search(r"class t0(,t\d+)* note", diagram)
+    # Asserting the bundle is whole turns the same absence into an answer.
+    assert main([*argv, "--whole-bundle", "--require-complete"]) == 0
+    assert "rbac      none" in capsys.readouterr().out
+
+
+def test_the_built_in_aggregated_roles_honour_aggregate_to_labels_in_the_bundle() -> None:
+    """Defect 8: a ClusterRole labelled aggregate-to-view that reads Secrets, bound through `view`, read `rbac none`;
+    and the stand-in for a built-in role was presented as a determined answer."""
+    extra = _role(
+        "ClusterRole", "extra-view", [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["get", "list", "watch"]}]
+    )
+    extra["metadata"]["labels"] = {"rbac.authorization.k8s.io/aggregate-to-view": "true"}
+    view = _binding("RoleBinding", "v", "ClusterRole", "view", [WEB])
+    graph = _reach([*_web(), extra, view], "deployment/web", "shop")
+    assert _leg(graph, "secrets")["status"] == "reached"
+    assert any(
+        "ClusterRole/view is not in the input" in r and "1 in the input counted (ClusterRole/extra-view)" in r
+        for r in _undetermined(graph)
+    )
+    plain = _reach([*_web(), view], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(plain, "rbac")["status"] == "not determined", "a stand-in for an aggregated role is not an answer"
+
+
+def test_an_aggregated_role_merges_its_own_rules_and_resolves_chains_whatever_the_label_names() -> None:
+    """Defect 16: own rules plus a matching source dropped the source; a chain top <- mid <- leaf was found or lost
+    depending on how its label names sorted."""
+    agg = _role("ClusterRole", "agg", [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]}])
+    agg["aggregationRule"] = {"clusterRoleSelectors": [{"matchLabels": {"agg": "true"}}]}
+    src = _role("ClusterRole", "src", SECRET_READER)
+    src["metadata"]["labels"] = {"agg": "true"}
+    merged = _reach(
+        [*_web(), agg, src, _binding("ClusterRoleBinding", "v", "ClusterRole", "agg", [WEB])], "deployment/web", "shop"
+    )
+    assert _leg(merged, "secrets")["status"] == "reached"
+    assert not any("only the ones in the input" in r for r in _undetermined(merged))
+    for top_label, mid_label in (("to-top", "to-mid"), ("a-to-top", "z-to-mid"), ("z-to-top", "a-to-mid")):
+        top = _role("ClusterRole", "top", [])
+        top["aggregationRule"] = {"clusterRoleSelectors": [{"matchLabels": {top_label: "true"}}]}
+        mid = _role("ClusterRole", "mid", [])
+        mid["metadata"]["labels"] = {top_label: "true"}
+        mid["aggregationRule"] = {"clusterRoleSelectors": [{"matchLabels": {mid_label: "true"}}]}
+        leaf = _role("ClusterRole", "leaf", SECRET_READER)
+        leaf["metadata"]["labels"] = {mid_label: "true"}
+        chain = _reach(
+            [*_web(), top, mid, leaf, _binding("ClusterRoleBinding", "v", "ClusterRole", "top", [WEB])],
+            "deployment/web",
+            "shop",
+        )
+        assert _leg(chain, "secrets")["status"] == "reached", top_label
+        assert any("2 in the input counted (ClusterRole/leaf, ClusterRole/mid)" in r for r in _undetermined(chain)), (
+            top_label
+        )
+
+
+def test_exposure_is_a_leg_and_a_refused_exposure_read_is_not_determined() -> None:
+    """Defect 9: with Services, Routes and Ingresses refused, the summary said "not reached by any exposure", complete;
+    and a refused Deployments list gave "no Deployment named web" with no word that the list was refused."""
+    docs = [*_web(), *_bound(SECRET_READER)]
+    refused = br.reach(
+        ap.collect_live(FakeBackend(docs, forbidden={"services", "routes", "ingresses"}), []),
+        "deployment/web",
+        "shop",
+        live=True,
+    )
+    assert _leg(refused, "exposure")["status"] == "not determined" and refused["complete"] is False
+    assert any(r.startswith("services: services is forbidden") for r in _undetermined(refused))
+    clean = br.reach(ap.collect_live(FakeBackend(docs), []), "deployment/web", "shop", live=True)
+    assert _leg(clean, "exposure")["status"] == "none" and clean["complete"] is True
+    with pytest.raises(br.ReachError, match=re.escape("that list was not read (deployments: deployments is forbidden")):
+        br.reach(ap.collect_live(FakeBackend(docs, forbidden={"deployments"}), []), "deployment/web", "shop", live=True)
+    with pytest.raises(br.ReachError, match=re.escape("namespace shop was not read (read: zzz)")):
+        br.reach(
+            ap.collect_live(FakeBackend(docs), ["zzz"]), "deployment/web", "shop", live=True, namespaces_read=["zzz"]
+        )
+
+
+def test_malformed_rbac_shapes_and_list_kinds_are_read_or_reported_never_nothing() -> None:
+    """Defect 10: `rules` as a mapping, `subjects` as a mapping and `verbs: "*"` read as no rights; a typed
+    ClusterRoleBindingList was dropped and the document then said "no ClusterRoleBinding is in the input"."""
+    rules_map = _role("Role", "r", [])
+    rules_map["rules"] = {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]}
+    a = _reach([*_web(), rules_map, _binding("RoleBinding", "v", "Role", "r", [WEB])], "deployment/web", "shop")
+    assert any("rules is a dict, not a list" in r for r in _undetermined(a))
+    subj = _binding("ClusterRoleBinding", "v", "ClusterRole", "cluster-admin", [])
+    subj["subjects"] = dict(WEB)
+    b = _reach([*_web(), subj], "deployment/web", "shop")
+    assert any("subjects is not a list" in r for r in _undetermined(b))
+    assert "no binding in these files" not in _leg(b, "rbac")["detail"]
+    scalar = _reach(
+        [*_web(), *_bound([{"apiGroups": "*", "resources": "*", "verbs": "*"}], kind="ClusterRole")],
+        "deployment/web",
+        "shop",
+    )
+    assert any("rules[0] apiGroups, resources, verbs are not a list" in r for r in _undetermined(scalar))
+    typed = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRoleBindingList",
+        "items": [
+            {"metadata": {"name": "v"}, "subjects": [WEB], "roleRef": {"kind": "ClusterRole", "name": "cluster-admin"}}
+        ],
+    }
+    listed = _reach([*_web()[:2], typed], "deployment/web", "shop")
+    assert "full control (cluster)" in {n["label"] for n in listed["nodes"]}
+    assert not any("no ClusterRoleBinding is in the input" in r for r in _undetermined(listed))
+
+
+def test_the_rbac_leg_names_its_reason_when_the_gap_hangs_from_a_binding() -> None:
+    """Defect 11: a missing Role printed `rbac     not determined` and nothing after it."""
+    graph = _reach([*_web(), _binding("RoleBinding", "x", "Role", "gone", [WEB])], "deployment/web", "shop")
+    assert _leg(graph, "rbac")["detail"] == "Role/shop/gone is not in the input"
+
+
+def test_a_path_step_names_the_namespace_of_the_grant() -> None:
+    """Defect 12: a RoleBinding in `other` gave a path ending `(shop)`; the same document's graph said `(other)`."""
+    svc = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "web", "namespace": "shop"},
+        "spec": {"type": "LoadBalancer", "selector": {"app": "web"}},
+    }
+    docs = [*_web(), svc, *_bound([{"apiGroups": [""], "resources": ["secrets"], "verbs": ["list"]}], ns="other")]
+    scan = ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs)))
+    assert scan["paths"][0]["summary"].endswith(f"{READ_SECRETS} (other)")
+    graph = _reach(docs, "deployment/web", "shop")
+    assert graph["paths"][0]["steps"][-1]["to"] in {n["label"] for n in graph["nodes"]}
+
+
+def test_scan_and_reach_print_the_same_evidence_and_the_scan_is_stable_under_shuffle() -> None:
+    """Defect 13: two equal proofs of full control; the scan named one and reach the other, and the scan itself gave
+    several outputs for one input in shuffled order."""
+    svc = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "web", "namespace": "shop"},
+        "spec": {"type": "LoadBalancer", "selector": {"app": "web"}},
+    }
+    full = [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["*"]}]
+    docs = [
+        *_web(),
+        svc,
+        _role("ClusterRole", "zz", full),
+        _binding("ClusterRoleBinding", "zz-b", "ClusterRole", "zz", [WEB]),
+        _role("ClusterRole", "aa", full),
+        _binding(
+            "ClusterRoleBinding", "aa-b", "ClusterRole", "aa", [{"kind": "Group", "name": "system:authenticated"}]
+        ),
+    ]
+    scan = ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs)))
+    graph = _reach(docs, "deployment/web", "shop")
+    assert scan["paths"][0]["steps"][-1]["evidence"] == graph["paths"][0]["steps"][-1]["evidence"]
+    outputs = set()
+    rng = random.Random(13)
+    for _ in range(20):
+        shuffled = copy.deepcopy(docs)
+        rng.shuffle(shuffled)
+        outputs.add(json.dumps(ap.scan(ap.Inventory.from_documents(shuffled))))
+    assert len(outputs) == 1
+
+
+def test_a_newline_in_input_cannot_forge_a_row_in_either_text_view(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Defect 14: a hostPath carrying newlines printed a forged `node     none ...` row."""
+    forged = "/data\n\n  node     none            no privileged container\n\x1b[2K"
+    f = tmp_path / "inj.yaml"
+    exposed = _exposed("web", volumes=[{"name": "v", "hostPath": {"path": forged}}])
+    f.write_text(yaml.safe_dump_all([*exposed, _sa("default", "shop")]), encoding="utf-8")
+    assert main(["posture", "reach", "deployment/web", "-n", "shop", "-f", str(f)]) == 0
+    reach_text = capsys.readouterr().out
+    assert main(["posture", "scan", "-f", str(f)]) == 0
+    scan_text = capsys.readouterr().out
+    for text in (reach_text, scan_text):
+        assert not any(line.lstrip().startswith("node     none") for line in text.splitlines()), text
+        assert "/data node none" in text
+
+
+def test_text_legs_name_their_component() -> None:
+    """Defect 15: an InferenceService printed two rows per leg with no word of which component each was."""
+    isvc = {
+        "apiVersion": "serving.kserve.io/v1beta1",
+        "kind": "InferenceService",
+        "metadata": {"name": "llm", "namespace": "ml"},
+        "spec": {
+            "predictor": {"containers": [{"name": "p", "image": "i", "securityContext": {"privileged": True}}]},
+            "transformer": {"containers": [{"name": "t", "image": "i"}]},
+        },
+    }
+    text = br.render_text(_reach([isvc], "isvc/llm", "ml"))
+    assert "  [InferenceService/ml/llm[predictor]]" in text and "  [InferenceService/ml/llm[transformer]]" in text
+
+
+def test_the_mcp_result_is_bounded_in_bytes_and_says_what_it_withheld() -> None:
+    """Defect 17: 200 bindings with 2,300-character names returned 1.67 MB of JSON to an MCP caller."""
+    long = "n" * 2300
+    parts = [*_web()] + [
+        _binding(
+            "RoleBinding",
+            f"{long}{i}",
+            "Role",
+            f"{long}{i}",
+            [{"kind": "Group", "name": "system:authenticated"}],
+            ns=f"ns{i}",
+        )
+        for i in range(200)
+    ]
+    kit = tk.Toolkit(load_settings())
+    out = kit.posture_reach(
+        tk.PostureReachIn(
+            manifests=yaml.safe_dump_all(parts), workload="deployment/web", namespace="shop", mermaid=True
+        )
+    )
+    assert len(json.dumps(out)) <= 96_000, "1.67 MB before"
+    assert br.MAX_BYTES == 96_000
+    t = out["truncated"]
+    assert t["stringsClipped"] > 0 and t["notDeterminedWithheld"] > 0 and t["maxBytes"] == br.MAX_BYTES
+    assert "withheld" in out["summary"] and "withheld" in out["mermaid"]
+    jsonschema.validate(
+        {k: v for k, v in out.items() if k != "mermaid"}, br.SCHEMA, cls=jsonschema.Draft202012Validator
+    )
+
+
+def test_the_deprecated_service_account_field_is_named_as_it_is_written() -> None:
+    """Defect 17: `spec.serviceAccount: adm` was reported as `serviceAccountName=adm`, a field not in the object."""
+    docs = [*_web(), _sa("adm")]
+    docs[0]["spec"]["template"]["spec"] = {"serviceAccount": "adm", "containers": [{"name": "c", "image": "i"}]}
+    edge = _edges(_reach(docs, "deployment/web", "shop"), "uses token of")[0]
+    assert edge["evidence"]["field"] == "spec.template.spec.serviceAccount"
+    assert edge["evidence"]["text"].startswith("spec.serviceAccount=adm;")
