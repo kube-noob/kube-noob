@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kube_noob.config import Settings
+from kube_noob.debug.cluster import list_items
 from kube_noob.errors import ClusterAccessError, ConfigError
 from kube_noob.incidents import IncidentLedger, Observation, observe, what_changed
 
@@ -69,14 +70,14 @@ class Watcher:
             return
         self.version = info.get("openshift")
         if self.platform is None:
-            self.platform = "openshift" if info.get("openshift") else "kubernetes"
+            self.platform = info.get("platform")  # None when ClusterVersion could not be read (G279)
 
     def snapshot(self, namespace: str) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
         snap: dict[str, list[dict[str, Any]]] = {}
         errors: list[str] = []
         for resource in RESOURCES:
             try:
-                snap[resource] = list(self.backend.get(resource, namespace=namespace).get("items") or [])
+                snap[resource] = list(list_items(self.backend.get(resource, namespace=namespace), resource))
             except ClusterAccessError as exc:
                 snap[resource] = []
                 errors.append(f"{namespace}/{resource}: {exc}")

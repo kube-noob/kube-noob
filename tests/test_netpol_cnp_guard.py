@@ -24,6 +24,16 @@ from typing import Any
 
 from kube_noob.debug.netpol import Inventory, check_reachability
 
+
+def _not_found(plural: str, namespace: str | None = None, name: str | None = None) -> str:
+    """What the in-cluster backend writes for a 404 on this resource's own path (debug/backends.py). A bare "the
+    server could not find the requested resource" or "not there" is a read that failed, not an absent API or
+    object (G279), so a stub that means "absent" says it in a backend's own words."""
+    from kube_noob.debug.cluster import ALLOWED_RESOURCES
+
+    return f"Not found: GET {ALLOWED_RESOURCES[plural].path(namespace, name)}"
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 _CNP = """
@@ -168,13 +178,13 @@ def test_the_live_cluster_check_reads_clusternetworkpolicies_too() -> None:
                 return {"items": [yaml.safe_load(_CNP)]}
             if plural in {"ciliumclusterwidenetworkpolicies", "globalnetworkpolicies"}:
                 raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(
-                    "the server could not find the requested resource"
+                    _not_found(plural, namespace, name)
                 )
             if plural in {"adminnetworkpolicies", "baselineadminnetworkpolicies", "networkpolicies"}:
                 return {"items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"team": name}}}
-            raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError("not there")
+            raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "web/frontend", "shop/payments")
     assert reads.count("clusternetworkpolicies") == 1, "read once, cluster-scoped, not per namespace"
@@ -198,12 +208,12 @@ def test_a_cluster_without_the_current_api_is_not_an_error() -> None:
                 "ciliumclusterwidenetworkpolicies",
                 "globalnetworkpolicies",
             }:
-                raise ClusterAccessError("the server could not find the requested resource")
+                raise ClusterAccessError(_not_found(plural, namespace, name))
             if plural in {"adminnetworkpolicies", "baselineadminnetworkpolicies", "networkpolicies"}:
                 return {"items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {}}}
-            raise ClusterAccessError("not there")
+            raise ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "web/frontend", "shop/payments")
     assert any("ClusterNetworkPolicy" in n for n in inv.notes), f"no note explaining the gap: {inv.notes}"

@@ -646,6 +646,7 @@ def load(path: Path) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     """Objects for a live snapshot through the read-only backend (never Secrets), and what could not be read."""
+    from kube_noob.debug.cluster import list_items
     from kube_noob.errors import KubeNoobError
 
     objects: list[dict[str, Any]] = []
@@ -656,11 +657,11 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
         scopes: list[str | None] = [None] if cluster or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                data = backend.get(resource, namespace=ns)
+                items = list_items(backend.get(resource, namespace=ns), resource)
             except KubeNoobError as exc:
                 not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue
-            for item in data.get("items") or [] if isinstance(data, dict) else []:
+            for item in items:
                 if isinstance(item, dict):
                     objects.append({**item, "kind": kind})
     if namespaces:

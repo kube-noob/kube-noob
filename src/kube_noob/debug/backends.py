@@ -35,6 +35,28 @@ from kube_noob.errors import ClusterAccessError
 from kube_noob.net import USER_AGENT
 
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+# The lines kubectl and oc write for their own failure (kubectl/pkg/cmd/util/helpers.go v1.35.0: checkErr's
+# "error: ", StandardErrorMessage's "Error from server" and "Unable to connect to the server").
+_ERROR_LINES = ("error: ", "Error from server", "Unable to connect to the server")
+_KLOG_PREFIX = re.compile(r"^[EWI]\d{4} [\d:.]+\s+\d+ [\w.]+:\d+\] ")
+
+
+def _stderr_for_message(stderr: str) -> str:
+    """kubectl's own error line first, then each distinct warning once. kubectl logs one memcache warning per
+    aggregated API it could not discover, several times over, BEFORE its error; the message keeps 800 characters,
+    so on a cluster whose metrics API was down the line that said what failed was the part cut off (G279)."""
+    lines = [ln.strip() for ln in stderr.strip().splitlines() if ln.strip()]
+    first = [ln for ln in lines if ln.startswith(_ERROR_LINES)]
+    rest: list[str] = []
+    seen: set[str] = set()
+    for ln in lines:
+        if ln.startswith(_ERROR_LINES):
+            continue
+        key = _KLOG_PREFIX.sub("", ln)
+        if key not in seen:
+            seen.add(key)
+            rest.append(key)
+    return "\n".join(first + rest)
 
 
 def cluster_client(base_url: str, token: str, ca_file: str, timeout: float) -> httpx.Client:
@@ -74,7 +96,7 @@ class KubectlBackend:
             raise ClusterAccessError(f"{self.name} timed out after {self.timeout}s") from exc
         if proc.returncode != 0:
             raise ClusterAccessError(
-                f"{self.name} {' '.join(args[:3])} failed: {redact_text(proc.stderr.strip())[:800]}"
+                f"{self.name} {' '.join(args[:3])} failed: {redact_text(_stderr_for_message(proc.stderr))[:800]}"
             )
         return proc.stdout
 

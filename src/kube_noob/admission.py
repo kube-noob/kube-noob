@@ -334,10 +334,12 @@ class Lookups:
 
     def _list(self, resource: str, namespace: str | None) -> list[dict[str, Any]]:
         self.reads += 1
-        data = self.backend.get(resource, namespace=namespace)
-        items = data.get("items") if isinstance(data, dict) else None
+        from kube_noob.debug.cluster import list_items
+
+        # A response without an items list raises, so the caller keeps its old copy instead of an empty one (G279)
+        items = list_items(self.backend.get(resource, namespace=namespace), resource)
         kind = CONTEXT_KINDS[resource]
-        return [{**i, "kind": kind} for i in items or [] if isinstance(i, dict)][:500]
+        return [{**i, "kind": kind} for i in items if isinstance(i, dict)][:500]
 
     def refresh(self) -> None:
         with self._lock:
