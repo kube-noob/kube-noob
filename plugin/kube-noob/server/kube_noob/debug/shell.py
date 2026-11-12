@@ -194,8 +194,6 @@ DEPLOYERS: dict[str, frozenset[str]] = {
     "kubeadm": frozenset({"version", "help", "config"}),
     "kapp": frozenset({"inspect", "list", "ls", "version", "help", "logs"}),
     "kpt": frozenset({"fn", "pkg", "help", "version"}),
-    "kubectx": frozenset(),
-    "kubens": frozenset(),
     "crossplane": frozenset({"version", "help", "beta"}),
     "eksctl": frozenset({"get", "version", "info", "help", "utils"}),
     "ansible-playbook": frozenset({"--check", "--syntax-check", "--list-tasks", "--list-hosts"}),
@@ -211,6 +209,16 @@ _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 _HEREDOC = re.compile(r"^(-?)\s*(['\"]?)([A-Za-z0-9_.-]+)\2")
 #: Where an output redirection writes nothing a later command could read as a manifest.
 _NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"})
+# Lexer patterns, matched at a position (never on a slice, which copied the rest of the line for every token) and
+# each free of overlapping quantifiers, so a crafted line costs time linear in its length.
+_REDIR_OP = re.compile(r"\d*(<<<|<<-|<<|<>|>>|>&|<&|>\||<|>)")
+_DUP_FD = re.compile(r"\d+(?![\w./])|-")
+_BRACE_LIST = re.compile(r"\{[^}\s,]*,[^}\s]*\}")  # the first part stops at the first comma: no backtracking
+_HEX2 = re.compile(r"[0-9A-Fa-f]{1,2}")
+_OCT3 = re.compile(r"[0-7]{1,3}")
+_HEX8 = re.compile(r"[0-9A-Fa-f]{1,8}")
+_PARAM = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])")
+_WORD_END = re.compile(r"[\s|;&()<>]")
 _ANSI_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "e": "\x1b", "E": "\x1b"}
 
 
@@ -429,7 +437,7 @@ class _Lexer:
                 out.append(_Tok("op", ch))
                 self.i += 1
                 continue
-            m = re.match(r"\d*(<<<|<<-|<<|<>|>>|>&|<&|>\||<|>)", s[self.i :])
+            m = _REDIR_OP.match(s, self.i)
             if (
                 m
                 and (ch in "<>" or m.group(0)[: -len(m.group(1))].isdigit())
@@ -456,7 +464,7 @@ class _Lexer:
     def _redirect_target(self, out: list[_Tok], op: str) -> None:
         while self.i < len(self.s) and self.s[self.i] in " \t":
             self.i += 1
-        fd = re.match(r"\d+(?![\w./])|-", self.s[self.i :]) if op in {">&", "<&"} else None
+        fd = _DUP_FD.match(self.s, self.i) if op in {">&", "<&"} else None
         if fd is not None:
             self.i += len(fd.group(0))
             return
@@ -573,7 +581,7 @@ class _Lexer:
                 continue
             if ch in "*?" or (ch == "[" and "]" in s[self.i + 1 : self._word_end()]):
                 glob = True  # a glob: the words are the matching file names, known only on that file system
-            if ch == "{" and re.match(r"\{[^}\s]*,[^}\s]*\}", s[self.i :]):
+            if ch == "{" and _BRACE_LIST.match(s, self.i):
                 dynamic = True  # a brace expansion makes several words
             if ch == "~" and not buf:
                 dynamic = True
@@ -587,7 +595,7 @@ class _Lexer:
         return Word(text, dynamic, s[raw_start : self.i], glob)
 
     def _word_end(self) -> int:
-        m = re.compile(r"[\s|;&()<>]").search(self.s, self.i)
+        m = _WORD_END.search(self.s, self.i)
         return m.start() if m else len(self.s)
 
     def _ansi_c(self) -> str | None:
@@ -603,16 +611,16 @@ class _Lexer:
                     out.append(_ANSI_ESCAPES[n])
                     i += 2
                 elif n == "x":
-                    m = re.match(r"[0-9A-Fa-f]{1,2}", s[i + 2 :])
+                    m = _HEX2.match(s, i + 2)
                     out.append(chr(int(m.group(0), 16)) if m else "x")
                     i += 2 + (len(m.group(0)) if m else 0)
                 elif n in "01234567":
-                    m = re.match(r"[0-7]{1,3}", s[i + 1 :])
+                    m = _OCT3.match(s, i + 1)
                     digits = m.group(0) if m else "0"
                     out.append(chr(int(digits, 8)))
                     i += 1 + len(digits)
                 elif n in {"u", "U"}:
-                    m = re.match(r"[0-9A-Fa-f]{1,8}", s[i + 2 :])
+                    m = _HEX8.match(s, i + 2)
                     out.append(chr(min(int(m.group(0), 16), 0x10FFFF)) if m else n)
                     i += 2 + (len(m.group(0)) if m else 0)
                 else:
@@ -666,7 +674,7 @@ class _Lexer:
             buf.append(s[self.i : end + 1])
             self.i = end + 1
             return True
-        m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])", s[self.i :])
+        m = _PARAM.match(s, self.i)
         if m:
             buf.append(m.group(0))
             self.i += len(m.group(0))
@@ -721,11 +729,23 @@ def _parse_into(text: str, line: Line, depth: int, read_script: ScriptReader | N
     producer: Command | None = None
     current: list[_Tok] = []
     stack: list[str | None] = []
-    for tok in [*toks, _Tok("op", ";")]:
+    seq = [*toks, _Tok("op", ";")]
+    for n, tok in enumerate(seq):
         if tok.kind == "op":
+            if (
+                tok.value == "("
+                and len(current) == 1
+                and current[0].kind == "word"
+                and n + 1 < len(seq)
+                and seq[n + 1].kind == "op"
+                and seq[n + 1].value == ")"
+            ):
+                current = []  # `NAME()`: a function definition, not a run of NAME; its body is read as it comes
+                seq[n + 1] = _Tok("op", ";")
+                continue
             if current:
                 before = len(line.commands)
-                _simple(current, line, depth, read_script, piped)
+                _simple(current, line, depth, read_script, piped, producer if piped else None)
                 made = line.commands[before:]
                 if piped and made:
                     made[0].source = producer
@@ -747,9 +767,16 @@ def _parse_into(text: str, line: Line, depth: int, read_script: ScriptReader | N
         line.cwd = saved
 
 
-def _simple(toks: list[_Tok], line: Line, depth: int, read_script: ScriptReader | None, piped: bool) -> None:
+def _simple(
+    toks: list[_Tok],
+    line: Line,
+    depth: int,
+    read_script: ScriptReader | None,
+    piped: bool,
+    producer: Command | None = None,
+) -> None:
     words = [t.word for t in toks if t.kind == "word" and t.word is not None]
-    cmd = Command(words=list(words), stdin_kind="pipe" if piped else "", cwd=line.cwd)
+    cmd = Command(words=list(words), stdin_kind="pipe" if piped else "", cwd=line.cwd, source=producer)
     for t in toks:
         if t.kind != "redir" or t.word is None:
             continue
@@ -785,7 +812,11 @@ def _assignments(cmd: Command, line: Line) -> None:
 
 
 def _skip_options(cmd: Command, start: int, with_value: frozenset[str]) -> int:
-    """Index of the first word after the options of the wrapper at cmd.words[start - 1]."""
+    """Index of the first word after the options of the wrapper at cmd.words[start - 1].
+
+    ``with_value`` names the options that take a value, short (`-u`) and long (`--user`). A long option takes its
+    value after `=` or as the next word; a cluster of short options (`-nu admin`, `-Eu admin`, `-uadmin`) takes the
+    next word when its last option needs a value and nothing follows it in the cluster."""
     i = start
     while i < len(cmd.words):
         t = cmd.words[i].text
@@ -793,23 +824,57 @@ def _skip_options(cmd: Command, start: int, with_value: frozenset[str]) -> int:
             return i + 1
         if not t.startswith("-") or t == "-":
             return i
-        i += 2 if (t in with_value) else 1
+        if t.startswith("--"):
+            i += 2 if (t in with_value) else 1
+            continue
+        takes_next = False
+        for j in range(1, len(t)):
+            if "-" + t[j] in with_value:
+                takes_next = j == len(t) - 1  # `-uadmin` carries its value; `-nu` takes the next word
+                break
+        i += 2 if takes_next else 1
     return i
 
 
-# Wrappers that run the rest of their arguments as a command, with the options that take a separate value.
+# Wrappers that run the rest of their arguments as a command, with the options that take a value (sudo(8),
+# doas(1), time(1), nice(1), ionice(1), stdbuf(1), caffeinate(8)).
 _WRAPPERS: dict[str, frozenset[str]] = {
-    "sudo": frozenset({"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R", "-T"}),
+    "sudo": frozenset(
+        {
+            "-u",
+            "-g",
+            "-C",
+            "-h",
+            "-p",
+            "-U",
+            "-r",
+            "-t",
+            "-D",
+            "-R",
+            "-T",
+            "--user",
+            "--group",
+            "--close-from",
+            "--host",
+            "--prompt",
+            "--other-user",
+            "--role",
+            "--type",
+            "--chdir",
+            "--chroot",
+            "--command-timeout",
+        }
+    ),
     "doas": frozenset({"-u", "-C"}),
     "command": frozenset(),
     "builtin": frozenset(),
     "exec": frozenset({"-a"}),
     "nohup": frozenset(),
-    "time": frozenset({"-f", "-o"}),
-    "nice": frozenset({"-n"}),
-    "ionice": frozenset({"-c", "-n", "-p"}),
+    "time": frozenset({"-f", "-o", "--format", "--output"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "-n", "-p", "--class", "--classdata", "--pid"}),
     "setsid": frozenset(),
-    "stdbuf": frozenset({"-i", "-o", "-e"}),
+    "stdbuf": frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
     "unbuffer": frozenset(),
     "chronic": frozenset(),
     "caffeinate": frozenset({"-t", "-w"}),
@@ -836,9 +901,16 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
         while cmd.words and cmd.words[0].text in KEYWORDS and not cmd.words[0].dynamic:
             del cmd.words[0]
         _assignments(cmd, line)
+        if cmd.words and cmd.words[0].text == "--" and not cmd.words[0].dynamic:
+            del cmd.words[0]  # `timeout 30 -- kubectl ...`: the end of a wrapper's options
+            continue
         if not cmd.words:
             return
         first = cmd.words[0]
+        if first.text == "function" and not first.dynamic:
+            # `function f { BODY; }`: the body's commands are read like `f() { BODY; }` (a call can run them).
+            del cmd.words[:2]
+            continue
         if first.text in NON_COMMANDS and not first.dynamic:
             return  # `for x in a b`: the words are a loop's list, not a command
         if first.text in {"export", "declare", "typeset", "local", "readonly"}:
@@ -880,7 +952,9 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             continue
         if tool == "timeout":
             i = _skip_options(cmd, 1, frozenset({"-s", "--signal", "-k", "--kill-after"}))
-            _drop(cmd, i + 1, "timeout")  # and the duration
+            if i < len(cmd.words) and cmd.words[i].text == "--":
+                i += 1
+            _drop(cmd, i + 1, "timeout")  # and the duration (`timeout 30 -- cmd` loses its `--` next round)
             continue
         if tool == "watch":
             i = _skip_options(cmd, 1, frozenset({"-n", "--interval", "-d", "-q"}))
@@ -914,6 +988,10 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             return
         if tool == "find":
             _find(cmd, line, depth, read_script)
+            return
+        if tool in {"fc", "r"} and not (tool == "fc" and any(w.text in {"-l"} for w in cmd.words[1:2])):
+            # `fc -s PREFIX` (and zsh's `r`) runs an earlier command from the shell's history: one verify cannot see.
+            line.opaque.append(f"{_show(tool)} re-runs a command from the shell's history, which verify cannot see")
             return
         if tool in {"cd", "pushd", "popd"}:
             line.commands.append(cmd)
@@ -959,10 +1037,11 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             return
         if tool in INTERPRETERS:
             _interpreter(cmd, line, tool, read_script)
+            _opaque_check(cmd, line, tool, read_script, executor=False, argv=False)
             line.commands.append(cmd)
             return
         if tool in EXECUTORS:
-            _mention_check(cmd, line, tool)
+            _opaque_check(cmd, line, tool, read_script, executor=True)
             line.commands.append(cmd)
             return
         if "/" in first.text:
@@ -976,67 +1055,245 @@ def _unwrap(cmd: Command, line: Line, depth: int, read_script: ScriptReader | No
             elif not first.text.startswith("/"):
                 _script(cmd.words[0:1], cmd, line, depth, read_script, "script")
                 return
+        # Any other program is opaque, not transparent: whatever it is called, a kube command in its arguments or
+        # on its standard input is one it may run (`aws-vault exec prod -- kubectl ...`, `echo '...' | at now`).
+        _opaque_check(cmd, line, tool, read_script, executor=False)
         line.commands.append(cmd)
         return
     line.opaque.append("more than 32 wrappers around one command")
 
 
-_MAKE_RULE = re.compile(r"^([^\s:=#][^:=#]*?)\s*::?(?!=)(.*)\Z")
-_MAKE_FALLBACK = re.compile(
-    r"^(?:\s*-?include\s|\s*sinclude\s|\.DEFAULT\s*:|\.SUFFIXES\s*:|\.[^\s:]+\.[^\s:]+\s*:)", re.M
-)
+#: A Makefile line longer than this is not parsed: the Makefile is unknown and a `make` that reads it is not
+#: determined. (A reviewer's line of 250,000 spaces took a backtracking rule pattern 62 seconds.)
+MAX_MAKE_LINE = 4_096
+MAX_MAKE_INCLUDES = 16
+#: make's options that take a value as the next word (GNU make 4.4, `make --help`); -j and -l take one only when it
+#: is a number.
+_MAKE_VALUE_OPTIONS = frozenset(
+    {"-f", "--file", "--makefile", "-C", "--directory", "-I", "--include-dir", "-o", "--old-file",
+     "--assume-old", "-W", "--what-if", "--new-file", "--assume-new", "-E", "--eval", "-O", "--output-sync",
+     "--jobserver-style", "--debug", "--shuffle"}
+)  # fmt: skip
+
+
+def _make_rule(raw: str) -> tuple[list[str], str] | None:
+    """`targets: prerequisites` (or `::`), without a pattern: the targets and what follows the colon, or None when
+    the line is not a rule (a variable assignment `X := y`, a recipe, a comment). Linear in the line's length."""
+    if not raw or raw[0] in " \t#":
+        return None
+    idx = raw.find(":")
+    if idx <= 0:
+        return None
+    head = raw[:idx]
+    if "=" in head or "#" in head:
+        return None
+    after = raw[idx + 1 :]
+    if after.startswith(":"):
+        after = after[1:]
+    if after.startswith("="):
+        return None  # `X := y`, `X ::= y`
+    return head.split(), after
+
+
+def _make_logical_lines(text: str) -> list[str] | None:
+    """The Makefile's lines with backslash-newline continuations joined, or None when a line is too long to read."""
+    out: list[str] = []
+    pending = ""
+    for physical in text.splitlines()[:20_000]:
+        if len(physical) > MAX_MAKE_LINE or len(pending) > MAX_MAKE_LINE * 4:
+            return None
+        joined = pending + " " + physical.lstrip("\t ") if pending else physical
+        pending = ""
+        if joined.endswith("\\") and not joined.endswith("\\\\"):
+            pending = joined[:-1]
+            continue
+        out.append(joined)
+    if pending:
+        out.append(pending)
+    return out
+
+
+def _make_dir(cwd: str | None, directory: str) -> str | None:
+    """`make -C DIR` relative to the command's directory, or None when it leaves what verify can follow."""
+    if cwd is None:
+        return None
+    if directory.startswith("/"):
+        return posixpath.normpath(directory)
+    joined = posixpath.normpath(posixpath.join(cwd or ".", directory))
+    return "" if joined == "." else joined
 
 
 def _make(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None) -> None:
     """`make TARGET`: the recipe lines of the targets asked for (and the targets they depend on) are shell lines,
-    read like `sh -c`. A recipe built from make variables (`$(KUBECTL) apply`) in a Makefile that names a kube tool
-    is opaque; a Makefile verify cannot read is not followed."""
-    words = [w.text for w in cmd.words[1:]]
-    makefile: str | None = None
+    read like `sh -c`, in the directory make runs in.
+
+    The Makefile is the one make reads: `-f FILE`, `-fFILE`, `--file=FILE`, `--makefile FILE` (several are read in
+    order), `-f -` and `-f /dev/stdin` from standard input, else GNUmakefile, makefile or Makefile, in the directory
+    `-C DIR`/`--directory=DIR` names. `include`, `-include` and `sinclude` are followed inside the tree; a
+    `$(shell ...)` or `!=` outside a recipe runs whenever the Makefile is read, so it is checked too. Inline recipes
+    (`target: ; command`) and backslash-continued lines are read. A recipe built from make variables in a Makefile
+    that names a kube tool (or given a kube tool in a command-line variable) is opaque, as is `--eval`, a Makefile
+    verify cannot read when it was named, and a line longer than MAX_MAKE_LINE."""
+    words = cmd.words[1:]
+    makefiles: list[str] = []
+    directory: str | None = cmd.cwd
     targets: list[str] = []
+    variables: dict[str, str] = {}
+    evals: list[str] = []
     i = 0
     while i < len(words):
-        t = words[i]
-        if t in {"-f", "--file", "--makefile"}:
-            makefile = words[i + 1] if i + 1 < len(words) else None
+        w = words[i]
+        t = w.text
+        nxt = words[i + 1].text if i + 1 < len(words) else None
+        value: str | None
+        if t.startswith("--") and "=" in t:
+            name, value = t.split("=", 1)
+            took = 1
+        elif t in _MAKE_VALUE_OPTIONS:
+            name, value = t, nxt
+            took = 2
+        elif t.startswith("-") and not t.startswith("--") and len(t) > 2 and "-" + t[1] in _MAKE_VALUE_OPTIONS:
+            name, value = "-" + t[1], t[2:]
+            took = 1
+        elif t in {"-j", "-l", "--jobs", "--load-average"} and nxt is not None and nxt.replace(".", "").isdigit():
             i += 2
             continue
-        if t in {"-C", "--directory"} or t.startswith("-C"):
-            line.opaque.append("make -C runs a Makefile in another directory, which verify does not follow")
-            return
-        if t.startswith("-") or "=" in t:
+        elif t.startswith("-"):
             i += 1
             continue
-        targets.append(t)
-        i += 1
-    text = None
-    if read_script is not None:
-        for name in [makefile] if makefile else ["GNUmakefile", "makefile", "Makefile"]:
-            if name:
-                text = read_script(name, cmd.cwd)
-                if text:
-                    break
-    if not text or not _names_kube(text):
+        elif _ASSIGN.match(t):
+            k, v = t.split("=", 1)
+            variables[k.rstrip(":+?")] = v
+            if w.dynamic:
+                line.opaque.append(f"make is given the variable {_show(k)} with a value only known when the line runs")
+                return
+            i += 1
+            continue
+        else:
+            targets.append(t)
+            i += 1
+            continue
+        if value is None:
+            line.opaque.append(f"make {_show(name)} with no value")
+            return
+        if name in {"-f", "--file", "--makefile"}:
+            makefiles.append(value)
+        elif name in {"-C", "--directory"}:
+            directory = _make_dir(directory, value)
+        elif name in {"-E", "--eval"}:
+            evals.append(value)
+        i += took
+    if directory is None:
+        line.opaque.append("make runs in a directory verify could not follow")
         return
+    for e in evals:
+        if _names_kube(e) or "$(" in e:
+            line.opaque.append(f"make --eval adds Makefile text that verify does not run: {_show(e)}")
+            return
+
+    def read(name: str) -> str | None:
+        return read_script(name, directory) if read_script is not None else None
+
+    texts: list[str] = []
+    if makefiles:
+        for name in makefiles:
+            if name in {"-", "/dev/stdin"}:
+                known, text = _stdin_text(cmd, read_script)
+                if not known:
+                    line.opaque.append("make reads its Makefile from standard input, which verify cannot read")
+                    return
+            else:
+                got = read(name)
+                if got is None:
+                    line.opaque.append(f"make reads {_show(name)}, which verify could not read")
+                    return
+                text = got
+            texts.append(text)
+    else:
+        for name in ("GNUmakefile", "makefile", "Makefile"):
+            got = read(name)
+            if got is not None:
+                texts.append(got)
+                break
+        if not texts:
+            if directory != cmd.cwd and (directory.startswith(("/", "..")) or directory == ".."):
+                line.opaque.append(f"make -C {_show(directory)} reads a Makefile outside the working directory")
+            return  # no Makefile here: make stops before it runs anything
+    lines: list[str] = []
+    missing: list[str] = []  # included files not in the tree yet
+    pending = [(t, 0) for t in texts]
+    included = 0
+    while pending:
+        text, level = pending.pop(0)
+        got_lines = _make_logical_lines(text)
+        if got_lines is None:
+            line.opaque.append(f"a Makefile line is longer than {MAX_MAKE_LINE:,} characters; verify did not read it")
+            return
+        for raw in got_lines:
+            stripped = raw.lstrip(" ")
+            word = stripped.split(None, 1)[0] if stripped else ""
+            if word in {"include", "-include", "sinclude"} and not raw.startswith("\t"):
+                for name in stripped.split()[1:]:
+                    if "$" in name:
+                        line.opaque.append(f"make includes {_show(name)}, a name built from make variables")
+                        return
+                    if level >= 3 or included >= MAX_MAKE_INCLUDES:
+                        line.opaque.append("make includes Makefiles more than 3 levels or 16 files deep")
+                        return
+                    got = read(name)
+                    if got is None:
+                        # A missing include in the tree stops make (`include`) or is skipped (`-include`); one
+                        # outside the tree is a file verify cannot see.
+                        if name.startswith(("/", "~")) or posixpath.normpath(name).startswith(".."):
+                            line.opaque.append(f"make includes {_show(name)}, which verify could not read")
+                            return
+                        missing.append(name)
+                        continue
+                    included += 1
+                    pending.append((got, level + 1))
+                continue
+            lines.append(raw)
+    if not any(_names_kube(t) for t in [*texts, *(t for t, _ in pending)]) and not any(
+        _names_kube("\n".join(lines)) or _names_kube(v) for v in [*variables.values(), ""]
+    ):
+        return
+    names_kube_values = [k for k, v in variables.items() if _names_kube(v) or MENTION.search(v)]
     rules: dict[str, tuple[list[str], list[str]]] = {}
     first = ""
     current: str | None = None
-    for raw in text.splitlines()[:5000]:
+    fallback = False
+    for raw in lines:
         if raw.startswith("\t") and current is not None:
             rules[current][1].append(raw[1:].lstrip("@-+ "))
             continue
-        m = _MAKE_RULE.match(raw)
-        if m and not raw.startswith("."):
-            names = m.group(1).split()
+        if not raw.startswith("\t") and ("$(shell" in raw or "${shell" in raw or "!=" in raw) and _names_kube(raw):
+            line.opaque.append(f"the Makefile runs a shell command whenever it is read: {_show(raw)}")
+            return
+        rule = _make_rule(raw)
+        if rule is not None:
+            names, after = rule
+            if raw.startswith(".DEFAULT") or raw.startswith(".SUFFIXES"):
+                fallback = True
+            elif raw.startswith(".") and len(names) == 1 and names[0].count(".") == 2:
+                fallback = True  # an old-fashioned suffix rule `.c.o:`
+            if raw.startswith("."):
+                current = None
+                continue
+            fallback = fallback or any("%" in n for n in names)
             current = names[0] if names else None
+            prerequisites, _, inline = after.partition(";")
             for n in names:
-                rules.setdefault(n, (m.group(2).split(";")[0].split(), []))
+                rules.setdefault(n, (prerequisites.split(), []))
+            if inline.strip() and current is not None:
+                rules[current][1].append(inline.strip().lstrip("@-+ "))
             first = first or (names[0] if names else "")
         elif raw.strip() and not raw.startswith("\t"):
             current = None
-    # A target with no rule runs none of this Makefile's recipes -- make stops, or uses a built-in rule (a compile
-    # or a copy) -- unless a pattern rule, a .DEFAULT rule or an included file could supply one.
-    fallback = any("%" in n for n in rules) or bool(_MAKE_FALLBACK.search(text))
+    rebuilt = [m for m in missing if m in rules or fallback]
+    if rebuilt:
+        # make builds a missing included file with a rule and then reads it: text verify cannot see.
+        line.opaque.append(f"make builds the included {_show(rebuilt[0])} with a rule and then reads it")
+        return
     seen: set[str] = set()
     todo = targets or [first]
     while todo and len(seen) < 50:
@@ -1057,48 +1314,229 @@ def _make(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None
             if "$(" in r or "${" in r:
                 line.opaque.append(f"make target {_show(t)} runs a recipe built from make variables: {_show(r)}")
                 continue
+            saved = line.cwd
+            line.cwd = directory
             _nested(r, cmd, line, depth, read_script, f"make {t}", isolate=True)
+            line.cwd = saved
+    if names_kube_values and not line.opaque:
+        line.opaque.append(f"make is given a kube tool in the variable {_show(names_kube_values[0])}")
+
+
+#: The options of npm, pnpm, yarn and bun that pick the package a script comes from, by tool.
+_PKG_DIR_OPTIONS = {
+    "npm": frozenset({"--prefix", "-C"}),
+    "pnpm": frozenset({"-C", "--dir"}),
+    "yarn": frozenset({"--cwd"}),
+    "bun": frozenset({"--cwd"}),
+}
+_PKG_WORKSPACE_OPTIONS = frozenset({"-w", "--workspace", "--filter", "-F"})
+#: Their subcommands that run a package's program, not a script: executors, held to the opaque check.
+_PKG_EXECUTORS = frozenset({"exec", "x", "dlx"})
 
 
 def _npm(cmd: Command, line: Line, depth: int, read_script: ScriptReader | None, tool: str) -> None:
     """`npm run NAME` (and `npm test`, `yarn NAME`, `pnpm NAME`, `bun run NAME`): the package.json script and its
-    pre/post scripts are shell lines, read like `sh -c`. Install commands read the install lifecycle scripts; the
-    scripts of dependencies are not seen."""
-    words = [w.text for w in cmd.words[1:] if not w.text.startswith("-")]
-    if not words and tool == "yarn":
-        words = ["install"]
-    if not words:
+    pre/post scripts are shell lines, read like `sh -c` in the package's directory, which `--prefix`, `-C`, `--dir`,
+    `--cwd` and `-w`/`--workspace` (a path) choose. Install commands read the install lifecycle scripts; the
+    scripts of dependencies are not seen. `npm exec`, `npm x`, `pnpm dlx` and `yarn dlx` run a package's program,
+    and `yarn NAME`/`pnpm NAME` without such a script runs a binary: those are checked like any opaque program."""
+    words = cmd.words[1:]
+    directory = ""
+    workspace: str | None = None
+    positional: list[str] = []
+    i = 0
+    while i < len(words):
+        t = words[i].text
+        if t == "--":
+            positional.extend(w.text for w in words[i + 1 :])
+            break
+        name, eq, value = t.partition("=") if t.startswith("--") else (t, "", "")
+        if name in _PKG_DIR_OPTIONS.get(tool, frozenset()) or name in _PKG_WORKSPACE_OPTIONS:
+            if not eq:
+                value = words[i + 1].text if i + 1 < len(words) else ""
+                i += 1
+            if name in _PKG_WORKSPACE_OPTIONS:
+                workspace = value
+            else:
+                directory = posixpath.join(directory, value) if directory else value
+            i += 1
+            continue
+        if t.startswith("-") and positional and positional[0] in _PKG_EXECUTORS:
+            positional.append(t)  # an option of the program `exec` runs
+        elif not t.startswith("-"):
+            positional.append(t)
+        i += 1
+    if not positional and tool == "yarn":
+        positional = ["install"]
+    if not positional:
         return
-    sub = words[0]
-    if sub in {"run", "run-script"} and len(words) > 1:
-        names = [words[1]]
+    sub = positional[0]
+    if sub in _PKG_EXECUTORS:
+        inner = Command(words=[Word(p, False, p) for p in positional[1:]], cwd=cmd.cwd)
+        if inner.words:
+            _opaque_check(inner, line, f"{tool} {sub}", read_script, executor=False)
+            _opaque_check(Command(words=[Word(tool, False, tool), *inner.words]), line, tool, None, executor=False)
+        return
+    if sub in {"run", "run-script"} and len(positional) > 1:
+        names = [positional[1]]
     elif sub in {"install", "i", "ci", "add"}:
         names = ["preinstall", "install", "postinstall", "prepare"]
-    elif sub in {"test", "t", "start", "stop", "restart"} or (tool in {"yarn", "pnpm"} and sub not in {"exec", "dlx"}):
+    elif sub in {"test", "t", "start", "stop", "restart"} or tool in {"yarn", "pnpm", "bun"}:
         names = [{"t": "test"}.get(sub, sub)]
     else:
         return
-    text = read_script("package.json", cmd.cwd) if read_script is not None else None
-    if not text:
+    if workspace is not None:
+        directory = posixpath.join(directory, workspace) if directory else workspace
+    pkg_dir = _make_dir(cmd.cwd, directory) if directory else cmd.cwd
+    if pkg_dir is None:
+        line.opaque.append(f"{tool} runs a package in a directory verify could not follow")
+        return
+    text = read_script("package.json", pkg_dir) if read_script is not None else None
+    if text is None:
+        if directory:
+            line.opaque.append(f"{tool} runs scripts of {_show(directory)}/package.json, which verify could not read")
+        elif tool in {"yarn", "pnpm", "bun"} and sub not in {"install", "add", "test"}:
+            _opaque_check(cmd, line, tool, None, executor=False)
         return
     try:
         from kube_noob.sanitize import loads_bounded
 
-        scripts = loads_bounded(text).get("scripts") if _names_kube(text) else None
+        scripts = loads_bounded(text).get("scripts")
     except (ValueError, AttributeError):
-        line.opaque.append("package.json names a kube tool and could not be read as JSON")
+        if _names_kube(text):
+            line.opaque.append("package.json names a kube tool and could not be read as JSON")
         return
     if not isinstance(scripts, dict):
-        return
+        scripts = {}
+    ran = False
     for name in names:
         for key in (f"pre{name}", name, f"post{name}"):
             body = scripts.get(key)
             if isinstance(body, str):
+                ran = True
+                saved = line.cwd
+                line.cwd = pkg_dir
                 _nested(body, cmd, line, depth, read_script, f"{tool} {key}", isolate=True)
+                line.cwd = saved
+    if not ran and tool in {"yarn", "pnpm", "bun"} and sub not in {"install", "add", "run", "test"}:
+        # `yarn NAME` with no such script runs the package binary NAME with the rest of the words.
+        _opaque_check(cmd, line, tool, None, executor=False)
 
 
 def _names_kube(text: str) -> bool:
     return bool(MENTION.search(text) or re.search(r"(?<![\w.-])k\s", text))
+
+
+#: The subcommands of each kube tool, so `pytest -k helm` (helm named as data) is told apart from
+#: `npx kubectl delete ...` (a command). kubectl and oc: `kubectl --help` and `oc --help` (master, 2026-11-12);
+#: helm: `helm --help` (v3); kustomize: `kustomize --help` (v5).
+_KUBECTL_SUBS = frozenset(
+    {
+        "annotate", "api-resources", "api-versions", "apply", "attach", "auth", "autoscale", "certificate",
+        "cluster-info", "completion", "config", "cordon", "cp", "create", "debug", "delete", "describe", "diff",
+        "drain", "edit", "events", "exec", "explain", "expose", "get", "kustomize", "label", "logs", "patch",
+        "plugin", "port-forward", "proxy", "replace", "rollout", "run", "scale", "set", "taint", "top", "uncordon",
+        "version", "wait", "krew", "adm", "new-app", "new-project", "new-build", "project", "projects", "process",
+        "start-build", "rsh", "rsync", "login", "logout", "whoami", "status", "tag", "import-image", "policy",
+        "secrets", "extract", "image", "idle", "observe", "registry", "serviceaccounts", "rollback", "cancel-build",
+        "import", "options",
+    }
+)  # fmt: skip
+_HELM_SUBS = frozenset(
+    {
+        "install", "upgrade", "uninstall", "delete", "rollback", "plugin", "repo", "pull", "push", "package",
+        "dependency", "dep", "registry", "create", "test", "template", "lint", "list", "ls", "status", "history",
+        "get", "show", "search", "env", "version", "verify", "completion",
+    }
+)  # fmt: skip
+_KUSTOMIZE_SUBS = frozenset({"build", "edit", "create", "cfg", "fn", "localize", "version", "help", "completion"})
+_SPLIT_COMMAND_TEXT = re.compile(r"[\s;&|()`'\"{}<>]+")
+
+
+def _kube_tail(tokens: list[str]) -> str | None:
+    """`TOOL SUB` when the tokens hold a kube tool followed by one of its subcommands that is not read-only -- a
+    command another program may run. The tool is recognised by name in any case or version (`KubeCtl`,
+    `kubectl1.30`, `helm3`, `/usr/local/bin/oc`, `nixpkgs#kubectl`); the `k` alias is not, because a lone `k` in
+    another program's arguments is not evidence."""
+    from kube_noob.debug.steps import classify_argv, kube_subcommand
+
+    for i, t in enumerate(tokens[:MAX_WORDS]):
+        name = next(
+            (p for p in (program(part) for part in re.split(r"[#=:@,]", t)) if p in KUBE_TOOLS and p != "k"), None
+        )
+        if name is None:
+            continue
+        rest = tokens[i + 1 : i + 1 + 64]
+        while rest and rest[0] == "--":
+            rest = rest[1:]
+        if name in {"kubectl", "oc", "kubecolor"}:
+            sub, subs = kube_subcommand(rest)[0], _KUBECTL_SUBS
+        else:
+            sub = next((r for r in rest if not r.startswith("-")), "")
+            subs = _HELM_SUBS if name == "helm" else _KUSTOMIZE_SUBS
+        if sub in subs and classify_argv([name, *rest]) != "read":
+            return f"{name} {sub}"
+    return None
+
+
+def _stdin_text(cmd: Command, read_script: ScriptReader | None) -> tuple[bool, str]:
+    """What arrives on the command's standard input, when it is known from the line: a here-document or
+    here-string, a `< FILE` in the tree, or the output of `echo`/`printf` literals or of `cat` of files in the tree
+    piped into it. (False, "") when it is not known."""
+    if cmd.stdin_kind in {"heredoc", "herestring"} and cmd.stdin is not None:
+        return True, cmd.stdin
+    if cmd.stdin_kind == "file" and cmd.stdin is not None:
+        if cmd.stdin_dynamic or read_script is None:
+            return False, ""
+        text = read_script(cmd.stdin, cmd.cwd)
+        return (text is not None), text or ""
+    src = cmd.source
+    if cmd.stdin_kind != "pipe" or src is None or not src.words:
+        return False, ""
+    if src.tool in {"echo", "printf"}:
+        return True, " ".join(w.text for w in src.words[1:]).replace("\\n", "\n")
+    if src.tool == "cat":
+        if src.stdin_kind in {"heredoc", "herestring"} and src.stdin is not None:
+            return True, src.stdin
+        files = [w for w in src.words[1:] if not w.text.startswith("-")]
+        if files and read_script is not None and not any(w.dynamic or w.glob for w in files):
+            texts = [read_script(w.text, src.cwd) for w in files[:16]]
+            if all(t is not None for t in texts):
+                return True, "\n".join(t or "" for t in texts)
+    return False, ""
+
+
+def _opaque_check(
+    cmd: Command, line: Line, tool: str, read_script: ScriptReader | None, *, executor: bool, argv: bool = True
+) -> None:
+    """A program the reader does not model is opaque. If its arguments hold a kube command, or its standard input
+    is text that names a kube tool, the line is not determined: verify cannot tell what the program does with it.
+    An executor (ssh, at, docker ...) is held to more: any kube tool named in its arguments counts, and commands it
+    reads from a file verify could not open count too."""
+    shown = _show(tool, 40)
+    if argv:
+        args = [w.text for w in cmd.words[1:]]
+        found = None
+        if executor:
+            m = next((MENTION.search(a) for a in args if MENTION.search(a)), None)
+            found = m.group(1) if m else None
+        if found is None:
+            found = _kube_tail(args)
+        if found is None:
+            spaced = [a for a in args if any(c.isspace() for c in a) or ";" in a]
+            found = next((f for f in (_kube_tail(_SPLIT_COMMAND_TEXT.split(a)) for a in spaced) if f), None)
+        if found is not None:
+            line.opaque.append(
+                f"{shown} is given `{_show(found, 40)}` in its arguments, and verify does not model what {shown} "
+                "does with it"
+            )
+            return
+    known, text = _stdin_text(cmd, read_script)
+    if known:
+        if MENTION.search(text) or _kube_tail(_SPLIT_COMMAND_TEXT.split(text)):
+            line.opaque.append(f"{shown} reads text that names a kube tool on its standard input")
+    elif executor and cmd.stdin_kind == "file":
+        line.opaque.append(f"{shown} reads its input from {_show(cmd.stdin or '', 60)}, which verify could not read")
 
 
 def _mention_check(cmd: Command, line: Line, tool: str) -> None:

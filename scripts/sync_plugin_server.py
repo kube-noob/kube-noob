@@ -63,6 +63,8 @@ GUARDED_IMPORTS = frozenset(
         "kube_noob.code.builds",
         # Rendering a chart runs the `helm` binary: the CLI's helm-audit and the gate do; the plugin never does.
         "kube_noob.generate.helm_render",
+        # The hook's no-fork path starts a fresh interpreter; the plugin starts no program (it falls back to a thread).
+        "kube_noob.hook_spawn",
         # The plugin makes no network calls of its own: no web_fetch, so no HTTP client module; and it serves stdio
         # only, so no REST routes.
         "kube_noob.net",

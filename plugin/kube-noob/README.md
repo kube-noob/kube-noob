@@ -63,8 +63,9 @@ runs, and that is the right way round for a tool people point at production clus
 the environment Claude Code gives it and exits at once: it starts no program, uv included (about 2 ms). Turned on,
 it runs the bundled `kube-noob verify` through the same `uv run` launcher as the server, which costs about 1 s per
 Bash command with uv's cache warm; a deny is blocked, a change it cannot decide asks you, and when uv is missing or
-its run fails the guard itself blocks the command (exit 2, with a one-line reason), on any Claude Code version. A run
-that outlives the 60-second timeout is let through by Claude Code; the check stops itself at 20 seconds. On Windows
+its run fails the guard itself blocks the command (exit 2, with a one-line reason), on any Claude Code version. The
+check stops itself at 20 seconds, and the guard kills a uv run that has not finished in 45 and blocks, inside Claude
+Code's 60-second timeout (which would let the call through). On Windows
 the guard needs Git Bash: without it, Claude Code runs the hook in PowerShell, where it does not parse, and the check
 does not run at all (nothing is blocked). To have it there, install Git for Windows or use `kube-noob hook install`
 from the CLI, which writes a settings entry with `"onFailure": "block"` for you alone.

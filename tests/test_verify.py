@@ -70,6 +70,26 @@ def ws(tmp_path: Path) -> Path:
     (tmp_path / "kustom-prefix" / "kustomization.yaml").write_text(
         "resources:\n  - ../good/orders-api.yaml\nnamePrefix: prod-\n"
     )
+    # Review 3: commands fed on stdin, Makefiles make reads by other names and directories, variables, $(shell),
+    # includes, inline and continued recipes, a line built to be slow, and a package in a subdirectory.
+    (tmp_path / "cmds.txt").write_text("kubectl delete ns prod\n")
+    (tmp_path / "plain.txt").write_text("echo hello\n")
+    (tmp_path / "sub" / "Makefile").write_text("deploy:\n\tkubectl apply -f ../bad/deploy.yaml\nlint:\n\techo lint\n")
+    (tmp_path / "evil.mk").write_text("x:\n\tkubectl delete ns prod\n")
+    (tmp_path / "b.mk").write_text(
+        "nuke: ; kubectl delete ns prod\n\nlint:\n\techo ok\n\nmulti:\n\tkubectl \\\n\t  delete ns prod\n\n"
+        "def:\n\t$(NUKE)\n\nk8s:\n\techo kubectl\n"
+    )
+    (tmp_path / "vars.mk").write_text("deploy:\n\t$(K) delete ns prod\n")
+    (tmp_path / "shell.mk").write_text("X := $(shell kubectl delete ns prod)\ntest:\n\techo ok\n")
+    (tmp_path / "shell2.mk").write_text("X := $(shell git rev-parse HEAD)\ntest:\n\techo $(X)\n")
+    (tmp_path / "incl.mk").write_text("include evil.mk\nall:\n\techo hi\n")
+    (tmp_path / "incl-out.mk").write_text("include /etc/evil.mk\nall:\n\techo hi\n")
+    (tmp_path / "long.mk").write_text("# kubectl\ntest:\n\techo ok\na" + " " * 250_000 + "b\n")
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "package.json").write_text(
+        json.dumps({"scripts": {"test": "echo ok", "deploy": "kubectl apply -f ../bad/deploy.yaml"}})
+    )
     return tmp_path
 
 
@@ -284,7 +304,8 @@ CORPUS: list[tuple[str, str, str | None]] = [
     ("make lint", "allow", "none"),
     ("make -f pattern.mk lint", "not-determined", None),
     ("make -f default.mk lint", "not-determined", None),
-    ("make -f inc.mk lint", "not-determined", None),
+    # inc.mk includes other.mk, which is not in the tree and no rule builds: make stops before any recipe runs
+    ("make -f inc.mk lint", "allow", "none"),
     ("npm run deploy", "deny", "changes-state"),
     ("npm test", "allow", "none"),
     # S4 ordinary work that must pass, and day-2 changes decided instead of refused
@@ -324,7 +345,212 @@ CORPUS: list[tuple[str, str, str | None]] = [
     ("kubectl kustomize kustom-ns | kubectl apply -f -", "allow", "changes-state"),
     ("kubectl apply -f good/*.yaml", "allow", "changes-state"),
     ("kubectl apply -f 'good/*.yaml'", "not-determined", "changes-state"),
+    # -- review 3 (G280) -----------------------------------------------------------------------------------------
+    # S1 stdin: a program fed text that names a kube tool runs it, as far as verify can tell
+    ("echo 'kubectl delete ns prod' | ssh bastion", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | at now", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | batch", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | su -", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | docker exec -i tools sh", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | busybox sh", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | pwsh -Command -", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | script -q /dev/null", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | make -f -", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | expect -", "not-determined", None),
+    ("echo 'kubectl delete ns prod' | crontab -", "not-determined", None),
+    ("printf 'kubectl delete ns prod\\n' | ssh bastion bash", "not-determined", None),
+    ("cat cmds.txt | ssh bastion", "not-determined", None),
+    ("at now < cmds.txt", "not-determined", None),
+    ("make -f - <<'EOF'\nx:\n\tkubectl delete ns prod\nEOF", "not-determined", None),
+    ("make -f /dev/stdin <<< $'x:\\n\\tkubectl delete ns prod'", "not-determined", None),
+    ("echo hello | ssh bastion", "allow", "none"),
+    ("at now < plain.txt", "allow", "none"),
+    ("echo ls | at now", "allow", "none"),
+    # 4. make: the Makefile make reads, its variables, $(shell), includes, inline and continued recipes, --eval
+    ("make --file=evil.mk x", "not-determined", None),
+    ("make --makefile=evil.mk x", "not-determined", None),
+    ("make -fevil.mk x", "not-determined", None),
+    ("make -C sub deploy", "deny", "changes-state"),
+    ("make -Csub deploy", "deny", "changes-state"),
+    ("make --directory=sub deploy", "deny", "changes-state"),
+    ("make --directory=sub lint", "allow", "none"),
+    ("make -C /etc x", "not-determined", None),
+    ("make -f missing.mk x", "not-determined", None),
+    ("make -f b.mk nuke", "not-determined", None),
+    ("make -f b.mk multi", "not-determined", None),
+    ("make -f b.mk def NUKE='kubectl delete ns prod'", "not-determined", None),
+    ("make -f b.mk lint", "allow", "none"),
+    ("make -f b.mk k8s", "allow", "none"),
+    ("make -f vars.mk deploy K=kubectl", "not-determined", None),
+    ("make -f vars.mk deploy K=echo", "allow", "none"),
+    ("make -f shell.mk test", "not-determined", None),
+    ("make -f shell2.mk test", "allow", "none"),
+    ("make -f incl.mk x", "not-determined", None),
+    ("make -f incl.mk all", "allow", "none"),
+    ("make -f incl-out.mk all", "not-determined", None),
+    ("make --eval='x: ; kubectl delete ns prod' x", "not-determined", None),
+    ("make -E 'x: ; kubectl delete ns prod' x", "not-determined", None),
+    ("make -f long.mk test", "not-determined", None),
+    ("make test V=1", "allow", "none"),
+    # 5. npm, pnpm, yarn: the package make reads, and the executors among their subcommands
+    ("npm --prefix web run deploy", "deny", "changes-state"),
+    ("npm run deploy --prefix web", "deny", "changes-state"),
+    ("npm -w web run deploy", "deny", "changes-state"),
+    ("npm --workspace=web run deploy", "deny", "changes-state"),
+    ("pnpm -C web run deploy", "deny", "changes-state"),
+    ("pnpm --dir web deploy", "deny", "changes-state"),
+    ("yarn --cwd web deploy", "deny", "changes-state"),
+    ("npm --prefix web test", "allow", "none"),
+    ("npm -w no-such-workspace run deploy", "not-determined", None),
+    ("npm exec -- kubectl delete ns prod", "not-determined", None),
+    ("npm x kubectl delete ns prod", "not-determined", None),
+    ("pnpm dlx kubectl delete ns prod", "not-determined", None),
+    ("yarn dlx kubectl delete ns prod", "not-determined", None),
+    ("bunx kubectl delete ns prod", "not-determined", None),
+    ("npx kubectl delete ns prod", "not-determined", None),
+    ("yarn kubectl delete ns prod", "not-determined", None),
+    ("npm exec -- prettier --check .", "allow", "none"),
+    ("npx tsc --noEmit", "allow", "none"),
+    # 6. wrapper options with their arity, and `function f { ...; }`
+    ("sudo -nu admin kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("sudo -Eu admin kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("sudo --user admin kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("sudo --user=admin kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("sudo -iu admin kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("sudo -u admin -- kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("timeout 30 -- kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("timeout -s KILL 30 kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("timeout --kill-after=5 30 kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("timeout -k 5 30 kubectl apply -f bad/deploy.yaml", "deny", "changes-state"),
+    ("function f { kubectl delete ns prod; }; f", "not-determined", None),
+    ("function f() { kubectl apply -f bad/deploy.yaml; }; f", "deny", "changes-state"),
+    ("f() { kubectl apply -f bad/deploy.yaml; }; f", "deny", "changes-state"),
+    # 7. day-2 changes that are escalations, exposures or copies from this machine
+    ("kubectl annotate sa default eks.amazonaws.com/role-arn=arn:aws:iam::1:role/admin", "not-determined", None),
+    ("kubectl annotate sa web iam.gke.io/gcp-service-account=GSA_NAME", "not-determined", None),
+    ("kubectl annotate sa default azure.workload.identity/client-id=0000 --overwrite", "not-determined", None),
+    ("kubectl label sa default azure.workload.identity/use=true", "not-determined", None),
+    ("kubectl annotate sa default owner=team", "allow", "changes-state"),
+    ("kubectl expose deploy web --port=80 --external-ip=8.8.8.8", "not-determined", None),
+    ("kubectl expose deploy web --port=80 --external-ip 8.8.8.8", "not-determined", None),
+    ("oc expose svc web", "not-determined", None),
+    ("kubectl expose deploy web --port=80", "allow", "changes-state"),
+    ("kubectl create secret generic k --from-file=$HOME/.kube/config", "not-determined", None),
+    ("kubectl create secret generic k --from-file=id_rsa=$HOME/.ssh/id_rsa", "not-determined", None),
+    ("kubectl create configmap leak --from-file=/etc/shadow", "not-determined", None),
+    ("kubectl create secret generic k --from-file=../../etc/passwd", "not-determined", None),
+    ("kubectl create secret generic k --from-file ~/.aws/credentials", "not-determined", None),
+    ("kubectl create configmap e --from-env-file=/etc/environment", "not-determined", None),
+    ("kubectl create configmap app --from-file=good/orders-api.yaml", "allow", "changes-state"),
+    ("kubectl create configmap app --from-file=cfg=good/orders-api.yaml", "allow", "changes-state"),
+    ("kubectl set env deploy/web DATABASE_URL=postgres://admin:hunter2@db:5432/app", "deny", "changes-state"),
+    ("kubectl set env deploy/web DATABASE_URL=postgres://db:5432/app", "allow", "changes-state"),
+    ("kubectl set env deploy/web LD_PRELOAD=/tmp/x.so", "not-determined", None),
+    ("kubectl set env deploy/web NODE_OPTIONS=--require=/tmp/x.js", "not-determined", None),
+    # the shell's history re-runs an earlier command verify cannot see
+    ("fc -s kubectl", "not-determined", None),
+    ("r kubectl", "not-determined", None),
+    ("history | grep kubectl", "allow", "none"),
+    ("helm plugin install https://github.com/databus23/helm-diff", "not-determined", None),
+    ("helm plugin list", "allow", None),
+    # 9. local configuration that changes only which context or namespace is the default
+    ("kubectx", "allow", None),
+    ("kubens shop", "allow", None),
+    ("kubectl config set-context --current --namespace=shop", "allow", None),
+    ("kubectl config set-credentials admin --exec-command=/tmp/evil.sh", "not-determined", None),
 ]
+
+#: Every wrapper the second review found the reader passing through as an unknown program, each around the same
+#: destructive command. None of them may be an allow.
+WRAPPED_DELETE = [
+    "aws-vault exec prod -- kubectl delete ns prod",
+    "op run -- kubectl delete ns prod",
+    "doppler run -- kubectl delete ns prod",
+    "kubie exec prod default kubectl delete ns prod",
+    "tsh kubectl delete ns prod",
+    "direnv exec . kubectl delete ns prod",
+    "nix-shell -p kubectl --run 'kubectl delete ns prod'",
+    "nix run nixpkgs#kubectl -- delete ns prod",
+    "mise exec -- kubectl delete ns prod",
+    "asdf exec kubectl delete ns prod",
+    "uv run kubectl delete ns prod",
+    "poetry run kubectl delete ns prod",
+    "pipenv run kubectl delete ns prod",
+    "npx kubectl delete ns prod",
+    "bundle exec kubectl delete ns prod",
+    "devbox run -- kubectl delete ns prod",
+    "flock /tmp/l kubectl delete ns prod",
+    "flock -x /tmp/l kubectl delete ns prod",
+    "flock /tmp/l -c 'kubectl delete ns prod'",
+    "taskset -c 0 kubectl delete ns prod",
+    "chrt -f 1 kubectl delete ns prod",
+    "strace -f kubectl delete ns prod",
+    "ltrace kubectl delete ns prod",
+    "gdb -batch -ex run --args kubectl delete ns prod",
+    "valgrind kubectl delete ns prod",
+    "torsocks kubectl delete ns prod",
+    "proxychains4 kubectl delete ns prod",
+    "fakeroot kubectl delete ns prod",
+    "numactl -N 0 kubectl delete ns prod",
+    "sg docker -c 'kubectl delete ns prod'",
+    "gosu root kubectl delete ns prod",
+    "su-exec root kubectl delete ns prod",
+    "pkexec kubectl delete ns prod",
+    "xvfb-run kubectl delete ns prod",
+    "catchsegv kubectl delete ns prod",
+    "faketime '2020-01-01' kubectl delete ns prod",
+    "cpulimit -l 50 -- kubectl delete ns prod",
+    "systemd-inhibit kubectl delete ns prod",
+    "watchexec -- kubectl delete ns prod",
+    "nodemon --exec 'kubectl delete ns prod'",
+    "concurrently 'kubectl delete ns prod'",
+    "tini -- kubectl delete ns prod",
+    "dumb-init kubectl delete ns prod",
+    "retry -- kubectl delete ns prod",
+    "ts kubectl delete ns prod",
+    "entr -r kubectl apply -f good/orders-api.yaml < files.txt",
+    "some-new-tool --flag kubectl delete ns prod",
+    "some-new-tool KubeCtl delete ns prod",
+    "some-new-tool kubectl1.30 delete ns prod",
+    "some-new-tool /usr/local/bin/oc delete project prod",
+    "some-new-tool helm3 uninstall web",
+]
+#: Ordinary commands of the same shapes that must still pass: a kube tool named as data, or no kube tool at all.
+WRAPPED_ORDINARY = [
+    "uv run pytest",
+    "poetry run pytest -q",
+    "pytest tests/test_verify.py -k helm -x",
+    "pytest -k helm tests/",
+    "brew install helm kubectl",
+    "asdf install kubectl 1.30.0",
+    "mise use kubectl@1.30",
+    "npx prettier --check .",
+    "bundle exec rspec",
+    "strace -f ls",
+    "strace kubectl get pods",
+    "tini -- node server.js",
+    "flock /tmp/l make test",
+    "direnv allow .",
+    "code k8s/helm/values.yaml",
+    "open http://localhost:8080",
+    "notify-send done",
+    "aws-vault exec prod -- aws s3 ls",
+    "op run -- env",
+    "nix run nixpkgs#hello",
+]
+
+
+@pytest.mark.parametrize("cmd", WRAPPED_DELETE)
+def test_an_unknown_program_that_names_a_kube_command_is_never_an_allow(ws: Path, cmd: str) -> None:
+    """The reader's default is opaque: a program it does not model is checked for a kube command in its arguments,
+    whatever its name, so the next wrapper nobody listed is not an allow either."""
+    assert _verify(cmd, ws)["verdict"] != "allow"
+
+
+@pytest.mark.parametrize("cmd", WRAPPED_ORDINARY)
+def test_an_unknown_program_that_names_no_kube_command_still_passes(ws: Path, cmd: str) -> None:
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "allow", r["notDetermined"]
 
 
 def test_the_corpus_has_at_least_forty_command_lines_of_each_shape() -> None:
@@ -423,7 +649,21 @@ def test_the_cli_exit_codes_follow_the_agents_table(
     assert main([*base, "-f", "bad/deploy.yaml"]) == 1
     assert main([*base, "-f", "missing.yaml"]) == 2
     assert main([*base]) == 2  # neither -f nor --command
+    # --against /dev/null is the empty baseline (every finding is new), not "no such file".
+    assert main([*base, "-f", "bad/deploy.yaml", "--against", "/dev/null"]) == 1
+    assert main([*base, "-f", "good/orders-api.yaml", "--against", "/dev/null"]) == 0
+    # A --cni that is not NAME or NAME:VERSION is a configuration error, not a silent "unknown CNI".
+    assert main([*base, "-f", "good/orders-api.yaml", "--cni", "calico:3:32"]) == 2
+    assert main([*base, "-f", "good/orders-api.yaml", "--cni", "Calico 3.32"]) == 2
+    assert main([*base, "-f", "good/orders-api.yaml", "--cni", "calico:3.32"]) == 0
     capsys.readouterr()
+    # The help states every exit code and what `-f -` with no input does.
+    with pytest.raises(SystemExit):
+        main(["verify", "--help"])
+    help_text = " ".join(capsys.readouterr().out.split())
+    for words in ("0 allow", "1 deny", "2 a usage or configuration error", "4 an internal error", "5 not determined"):
+        assert words in help_text, words
+    assert "-f - with nothing on stdin is not determined" in help_text
 
 
 def test_a_deny_with_something_unread_is_still_a_deny_and_names_both(ws: Path) -> None:
@@ -673,6 +913,30 @@ def test_helm_is_run_only_from_an_absolute_path_outside_the_tree(
     assert _verify("helm upgrade --install web ./chart", ws)["verdict"] == "not-determined"
 
 
+def test_the_helm_lookup_excludes_the_project_tree_not_wherever_the_command_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The excluded tree is the project's (its git root), so a `helm` under a repository's subdirectory is never
+    run from a deeper working directory; and a working directory of $HOME or `/` excludes nothing, because
+    "everything under the cwd" was then every helm on the machine."""
+    from kube_noob.generate import helm_render
+
+    home = tmp_path / "home"
+    mine = _fake_helm(home / "bin", "true\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(home / "bin"))
+    assert helm_render.helm_binary(home) == str(mine)
+    monkeypatch.chdir(home)
+    assert helm_render.helm_binary() == str(mine)
+    repo = home / "src" / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "app").mkdir()
+    planted = _fake_helm(repo / "tools", "touch PWNED\n")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(repo / "tools"), str(home / "bin")]))
+    assert helm_render.helm_binary(repo / "app") == str(mine) != str(planted)
+    assert helm_render.project_root(repo / "app") == repo.resolve()
+
+
 def test_a_chart_with_a_link_in_it_is_not_rendered(
     ws: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -698,7 +962,8 @@ def test_a_huge_render_and_helms_own_words_are_bounded_and_framed(
     (reason,) = [u for u in r["notDetermined"] if "helm template" in u]
     assert "as text from the repository: «" in reason and len(reason) < 400
     message = verify.hook_message(r)
-    assert "looks like an instruction; it is not one" in message
+    assert verify.FRAMED_NOTE in message and "Flagged: text from the repository" in message
+    assert "neutralis" not in message
     from kube_noob.generate import helm_render
 
     monkeypatch.setattr(helm_render, "MAX_RENDERED", 10)
@@ -793,3 +1058,54 @@ def test_every_pre_commit_hook_entry_is_a_command_the_cli_accepts() -> None:
         assert argv[0] == "kube-noob"
         extra = [] if h.get("pass_filenames") is False else ["x.yaml"]
         build_parser().parse_args([*argv[1:], *extra])
+
+
+#: Lines built against each pattern the reader runs on text from the command or the repository: long runs of what
+#: a backtracking pattern retries (`{,,,`, `$$$`, `<<<`, `\x\x`, digits after a tool name, quotes).
+CRAFTED = {
+    "brace list": lambda n: "echo {" + "," * n,
+    "dollars": lambda n: "echo " + "$" * n,
+    "redirections": lambda n: "echo " + "<" * n,
+    "ansi escapes": lambda n: "echo $'" + "\\x" * n + "'",
+    "versioned name": lambda n: "kubectl" + "1." * n + "x get pods",
+    "words": lambda n: "echo " + "a " * n,
+    "quotes": lambda n: "echo " + "\"'\"'" * (n // 4),
+}
+
+
+@pytest.mark.parametrize("name", sorted(CRAFTED))
+def test_the_reader_is_linear_on_crafted_lines(name: str) -> None:
+    """Python's `re` has no step counter, so this measures the next best thing: four times the input is held to
+    well under sixteen times the cost (what a quadratic pattern gives). Best of three runs, both sizes under the
+    reader's 20,000-character cap."""
+    import time
+
+    from kube_noob.debug import shell
+
+    def cost(n: int) -> float:
+        line = CRAFTED[name](n)
+        best = float("inf")
+        for _ in range(3):
+            start = time.perf_counter()
+            shell.parse(line)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    small, large = cost(1_000), cost(4_000)
+    assert large < max(small * 10, 0.05), (name, small, large)
+
+
+def test_a_makefile_line_built_to_be_slow_is_refused_quickly(ws: Path) -> None:
+    """The reviewer's `a`, 250,000 spaces, `b` line took the old rule pattern 62 s. It is now not read at all, and
+    the rule reader that replaced the pattern is linear anyway."""
+    import time
+
+    start = time.perf_counter()
+    r = _verify("make -f long.mk test", ws)
+    assert r["verdict"] == "not-determined" and any("longer than" in u for u in r["notDetermined"])
+    assert time.perf_counter() - start < 5
+    from kube_noob.debug.shell import _make_rule
+
+    start = time.perf_counter()
+    assert _make_rule("a" + " " * 250_000 + "b") is None
+    assert time.perf_counter() - start < 0.5

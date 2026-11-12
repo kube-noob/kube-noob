@@ -479,7 +479,19 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
+def _check_cni(raw: str | None) -> None:
+    """--cni is NAME or NAME:VERSION; anything else is a configuration error (exit 2) for gate and verify alike."""
+    if raw:
+        from kube_noob.debug.cni import parse_cni
+
+        try:
+            parse_cni(raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
+
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    _check_cni(getattr(a, "cni", None))
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
     from kube_noob.code import builds as cb
@@ -568,8 +580,11 @@ def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         "exceptions": _read(a.exceptions) if a.exceptions else None,
         "cni": a.cni,
     }
+    _check_cni(a.cni)
     try:
-        against = verify.collect(a.against, _read) if a.against else None
+        # /dev/null is the empty baseline: every finding of the change is new.
+        named = [p for p in a.against if p != os.devnull]
+        against = verify.collect(named, _read) if named else ([] if a.against else None)
         if a.change_command is not None:
             plan = verify.plan(a.change_command, cwd=Path.cwd(), platform=platform, version=a.pversion)
             result = verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
@@ -589,7 +604,9 @@ def _hook_install(a: argparse.Namespace, fmt: str) -> int:
 
     scope = a.scope or "project"
     path = hook.settings_path(scope, Path.cwd(), Path.home())
-    options = hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on)
+    options = hook.Options(
+        platform=a.platform, version=a.pversion, fail_on=a.fail_on, executable=hook.current_executable()
+    )
     try:
         flags = options.args()
     except hook.InstallError as exc:
@@ -1273,11 +1290,14 @@ def build_parser() -> argparse.ArgumentParser:
         "not-determined",
         description="One verdict for a change: allow, deny (it adds findings at or above --fail-on, or a command "
         "grants cluster-admin, the privileged SCC or wildcard RBAC) or not-determined (what it does cannot be read "
-        "from its text and the local files: a URL, -f - with no input, exec, a delete, a strategic-merge patch, a "
-        "flag or wrapper verify does not model). A command is never run: its files are read inside the working "
-        "directory, no link followed, no network. Uses the gate's own audit, so `verify -f X` and `gate -f X` "
-        "agree on every finding. Exit 0 allow, 1 deny, 5 not determined (0 with --allow-undetermined). Example: "
-        "kube-noob verify --command 'kubectl apply -f k8s/ -n shop'",
+        "from its text and the local files: a URL, exec, a delete, a strategic-merge patch, a program or wrapper "
+        "verify does not model that is given a kube command). In --command, kubectl apply -f - with nothing on stdin "
+        "is not determined; verify -f - with nothing on stdin is a usage error (exit 2). A command is never run: its "
+        "files are read inside the working directory, no link followed, no network. Uses the gate's own audit, so "
+        "`verify -f X` and `gate -f X` agree on every finding. --against /dev/null is an empty baseline. Exit codes: "
+        "0 allow, 1 deny, 2 a usage or configuration error (a missing file, a bad --cni), 4 an internal error or "
+        "refused input, 5 not determined (0 with --allow-undetermined; a deny stays 1). Example: kube-noob verify "
+        "--command 'kubectl apply -f k8s/ -n shop'",
     )
     vf.add_argument("-f", "--file", action="append", default=[], help="proposed manifests: a file, a directory or -")
     vf.add_argument(

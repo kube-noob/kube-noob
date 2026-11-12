@@ -30,6 +30,7 @@ kubectl apply ...`` sets the variable for kubectl, not for the hook, and the lin
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -82,6 +83,9 @@ class Options:
     platform: str = "kubernetes"
     version: str | None = None
     fail_on: str = "high"
+    #: The program the settings entry runs. `hook install` writes the absolute path of the kube-noob that ran it, so
+    #: a `kube-noob` earlier on the agent's PATH (a file in the repository, a virtualenv) is not the one that runs.
+    executable: str = "kube-noob"
 
     def args(self) -> str:
         """The flags for the settings snippet; every value is from a closed set or a version pattern, so the
@@ -105,8 +109,38 @@ class Options:
 _FAIL_ON = ("info", "low", "medium", "high", "critical", "never")
 
 
+def current_executable() -> str:
+    """The absolute path of the kube-noob being run, for the settings entry; "kube-noob" when it cannot be found."""
+    import shutil
+
+    candidates = [sys.argv[0] if sys.argv and Path(sys.argv[0]).name.startswith("kube-noob") else None]
+    candidates.append(shutil.which("kube-noob"))
+    for c in candidates:
+        if c and Path(c).is_file() and os.access(c, os.X_OK):
+            path = str(Path(c).resolve())
+            if path.isprintable():
+                return path
+    return "kube-noob"
+
+
+def _is_kube_noob_hook(command: str) -> bool:
+    """`kube-noob hook claude-code ...`, under any path to kube-noob (bare, absolute, quoted)."""
+    import shlex
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    return len(words) >= 3 and Path(words[0]).name == "kube-noob" and words[1:3] == ["hook", "claude-code"]
+
+
 def settings_snippet(options: Options | None = None) -> dict[str, Any]:
-    command = HOOK_COMMAND + (options or Options()).args()
+    import shlex
+
+    o = options or Options()
+    if not o.executable.isprintable() or not (o.executable == "kube-noob" or o.executable.startswith("/")):
+        raise InstallError("the kube-noob path for the settings entry is not an absolute, printable path")
+    command = shlex.quote(o.executable) + HOOK_COMMAND[len("kube-noob") :] + o.args()
     return {
         "hooks": {
             "PreToolUse": [
@@ -233,23 +267,34 @@ _TIMEOUT_MESSAGE = (
 )
 
 
-def main(stdin: Any = None, env: Mapping[str, str] | None = None, options: Options | None = None) -> int:
-    """Answer one hook call within the budget, whatever happens: the check runs in a worker thread and the hook
-    blocks (exit 2) when it has not answered by then -- a check that is still running is not a pass, and Claude Code
-    would let a hook that hits its own timeout through unless `onFailure` is set."""
+def main(
+    stdin: Any = None,
+    env: Mapping[str, str] | None = None,
+    options: Options | None = None,
+    *,
+    budget: float | None = None,
+    isolate: str | None = None,
+) -> int:
+    """Answer one hook call within the budget, whatever happens: the check runs in a CHILD PROCESS that is killed
+    when the budget is spent, and the hook then blocks (exit 2). A thread could not do this: a regular expression
+    running in C holds the interpreter until it returns, so a Makefile line built to be slow kept the hook past
+    Claude Code's timeout -- which lets the call through unless `onFailure` is set.
+
+    ``isolate``: "fork" (POSIX, the default there), "spawn" (a fresh interpreter, the default where there is no
+    fork) or "thread" (tests only: not bounded against C code)."""
+    limit = BUDGET_SECONDS + 1.0 if budget is None else budget
     try:
         raw = (stdin or sys.stdin.buffer).read(MAX_INPUT + 1)
-        box: list[tuple[int, str, str]] = []
-        worker = threading.Thread(
-            target=lambda: box.append(run(raw, os.environ if env is None else env, options=options)), daemon=True
-        )
-        worker.start()
-        worker.join(BUDGET_SECONDS + 1.0)
-        if not box:
+        mode = isolate or ("fork" if hasattr(os, "fork") else "spawn")
+        got = _bounded(raw, dict(os.environ if env is None else env), options, limit, mode)
+        if got is None:
             _write(sys.stderr, _TIMEOUT_MESSAGE + "\n")
-            os._exit(2)  # the worker is still running; do not wait for it at interpreter shutdown
-        code, out, err = box[0]
-        _write(sys.stdout, out)
+            return 2
+        code, out, err = got
+        if out and not _write(sys.stdout, out):
+            # The `ask` (or any answer on stdout) did not reach Claude Code: blocking is the only safe reading.
+            _write(sys.stderr, "kube-noob hook could not write its answer; the command is blocked.\n")
+            return 2
         _write(sys.stderr, err)
         return code
     except BaseException:  # noqa: BLE001 - a crashed hook is not a pass
@@ -257,14 +302,98 @@ def main(stdin: Any = None, env: Mapping[str, str] | None = None, options: Optio
         return 2
 
 
-def _write(stream: Any, text: str) -> None:
+def _bounded(
+    raw: bytes, env: dict[str, str], options: Options | None, limit: float, mode: str
+) -> tuple[int, str, str] | None:
+    """run() in a child bounded by ``limit`` seconds: its answer, or None when it was killed for time."""
+    if mode == "thread":
+        box: list[tuple[int, str, str]] = []
+        worker = threading.Thread(target=lambda: box.append(run(raw, env, options=options)), daemon=True)
+        worker.start()
+        worker.join(limit)
+        return box[0] if box else None
+    if mode == "fork":
+        rfd, wfd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - the child; its result reaches the parent through the pipe
+            code = 3
+            try:
+                os.close(rfd)
+                data = json.dumps(run(raw, env, options=options)).encode()
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(wfd, view) :]
+                code = 0
+            finally:
+                os._exit(code)
+        os.close(wfd)
+        answer = _read_until(rfd, limit, lambda: _kill(pid))
+        os.close(rfd)
+        _, status = os.waitpid(pid, 0)
+        if answer is None:
+            return None
+        if status != 0:
+            return _block("kube-noob hook: the check stopped before it answered; blocked.")
+        return _decode(answer)
+    # spawn: a fresh interpreter on the same code (kube_noob.hook_spawn). The Claude plugin starts no program, so
+    # its copy has no such module: there, without fork, the check runs in a thread (bounded except against C code;
+    # the reader's patterns are linear, and the plugin's guard kills uv at 45 seconds).
+    try:
+        from kube_noob.hook_spawn import run_spawned
+    except ImportError:
+        return _bounded(raw, env, options, limit, "thread")
+    answer = run_spawned(raw, env, None if options is None else dict(options.__dict__), limit)
+    if answer is None:
+        return None
+    return _decode(answer) if answer else _block("kube-noob hook: the check stopped before it answered; blocked.")
+
+
+def _read_until(fd: int, limit: float, on_timeout: Any) -> bytes | None:
+    import select
+
+    deadline = time.monotonic() + limit
+    chunks: list[bytes] = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            on_timeout()
+            return None
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _kill(pid: int) -> None:
+    import signal
+
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGKILL)
+
+
+def _decode(data: bytes) -> tuple[int, str, str]:
+    try:
+        code, out, err = sanitize.loads_bounded(data)
+        if code in (0, 2) and isinstance(out, str) and isinstance(err, str):
+            return int(code), out, err
+    except (ValueError, TypeError):
+        pass
+    return _block("kube-noob hook: the check gave no answer it could read; blocked.")
+
+
+def _write(stream: Any, text: str) -> bool:
+    """Write and flush; False when the stream is closed or the pipe is broken."""
     if not text:
-        return
+        return True
     try:
         stream.write(text)
         stream.flush()
+        return True
     except (OSError, ValueError):
-        pass  # a closed stream: the exit code still answers
+        return False  # a closed stream: the exit code still answers
 
 
 #: The values that turn the plugin's check on, matched exactly and ignoring ASCII case -- the rule the shell guard in
@@ -329,7 +458,7 @@ def merged(existing: dict[str, Any], options: Options | None = None) -> tuple[di
         if isinstance(g, dict) and isinstance(g.get("hooks"), list):
             for h in g["hooks"]:
                 command = str(h.get("command", "")).strip() if isinstance(h, dict) else ""
-                if not (command == HOOK_COMMAND or command.startswith(HOOK_COMMAND + " ")):
+                if not _is_kube_noob_hook(command):
                     continue
                 if command == want_cmd and _covers(g.get("matcher")) and h.get("onFailure") == "block":
                     return out, False  # this exact hook is installed

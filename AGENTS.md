@@ -110,7 +110,10 @@ that as policy violations.
 
 How two commands fit the table (G280):
 
-- `kube-noob verify` uses 0, 1 and 5 only. 1 is "findings at or above `--fail-on`": the audit's findings, a grant in
+- `kube-noob verify` answers with 0 (allow), 1 (deny) and 5 (not determined), and like every command exits 2 on a
+  usage or configuration error (`-f` and `--command` together or neither, a file that is not there, `verify -f -`
+  with nothing on stdin, a `--cni` that is not NAME or NAME:VERSION) and 4 on an internal error or refused input;
+  `--help` lists the same five. 1 is "findings at or above `--fail-on`": the audit's findings, a grant in
   the command that the memory verifier counts as one (cluster-admin, the privileged SCC, wildcard RBAC), or a
   literal credential in `set env` (KN-S013's finding, before there is a manifest). 5 is "the evidence was
   incomplete": what the change does could not be read from its text and the local files -- a URL, a delete whose

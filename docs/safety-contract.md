@@ -261,11 +261,13 @@ Every call that starts a program in the shipped package (`src/kube_noob`, the co
 |---|---|---|---|
 | `kube_noob/debug/backends.py` | `KubectlBackend._run` | `subprocess.run` | `[self.binary, *args, '--request-timeout', f'{int(self.timeout)}s'] + ['--context', self.context]` |
 | `kube_noob/generate/helm_render.py` | `render_chart` | `subprocess.run` | `[helm, 'template', release, str(chart), '--namespace', namespace] + ['--kube-version', kube_version] + ['--values', vf] + [flag, value]` |
+| `kube_noob/hook_spawn.py` | `run_spawned` | `subprocess.Popen` | `[sys.executable, '-I', '-B', '-c', _CHILD, package_parent]` |
 | `kube_noob/sources/advisories.py` | `from_archive` | `subprocess.Popen` | `['zstd', '-dc', '--', str(path)]` |
 | `kube_noob/sources/git_ingest.py` | `_git` | `subprocess.run` | `[git, *args]` |
 
 - `kube_noob/debug/backends.py` runs `kubectl`, `oc`
 - `kube_noob/generate/helm_render.py` runs `helm`
+- `kube_noob/hook_spawn.py` runs `python`
 - `kube_noob/sources/advisories.py` runs `zstd`
 - `kube_noob/sources/git_ingest.py` runs `git`
 
@@ -286,6 +288,7 @@ Where it is applied (found in the code):
 - `kube_noob/evals/problems.py` `parse` calls `sanitize.json_nesting_ok`
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
+- `kube_noob/hook.py` `_decode` calls `sanitize.loads_bounded`
 - `kube_noob/hook.py` `_run` calls `sanitize.loads_bounded`
 - `kube_noob/hook.py` `write_settings` calls `sanitize.json_nesting_ok`
 - `kube_noob/hook.py` `write_settings` calls `sanitize.loads_bounded`

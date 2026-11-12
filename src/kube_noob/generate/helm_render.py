@@ -22,20 +22,32 @@ MAX_RENDERED = 5_000_000
 MAX_CHART_FILES = 5_000
 
 
+def project_root(start: Path) -> Path:
+    """The tree under review that holds ``start``: the nearest directory with a `.git` above it, else ``start``."""
+    start = start.resolve()
+    for d in [start, *start.parents]:
+        if (d / ".git").exists():
+            return d
+    return start
+
+
 def helm_binary(project: Path | None = None) -> str | None:
-    """The `helm` on PATH, looked up only in absolute PATH entries outside ``project`` and the current directory.
+    """The `helm` on PATH, looked up only in absolute PATH entries outside the project tree.
 
     `shutil.which("helm")` honoured a relative PATH entry (`bin`, `.`) and so ran a `helm` the checked-out
-    repository supplies -- a program from the tree under review, run by the tool reviewing it (G280)."""
+    repository supplies -- a program from the tree under review, run by the tool reviewing it (G280). The tree is
+    the project's (its git root, else the directory itself), never just "wherever the command runs": with the
+    working directory at $HOME or `/`, excluding everything under it excluded every helm on the machine. A tree that
+    IS $HOME or `/` excludes nothing, because it is the machine, not a repository."""
     import os
 
-    cwd = Path.cwd().resolve()
-    roots = [cwd, *([project.resolve()] if project is not None else [])]
+    root = project_root(project if project is not None else Path.cwd())
+    broad = {Path("/"), Path.home().resolve()}
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry or not os.path.isabs(entry):
             continue
         p = Path(entry).resolve()
-        if any(p == r or p.is_relative_to(r) for r in roots):
+        if root not in broad and (p == root or p.is_relative_to(root)):
             continue
         found = shutil.which("helm", path=str(p))
         if found:

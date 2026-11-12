@@ -931,6 +931,8 @@ def default_violations(settings: Any | None = None) -> list[str]:
 KNOWN_PROGRAMS: dict[str, tuple[str, ...]] = {
     "kube_noob/debug/backends.py": ("kubectl", "oc"),
     "kube_noob/generate/helm_render.py": ("helm",),
+    # The pre-action hook runs its check in a fresh copy of this interpreter where there is no fork (Windows).
+    "kube_noob/hook_spawn.py": ("python",),
     "kube_noob/sources/advisories.py": ("zstd",),
     "kube_noob/sources/git_ingest.py": ("git",),
 }
