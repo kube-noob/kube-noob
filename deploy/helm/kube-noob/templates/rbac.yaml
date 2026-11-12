@@ -42,6 +42,12 @@ rules:
   - apiGroups: [ray.io]
     resources: [rayclusters, rayservices, rayjobs]
     verbs: [get, list]
+  # OLM-installed operators, for the operator inventory: which are installed, at what version, from which catalog
+  # and channel. Namespaced, read-only, no credentials; a cluster without OLM answers 404, reported as not an OLM
+  # cluster. Group and version are the published CRDs: operators.coreos.com/v1alpha1.
+  - apiGroups: [operators.coreos.com]
+    resources: [clusterserviceversions, subscriptions]
+    verbs: [get, list]
   # Who may do what (no credentials): the attack-path scan reads RBAC; Secrets stay out.
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [roles, rolebindings{{ if .cluster }}, clusterroles, clusterrolebindings{{ end }}]

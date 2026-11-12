@@ -489,3 +489,20 @@ def test_the_controls_line_names_only_controls_with_findings(
     main(["audit", "-f", str(path), "--platform", "openshift", "--version", "4.20", "--fail-on", "never"])
     line = next((ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("NIST SP 800-53")), "")
     assert "(0)" not in line and "SC-28(1)" not in line
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        (_aps("spec: {audit: {profile: Default}}", "other"), "none of them is the singleton named 'cluster'"),
+        (
+            _aps("spec: {audit: {profile: Default}}") + "---\n" + _aps("spec: {audit: {profile: None}}"),
+            "2 APIServer objects named 'cluster'",
+        ),
+    ],
+)
+def test_detection_coverage_reads_only_the_object_named_cluster(text: str, why: str) -> None:
+    """The coverage projection trusted a lone APIServer of any name: the same shape KN-S035 and KN-S040 decline."""
+    cov = _r(text, "openshift", "4.20").detection_coverage
+    assert cov is not None and why in cov["undecided"]
+    assert set(cov) == {"from", "undecided", "controls", "source", "cannotSay"}, "a verdict was drawn anyway"

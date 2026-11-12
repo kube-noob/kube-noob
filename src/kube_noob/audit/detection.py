@@ -334,6 +334,10 @@ def _undecided(refs: list[str], why: str) -> dict[str, Any]:
     }
 
 
+def _how_many(found: Sequence[Document]) -> str:
+    return "several cluster-scoped APIServer objects" if len(found) > 1 else "one cluster-scoped APIServer object"
+
+
 def coverage(
     docs: Sequence[Document], version: str | None = None, platform: str = "openshift"
 ) -> dict[str, Any] | None:
@@ -350,12 +354,22 @@ def coverage(
     if not found:
         return None
     refs = [d.ref() for d in found]
-    named = [d for d in found if _name_of(d) == "cluster"] if len(found) > 1 else found
-    if len(named) != 1:
+    # Only the object named `cluster` is the platform's configuration. A lone object of another name used to be
+    # read as if it were, so a coverage statement could be drawn from settings the cluster ignores; two named
+    # `cluster` are a bundle that disagrees with itself (G272, the shape KN-S035 and KN-S040 decline).
+    named = [d for d in found if _name_of(d) == "cluster"]
+    if not named:
         return _undecided(
             refs,
-            "this bundle carries several cluster-scoped APIServer objects and none of them is the singleton "
-            "named 'cluster', so which configuration the cluster has cannot be read from it",
+            f"this bundle carries {_how_many(found)} "
+            "and none of them is the singleton named 'cluster', the only one the platform reads, so which "
+            "configuration the cluster has cannot be read from it",
+        )
+    if len(named) > 1:
+        return _undecided(
+            refs,
+            f"this bundle carries {len(named)} APIServer objects named 'cluster', which the API server cannot hold "
+            "at once, so which configuration the cluster has cannot be read from it",
         )
     doc = named[0]
     spec = doc.data.get("spec") if isinstance(doc.data, dict) else None

@@ -418,6 +418,43 @@ findings: 2 critical, 8 high, 10 medium, 2 low, 2 info
   MEDIUM   etcd: etcd logged "slow fdatasync" 1 time(s) on 1 member(s)
 ```
 
+### Which operators are installed, at what version, and from where?
+
+`operators inventory` lists what OLM installed: each operator's package, version (and whether `spec.version` stated
+it or it was read off the name), catalog, channel, approval mode, its namespace and the namespaces it serves, its
+phase, an upgrade waiting to happen and a Manual approval waiting for a person. OLM copies an operator's
+ClusterServiceVersion into every namespace it serves; those copies are folded into one operator with the list of
+namespaces, never counted as more installs. A Subscription with nothing installed, and a ClusterServiceVersion with
+no Subscription (catalog and channel then say unknown), each get a state of their own.
+
+It reads manifests, a must-gather or the cluster (ClusterServiceVersions and Subscriptions only, read-only). What it
+could not read is part of the answer, and the list is `listed` only when nothing it needs was skipped: no
+ClusterServiceVersions read is "not determined"; a file it could not parse, a file the must-gather reader skipped, an
+object it could not use, or a namespace with CSVs and no Subscription in the files you gave makes it `partial` and is
+named; a cluster that answers 404 for `operators.coreos.com` on both reads is "not an OLM cluster". None of them is
+reported as zero operators. A Subscription counts as installed only through the CSV its `installedCSV` names.
+`--require-complete` exits 5 on anything but a complete answer. With `-f DIR`, every `.yaml`, `.yml` and `.json` file
+is read on its own. Operators installed by Helm or plain manifests are outside it, and it says so.
+
+```bash
+kube-noob operators inventory --must-gather must-gather.tar.gz
+oc get csv,sub,ip,og -A -o yaml > olm.yaml
+kube-noob operators inventory -f olm.yaml --format json
+kube-noob --cluster-enabled operators inventory --live --require-complete
+```
+
+```text
+operator inventory (must-gather): partial -- 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator
+  rhacs-operator.v4.6.0  package unknown  version 4.6.0 (derived from the name)  state subscription-not-read  phase Failed [InstallCheckFailed]
+      namespace rhacs-operator; copied into 1: shop
+      catalog unknown, channel unknown, approval unknown (not read)
+not read: subscriptions (not-read) not in this must-gather (namespaces/<ns>/operators.coreos.com/subscriptions)
+```
+
+From an MCP client, `kubenoob_operator_inventory` takes the objects as YAML, `kubenoob_cluster_operator_inventory`
+reads the cluster when cluster access is on, and `kubenoob_analyze_must_gather` and `kube-noob must-gather
+analyze` return the same inventory as `operatorInventory`.
+
 ### Why was this denied?
 
 `policy explain` reads a denial and explains it policy by policy: Kyverno, OPA Gatekeeper, ValidatingAdmissionPolicy,

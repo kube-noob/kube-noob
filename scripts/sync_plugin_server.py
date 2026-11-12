@@ -72,6 +72,9 @@ GUARDED_IMPORTS = frozenset(
         "kube_noob.mustgather.ingest",
         "kube_noob.mustgather.report",
         "kube_noob.mustgather.sample",
+        # The operator inventory's must-gather reader, for the same reason; the inventory itself
+        # (kube_noob.operators: manifests handed to it, and the live read when cluster access is on) ships.
+        "kube_noob.mustgather.operators",
     }
 )
 # LLM SDKs never ship in the plugin, even if one returns to the core dependencies; the plugin runs the MCP server only.

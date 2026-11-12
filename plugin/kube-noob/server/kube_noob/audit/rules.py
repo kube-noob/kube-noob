@@ -4037,7 +4037,6 @@ def cluster_apiservers(ctx: AuditContext) -> list[Document]:
     return [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
 
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 #: How much of one input-derived fragment a message carries. A flag value or a container name is the user's own
 #: text: cleaned of invisible and control characters, collapsed to one line and cut here, so it can neither forge
 #: a line of the text view nor flood a SARIF message (G272).
@@ -4045,8 +4044,12 @@ SHOWN_LIMIT = 200
 
 
 def _shown(value: object, limit: int = SHOWN_LIMIT) -> str:
-    """``value`` as one visible line of at most ``limit`` characters, saying how much was cut."""
-    from kube_noob.sanitize import clean
+    """``value`` as one visible line of at most ``limit`` characters, saying how much was cut.
+
+    `sanitize.visible` makes it printable (every non-printing character, by Unicode category, and every terminal
+    escape sequence); this collapses it to one line and caps it, which `visible` leaves to its callers.
+    """
+    from kube_noob.sanitize import visible
 
     text = str(value)
     if len(text) > limit * 4:
@@ -4054,7 +4057,7 @@ def _shown(value: object, limit: int = SHOWN_LIMIT) -> str:
         text = text[: limit * 4]
     else:
         cut = 0
-    text = " ".join(_CONTROL_CHARS.sub(" ", clean(text)[0]).split())
+    text = " ".join(visible(text).split())
     if len(text) > limit:
         cut += len(text) - limit
         text = text[:limit]
