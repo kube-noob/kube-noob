@@ -19,7 +19,7 @@ from typing import Any
 
 from kube_noob import __version__
 from kube_noob.debug.cluster import redact_text
-from kube_noob.mustgather.analyse import SEVERITIES, Analysis
+from kube_noob.mustgather.analyse import SEVERITIES, Analysis, has_clusterversion
 from kube_noob.mustgather.ingest import GATHER_DIRS, Bundle
 
 MAX_MATCHED_FINDINGS = 20  # findings sent to known-issue and memory matching (the most severe first)
@@ -58,7 +58,8 @@ def build(
     a = analysis.as_dict()
     cluster = a["cluster"]
     version = cluster.get("version") or None
-    platform = "openshift" if cluster.get("version") else "kubernetes"
+    # a ClusterVersion makes it OpenShift even when none is named version or none holds a readable version
+    platform = "openshift" if cluster.get("version") or has_clusterversion(cluster) else "kubernetes"
     operators = [o["name"] for o in cluster.get("operators", [])]
     roots = bundle.as_dict()["gatherRoots"]
     findings = [{"rank": n, **f} for n, f in enumerate(a["findings"], start=1)]
@@ -159,6 +160,10 @@ def _environment(r: dict[str, Any]) -> list[str]:
             update = f"; update to {_md(c['desiredVersion'])}" + (f" ({_md(state)})" if state else "")
         channel = f" (channel {_md(c['channel'])})" if c.get("channel") else ""
         out.append(f"- OpenShift Container Platform {_md(c['version'])}{channel}{update}")
+    elif c.get("clusterVersionNote"):
+        out.append(f"- Version: not determined: {_md(c['clusterVersionNote'])}")
+    elif r.get("platform") == "openshift":
+        out.append("- Version: not determined: the ClusterVersion named version holds no version this reads")
     else:
         out.append("- Version: not in this must-gather (no ClusterVersion collected)")
     if c.get("platform"):
@@ -199,7 +204,12 @@ def _knowledge_line(r: dict[str, Any]) -> str:
 
 def markdown(r: dict[str, Any]) -> str:
     c, counts = r["cluster"], r["counts"]
-    title = f"OpenShift {c['version']}" if c.get("version") else "a Kubernetes cluster"
+    if c.get("version"):
+        title = f"OpenShift {c['version']}"
+    elif r.get("platform") == "openshift":
+        title = "an OpenShift cluster (version not determined)"
+    else:
+        title = "a Kubernetes cluster"
     if c.get("platform"):
         title += f" on {c['platform']}"
     lines = [

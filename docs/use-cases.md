@@ -481,22 +481,30 @@ is affected. Most operators have no table entry and are `no-alias` -- not matche
   is not looked up; one from any other catalog (a mirror, a custom one) keeps its matches, labelled as unverified.
 - **The release.** `--openshift-version`, and the must-gather's or the live ClusterVersion named `version`, which is
   read even when a version is given, so a disagreement is reported. An update in progress searches both releases and
-  is incomplete; a version taken from `status.desired` says so; a cluster that does not serve ClusterVersion is not
-  OpenShift, and the notes do not apply; a release outside 4.20-4.22 is not determined for every operator.
-- **Two gates, one meaning each.** `--require-complete` exits 5 unless the evidence was complete (the inventory read in
-  full, the release known, settled and indexed) -- what `complete` means for `operators inventory` and
-  `must-gather analyze` too. `--require-matched` also exits 5 unless every installed operator was looked up: none
-  without an alias or a known package, none not determined, none from another catalog. The verdict says which:
-  `matched`, `partly-matched`, `not-matched`, `partial`, `not-determined`, `nothing-to-match` or `no-olm`.
+  is incomplete, even when the version you give is the one it is updating from; `releasesSearched` lists only the
+  releases actually searched. A version taken from `status.desired` says so. A cluster that does not serve
+  ClusterVersion is not OpenShift, and an OKD version (`4.20.0-okd-scos.6`) is not OpenShift Container Platform: the
+  notes do not apply to either, and a release outside 4.20-4.22 is not determined for every operator.
+- **One gate, for the evidence.** `complete` is exactly "`incompleteBecause` is empty", and `--require-complete` exits 5
+  unless it is: the inventory read in full, and the release known, settled, indexed and OpenShift's. So a cluster the
+  release notes do not cover -- not OpenShift, OKD, or a release outside the index -- exits 5 too, and the refusal
+  names the reason. That is the documented applicability of the answer, not a crash. Whether every operator was
+  matched is a different question, about kube-noob's name table rather than about unread evidence, so it is not an exit
+  code: `allMatched` is true only when at least one operator was looked up, every one was, and none came from a catalog
+  kube-noob cannot verify. A gate on it is `jq -e '.allMatched == true'`. The verdict says which: `matched`,
+  `partly-matched` (some not matched, or matches only from an unverified catalog, which the summary says),
+  `not-matched`, `partial`, `not-determined`, `nothing-to-match` or `no-olm`.
 
 ```bash
 kube-noob operators issues --must-gather must-gather.tar.gz
 kube-noob operators issues -f olm.yaml --openshift-version 4.21.9 --format json
 kube-noob --cluster-enabled operators issues --live --require-complete
+kube-noob operators issues -f olm.yaml --openshift-version 4.21.9 --format json | jq -e '.allMatched == true'
 ```
 
 ```text
 operator known issues (manifests): partly-matched -- 1 of 2 installed operator(s) were not matched against the release notes; 1 named and 0 only mentioned in the OpenShift 4.22 release notes as of 2026-10-27 (6 open, 9 fixed issue(s)); 0 looked up and named in no issue (a release-note lookup, not a vulnerability check)
+complete: yes; all matched: no
   openshift-ptp/ptp-operator.v4.22.0-202601010000  named: the OpenShift 4.22 release notes name this product in 4 issue(s) and only mention it in 11 more
       OCPBUGS-66413 [open, mentioned, OpenShift 4.22]
         via 'PTP': uses 'PTP', a component name or abbreviation, not the product's name

@@ -602,6 +602,13 @@ def get_index(data_dir: Path | None = None) -> Index:
                         }
                     elif str(l_meta["retrievedAt"]) >= str(meta.get("retrievedAt", "")):
                         issues, meta = l_issues, l_meta
+                    else:  # a valid but older copy loses to the bundled one, and says so like the other two
+                        meta = {
+                            **meta,
+                            "_localNote": f"a local copy in known_issues/ was not used: its retrievedAt "
+                            f"{l_meta['retrievedAt']} is older than the bundled release notes "
+                            f"({meta.get('retrievedAt')})",
+                        }
             _cache[key] = Index(issues, meta)
         return _cache[key]
 

@@ -1812,13 +1812,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-complete",
         action="store_true",
         help="exit 5 unless the evidence was complete: the inventory read in full, and the cluster's release known, "
-        "settled (no update in progress) and indexed -- the same meaning complete has for operators inventory",
-    )
-    opk.add_argument(
-        "--require-matched",
-        action="store_true",
-        help="exit 5 unless the answer is complete AND every installed operator was looked up: none without an alias "
-        "or a known package, none not determined, none from a catalog other than redhat-operators",
+        "settled (no update in progress), indexed and OpenShift (not OKD, not plain Kubernetes) -- so a cluster the "
+        "release notes do not cover exits 5 too, with the reason. Whether every operator was matched is allMatched "
+        "in the JSON, not an exit code",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -3446,15 +3442,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _emit(found, fmt)
         if a.require_complete and not found["complete"]:
             print(
-                f"refusing a complete verdict: the answer is {found['verdict']} ({found['summary']})", file=sys.stderr
-            )
-            return 5
-        if a.require_matched and not found["allMatched"]:
-            c = found["counts"]
-            print(
-                f"refusing: {c['notMatched']} of {c['assessable']} installed operator(s) were not matched against the "
-                f"release notes and {c['catalogUnverified']} come from a catalog that is not "
-                f"{operator_issues.RED_HAT_CATALOG} (the answer is {found['verdict']})",
+                f"refusing a complete verdict: the answer is {found['verdict']}, incomplete because "
+                f"{'; '.join(found['incompleteBecause'])}",
                 file=sys.stderr,
             )
             return 5

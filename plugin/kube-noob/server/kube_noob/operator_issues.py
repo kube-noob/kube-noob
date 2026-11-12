@@ -18,7 +18,7 @@ So the join is the one the data can populate, and it says so:
   platform component (``PLATFORM_TERMS``), is demoted to ``mentioned`` with that reason: it is about where the two
   meet, and its fix may be in the platform. "Named" means the notes name the product, not that it is affected.
 - **A package with no entry is ``no-alias``; one the inventory could not read is ``package-unknown``.** Neither is
-  clean; neither is guessed from the CSV's name. Both count as not matched (``--require-matched``).
+  clean; neither is guessed from the CSV's name. Both count as not matched, and ``allMatched`` is false.
 - **Only Red Hat's build is what the notes describe.** The default catalogs are ``redhat-operators`` (Red Hat
   products, built by Red Hat), ``certified-operators`` (ISV builds), ``community-operators`` and the retired
   ``redhat-marketplace`` (openshift-docs a28e76ff ``modules/olm-rh-catalogs.adoc``). An operator from one of the last
@@ -27,9 +27,13 @@ So the join is the one the data can populate, and it says so:
 - **Narrowed by the cluster's OpenShift release.** The release is given (``--openshift-version``), or read from the
   ClusterVersion named ``version`` (the newest Completed history entry; if none completed, ``status.desired``, said
   so). Both are read when both exist, and a disagreement is a caveat; the given one wins. An update in progress
-  searches both releases and the answer is incomplete. A known issue with no fix listed in an earlier indexed
-  release still applies (``known_issues.Index._applies``, the rule ``known-issues`` uses) and is labelled as listed
-  for that release. A cluster whose API does not serve ClusterVersion is not OpenShift: the notes do not apply.
+  searches both releases and the answer is incomplete, whether or not a version is given. A known issue from an
+  earlier indexed release still applies until the fix it lists (``known_issues.Index._applies``, the rule
+  ``known-issues`` uses), even when that fix is in a later release, and one with no fix is labelled as listed for that
+  release. A cluster whose API does not serve ClusterVersion is not OpenShift, and an OKD version (an ``okd``
+  pre-release suffix) is not OpenShift Container Platform: the notes do not apply to either.
+- **One list says whether the answer is complete.** ``complete`` is ``not incompleteBecause``, and ``allMatched`` is
+  true only for ``matched``: every installed operator looked up, none from an unverified catalog, at least one.
 - **A fix is an OpenShift release, never an operator version.** The notes list "fixed in 4.22.3"; they do not say
   whether the fix ships in the payload or in the operator's bundle, so ``installedHasFix`` is ``not-determined``.
   ``fixReleaseVsCluster`` says only whether the listed release is at or before the cluster's version.
@@ -343,6 +347,15 @@ def parse_version(value: Any) -> str | None:
     return value if isinstance(value, str) and _OCP.match(value) else None
 
 
+def is_okd(version: str | None) -> bool:
+    """An OKD version: OKD, the community distribution built from the same sources, writes an ``okd`` pre-release
+    suffix (``4.20.0-okd-scos.0`` in okd.io's 4.20 release notes; ``4.20.0-0.okd-scos-<date>`` in its
+    ``4.20.0-0.okd-scos`` release stream). The bundled index is OpenShift Container Platform's release notes, which do
+    not describe OKD's builds."""
+    m = _OCP.match(version or "")
+    return bool(m and m.group(4) and "okd" in m.group(4).lower())
+
+
 def _release(version: str) -> str:
     m = _OCP.match(version)
     if m is None:  # callers pass parse_version output only
@@ -478,13 +491,13 @@ def _rows(hits: list[_Hit], ctx: _Ctx) -> list[dict[str, Any]]:
     groups: dict[str, list[_Hit]] = {}
     for h in hits:
         i = h.issue
-        open_issue = i.kind == "known" and not i.fixed_in
-        if not ctx.versions:
-            applies = True
-        elif open_issue:
-            applies = any(Index._applies(i, v) for v in ctx.versions)
-        else:
-            applies = i.minor in ctx.releases
+        # a record of a searched release, or a known issue from an earlier one not yet fixed at the cluster's version
+        # (a fix listed in a later release's z-stream keeps it listed until that fix)
+        applies = (
+            not ctx.versions
+            or i.minor in ctx.releases
+            or (i.kind == "known" and any(Index._applies(i, v) for v in ctx.versions))
+        )
         if applies:
             groups.setdefault(i.id, []).append(h)
     rows = []
@@ -547,7 +560,7 @@ def _hints(surface: Surface) -> dict[str, str]:
         run = "run kube-noob operators issues --must-gather <path>"
         return {
             "version": f"{run} --openshift-version <x.y.z> to give it",
-            "issues": f"{run} to see all of them",
+            "issues": f"{run} --issues {MAX_ISSUES_PER_PACKAGE} to see up to {MAX_ISSUES_PER_PACKAGE} per package",
             "operators": f"{run} --top 500 to see more",
         }
     if surface == "mcp":
@@ -601,30 +614,48 @@ def assess(
             f"the given version {given} disagrees with the ClusterVersion's {detected} ({rel.detected_from}); the "
             "given one is used"
         )
+    okd = next((v for v in (version, detected) if is_okd(v)), None)
     versions = [version] if version else []
-    if rel.updating_to and not given:
-        caveats.append(f"an update to {rel.updating_to} is in progress: both releases are searched, labelled")
-        incomplete.append(f"the cluster is updating to {rel.updating_to}")
-        if _release(rel.updating_to) != _release(version or rel.updating_to):
-            versions.append(rel.updating_to)
-    if rel.from_desired and not given:
-        incomplete.append("the version is status.desired: no update has completed")
-    searched = sorted({_release(v) for v in versions}, key=vkey)
-    outside = [r for r in searched if r not in releases_indexed]
+    if rel.updating_to and _release(rel.updating_to) != _release(version or rel.updating_to):
+        versions.append(rel.updating_to)  # an update in progress is a fact about the cluster, given a version or not
+    wanted = sorted({_release(v) for v in versions}, key=vkey)
+    outside = [r for r in wanted if r not in releases_indexed]
     running = versions[0] if versions else None
     run_release = _release(running) if running else None
     not_indexed = bool(run_release and run_release in outside)
-    if outside and not not_indexed:
-        caveats.append(
-            f"OpenShift {', '.join(outside)} is not in the indexed release notes ({', '.join(releases_indexed)}): only "
-            f"{run_release} was searched"
+    versions = [v for v in versions if _release(v) not in outside]
+    narrowed = [r for r in wanted if r not in outside]
+    # reasons the answer is incomplete because of the release; they count only when there is something to look up
+    release_gaps: list[str] = []
+    if rel.not_openshift:
+        release_gaps.append(
+            "the cluster is not OpenShift (it does not serve ClusterVersion): the OpenShift release notes do not "
+            "apply, so no operator was looked up"
         )
-        incomplete.append(f"OpenShift {', '.join(outside)} is not indexed")
-        versions = [v for v in versions if _release(v) not in outside]
-        searched = [r for r in searched if r not in outside]
+    if okd:
+        release_gaps.append(
+            f"{okd} is an OKD version, not OpenShift Container Platform: the indexed release notes are OpenShift's, so "
+            "no operator was looked up"
+        )
+        caveats.append(
+            f"the cluster runs OKD ({okd}), the community distribution: the indexed release notes are OpenShift "
+            "Container Platform's and do not describe OKD's builds, so every operator is not determined"
+        )
+    if not_indexed:
+        release_gaps.append(
+            f"OpenShift {run_release} is not in the indexed release notes ({', '.join(releases_indexed)}), so no "
+            "operator was looked up"
+        )
+    elif outside:
+        release_gaps.append(f"OpenShift {', '.join(outside)} is not indexed")
+    if rel.updating_to:
+        release_gaps.append(f"the cluster is updating to {rel.updating_to}")
+    if rel.from_desired and not given:
+        release_gaps.append("the version is status.desired: no update has completed")
+    applicable = not (rel.not_openshift or okd or not_indexed)
     newest = _exact(corpus.newest.get(run_release or ""))
     now = _exact(running)
-    if newest is not None and now is not None and now > newest:
+    if applicable and newest is not None and now is not None and now > newest:
         caveats.append(
             f"the cluster is at {running}, past the newest {run_release} update in the index "
             f"({corpus.newest.get(run_release or '')}): issues reported after {as_of} are not included"
@@ -632,7 +663,7 @@ def assess(
     if rel.not_openshift:
         pass
     elif not version:
-        incomplete.append("the cluster's OpenShift version is not known: issues were not narrowed to a release")
+        release_gaps.append("the cluster's OpenShift version is not known: issues were not narrowed to a release")
         caveats.append(
             f"the cluster's OpenShift version is not known: every indexed release ({', '.join(releases_indexed)}) "
             f"was searched; {hints['version']}"
@@ -642,6 +673,7 @@ def assess(
             f"OpenShift {version} (release {run_release}) is outside the indexed release notes "
             f"({', '.join(releases_indexed)}, as of {as_of}): every operator is not determined"
         )
+    update_at = len(caveats)  # the update's caveat says what was searched, which is known after the lookups
     if knowledge.get("recordsRejected"):
         caveats.append(
             f"{knowledge['recordsRejected']} record(s) of the loaded release notes were not usable and were left "
@@ -649,12 +681,13 @@ def assess(
         )
     if knowledge.get("localCopyNote"):
         caveats.append(str(knowledge["localCopyNote"]))
-    ctx = _Ctx(versions, searched, running, as_of)
+    ctx = _Ctx(versions, narrowed, running, as_of)
 
     # -- every operator
     package_rows: dict[str, list[dict[str, Any]]] = {}
     entries: list[dict[str, Any]] = []
     dead_seen: set[str] = set()
+    looked_up = False
     for op in inv["operators"]:
         entry: dict[str, Any] = {
             k: op[k]
@@ -685,8 +718,17 @@ def assess(
         elif state == "csv-missing":
             verdict = "not-determined"
             reason = "its Subscription names an installed CSV that was not read: whether it is installed is not known"
+        elif state in ("csv-not-read", "status-not-read"):
+            verdict = "not-determined"
+            reason = (
+                f"whether it is installed was not read (inventory state {state}), so it was not looked up: a "
+                "Subscription is not an installed operator"
+            )
         elif rel.not_openshift:
             verdict, reason = "not-determined", "the cluster is not OpenShift: the OpenShift release notes do not apply"
+        elif okd:
+            verdict = "not-determined"
+            reason = "the cluster runs OKD: the OpenShift Container Platform release notes do not describe its builds"
         elif not_indexed:
             verdict = "not-determined"
             reason = f"OpenShift {run_release} is not in the indexed release notes ({', '.join(releases_indexed)})"
@@ -709,11 +751,12 @@ def assess(
                 "of this package, not this one"
             )
         else:
+            looked_up = True
             if package not in package_rows:
                 package_rows[package] = _rows(corpus.hits.get(package, []), ctx)
             rows = package_rows[package]
             dead = corpus.dead.get(package, [])
-            where = f"OpenShift {', '.join(searched)}" if searched else "every indexed release (release not known)"
+            where = f"OpenShift {', '.join(narrowed)}" if narrowed else "every indexed release (release not known)"
             named_n = sum(r["tier"] == "named" for r in rows)
             if named_n:
                 verdict = "named"
@@ -778,6 +821,18 @@ def assess(
         )
     if counts_missing := sum(1 for e in entries if e["inventoryState"] == "csv-missing"):
         incomplete.append(f"{counts_missing} operator(s) name a CSV that was not read")
+    if assessable:  # with nothing to look up, the release it would have been looked up in is not a gap
+        incomplete.extend(release_gaps)
+    # what was searched: the cluster's release(s), or every indexed one when the release is not known -- and nothing
+    # when no operator reached the lookup
+    searched = (narrowed if version else list(releases_indexed)) if looked_up else []
+    if rel.updating_to:
+        said = f"searched OpenShift {', '.join(searched)}" if searched else "no release was searched"
+        if outside:
+            said += (
+                f"; OpenShift {', '.join(outside)} is not in the indexed release notes ({', '.join(releases_indexed)})"
+            )
+        caveats.insert(update_at, f"an update to {rel.updating_to} is in progress: {said}")
     caveats = [f"inventory: {c}" for c in inv["caveats"]] + caveats
     if counts["no-alias"]:
         caveats.append(
@@ -803,21 +858,36 @@ def assess(
         names = ", ".join(f"{e['namespace']}/{e.get('csv') or e.get('package') or '?'}" for e in undetermined[:10])
         caveats.append(f"the inventory could not say whether these are installed: {names}")
 
+    complete = not incomplete  # one list decides it, so the flag and the reasons cannot disagree
     if inv["verdict"] in ("not-determined", "no-olm"):
         answer = inv["verdict"]
-    elif rel.not_openshift or not_indexed:
-        answer = "not-determined"
-    elif incomplete:
-        answer = "partial"
-    elif assessable == 0:
+    elif assessable == 0 and complete:
         answer = "nothing-to-match"
+    elif assessable and not applicable:
+        answer = "not-determined"
+    elif not complete:
+        answer = "partial"
     elif not_matched == 0 and unverified == 0:
         answer = "matched"
     elif matched == 0:
         answer = "not-matched"
     else:
         answer = "partly-matched"
-    complete = answer in ("matched", "partly-matched", "not-matched", "nothing-to-match", "no-olm")
+    if rel.not_openshift:
+        inapplicable = (
+            f"the cluster is not OpenShift, so the OpenShift release notes do not apply to its {len(entries)} "
+            "operator(s)"
+        )
+    elif okd:
+        inapplicable = (
+            f"the cluster runs OKD ({okd}), and the indexed release notes are OpenShift Container Platform's, so none "
+            f"of the {len(entries)} operator(s) was looked up"
+        )
+    else:
+        inapplicable = (
+            f"OpenShift {run_release} is not in the indexed release notes ({', '.join(releases_indexed)}, as of "
+            f"{as_of}), so none of the {len(entries)} operator(s) was looked up"
+        )
 
     issues_out: dict[str, Any] = {}
     for package, rows in sorted(package_rows.items()):
@@ -837,7 +907,7 @@ def assess(
     out: dict[str, Any] = {
         "verdict": answer,
         "complete": complete,
-        "allMatched": complete and not_matched == 0 and unverified == 0,
+        "allMatched": answer == "matched",  # at least one operator, every one looked up, none unverified
         "summary": _summary(
             answer,
             inv,
@@ -845,14 +915,12 @@ def assess(
             assessable,
             not_matched,
             unverified,
-            searched,
+            narrowed,
             as_of,
             open_total,
             fixed_total,
             incomplete,
-            rel,
-            run_release,
-            releases_indexed,
+            inapplicable,
             len(entries),
             not_assessed,
         ),
@@ -872,6 +940,7 @@ def assess(
             "releasesSearched": searched,
             "indexed": None if not version or rel.not_openshift else not not_indexed,
             "notOpenShift": rel.not_openshift,
+            "okd": okd is not None,
         },
         "knowledge": {
             "knownIssuesAsOf": as_of,
@@ -935,9 +1004,7 @@ def _summary(
     open_total: int,
     fixed_total: int,
     incomplete: list[str],
-    rel: Release,
-    run_release: str | None,
-    releases: list[str],
+    inapplicable: str,
     total: int,
     not_assessed: int,
 ) -> str:
@@ -949,32 +1016,28 @@ def _summary(
             f"not determined: the installed operators could not be read ({inv['summary']}). That does not mean no "
             "operator has a reported issue."
         )
-    if rel.not_openshift:
-        return (
-            "not determined: the cluster is not OpenShift, so the OpenShift release notes do not apply to its "
-            f"{total} operator(s)"
-        )
     if answer == "not-determined":
-        return (
-            f"not determined: OpenShift {run_release} is not in the indexed release notes ({', '.join(releases)}, as "
-            f"of {as_of}), so none of the {total} operator(s) was looked up"
-        )
+        return f"not determined: {inapplicable}"
     if answer == "nothing-to-match":
         return f"no installed operator to look up ({total} subscribed, none installed)" + tail
     where = f"the OpenShift {', '.join(searched)} release notes" if searched else "the indexed release notes"
-    lead = (
-        f"{not_matched} of {assessable} installed operator(s) were not matched against the release notes"
-        if not_matched
-        else f"all {assessable} installed operator(s) were looked up"
+    unverified_said = (
+        f"{unverified} of them only from a catalog kube-noob cannot verify as Red Hat's build ({RED_HAT_CATALOG})"
     )
+    if not_matched:
+        lead = f"{not_matched} of {assessable} installed operator(s) were not matched against the release notes"
+    elif unverified:
+        lead = f"all {assessable} installed operator(s) were looked up, {unverified_said}"
+    else:
+        lead = f"all {assessable} installed operator(s) were looked up"
     parts = [
         lead,
         f"{counts['named']} named and {counts['mentioned']} only mentioned in {where} as of {as_of} ({open_total} "
         f"open, {fixed_total} fixed issue(s))",
         f"{counts['none-named']} looked up and named in no issue",
     ]
-    if unverified:
-        parts.append(f"{unverified} from a catalog other than {RED_HAT_CATALOG}")
+    if unverified and not_matched:
+        parts.append(f"{unverified} matched only from a catalog kube-noob cannot verify as Red Hat's build")
     head = "; ".join(parts)
     if not_assessed:
         head += f"; {not_assessed} operator(s) not assessed"
@@ -1000,6 +1063,7 @@ def render_text(out: dict[str, Any]) -> str:
         version += f"; updating to {cl['updatingTo']}"
     lines = [
         f"operator known issues ({out['inventory']['source']}): {out['verdict']} -- {out['summary']}",
+        f"complete: {'yes' if out['complete'] else 'no'}; all matched: {'yes' if out['allMatched'] else 'no'}",
         f"cluster: {version}; searched {', '.join(cl['releasesSearched']) or 'no release'}",
         f"release notes: {k['source']}, OpenShift {', '.join(k['openshiftReleases'])}, as of {k['knownIssuesAsOf']}"
         + (f"; {k['recordsRejected']} record(s) left out as unusable" if k.get("recordsRejected") else ""),
@@ -1035,6 +1099,8 @@ def render_text(out: dict[str, Any]) -> str:
         lines.append(f"      issues: {block['open']} open, {block['fixed']} fixed")
         for row in block["rows"]:
             head = f"      {row['id']} [{row['class']}, {row['tier']}, OpenShift {', '.join(row['releases'])}]"
+            if row.get("ids"):
+                head += f" (ids {', '.join(row['ids'])})"
             lines.append(head + (f" {row['listed']}" if row.get("listed") else ""))
             lines.append(f"        {row['summary']}")
             lines.append(f"        via {row['via']!r}: {row['tierWhy']}")

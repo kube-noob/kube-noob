@@ -10,6 +10,7 @@ named for a behaviour; most are about a miss, a gap or a guess not reading as "n
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import random
@@ -383,7 +384,7 @@ def test_metallb_frr_bug_is_a_mention_of_the_platform() -> None:
 # -- the verdict and the gates -------------------------------------------------------------------------------------
 
 
-def test_only_unaliased_operators_is_not_matched_and_fails_require_matched(
+def test_only_unaliased_operators_is_not_matched_and_all_matched_says_so(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     docs = [d for n in range(30) for d in pair(f"op{n}", f"ns{n}", f"op{n}.v1.0.0")]
@@ -396,8 +397,8 @@ def test_only_unaliased_operators_is_not_matched_and_fails_require_matched(
     base = ["operators", "issues", "-f", str(f), "--openshift-version", "4.21.9", "--top", "3"]
     assert main([*base, "--require-complete"]) == 0  # complete keeps the inventory's meaning: the evidence was read
     capsys.readouterr()
-    assert main([*base, "--require-matched"]) == 5
-    assert "30 of 30 installed operator(s) were not matched" in capsys.readouterr().err
+    assert main([*base, "--format", "json"]) == 0  # the documented gate: jq -e '.allMatched == true'
+    assert json.loads(capsys.readouterr().out)["allMatched"] is False
 
 
 def test_some_unaliased_operators_is_partly_matched() -> None:
@@ -938,3 +939,318 @@ def test_the_plugin_ships_the_join() -> None:
     sys.modules["kn_sync_plugin_r5"] = mod
     spec.loader.exec_module(mod)
     assert "kube_noob.operator_issues" in mod.plugin_modules(ROOT)
+
+
+# -- second review: the headline, the gate and the numbers beside them agree ----------------------------------------
+
+NOT_SERVED = 'the server doesn\'t have a resource type "%s"'
+FORBIDDEN_CV = 'clusterversions.config.openshift.io "version" is forbidden'
+OKD_VERSIONS = ("4.20.0-okd-scos.6", "4.20.0-0.okd-scos-2025-06-20-105747", "4.15.0-0.okd-2024-03-10-010116")
+
+
+def no_olm_live(cv_error: str | None = None, cv: Any = None) -> dict[str, Any]:
+    errors = {r: NOT_SERVED % r for r in ("clusterserviceversions", "subscriptions", "installplans", "operatorgroups")}
+    if cv_error:
+        errors["clusterversions"] = cv_error
+    backend = FakeBackend({"clusterversions": [cv]} if cv is not None else {}, errors)
+    return oi.assess(ops.collect_live(backend, []), release=oi.live_release(backend))
+
+
+def _synthetic(*extra: known_issues.Issue) -> known_issues.Index:
+    issues, meta = known_issues.bundled()
+    return known_issues.Index(issues + list(extra), meta)
+
+
+def _issue(issue_id: str, kind: str, minor: str, version: str, text: str, **kw: Any) -> known_issues.Issue:
+    return known_issues.Issue(
+        id=issue_id,
+        ids=kw.pop("ids", (issue_id,)),
+        kind=kind,
+        minor=minor,
+        version=version,
+        text=text,
+        source="https://github.com/openshift/openshift-docs/blob/" + "a" * 40 + "/modules/x.adoc",
+        issued=None,
+        fixed_in=kw.pop("fixed_in", None),
+    )
+
+
+@functools.cache
+def _every_verdict_path() -> dict[str, dict[str, Any]]:
+    vpa = pair("vertical-pod-autoscaler", "vpa", "vpa.v1")
+    unaliased = pair("my-operator", "m", "my.v1")
+    nothing = [{"kind": "ClusterServiceVersionList", "items": []}, sub("ptp", "p", "ptp-operator")]
+    paths: dict[str, dict[str, Any]] = {
+        "matched": assess(*vpa),
+        "partly-matched": assess(*vpa, *unaliased),
+        "not-matched": assess(*unaliased),
+        "unverified catalog only": assess(*pair("metallb-operator", "m", "m.v1", source="mirror")),
+        "version not known": assess(*vpa, version=None),
+        "release not indexed": assess(*vpa, version="4.18.5"),
+        "nothing to match": assess(*nothing),
+        "nothing to match, version not known": assess(*nothing, version=None),
+        "nothing to match, release not indexed": assess(*nothing, version="4.18.5"),
+        "nothing to match, not openshift": live(nothing[1:], error=NOT_SERVED % "clusterversions"),
+        "blind input": assess({"kind": "ConfigMap", "metadata": {"name": "x"}}),
+        "csv not read": assess(csv("other.v1", "a"), sub("vpa", "a", "vertical-pod-autoscaler", "vpa.v4.21.0")),
+        "not openshift": live(vpa, error=NOT_SERVED % "clusterversions"),
+        "clusterversion forbidden": live(vpa, error=FORBIDDEN_CV),
+        "no-olm, clusterversion forbidden": no_olm_live(FORBIDDEN_CV),
+        "no-olm, not openshift": no_olm_live(NOT_SERVED % "clusterversions"),
+        "no-olm, openshift 4.21.9": no_olm_live(cv=cv_doc(("4.21.9", "Completed"))),
+        "update to an unindexed release": live(vpa, cv_doc(("4.23.0", "Partial"), ("4.22.3", "Completed"))),
+        "update from an unindexed release": live(vpa, cv_doc(("4.20.1", "Partial"), ("4.19.9", "Completed"))),
+        "update, version given": live(vpa, cv_doc(("4.22.1", "Partial"), ("4.21.9", "Completed")), given="4.21.9"),
+        "settled": live(vpa, cv_doc(("4.21.9", "Completed"))),
+    }
+    for v in OKD_VERSIONS:
+        paths[f"okd live {v}"] = live(vpa, cv_doc((v, "Completed")))
+        paths[f"okd given {v}"] = assess(*vpa, version=v)
+    return paths
+
+
+@pytest.mark.parametrize("label", sorted(_every_verdict_path()))
+def test_complete_is_exactly_an_empty_incomplete_because_on_every_verdict_path(label: str) -> None:
+    out = _every_verdict_path()[label]
+    assert out["complete"] is (out["incompleteBecause"] == []), (label, out["complete"], out["incompleteBecause"])
+    if out["complete"]:
+        assert out["verdict"] in ("matched", "partly-matched", "not-matched", "nothing-to-match", "no-olm"), label
+    else:
+        assert out["verdict"] in ("partial", "not-determined"), label
+    if out["allMatched"]:
+        assert out["verdict"] == "matched" and out["counts"]["assessable"] > 0 and out["complete"], label
+    if out["cluster"]["notOpenShift"] and out["counts"]["assessable"]:
+        assert any("not OpenShift" in r for r in out["incompleteBecause"]), label
+    if out["cluster"]["indexed"] is False and out["counts"]["assessable"]:
+        assert any("not in the indexed release notes" in r for r in out["incompleteBecause"]), label
+    if out["counts"]["assessable"] == 0:  # nothing to look up: no reason about the release it was not looked up in
+        assert not any("version" in r or "OpenShift" in r for r in out["incompleteBecause"]), label
+    text = oi.render_text(out)
+    assert f"complete: {'yes' if out['complete'] else 'no'}" in text, label
+
+
+def test_all_matched_is_never_true_when_nothing_was_looked_up() -> None:
+    nothing = assess({"kind": "ClusterServiceVersionList", "items": []}, sub("ptp", "p", "ptp-operator"))
+    assert nothing["verdict"] == "nothing-to-match" and nothing["complete"] is True
+    assert nothing["allMatched"] is False
+    no_olm = no_olm_live(cv=cv_doc(("4.21.9", "Completed")))
+    assert no_olm["verdict"] == "no-olm" and no_olm["complete"] is True and no_olm["allMatched"] is False
+    forbidden = no_olm_live(FORBIDDEN_CV)
+    assert forbidden["verdict"] == "no-olm" and forbidden["complete"] is True and forbidden["incompleteBecause"] == []
+    assert forbidden["allMatched"] is False
+    assert assess(*pair("vertical-pod-autoscaler", "vpa", "vpa.v1"))["allMatched"] is True  # the real case still is
+
+
+def test_there_is_no_matching_gate_and_require_complete_says_why_it_refuses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    f = tmp_path / "ops.yaml"
+    f.write_text(y(*pair("vertical-pod-autoscaler", "vpa", "vpa.v1")))
+    base = ["operators", "issues", "-f", str(f)]
+    with pytest.raises(SystemExit) as gone:  # removed: exit 5 means unread evidence, not a gap in kube-noob's table
+        main([*base, "--openshift-version", "4.21.9", "--require-matched"])
+    assert gone.value.code == 2
+    capsys.readouterr()
+    assert main([*base, "--openshift-version", "4.18.5", "--require-complete"]) == 5
+    err = capsys.readouterr().err
+    assert "OpenShift 4.18 is not in the indexed release notes" in err
+    assert main([*base, "--openshift-version", OKD_VERSIONS[0], "--require-complete"]) == 5
+    assert "OKD" in capsys.readouterr().err
+    assert main([*base, "--openshift-version", "4.21.9", "--require-complete"]) == 0
+    capsys.readouterr()
+    assert "require-matched" not in (ROOT / "src" / "kube_noob" / "cli.py").read_text()
+
+
+def test_a_known_issue_fixed_in_a_later_minor_is_listed_until_that_fix() -> None:
+    index = _synthetic(
+        _issue(
+            "OCPBUGS-990001", "known", "4.20", "4.20", "The Vertical Pod Autoscaler leaks memory.", fixed_in="4.21.3"
+        )
+    )
+    c = ops.from_manifests(y(*pair("vertical-pod-autoscaler", "vpa", "vpa.v1")))
+    before = oi.assess(c, release=oi.Release(given="4.21.1"), index=index)
+    r = row(before, "vertical-pod-autoscaler", "OCPBUGS-990001")
+    assert r["class"] == "fixed" and r["fixedInOpenShift"] == "4.21.3" and r["fixReleaseVsCluster"] == "after"
+    assert r["releases"] == ["4.20"]
+    at_fix = oi.assess(c, release=oi.Release(given="4.21.3"), index=index)
+    assert "OCPBUGS-990001" not in {x["id"] for x in rows(at_fix, "vertical-pod-autoscaler")}
+    # the neighbours: its own release still lists it, and a release before its own does not
+    assert row(
+        oi.assess(c, release=oi.Release(given="4.20.9"), index=index), "vertical-pod-autoscaler", "OCPBUGS-990001"
+    )
+    assert "OCPBUGS-990001" not in {
+        x["id"] for x in rows(oi.assess(c, release=oi.Release(given="4.22.1"), index=index), "vertical-pod-autoscaler")
+    }
+
+
+@pytest.mark.parametrize("version", OKD_VERSIONS)
+def test_okd_is_not_read_as_openshift_on_any_surface(version: str, tmp_path: Path) -> None:
+    vpa = pair("vertical-pod-autoscaler", "vpa", "vpa.v1")
+    kit = tk.Toolkit(load_settings())
+    files = {
+        G % ("vpa", "clusterserviceversions.yaml"): y({"kind": "List", "items": [vpa[0]]}),
+        G % ("vpa", "subscriptions.yaml"): y({"kind": "List", "items": [vpa[1]]}),
+        CV_PATH % "version": y(cv_doc((version, "Completed"))),
+    }
+    bundle = ingest.open_bundle(mgdir(tmp_path, files))
+    from kube_noob.mustgather import operators as mg_operators
+
+    in_must_gather = oi.for_must_gather(mg_operators.collect(bundle), analyse.analyse(bundle).as_dict()["cluster"])
+    for label, out in (
+        ("must-gather", in_must_gather),
+        ("live", live(vpa, cv_doc((version, "Completed")))),
+        ("flag", assess(*vpa, version=version)),
+        ("tool", kit.operator_known_issues(tk.OperatorKnownIssuesIn(manifests=y(*vpa), openshift_version=version))),
+    ):
+        assert out["verdict"] == "not-determined" and out["complete"] is False, label
+        assert out["allMatched"] is False and out["issues"] == {}, label
+        assert {o["verdict"] for o in out["operators"]} == {"not-determined"}, label
+        assert any("OKD" in r for r in out["incompleteBecause"]), label
+        assert any("OKD" in c and "OpenShift" in c for c in out["caveats"]), label
+        assert "OKD" in out["summary"] and "OKD" in oi.render_text(out), label
+    # the neighbour: an OpenShift pre-release is still OpenShift
+    assert assess(*vpa, version="4.21.0-rc.1")["cluster"]["indexed"] is True
+
+
+def _cv_with_condition(name: str, version: str) -> str:
+    doc = cv_doc((version, "Completed"), name=name)
+    doc["status"]["conditions"] = [{"type": "Failing", "status": "True", "message": "the payload failed"}]
+    return y(doc)
+
+
+def test_a_must_gather_whose_clusterversion_is_not_named_version_stays_openshift(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kube_noob.mustgather import report as mg_report
+
+    files = {
+        CV_PATH % "other": _cv_with_condition("other", "4.22.1"),
+        CV_PATH % "zzz": _cv_with_condition("zzz", "4.20.3"),
+    }
+    root = mgdir(tmp_path, files)
+    bundle = ingest.open_bundle(root)
+    analysis = analyse.analyse(bundle)
+    cluster = analysis.as_dict()["cluster"]
+    assert cluster["version"] == "" and "ClusterVersion present but none named version" in cluster["clusterVersionNote"]
+    failing = [f for f in analysis.findings if f.analyser == "clusterversion" and "Failing" in f.title]
+    assert sorted(f.object for f in failing) == ["ClusterVersion/other", "ClusterVersion/zzz"]
+    assert cluster["clusterVersionNote"] in analyse.render_text(analysis)
+    rep = mg_report.build(bundle, analysis, match_known=lambda t, p, v: {}, match_memory=lambda *a: {})
+    assert rep["platform"] == "openshift"
+    md = mg_report.markdown(rep)
+    assert "a Kubernetes cluster" not in md and "no ClusterVersion collected" not in md
+    assert "ClusterVersion present but none named version" in md
+    # the neighbours: one named version is used as before, and none at all is still not collected
+    named = mgdir(tmp_path / "n", {CV_PATH % "version": _cv_with_condition("version", "4.22.1")})
+    one_cv = analyse.analyse(ingest.open_bundle(named))
+    assert one_cv.as_dict()["cluster"]["version"] == "4.22.1"
+    assert [f.object for f in one_cv.findings if "Failing" in f.title] == ["ClusterVersion/version"]
+    bare = mgdir(tmp_path / "b", {G % ("p", "clusterserviceversions.yaml"): y(csv("x.v1", "p"))})
+    b = ingest.open_bundle(bare)
+    none_rep = mg_report.build(b, analyse.analyse(b), match_known=lambda t, p, v: {}, match_memory=lambda *a: {})
+    assert none_rep["platform"] == "kubernetes" and "no ClusterVersion collected" in mg_report.markdown(none_rep)
+
+
+def test_releases_searched_lists_only_what_was_searched_in_one_caveat() -> None:
+    vpa = pair("vertical-pod-autoscaler", "vpa", "vpa.v1")
+    up = live(vpa, cv_doc(("4.23.0", "Partial"), ("4.22.3", "Completed")))
+    assert up["cluster"]["releasesSearched"] == ["4.22"]
+    said = [c for c in up["caveats"] if "4.23" in c]
+    assert len(said) == 1 and "searched OpenShift 4.22" in said[0] and "both" not in said[0], said
+    assert {r for x in rows(up, "vertical-pod-autoscaler") for r in x["releases"]} <= {"4.20", "4.21", "4.22"}
+    down = live(vpa, cv_doc(("4.20.1", "Partial"), ("4.19.9", "Completed")))
+    assert down["cluster"]["releasesSearched"] == [] and down["issues"] == {}
+    assert not any("both releases are searched" in c for c in down["caveats"])
+    assert any("an update to 4.20.1 is in progress: no release was searched" in c for c in down["caveats"])
+    both = live(vpa, cv_doc(("4.22.1", "Partial"), ("4.21.9", "Completed")))
+    assert both["cluster"]["releasesSearched"] == ["4.21", "4.22"]
+    assert any("searched OpenShift 4.21, 4.22" in c for c in both["caveats"])
+    unknown = assess(*vpa, version=None)
+    assert unknown["cluster"]["releasesSearched"] == ["4.20", "4.21", "4.22"]  # every indexed release was searched
+    assert assess(*pair("my-operator", "m", "my.v1"))["cluster"]["releasesSearched"] == []  # nothing was looked up
+    assert "searched no release" in oi.render_text(assess(*pair("my-operator", "m", "my.v1")))
+
+
+def test_every_match_from_an_unverified_catalog_is_said_in_the_summary() -> None:
+    out = assess(
+        *pair("metallb-operator", "m", "m.v1", source="mirror"), *pair("ptp-operator", "p", "p.v1", source=None)
+    )
+    assert out["verdict"] == "partly-matched" and out["counts"]["notMatched"] == 0
+    assert out["summary"].startswith(
+        "all 2 installed operator(s) were looked up, 2 of them only from a catalog kube-noob cannot verify"
+    )
+    mixed = assess(*pair("metallb-operator", "m", "m.v1", source="mirror"), *pair("ptp-operator", "p", "p.v1"))
+    assert mixed["summary"].startswith("all 2 installed operator(s) were looked up, 1 of them only from a catalog")
+    assert assess(*pair("ptp-operator", "p", "p.v1"))["summary"].startswith(
+        "all 1 installed operator(s) were looked up;"
+    )
+
+
+def test_a_given_version_does_not_hide_an_update_in_progress() -> None:
+    vpa = pair("vertical-pod-autoscaler", "vpa", "vpa.v1")
+    for given in ("4.21.9", "4.21", "4.22.1"):
+        out = live(vpa, cv_doc(("4.22.1", "Partial"), ("4.21.9", "Completed")), given=given)
+        assert out["complete"] is False and out["cluster"]["updatingTo"] == "4.22.1", given
+        assert any("updating to 4.22.1" in r for r in out["incompleteBecause"]), given
+        assert any("an update to 4.22.1 is in progress" in c for c in out["caveats"]), given
+    within = live(vpa, cv_doc(("4.21.10", "Partial"), ("4.21.9", "Completed")), given="4.21.9")
+    assert within["complete"] is False and within["cluster"]["releasesSearched"] == ["4.21"]
+
+
+def test_the_text_view_gives_every_id_of_a_row() -> None:
+    index = _synthetic(
+        _issue(
+            "OCPBUGS-990010",
+            "known",
+            "4.22",
+            "4.22",
+            "The PTP Operator drops a lock.",
+            ids=("OCPBUGS-990010", "OCPBUGS-990011"),
+        )
+    )
+    out = oi.assess(
+        ops.from_manifests(y(*pair("ptp-operator", "p", "p.v1"))), release=oi.Release(given="4.22.3"), index=index
+    )
+    assert row(out, "ptp-operator", "OCPBUGS-990010")["ids"] == ["OCPBUGS-990010", "OCPBUGS-990011"]
+    assert "ids OCPBUGS-990010, OCPBUGS-990011" in oi.render_text(out)
+
+
+def test_the_must_gather_hint_says_what_the_command_shows_by_default() -> None:
+    hint = oi.for_must_gather(ops.from_manifests(y(*pair("ptp-operator", "p", "p.v1"))), {})["hints"]["issues"]
+    assert "see all of them" not in hint
+    assert f"--issues {oi.MAX_ISSUES_PER_PACKAGE}" in hint and str(oi.MAX_ISSUES_PER_PACKAGE) in hint
+
+
+@pytest.mark.parametrize("bad", ["4.21\n", " 4.21", "4.21 ", "4.21\t", "\n4.21"])
+def test_the_tool_refuses_a_version_with_whitespace_like_the_cli(
+    bad: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(ValueError):
+        tk.OperatorKnownIssuesIn(manifests="x: 1", openshift_version=bad)
+    with pytest.raises(ValueError):
+        tk.ClusterOperatorKnownIssuesIn(openshift_version=bad)
+    f = tmp_path / "x.yaml"
+    f.write_text(y(*pair("ptp-operator", "p", "p.v1")))
+    assert main(["operators", "issues", "-f", str(f), "--openshift-version", bad]) == 2
+    capsys.readouterr()
+
+
+def test_a_valid_local_copy_older_than_the_bundled_one_is_said(tmp_path: Path) -> None:
+    data = _write_corpus(tmp_path, {"retrievedAt": "2020-01-01", "records": [GOOD]})
+    k = known_issues.get_index(data).knowledge()
+    assert k["knownIssuesAsOf"] == "2026-10-27"
+    assert "older than the bundled" in k["localCopyNote"] and "2020-01-01" in k["localCopyNote"]
+    newer = _write_corpus(tmp_path / "n", {"retrievedAt": "2027-01-01", "records": [GOOD]})
+    assert "localCopyNote" not in known_issues.get_index(newer).knowledge()
+
+
+@pytest.mark.parametrize("state", ["csv-not-read", "status-not-read"])
+def test_an_operator_whose_install_was_not_read_is_never_named(state: str) -> None:
+    if state == "csv-not-read":
+        c = ops.from_sources([("subs.yaml", [sub("vpa", "a", "vertical-pod-autoscaler", "vpa.v1")])])
+    else:
+        c = ops.from_manifests(y(csv("vpa.v1", "a"), sub("vpa", "a", "vertical-pod-autoscaler", status=False)))
+    out = oi.assess(c, release=oi.Release(given="4.21.9"))
+    op = one(out, "vertical-pod-autoscaler")
+    assert op["inventoryState"] == state and op["verdict"] == "not-determined", op
+    assert out["issues"] == {} and out["allMatched"] is False

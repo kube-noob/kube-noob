@@ -615,6 +615,19 @@ def _ocp_version_field(description: str) -> Any:
     return Field(None, max_length=80, pattern=VERSION_FIELD_PATTERN, description=description)
 
 
+def _strict_ocp_version(value: Any) -> Any:
+    """The version exactly as the CLI's --openshift-version takes it. Runs before the model strips whitespace and
+    before the pattern, whose ``$`` would accept a trailing newline: "4.21\n" is refused, not read as 4.21."""
+    from kube_noob.operator_issues import parse_version
+
+    if value is not None and parse_version(value) is None:
+        raise ValueError(
+            "openshift_version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, no "
+            "leading zeros, no whitespace)"
+        )
+    return value
+
+
 class OperatorKnownIssuesIn(_In):
     manifests: str = Field(
         ...,
@@ -630,6 +643,8 @@ class OperatorKnownIssuesIn(_In):
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
     issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
 
+    _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
+
 
 class ClusterOperatorKnownIssuesIn(_In):
     namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
@@ -643,6 +658,8 @@ class ClusterOperatorKnownIssuesIn(_In):
     )
     top: int = Field(200, ge=1, le=500, description="How many operators to return.")
     issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
+
+    _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
 
 
 class BuildDiagnoseIn(_In):
