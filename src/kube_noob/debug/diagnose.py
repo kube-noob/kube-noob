@@ -741,4 +741,4 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         lines += ["", "## Recent logs (redacted)"]
         for name, text in result["logs"].items():
             lines += ["", f"### {name}", "```", text[-3000:], "```"]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kube_noob import __version__
+from kube_noob import __version__, sanitize
 from kube_noob.debug.cluster import redact_text
 from kube_noob.mustgather.analyse import SEVERITIES, Analysis
 from kube_noob.mustgather.ingest import GATHER_DIRS, Bundle
@@ -264,7 +264,7 @@ def markdown(r: dict[str, Any]) -> str:
         lines += ["", *extra]
     if r["signals"]:
         lines += ["", "## Signals", "", ", ".join(f"{_md(s['kind'])}:{_md(s['name'])}" for s in r["signals"])]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)
 
 
 def case_draft(r: dict[str, Any]) -> str:
@@ -318,7 +318,7 @@ def case_draft(r: dict[str, Any]) -> str:
     if r["nextSteps"]:
         lines += ["Read-only checks kube-noob suggests running first (paste their output into the case):", ""]
         lines += ["```bash", *(s["command"] for s in r["nextSteps"][:10]), "```"]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)
 
 
 def write(r: dict[str, Any], out_dir: Path, *, draft: bool) -> list[Path]:

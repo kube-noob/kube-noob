@@ -287,6 +287,26 @@ def test_a_workload_that_could_not_be_read_is_not_reported_as_absent_from_the_ma
         inventory_from_cluster(Cluster(WORKLOADS, errors=errors), "monitoring/prometheus", "shop/orders")
 
 
+def test_a_workload_answered_from_another_kind_says_which_kind_could_not_be_read() -> None:
+    """`shop/orders` names a Deployment first. When Deployments cannot be read and a Pod of that name can, the
+    answer is about the Pod -- and says that the Deployment, which would have been the one asked about, was not
+    looked at, rather than answering silently for a different object."""
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "orders", "namespace": "shop", "labels": {"app": "orders"}},
+        "spec": {"containers": [{"name": "c", "image": "o:1", "ports": [{"containerPort": 8080}]}]},
+    }
+    forbidden = 'Error from server (Forbidden): deployments.apps "orders" is forbidden: User "u" cannot get'
+    cluster = Cluster([*WORKLOADS, ALLOW_ALL, pod], errors={"deployments": forbidden})
+    _KINDS["pods"] = "Pod"
+    try:
+        inv = inventory_from_cluster(cluster, "shop/orders", "shop/orders")
+    finally:
+        del _KINDS["pods"]
+    assert any(n.startswith("shop/orders was read as a Pod, but deployments could not be read") for n in inv.notes)
+
+
 # -------------------------------------------------------------------- the same through a real kubectl process
 
 

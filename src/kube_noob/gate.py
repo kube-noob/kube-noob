@@ -770,7 +770,6 @@ def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
 _MD_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"} | {c: "\\" + c for c in "\\`*_[]!#~"}
 
 
@@ -779,7 +778,7 @@ def _cell(text: Any, limit: int = 300) -> str:
     path): control characters and line breaks become spaces so nothing starts a new heading or table row, HTML
     is entity-escaped and link, image, emphasis and code syntax is backslash-escaped, so a report cannot render as
     a different verdict, an image or a link in the job summary (red team, VUL1)."""
-    flat = _CONTROL.sub(" ", str(text))[:limit]
+    flat = sanitize.visible_squeezed(str(text))[:limit]
     return "".join(_MD_ESCAPE.get(c, c) for c in flat)
 
 
@@ -950,7 +949,7 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
-    return "\n".join(lines)
+    return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:

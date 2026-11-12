@@ -107,7 +107,7 @@ Off until `cluster.enabled` is true. The backends are `KubectlBackend` (runs `ku
 - HTTP methods the in-cluster backend sends: `GET`
 - Verbs the API server is asked for: `get`, `list` (`watch` is never requested: no `--watch`, no `watch=true`)
 - Flags it can pass: `--all-namespaces`, `--container`, `--context`, `--field-selector`, `--namespace`, `--output`, `--previous`, `--request-timeout`, `--selector`, `--tail`
-- API paths it builds: `/api/v1`, `/api/v1/namespaces/`, `/api/v1/namespaces/{namespace}/pods/{pod}/log`, `/apis/`, `/apis/{self.group_version}`, `/version`
+- API paths it builds: `/api/v1`, `/api/v1/namespaces/`, `/api/v1/namespaces/{namespace}/pods/{pod}/log`, `/apis/`, `/apis/{rdef.group_version}`, `/apis/{self.group_version}`, `/version`
 - Names, namespaces, selectors and containers taken from a caller must match strict patterns (`_NAME`, `_SELECTOR`, `_FIELD_SELECTOR`, `_CONTAINER` in `debug/cluster.py`), none of which admits `/`, `?`, `#` or a newline, so a name cannot add a path segment such as `/exec` or `/proxy`.
 - `resolve_resource` refuses `secrets` by name and any resource outside the allowlist below (48 resources, 64 short names); subresources such as `pods/exec` are not in it.
 - Output is redacted before it leaves the backend: 10 credential patterns for logs and text (markers `***JWT***`, `***PRIVATE KEY***`, `***aws-key-id***`, `***github-token***`, `***slack-token***`, `***vault-token***` and `***` for values), ConfigMap `data` and `binaryData` replaced by byte counts, sensitive `env` values, `last-applied-configuration` and sensitive annotations masked, `managedFields` dropped.
@@ -271,32 +271,55 @@ Where it is applied (found in the code):
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
 - `kube_noob/build/oci.py` `_json` calls `sanitize.loads_bounded`
+- `kube_noob/cli.py` `_tprint` calls `sanitize.visible_lines`
+- `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
+- `kube_noob/code/sarif.py` `_location` calls `sanitize.visible`
+- `kube_noob/code/sarif.py` `_s` calls `sanitize.visible_squeezed`
 - `kube_noob/code/sarif.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/code/ship.py` `_args` calls `sanitize.loads_bounded`
 - `kube_noob/debug/diagnose.py` `_selector` calls `sanitize.loads_bounded`
+- `kube_noob/debug/diagnose.py` `bundle_markdown` calls `sanitize.visible_lines`
+- `kube_noob/debug/policy.py` `explain` calls `sanitize.visible`
+- `kube_noob/drift.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/evals/problems.py` `parse` calls `sanitize.json_nesting_ok`
+- `kube_noob/gate.py` `_cell` calls `sanitize.visible_squeezed`
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
+- `kube_noob/gate.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/insight.py` `_json` calls `sanitize.json_nesting_ok`
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`
+- `kube_noob/kyverno_migrate.py` `_header` calls `sanitize.visible`
 - `kube_noob/memory/importers.py` `parse` calls `sanitize.loads_bounded`
+- `kube_noob/memory/model.py` `Command._one_clean_line` calls `sanitize.has_invisible`
+- `kube_noob/memory/replay.py` `markdown` calls `sanitize.visible_lines`
+- `kube_noob/mustgather/ingest.py` `Bundle.skip` calls `sanitize.visible`
+- `kube_noob/mustgather/ingest.py` `_meta` calls `sanitize.visible`
+- `kube_noob/mustgather/ingest.py` `_visit` calls `sanitize.has_invisible`
+- `kube_noob/mustgather/report.py` `case_draft` calls `sanitize.visible_lines`
+- `kube_noob/mustgather/report.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/operators.py` `_package_property` calls `sanitize.loads_bounded`
+- `kube_noob/report_html.py` `_esc` calls `sanitize.visible_lines`
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
 - `kube_noob/server/mcp_app.py` `build_server.knowledge_doc` calls `sanitize.clean`
 - `kube_noob/server/rest.py` `register.endpoint.handle` calls `sanitize.json_nesting_ok`
+- `kube_noob/signals/alertmanager.py` `_clean` calls `sanitize.visible`
 - `kube_noob/signals/alertmanager.py` `_load` calls `sanitize.json_nesting_ok`
 - `kube_noob/signals/core.py` `_parse` calls `sanitize.loads_bounded`
 - `kube_noob/sources/db_bundle.py` `_known_problems` calls `sanitize.loads_bounded`
 - `kube_noob/sources/db_bundle.py` `build` calls `sanitize.loads_bounded`
+- `kube_noob/sources/jira.py` `insights_markdown` calls `sanitize.visible_lines`
 - `kube_noob/sources/jira.py` `load_state` calls `sanitize.loads_bounded`
 - `kube_noob/ticket_changes.py` `sync_state` calls `sanitize.loads_bounded`
+- `kube_noob/tickets.py` `_clip` calls `sanitize.visible`
 - `kube_noob/tickets.py` `_ticket_shards` calls `sanitize.loads_bounded`
 - `kube_noob/tool_runner.py` `call` calls `sanitize.result`
 - `kube_noob/upgrade_risks.py` `bundled` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/kev.py` `parse` calls `sanitize.loads_bounded`
+- `kube_noob/vuln/reports.py` `_s` calls `sanitize.visible_squeezed`
 - `kube_noob/vuln/reports.py` `parse` calls `sanitize.loads_bounded`
+- `kube_noob/vuln/threat.py` `render_markdown` calls `sanitize.visible_lines`
 - `kube_noob/vuln/vex.py` `_corpus_records` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/vex.py` `_documents` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/vex.py` `load` calls `sanitize.loads_bounded`

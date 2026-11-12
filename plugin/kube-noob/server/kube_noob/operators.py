@@ -129,13 +129,6 @@ _SUFFIX = r"(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?"
 _SEMVER = re.compile(rf"^{_CORE}{_SUFFIX}\Z")
 # `<package>.v<semver>`, the naming convention OLM bundles follow; used only when no field states the version
 _NAMED_VERSION = re.compile(rf"\.v({_CORE}{_SUFFIX})\Z")
-_NOT_SERVED = re.compile(
-    r"the server (?:doesn't|does not) have a resource type \"(?P<r>[a-z]+)(?:\.operators\.coreos\.com)?\""
-)
-_IN_CLUSTER_404 = re.compile(
-    r"^Not found: GET /apis/operators\.coreos\.com/v1alpha1/(?:namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?"
-    r"(?P<r>[a-z]+)\Z"
-)
 
 State = Literal[
     "installed",
@@ -516,12 +509,11 @@ def _not_served(resource: str, message: str) -> bool:
     """A 404 because the API group is not served, recognised only in the exact words the two backends write for
     it: kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's "Not
     found" for this group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does
-    not exist -- is a read that failed, which is not determined. (``debug.netpol._tier_absent`` is a looser
-    substring match; this inventory does not use it.)"""
-    if "forbidden" in message.lower():
-        return False
-    m = _NOT_SERVED.search(message) or _IN_CLUSTER_404.match(message.strip())
-    return m is not None and m.group("r") == resource
+    not exist -- is a read that failed, which is not determined. The shapes live in one place for every live
+    reader, ``debug.cluster.classify_read_failure`` (G279)."""
+    from kube_noob.debug.cluster import classify_read_failure
+
+    return classify_read_failure(resource, message) == "not-served"
 
 
 def collect_live(backend: Any, namespaces: list[str]) -> Collected:

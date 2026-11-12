@@ -2888,12 +2888,11 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
-_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-
-
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped."""
-    print(_TERMINAL_CONTROL.sub("", text))
+    """Print text that may echo a manifest or a log. Every character that does not print -- terminal escapes, bidi
+    overrides, the tag block, soft hyphens, lone surrogates (which made print() itself raise) -- becomes a space;
+    newlines and tabs stay (``sanitize.visible_lines``, G279)."""
+    print(sanitize.visible_lines(text))
 
 
 def _print_denials(out: dict[str, Any]) -> None:

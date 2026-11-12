@@ -58,8 +58,13 @@ flowchart LR
 - MCP clients and model output are untrusted input: every tool validates with Pydantic, YAML is size/alias bounded.
   Text that came from outside is untrusted on the way out too: `kube_noob.sanitize` cleans every MCP result (invisible
   characters, role and tool-call markers, instruction phrases, exfiltrating Markdown) and flags it `untrusted`.
+  Terminal and file output -- the text view, Markdown job summaries and reports, SARIF, the HTML report, tickets --
+  goes through `sanitize.visible` and its variants (`visible_lines`, `visible_squeezed`, `has_invisible`), which
+  work on Unicode categories; before G279 eleven modules kept hand-written control-character lists that let the
+  Arabic letter mark, the soft hyphen, the tag block and bidi overrides through, and a test now fails if a module
+  writes its own list again.
   Pasted payloads are data too: an Alertmanager payload is read as JSON only (2 MB, 500 alerts, 64 labels, 2,000
-  characters per value, control characters dropped), and only an OpenShift release label sets the version.
+  characters per value, every non-printing character dropped), and only an OpenShift release label sets the version.
 - The Agent Skill (`skill/kube-noob/scripts/kn.py`) is a fourth surface over the same toolkit: it calls
   `kube_noob.tool_runner.call` (the code path `mcp_app.run_tool` uses), loads only the bundled copy of the server
   source next to it, and forces `offline: true`, web and cluster off and no model, whatever the config file or
@@ -78,6 +83,11 @@ flowchart LR
 - The admin lock (`offline: true`) is applied at config load and only tightens: it disables web, refuses corpus
   downloads and allows only loopback or `*.svc` model endpoints. `kube-noob doctor` reports the result.
 - Cluster access is read-only, allowlisted per resource, never Secrets, and redacts values before they reach a model.
+  A failed read is never taken for an absent one: `debug.cluster.classify_read_failure` recognises "not served" and
+  "not found" only in the exact words kubectl/oc and the in-cluster backend write for THIS resource, and calls
+  everything else -- an auth plugin "not found" on PATH, a proxy's 404, a bare "could not find the requested
+  resource" -- forbidden or not read; a response without an `items` list is a failed read (`list_items`), not
+  zero objects (G279).
   Diagnoses list read-only steps first; commands that execute or change state are labelled as needing approval.
   A structured playbook ties each root cause to the patterns that point at it, its own read-only steps and fixes
   (`debug.playbooks.Cause`, `debug.diagnose.likely_cause`); with no pattern matching, the first cause is shown.

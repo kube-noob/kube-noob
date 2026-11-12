@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
+from kube_noob import sanitize
+
 MAX_MEMBERS = 300_000
 MAX_TOTAL_BYTES = 16 * 2**30  # processed, uncompressed
 MAX_FILE_BYTES = 64 * 2**20  # a resource YAML kept whole
@@ -47,7 +49,6 @@ MAX_REPORTED = 200
 ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz")
 _NESTED = re.compile(r"\.(?:gz|tgz|tar|zip|xz|bz2|zst|7z|rar)$", re.I)
 _LOG = re.compile(r"\.log$|/logs/(?:rotated/)?[^/]+$")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 GATHER_DIRS = ("cluster-scoped-resources", "namespaces")
 
 
@@ -142,7 +143,7 @@ class Bundle:
             self.skipped_unlisted += 1
         ex = self.examples.setdefault(reason, [])
         if len(ex) < 5:
-            ex.append(_CONTROL.sub("?", path)[:300])
+            ex.append(sanitize.visible(path, replacement="?")[:300])
 
     def text(self, path: str) -> str:
         return self.files[path].decode("utf-8", "replace")
@@ -195,7 +196,7 @@ def _meta(bundle: Bundle, path: str, data: bytes) -> None:
     name = posixpath.basename(path)
     parent = posixpath.dirname(path)
     text = data[:4096].decode("utf-8", "replace")
-    lines = [_CONTROL.sub(" ", x).strip() for x in text.splitlines() if x.strip()][:3]
+    lines = [sanitize.visible(x).strip() for x in text.splitlines() if x.strip()][:3]
     bundle.files[path] = data[:4096]
     for prefix, root in bundle.roots.items():
         own = prefix == parent
@@ -264,7 +265,7 @@ def _visit(bundle: Bundle, path: str, size: int) -> str | None:
     if path.count("/") >= MAX_DEPTH:
         bundle.skip(f"nested deeper than {MAX_DEPTH} directories (not read)", path)
         return None
-    if _CONTROL.search(path):
+    if sanitize.has_invisible(path):  # bidi, tag and format characters too, not only C0 (G279)
         bundle.skip("control characters in the name (not read)", path)
         return None
     if secret_like(path):

@@ -170,16 +170,52 @@ _TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]{0,256}(
 _INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
-def visible(text: str) -> str:
-    """``text`` with every character that does not print replaced by a space, and terminal escape sequences
-    removed. The one place a shown string from untrusted input is made printable: a hand-kept list of invisible
-    code points missed U+061C, the soft hyphen and the tag block, so this works on Unicode categories instead.
-    Callers collapse whitespace and cap the length themselves."""
+def _invisible(ch: str) -> bool:
+    if ch.isascii():
+        return ch < " " or ch == "\x7f"
+    return unicodedata.category(ch) in _INVISIBLE_CATEGORIES
+
+
+def visible(text: str, *, replacement: str = " ", keep: str = "") -> str:
+    """``text`` with every character that does not print replaced by ``replacement`` (a space), and terminal escape
+    sequences removed. The one place a shown string from untrusted input is made printable: a hand-kept list of
+    invisible code points missed U+061C, the soft hyphen and the tag block, so this works on Unicode categories
+    instead. ``keep`` names characters left as they are (``visible_lines`` keeps the newline and the tab). Callers
+    collapse whitespace and cap the length themselves. Text with none of these characters is returned unchanged."""
+    stripped = _TERMINAL_ESCAPE.sub(replacement, text) if "\x1b" in text else text
     if text.isascii():
-        stripped = _TERMINAL_ESCAPE.sub(" ", text)
-        return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in stripped)
-    stripped = _TERMINAL_ESCAPE.sub(" ", text)
-    return "".join(" " if unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped)
+        return "".join(replacement if (ch < " " or ch == "\x7f") and ch not in keep else ch for ch in stripped)
+    return "".join(
+        replacement if ch not in keep and unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped
+    )
+
+
+def visible_lines(text: str) -> str:
+    """``visible`` for multi-line text -- a terminal line, a log, a whole Markdown document: the newline and the tab
+    are kept, every other character that does not print becomes a space and terminal escapes are removed."""
+    return visible(text, keep="\n\t")
+
+
+def visible_squeezed(text: str) -> str:
+    """``visible`` for one line, where each RUN of characters that do not print becomes a single space -- what a
+    C0-range substitution did, so a scanner's CR LF still reads as one space. Ordinary spaces are untouched."""
+    out: list[str] = []
+    run = False
+    for ch in visible(text, replacement="\x00"):
+        if ch == "\x00":
+            if not run:
+                out.append(" ")
+            run = True
+        else:
+            out.append(ch)
+            run = False
+    return "".join(out)
+
+
+def has_invisible(text: str, *, keep: str = "") -> bool:
+    """Whether ``text`` holds a character ``visible`` would replace (other than those in ``keep``), or a terminal
+    escape. For refusing a value outright -- a file name, a remembered command -- rather than cleaning it."""
+    return any(_invisible(ch) and ch not in keep for ch in text)
 
 
 def _chars(*points: int | tuple[int, int]) -> str:

@@ -34,7 +34,6 @@ VERSION_LABELS = ("openshift_version", "version")
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]{0,127}\Z")
 _OCP_RELEASE = re.compile(r"^4\.\d{1,2}(\.\d{1,3})?\Z")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -62,7 +61,7 @@ class Payload:
 
 def _clean(value: Any) -> str:
     text = value if isinstance(value, str) else ""
-    return " ".join(_CONTROL.sub(" ", text[: MAX_VALUE * 2]).split())[:MAX_VALUE]
+    return " ".join(sanitize.visible(text[: MAX_VALUE * 2]).split())[:MAX_VALUE]
 
 
 def _labels(value: Any) -> dict[str, str]:

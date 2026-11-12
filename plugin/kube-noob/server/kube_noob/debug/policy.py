@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from kube_noob import sanitize
 from kube_noob.catalog import OPENSHIFT_FAMILY
 from kube_noob.debug.cluster import redact_text
 from kube_noob.debug.steps import classify_step, split_comment
@@ -1198,9 +1199,6 @@ def _namespace(text: str) -> str | None:
     return None
 
 
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-
-
 def admission_signal(denial: dict[str, Any]) -> str:
     """The signal name of a denial: ``engine``, or ``engine:policy/rule`` (``kube_noob.signals`` kind admission)."""
     parts = [p for p in (denial.get("policy"), denial.get("rule")) if p]
@@ -1215,7 +1213,8 @@ def explain(text: str, platform: str | None = None) -> dict[str, Any]:
     """
     if len(text) > MAX_INPUT:
         text = text[-MAX_INPUT:]
-    text = redact_text(_CONTROL.sub("", text))
+    # dropped, not spaced, as before; newlines and tabs stay, because the patterns below read lines (G279)
+    text = redact_text(sanitize.visible(text, replacement="", keep="\n\t"))
     ns = _namespace(text)
     sa = re.search(r"system:serviceaccount:" + _NAME + r":(" + _NAME + r")", text)
     denials: list[Denial] = []

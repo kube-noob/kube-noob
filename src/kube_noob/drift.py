@@ -30,6 +30,7 @@ from typing import Any
 
 import yaml
 
+from kube_noob import sanitize
 from kube_noob.attack_paths import LIVE_RESOURCES
 from kube_noob.audit.podspec import LONG_RUNNING_EMBEDDED_KINDS
 from kube_noob.sanitize import MAX_JSON_DEPTH_FILE, loads_bounded
@@ -626,7 +627,7 @@ def markdown(report: dict[str, Any]) -> str:
         lines += ["", standing["note"], ""]
     for note in report.get("notes") or []:
         lines += [f"> {note}", ""]
-    return "\n".join(lines)
+    return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
 
 
 def load(path: Path) -> dict[str, Any]:

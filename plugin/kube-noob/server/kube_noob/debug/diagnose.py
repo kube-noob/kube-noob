@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from kube_noob import sanitize
-from kube_noob.debug.cluster import Backend, redact_text
+from kube_noob.debug.cluster import Backend, list_items, redact_text
 from kube_noob.debug.playbooks import EXIT_CODES, PLAYBOOKS, Cause, Playbook
 from kube_noob.debug.steps import classify_step, split_comment
 from kube_noob.errors import ClusterAccessError
@@ -612,11 +612,12 @@ def collect_evidence(backend: Backend, namespace: str, kind: str, name: str, log
             )
         sel = (obj.get("spec") or {}).get("selector") or {}
         sel_str = _selector_string(sel) if resource != "jobs" else f"job-name={name}"
-        pods = backend.get("pods", namespace=namespace, selector=sel_str or None).get("items", []) if sel_str else []
+        pods = list_items(backend.get("pods", namespace=namespace, selector=sel_str), "pods") if sel_str else []
     for pod in pods[:10]:
         lines.extend(_pod_summary(pod))
     lines.extend(_service_account_pull_secrets(backend, namespace, pods[:10]))
-    events = backend.get("events", namespace=namespace).get("items", [])
+    # a response without an items list is a failed read, not "no events" (G279)
+    events = list_items(backend.get("events", namespace=namespace), "events")
     names = {name} | {p.get("metadata", {}).get("name") for p in pods}
     rel = [
         e
@@ -740,4 +741,4 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         lines += ["", "## Recent logs (redacted)"]
         for name, text in result["logs"].items():
             lines += ["", f"### {name}", "```", text[-3000:], "```"]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)

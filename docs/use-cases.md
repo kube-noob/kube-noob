@@ -498,8 +498,11 @@ reverse, but an answer that holds under both still holds. A Calico version too c
 which does not say whether the cluster is on 3.31 or 3.32) is treated the same way. With `--live` the flag is
 usually unnecessary: Calico publishes its version in `clusterinformations.crd.projectcalico.org` and kube-noob
 reads it, so the answer uses the cluster's real CNI rather than an assumption. A cluster without that CRD is not
-running Calico and behaves as before; a read the token is not allowed to make says so and changes nothing; and an
-explicit `--cni` always wins, because a caller who passes it knows something a forbidden read cannot see.
+running Calico and behaves as before -- recognised only when the API says it does not serve the resource, not
+from any error that happens to say "not found". A read that failed (forbidden, an expired login, an auth plugin
+missing from PATH) says so and is treated like a CNI nobody documents: the admin tiers are evaluated both ways and
+the verdict is `undetermined` only where the two readings disagree (G279). An explicit `--cni` always wins, because
+a caller who passes it knows something a forbidden read cannot see.
 
 `kube-noob audit --cni calico:3.32` turns the same fact into a finding a CI gate fails on: **KN-N014** reports an
 `AdminNetworkPolicy` or `BaselineAdminNetworkPolicy` that this CNI no longer enforces, at HIGH, because a policy

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from kube_noob.audit.rules import SENSITIVE_ENV
 from kube_noob.config import Settings
@@ -299,6 +299,87 @@ def resolve_resource(resource: str) -> tuple[str, ResourceDef]:
     return r, ALLOWED_RESOURCES[r]
 
 
+#: What a failed read says about the thing it tried to read. Only the first two are facts about the cluster:
+#: ``not-served`` (this API resource does not exist on this cluster) and ``not-found`` (a named object does not
+#: exist, possible only when a name was asked for). ``forbidden`` and ``not-read`` are a read that failed, and
+#: neither may be taken as absence.
+ReadFailure = Literal["not-served", "not-found", "forbidden", "not-read"]
+
+# kubectl and oc, when discovery does not list the resource. cli-runtime v1.35.0
+# staging/src/k8s.io/cli-runtime/pkg/resource/builder.go, mappingFor:
+#   fmt.Errorf("the server doesn't have a resource type %q", groupResource.Resource)
+# (the resource is the plural alone, quoted; kubectl's checkErr prefixes "error: "). Accepting the plural with its
+# group too costs nothing and is what a hand-typed fake writes.
+_KUBECTL_NOT_SERVED = 'the server (?:doesn\'t|does not) have a resource type "{resource}(?:\\.{group})?"'
+# client-go v1.35.0 discovery/cached/memory/memcache.go: a group whose discovery failed is logged as
+#   "couldn't get resource list for %v: %v" (and the whole list as "couldn't get current server API group list").
+# When it is THIS resource's group, the "doesn't have a resource type" that follows is discovery failing, not
+# the API being absent. Another group failing -- an aggregated metrics API that is down -- says nothing about it.
+_DISCOVERY_FAILED = "couldn't get resource list for {group}/"
+_NO_GROUP_LIST = "couldn't get current server API group list"
+# kubectl for a named object: apimachinery v1.35.0 pkg/api/errors/errors.go NewNotFound,
+#   fmt.Sprintf("%s %q not found", qualifiedResource.String(), name)
+# printed by kubectl/pkg/cmd/util/helpers.go StandardErrorMessage as "Error from server (%s): %s".
+_KUBECTL_OBJECT_NOT_FOUND = 'Error from server \\(NotFound\\): {qualified} "{name}" not found'
+_FORBIDDEN = re.compile(r"(?i)\bforbidden\b")
+
+
+def classify_read_failure(resource: str, message: str, name: str | None = None) -> ReadFailure:
+    """Say what a backend's failed read means, recognising absence only in the exact words a backend uses for it.
+
+    ``not-served`` is kubectl/oc's "the server doesn't have a resource type" for THIS resource, or the in-cluster
+    backend's 404 for THIS resource's own list path. ``not-found`` is the same pair for a named object. A message
+    that merely contains "not found" or "NotFound" or "404" -- an auth plugin "not found" on PATH, a proxy's 404,
+    "the server could not find the requested resource" with no resource named, a namespace that does not exist --
+    is ``not-read``: the read failed and says nothing about whether the thing exists. A forbidden read is
+    ``forbidden`` whatever else the message says, because RBAC is checked before the API server routes the
+    request, so a 403 can hide an API that is not there just as well as one that is.
+    """
+    try:
+        plural, rdef = resolve_resource(resource)
+    except ClusterAccessError:
+        return "not-read"
+    if _FORBIDDEN.search(message):
+        return "forbidden"
+    group = rdef.group_version.split("/")[0] if "/" in rdef.group_version else ""
+    text = message.strip()
+    if group and _DISCOVERY_FAILED.format(group=group) in text:
+        return "not-read"
+    if _NO_GROUP_LIST in text:
+        return "not-read"
+    # The in-cluster backend writes exactly "Not found: GET <path>" for a 404 (debug/backends.py). Anchored at
+    # both ends, against the path this resource is read from, so another path's 404 cannot match.
+    base = "/api/v1" if rdef.group_version == "v1" else f"/apis/{rdef.group_version}"
+    ns = r"(?:/namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?"
+    in_cluster = f"^Not found: GET {re.escape(base)}{ns}/{re.escape(plural)}"
+    if name is None:
+        if re.search(_KUBECTL_NOT_SERVED.format(resource=re.escape(plural), group=re.escape(group)), text):
+            return "not-served"
+        if re.match(in_cluster + r"\Z", text):
+            return "not-served"
+        return "not-read"
+    qualified = f"{plural}.{group}" if group else plural
+    if re.search(_KUBECTL_OBJECT_NOT_FOUND.format(qualified=re.escape(qualified), name=re.escape(name)), text):
+        return "not-found"
+    # For a named object the in-cluster 404 cannot tell "no such object" from "no such API"; both mean it is not
+    # there to be read, which is all a named read asks.
+    if re.match(in_cluster + f"/{re.escape(name)}\\Z", text):
+        return "not-found"
+    if re.search(_KUBECTL_NOT_SERVED.format(resource=re.escape(plural), group=re.escape(group)), text):
+        return "not-found"
+    return "not-read"
+
+
+def list_items(data: Any, resource: str) -> list[Any]:
+    """The ``items`` of a list response, or a failed read. A response without an ``items`` list is not zero
+    objects: the backend returned something that is not a list, and reading it as empty is how a failed read
+    became "nothing there"."""
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise ClusterAccessError(f"{resource}: the response held no items list")
+    return items
+
+
 def _check(value: str | None, pattern: re.Pattern[str], what: str) -> None:
     if value is not None and not pattern.match(value):
         raise ClusterAccessError(f"Invalid {what}: {value!r}")
@@ -358,14 +439,25 @@ def cluster_info(backend: Backend) -> dict[str, Any]:
         "openshift": None,
         "channel": None,
     }
+    not_read = ""
     try:
         cv = backend.get("clusterversions", name="version")
-    except (ClusterAccessError, KubeNoobError):
-        cv = {}  # not OpenShift, or the ServiceAccount may not read ClusterVersion
-    desired = (cv.get("status") or {}).get("desired") or {}
+    except (ClusterAccessError, KubeNoobError) as exc:
+        cv = {}
+        # Not served is not OpenShift. Forbidden, or any other failed read, is not "Kubernetes": a ServiceAccount
+        # that may not read ClusterVersion is the usual shape on OpenShift itself (G279).
+        if classify_read_failure("clusterversions", str(exc), name="version") not in {"not-served", "not-found"}:
+            not_read = f"ClusterVersion could not be read ({str(exc)[:300]}), so whether this is OpenShift is not known"
+    desired = (cv.get("status") or {}).get("desired") or {} if isinstance(cv, dict) else {}
     if desired.get("version"):
         out["openshift"] = desired["version"]
         out["channel"] = (cv.get("spec") or {}).get("channel")
-    out["platform"] = "openshift" if out["openshift"] else "kubernetes"
+    if out["openshift"]:
+        out["platform"] = "openshift"
+    elif not_read:
+        out["platform"] = None
+        out["platformNotRead"] = not_read
+    else:
+        out["platform"] = "kubernetes"
     out.update(compare(out["kubernetes"], out["openshift"]))
     return out
