@@ -113,8 +113,8 @@ def test_the_rewrite_does_not_depend_on_the_terminal() -> None:
 def test_an_escape_between_identifier_characters_is_marked_and_in_prose_removed() -> None:
     assert sanitize.visible_lines("web\x1b[31mx", mark=True) == "web<ESC>x"
     assert sanitize.visible_lines("web\x1b[31m\x1b[1mx", mark=True) == "web<ESC>x"
-    assert sanitize.visible_lines("a \x1b[31mred\x1b[0m.", mark=True) == "a red."
-    assert sanitize.visible_lines("web\x1b[31mx") == "webx"  # without mark: removed, as for MCP
+    assert sanitize.visible_lines("a \x1b[31mred\x1b[0m, done", mark=True) == "a red, done"
+    assert sanitize.visible_lines("web\x1b[31mx", mark=False) == "web x"  # never a splice (fourth review)
 
 
 # -------------------------------------------------------------------- 7: annotations clean, then escape

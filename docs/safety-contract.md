@@ -277,7 +277,6 @@ Where it is applied (found in the code):
 - `kube_noob/cli.py` `_dispatch` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/cli.py` `_memory` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/cli.py` `_posture_drift` calls `sanitize.defuse_workflow_commands`
-- `kube_noob/cli.py` `_tprint` calls `sanitize.visible_lines`
 - `kube_noob/cli.py` `_unexpected` calls `sanitize.one_line`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.visible`

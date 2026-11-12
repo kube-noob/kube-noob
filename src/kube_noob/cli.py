@@ -174,6 +174,17 @@ def _raw_stdout() -> Any:
     return getattr(sys.stdout, "_inner", sys.stdout)
 
 
+def _write_document(text: str) -> None:
+    """A whole document to stdout, past the text boundary, in 64 KiB pieces and then flushed HERE, inside the
+    command: a reader that went away mid-document (`| head -c 10`) raises BrokenPipeError where `_main` turns it
+    into exit 141. Written in one piece, the rest of it waited in the buffer for the final flush, the error was
+    lost there, and a truncated document exited 0 or 1 (G279, fourth review)."""
+    out = _raw_stdout()
+    for i in range(0, len(text), 65536):
+        out.write(text[i : i + 65536])
+    out.flush()
+
+
 def _workflow_command(line: str) -> None:
     """A GitHub workflow command kube-noob builds on purpose (``gate --github-annotations``): the one kind of line
     the output boundary lets through as a command (G279)."""
@@ -190,11 +201,10 @@ def _emit(obj: Any, fmt: str) -> None:
     are terminal-safe and load back to exactly the data (G279)."""
     from kube_noob.yamlio import dump_yaml
 
-    out = _raw_stdout()
     if fmt == "json":
-        out.write(json_document(obj, indent=2, default=str) + "\n")
+        _write_document(json_document(obj, indent=2, default=str) + "\n")
     else:
-        out.write(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
+        _write_document(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
@@ -945,7 +955,7 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.format == "yaml":
             _emit(out, fmt)
         else:  # the AdmissionReview the API server would receive: a document, so past the text boundary (G279)
-            _raw_stdout().write(json_document(out, indent=1) + "\n")
+            _write_document(json_document(out, indent=1) + "\n")
         return 0 if out["response"]["allowed"] else 1
     context = None
     if ad.lookups:
@@ -2268,13 +2278,18 @@ def main(argv: list[str] | None = None) -> int:
     out, err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
     try:
-        return _main(a)
-    except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
-        return _unexpected(exc)
+        try:
+            rc = _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            rc = _unexpected(exc)
+        try:
+            sys.stdout.flush()  # writes a colon held back at the start of a line, and whatever is buffered
+        except BrokenPipeError:
+            return _pipe_closed()  # the reader left: exit 141, never the code of a truncated answer (G279)
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.flush()
+        return rc
     finally:
-        for stream in (sys.stdout, sys.stderr):
-            with contextlib.suppress(OSError, ValueError):
-                stream.flush()  # writes a colon held back at the start of a line
         sys.stdout, sys.stderr = out, err
 
 
@@ -2308,10 +2323,15 @@ def _main(a: argparse.Namespace) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 4
     except BrokenPipeError:
-        # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        return 141
+        return _pipe_closed()
+
+
+def _pipe_closed() -> int:
+    """`kube-noob ... | head`: the reader went away; exit quietly with 141, like other CLI tools. What is still
+    buffered goes to /dev/null, so the interpreter's own flush at exit cannot raise again."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    return 141
 
 
 def _dispatch(a: argparse.Namespace, s: Settings) -> int:
@@ -2373,7 +2393,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
                 # The document carries what was not read and not evaluated as notifications, and the operator
                 # still gets the notice on stderr: a partial audit must not look clean on either channel.
-                _raw_stdout().write(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
+                _write_document(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":
@@ -2419,7 +2439,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
         else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
-            _raw_stdout().write(res["manifests"])
+            _write_document(res["manifests"])
         print(
             yaml.safe_dump(
                 {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
@@ -2467,7 +2487,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
             else:
-                _raw_stdout().write(out["manifests"])
+                _write_document(out["manifests"])
             print(
                 yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
                 file=sys.stderr,
@@ -3022,10 +3042,10 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
 
 
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log. Every character that does not print -- terminal escapes, bidi
-    overrides, the tag block, soft hyphens, lone surrogates (which made print() itself raise) -- becomes a space;
-    newlines and tabs stay (``sanitize.visible_lines``, G279)."""
-    print(sanitize.visible_lines(text))
+    """Print text that may echo a manifest or a log. It goes to stdout as it is: the output boundary
+    (``_VisibleStream``) cleans and marks it there, once. Cleaning it here first, without marking, removed a
+    character inside a name before the boundary could show it (G279, fourth review)."""
+    print(text)
 
 
 def _print_denials(out: dict[str, Any]) -> None:
@@ -3204,7 +3224,7 @@ def _policy_generate(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(body, fmt)
         return 0
     if not a.output:
-        _raw_stdout().write(text)  # the document: safe_dump_all escapes every non-ASCII character
+        _write_document(text)  # the document: its dumper escapes every character that would not print
     rules = sorted({row["ruleId"] for row in g.generated})
     lines = [
         f"{len(g.documents)} policies for {len(rules)} rules ({', '.join(engines)}, mode {a.mode}, {platform})"

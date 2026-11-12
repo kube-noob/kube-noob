@@ -170,8 +170,8 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
 # starts none of these is a control character like any other.
 _TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]{0,512}(?:\x07|\x1b\\)?|[ -/]*[0-~])")
 
-#: The characters of a word an escape sequence can sit inside (`web<ESC>x`); not punctuation, so prose is clean.
-_WORD = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+#: A run of escape sequences; inside a name (`_IDENT` on both sides, the same set format characters use) it is
+#: shown as `<ESC>`, so `api<ESC>.internal` is not `api.internal` (fourth review).
 _ESCAPE_RUN = re.compile("(?:" + _TERMINAL_ESCAPE.pattern + ")+")
 
 
@@ -274,8 +274,11 @@ def _replaced(o: int) -> bool:
 
 
 def _printing_non_ascii(ch: str) -> bool:
+    """A non-ASCII character that prints: what a joiner or a variation selector can belong to. Not white space
+    (NBSP, U+2000-200A, U+3000): `one_line` strips it, and the selector it kept was then left on its own, so the
+    output failed `has_invisible` (G279, fourth review)."""
     o = ord(ch)
-    return o > 0x7F and not _replaced(o) and o not in _FORMAT and o not in _IGNORABLE
+    return o > 0x7F and not ch.isspace() and not _replaced(o) and o not in _FORMAT and o not in _IGNORABLE
 
 
 def _keep_in_context(text: str, i: int, o: int) -> bool:
@@ -301,18 +304,20 @@ def _keep_in_context(text: str, i: int, o: int) -> bool:
 
 def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, int] | None = None) -> str:
     """The one rule every output and every MCP result follows (``visible`` and ``clean`` both call it)."""
+    # Inside a name (an identifier character on both sides) nothing is ever removed without a trace: removing
+    # would join two halves into another name (`web<ESC>x` is not `webx`, `openshift<U+200B>-etcd` is not
+    # `openshift-etcd`). With `mark` the trace is a marker; without, the replacement, or a space (G279, reviews 3-4).
+    gap = replacement or " "
     if "\x1b" in text:
-        if mark:
-            # Inside a name, removing the sequence would join two halves into another name (`web<ESC>x` is not
-            # `webx`); in prose it is removed (G279, third review).
-            def esc(m: re.Match[str]) -> str:
-                a, b = m.start(), m.end()
-                inside = a > 0 and b < len(text) and text[a - 1] in _WORD and text[b] in _WORD
-                return "<ESC>" if inside else ""
+        source = text
 
-            text = _ESCAPE_RUN.sub(esc, text)
-        else:
-            text = _TERMINAL_ESCAPE.sub("", text)
+        def esc(m: re.Match[str]) -> str:
+            a, b = m.start(), m.end()
+            if a > 0 and b < len(source) and source[a - 1] in _IDENT and source[b] in _IDENT:
+                return "<ESC>" if mark else gap
+            return ""
+
+        text = _ESCAPE_RUN.sub(esc, text)
         if stats is not None:
             stats["escape"] = stats.get("escape", 0) + 1
     if "\r\n" in text:
@@ -321,7 +326,10 @@ def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, i
     if text.isascii():
         if not controls.search(text):
             return text
-        return controls.sub(replacement, text)
+        if replacement:
+            return controls.sub(replacement, text)
+        source = text
+        return controls.sub(lambda m: _dropped(source, m.start(), m.end(), mark, gap), text)
     has_controls = controls.search(text) is not None
     if not has_controls and not _NONASCII_SPECIAL.search(text):
         return text
@@ -348,8 +356,9 @@ def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, i
             out.append(seg)
             last = seg
         elif o < 0x20 or o == 0x7F or _replaced(o):
-            out.append(replacement)
-            last = replacement[-1:]
+            put = replacement or _dropped(text, start, end, mark, gap)
+            out.append(put)
+            last = put[-1:] or last
             if stats is not None:
                 stats["control"] = stats.get("control", 0) + 1
         elif _keep_in_context(text, start, o):
@@ -359,15 +368,13 @@ def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, i
             if stats is not None:
                 kind = "tag" if o in _TAG_CODES else "bidi" if o in _BIDI_CODES else "format"
                 stats[kind] = stats.get(kind, 0) + 1
-            if mark:
-                j = end
-                while j < len(text) and (ord(text[j]) in _FORMAT or ord(text[j]) in _IGNORABLE):
-                    j += 1
-                after = text[j : j + 1]
-                if last and after and last in _IDENT and after in _IDENT:
-                    marker = f"<U+{o:04X}>"
-                    out.append(marker)
-                    last = ">"
+            j = end
+            while j < len(text) and (ord(text[j]) in _FORMAT or ord(text[j]) in _IGNORABLE):
+                j += 1
+            after = text[j : j + 1]
+            if last and after and last in _IDENT and after in _IDENT:
+                out.append(f"<U+{o:04X}>" if mark else gap)
+                last = ">" if mark else gap[-1]
     out.append(text[pos:])
     return "".join(out)
 
@@ -375,7 +382,14 @@ def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, i
 _ANY_SPECIAL = re.compile(_NONASCII_SPECIAL.pattern + r"|[\x00-\x1f\x7f]")
 
 
-def visible(text: str, *, replacement: str = " ", keep: str = "", mark: bool = False) -> str:
+def _dropped(text: str, start: int, end: int, mark: bool, gap: str) -> str:
+    """What a character replaced by "" leaves: nothing, unless it sat inside a name (G279, fourth review)."""
+    if start > 0 and end < len(text) and text[start - 1] in _IDENT and text[end] in _IDENT:
+        return f"<U+{ord(text[start]):04X}>" if mark else gap
+    return ""
+
+
+def visible(text: str, *, replacement: str = " ", keep: str = "", mark: bool = True) -> str:
     """``text`` as it should reach a terminal or a file a person reads. The rule (G279), shared with ``clean``:
 
     * terminal control sequences (CSI, OSC -- hyperlinks and clipboard writes --, DCS, APC, PM, SOS) are removed;
@@ -384,9 +398,11 @@ def visible(text: str, *, replacement: str = " ", keep: str = "", mark: bool = F
       left alone (the newline and the tab for ``visible_lines``);
     * format and default-ignorable characters are removed: bidi overrides, embeddings, isolates and marks (LRM,
       RLM, ALM), the tag block, the soft hyphen, the BOM, zero-width spaces, interlinear annotation marks, the
-      Hangul fillers, the combining grapheme joiner, variation selectors and the reserved default-ignorables. With
-      ``mark``, one that sat inside an ASCII name (an identifier character on both sides) is shown as ``<U+200B>``
-      instead, so ``web<U+200B>x`` cannot pass for ``webx``;
+      Hangul fillers, the combining grapheme joiner, variation selectors and the reserved default-ignorables. One
+      that sat inside an ASCII name (an identifier character on both sides) is shown as ``<U+200B>`` instead, so
+      ``web<U+200B>x`` cannot pass for ``webx``; an escape sequence there as ``<ESC>``. ``mark=False`` shows the
+      replacement (or a space) there instead -- never nothing, which would splice the name. ``mark`` is the default
+      (fourth review: eight callers that did not pass it spliced names);
     * kept where the text needs them: ZWJ and ZWNJ, variation selectors after a printing non-ASCII character (emoji
       sequences, Devanagari, Sinhala, Malayalam, Persian, ideographic variation sequences), VS16 in a keycap, and
       the Mongolian selectors after a Mongolian letter;
@@ -408,7 +424,7 @@ def replace_surrogates(text: str) -> str:
     return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
 
 
-def visible_lines(text: str, *, mark: bool = False) -> str:
+def visible_lines(text: str, *, mark: bool = True) -> str:
     """``visible`` for multi-line text -- a terminal line, a log, a whole Markdown document: the newline and the tab
     are kept (CR LF becomes a newline), everything else that does not print is handled as ``visible`` says."""
     return _core(text, " ", "\n\t", mark)
@@ -423,7 +439,15 @@ def visible_squeezed(text: str) -> str:
 
 def one_line(text: str) -> str:
     """``visible`` with every run of white space collapsed to one space: a name or a message on one line."""
-    return " ".join(_core(text, " ", "", True).split())
+    out = " ".join(_core(text, " ", "", True).split())
+    # Idempotent (fourth review): removing a character can join two runs of combining marks into one longer than
+    # the cap, or leave a selector without its base once white space is collapsed. A second pass only cuts.
+    for _ in range(2):
+        again = " ".join(_core(out, " ", "", True).split())
+        if again == out:
+            break
+        out = again
+    return out
 
 
 #: The service-message prefixes CI systems read ANYWHERE in a line: GitHub's legacy ``##[`` (actions/runner
@@ -763,11 +787,21 @@ def _excerpt(s: str) -> str:
 _WS = re.compile(r"\s+")
 
 
+_MARKER = re.compile(r"<U\+[0-9A-F]{4,6}>|<ESC>")
+
+
 def _normalise(text: str, fold: bool = True) -> tuple[str, list[int]]:
     """A copy for phrase matching and, for each of its characters, the index of the original character it came
     from: colour codes, format characters and hyphenated line breaks dropped, entities decoded, look-alikes folded
     (when ``fold``), white space collapsed."""
-    if text.isascii() and "&" not in text and "\x1b" not in text and "_" not in text and "-\n" not in text:
+    if (
+        text.isascii()
+        and "&" not in text
+        and "\x1b" not in text
+        and "_" not in text
+        and "-\n" not in text
+        and "<" not in text
+    ):
         parts: list[str] = []
         idx: list[int] = []
         pos = 0
@@ -785,6 +819,8 @@ def _normalise(text: str, fold: bool = True) -> tuple[str, list[int]]:
     where: list[int] = []
     skip_until = -1
     ansi = {m.start(): m.end() for m in _ANSI.finditer(text)}
+    # a marker `visible` left where it removed a character inside a name reads as that character did: nothing
+    ansi |= {m.start(): m.end() for m in _MARKER.finditer(text)}
     entities = {m.start(): m for m in _ENTITY.finditer(text)}
     i = 0
     n = len(text)
@@ -858,7 +894,9 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
     # about a character (G279): escapes and format characters removed, controls replaced, joiners kept where a
     # script or an emoji needs them.
     stats: dict[str, int] = {}
-    head = _core(head, " ", "\n\t", False, stats)
+    # Marked, so a name in a structured result reads `openshift<U+200B>-etcd`, not `openshift-etcd`; the phrase
+    # matcher reads past the markers as it reads past the characters (fourth review).
+    head = _core(head, " ", "\n\t", True, stats)
     for kind, label in (("tag", "unicode-tags"), ("bidi", "bidi-override"), ("format", "zero-width")):
         if stats.get(kind):
             findings.append(Finding(label, f"{stats[kind]} character(s) removed", field))

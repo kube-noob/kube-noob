@@ -40,8 +40,9 @@ def _clean(text: str) -> bool:
 
 
 def test_the_shared_variants_keep_what_each_caller_needs() -> None:
-    assert sanitize.visible("a\u202eb") == "ab"  # format characters go without a space
-    assert sanitize.visible_lines("a\u202eb\nc\td\re") == "ab\nc\td e"
+    assert sanitize.visible("a \u202eb") == "a b"  # in prose, format characters go without a space
+    assert sanitize.visible("a\u202eb") == "a<U+202E>b"  # inside a name, marked (fourth review)
+    assert sanitize.visible_lines("a\u202eb\nc\td\re") == "a<U+202E>b\nc\td e"
     assert sanitize.visible_squeezed("a\r\n\u202e\u061cb  c") == "a b  c"
     assert sanitize.visible("a/\x07b", replacement="?") == "a/?b"
     assert sanitize.has_invisible("ls\u202e") and sanitize.has_invisible("ls\t-l")
@@ -54,9 +55,13 @@ def test_the_shared_variants_keep_what_each_caller_needs() -> None:
 # ------------------------------------------------------------------------------------------- the eleven modules
 
 
-def test_cli_terminal_lines(capsys: pytest.CaptureFixture[str]) -> None:
-    from kube_noob.cli import _tprint
+def test_cli_terminal_lines(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_tprint` leaves the cleaning to the output boundary (fourth review), so it is tested through it."""
+    import sys
 
+    from kube_noob.cli import _tprint, _VisibleStream
+
+    monkeypatch.setattr(sys, "stdout", _VisibleStream(sys.stdout))
     _tprint(f"name {HOSTILE}\nsecond line\twith a tab")
     out = capsys.readouterr().out
     assert _clean(out) and out.endswith("second line\twith a tab\n")
@@ -448,18 +453,21 @@ def test_text_in_scripts_that_need_joiners_survives_unchanged(name: str) -> None
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("a\u202eb", "ab"),  # format characters are removed without a space
-        ("pay\u200bpal", "paypal"),
-        ("x\u200dy", "xy"),  # a joiner between ASCII letters only splits a word
-        ("x\u200cy", "xy"),
+        # Inside a name a removed character leaves a marker, never nothing: `paypal` is another name (fourth review)
+        ("a\u202eb", "a<U+202E>b"),
+        ("pay\u200bpal", "pay<U+200B>pal"),
+        ("x\u200dy", "x<U+200D>y"),  # a joiner between ASCII letters only splits a word
+        ("x\u200cy", "x<U+200C>y"),
+        ("a \u202eb", "a b"),  # in prose: removed without a space
         ("\u05e9\u200f\u05dc", "\u05e9\u05dc"),  # RLM: invisible, removed without a space
         ("\ufeffkind", "kind"),
-        ("a\U000e0041b", "ab"),
-        ("soft\u00adhyphen", "softhyphen"),
-        ("a\ufff9b\ufffbc", "abc"),
-        ("a\x1b[31mred\x1b[0m", "ared"),  # escapes go to nothing: a space would split what they sat inside
-        ("a\x1b]8;;http://evil.example\x1b\\link\x1b]8;;\x1b\\b", "alinkb"),
-        ("a\x1b]52;c;ZWNobyBwd25k\x07b", "ab"),
+        ("a\U000e0041b", "a<U+E0041>b"),
+        ("soft\u00adhyphen", "soft<U+00AD>hyphen"),
+        ("a\ufff9b\ufffbc", "a<U+FFF9>b<U+FFFB>c"),
+        ("a\x1b[31mred\x1b[0m", "a<ESC>red"),  # inside a word: marked; at its end, removed
+        ("a \x1b[31mred\x1b[0m done", "a red done"),
+        ("a\x1b]8;;http://evil.example\x1b\\link\x1b]8;;\x1b\\b", "a<ESC>link<ESC>b"),
+        ("a\x1b]52;c;ZWNobyBwd25k\x07b", "a<ESC>b"),
         ("a\x9bb\x85c\x07d", "a b c d"),
         ("a\u2028b\u2029c", "a b c"),
         ("a\ud800b", "a b"),

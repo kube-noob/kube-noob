@@ -1213,7 +1213,8 @@ def explain(text: str, platform: str | None = None) -> dict[str, Any]:
     """
     if len(text) > MAX_INPUT:
         text = text[-MAX_INPUT:]
-    # dropped, not spaced, as before; newlines and tabs stay, because the patterns below read lines (G279)
+    # dropped, not spaced, as before -- except inside a name, where it is marked rather than splicing the name;
+    # newlines and tabs stay, because the patterns below read lines (G279)
     text = redact_text(sanitize.visible(text, replacement="", keep="\n\t"))
     ns = _namespace(text)
     sa = re.search(r"system:serviceaccount:" + _NAME + r":(" + _NAME + r")", text)
