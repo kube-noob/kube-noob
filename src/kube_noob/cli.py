@@ -3379,8 +3379,6 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
             _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
-        if out.get("notServed"):
-            _tprint("not served by this cluster: " + "; ".join(flat(n) for n in out["notServed"][:10]))
         for note in (out.get("assumptions") or [])[:10]:
             _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:

@@ -166,6 +166,81 @@ def test_legacy_bundle_migrates_to_current_apis() -> None:
     assert hpa["spec"]["metrics"][0]["resource"]["target"] == {"type": "Utilization", "averageUtilization": 70}
 
 
+_S010_CRITICAL = [
+    "/",
+    "/etc",
+    "/etc/",
+    "//etc",
+    "/etc/../etc",
+    "/proc",
+    "/var/lib/kubelet",
+    "/var/lib/kubelet/",
+    "/etc/kubernetes",
+    "/etc/kubernetes/pki",
+    "/etc/kubernetes/./admin.conf",
+    "/var/lib/kubelet/pki",
+    "/var/lib/kubelet/pods",
+    "/var/lib/kubelet/pods/abc/volumes",
+    "/var/run/docker.sock",
+    "/run/containerd/containerd.sock",
+    "/var/run/crio/crio.sock",
+    "/run/podman/podman.sock",
+    "/var/run/dockershim.sock",
+    "/var/run/cri-dockerd.sock",
+    "/root",
+    "/root/.ssh",
+    "/var/lib/etcd",
+    "/var/lib/etcd/member",
+]
+#: What every cluster mounts and what gives no node: kube-proxy, CNI plugins, CA bundles, the time zone, the
+#: machine id, kubelet plugin registration (the third review: a subtree rule made `gate --fail-on critical` fail on
+#: nearly every cluster).
+_S010_HIGH = [
+    "/run/xtables.lock",
+    "/var/run/calico",
+    "/var/run/cilium",
+    "/run/flannel",
+    "/etc/cni/net.d",
+    "/etc/localtime",
+    "/etc/ssl/certs",
+    "/etc/pki/ca-trust/extracted/pem",
+    "/etc/machine-id",
+    "/proc/sys/net",
+    "/var/lib/kubelet/device-plugins",
+    "/var/lib/kubelet/plugins_registry",
+    "/var/run/secrets",
+    "/var/run",
+    "/run",
+    "/lib/modules",
+    "/var/log",
+    "/ETC",
+    "etc",
+    "/var/lib/containerd",
+]
+
+
+@pytest.mark.parametrize(("path", "critical"), [(p, True) for p in _S010_CRITICAL] + [(p, False) for p in _S010_HIGH])
+def test_kn_s010_is_critical_for_credential_and_api_paths_only(path: str, critical: bool) -> None:
+    """Third review: KN-S010 escalated every path under /etc, /run, /var/run, /proc and /root to critical, which made
+    kube-proxy's xtables lock, CNI state and CA bundles fail `gate --fail-on critical`. Critical is the node's
+    credentials and API: the existing set, /etc/kubernetes and /var/lib/kubelet/{pki,pods} and below, /root and
+    /var/lib/etcd and below, and a runtime socket anywhere -- after `//`, a trailing `/` and `.`/`..` resolve."""
+    from kube_noob.audit.rules import takes_over_node
+
+    doc = (
+        "apiVersion: apps/v1\nkind: DaemonSet\nmetadata: {name: d, namespace: kube-system}\nspec:\n"
+        "  selector: {matchLabels: {app: d}}\n  template:\n    metadata: {labels: {app: d}}\n    spec:\n"
+        f"      volumes: [{{name: h, hostPath: {{path: {path!r}}}}}]\n"
+        "      containers: [{name: c, image: quay.io/acme/x:1.0.0, volumeMounts: [{name: h, mountPath: /h}]}]\n"
+    )
+    found = [f for f in analyze(doc, "kubernetes").findings if f.rule_id == "KN-S010"]
+    assert len(found) == 1
+    assert found[0].severity is (Severity.CRITICAL if critical else Severity.HIGH), path
+    assert takes_over_node(path) is critical, path
+    text = str(explain_rule("KN-S010"))
+    assert "/etc/kubernetes" in text and "/var/lib/etcd" in text
+
+
 def test_fixer_flips_explicit_privilege_escalation_on_openshift_only() -> None:
     from kube_noob.audit.fixer import fix_manifests
 

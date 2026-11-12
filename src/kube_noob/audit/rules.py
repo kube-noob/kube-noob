@@ -1493,25 +1493,41 @@ PSS_RESTRICTED_ALLOWED_ADD = frozenset({"NET_BIND_SERVICE"})
 SENSITIVE_ENV = re.compile(
     r"(PASS(WORD|WD)?|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY)", re.IGNORECASE
 )
-RUNTIME_SOCKETS = ("docker.sock", "containerd.sock", "crio.sock", "cri-dockerd.sock")
-#: Host directories that hand a container the node: the node's configuration and the cluster's PKI (/etc), the
-#: kubelet's state and every other pod's volumes (/var/lib/kubelet), the host's processes (/proc), root's home,
-#: and the runtime sockets (/var/run, /run). The directory itself or anything under it; `/` only as itself, since
-#: everything is under it. One list for the audit's KN-S010 and the attack-path scan, which kept two and disagreed
-#: (the scan scored /etc/kubernetes/pki as an ordinary host path, G273).
-NODE_TAKEOVER_DIRS = ("/etc", "/var/lib/kubelet", "/proc", "/root", "/var/run", "/run")
+#: Container runtime sockets: whoever reaches one starts privileged containers on the node. Matched as the last
+#: path component, wherever it is mounted from (/run, /var/run, /run/containerd, ...).
+RUNTIME_SOCKETS = (
+    "docker.sock",
+    "containerd.sock",
+    "crio.sock",
+    "cri-dockerd.sock",
+    "podman.sock",
+    "dockershim.sock",
+)
+#: KN-S010 is critical for these paths exactly: the whole host (`/`), its configuration and processes as a whole
+#: (`/etc`, `/proc`) and the kubelet's state directory itself. Not for what is under `/etc` or `/proc` in general:
+#: kube-proxy, CNI plugins, CA bundles and the time zone mount paths there on nearly every cluster, and a subtree
+#: rule made `gate --fail-on critical` fail on all of them (G273, third review).
+NODE_TAKEOVER_EXACT = ("/", "/etc", "/proc", "/var/lib/kubelet")
+#: ... and for these and anything under them: the cluster's PKI and kubeconfigs (/etc/kubernetes), the kubelet's
+#: client certificates and every pod's volumes, Secrets included (/var/lib/kubelet/pki, /var/lib/kubelet/pods),
+#: root's home (credentials, SSH keys) and etcd's data (every Secret of the cluster).
+NODE_TAKEOVER_TREES = ("/etc/kubernetes", "/var/lib/kubelet/pki", "/var/lib/kubelet/pods", "/root", "/var/lib/etcd")
 
 
 def takes_over_node(path: str) -> bool:
-    """True when a hostPath at `path` gives the container the node: one of NODE_TAKEOVER_DIRS or anything under
-    it, `/` itself, or a container runtime socket. `/etc/../`, `//etc` and a trailing slash are what they resolve
-    to."""
+    """True when a hostPath at `path` gives the container the node's credentials or its API: one of
+    NODE_TAKEOVER_EXACT, one of NODE_TAKEOVER_TREES or anything under it, or a container runtime socket. `//`, a
+    trailing `/` and `.` or `..` segments are what they resolve to; a relative path is never critical. One function
+    for the audit's KN-S010 and the attack-path scan's "node takeover", so the two cannot disagree."""
     import posixpath
 
-    norm = "/" + posixpath.normpath("/" + str(path)).lstrip("/")
-    if norm == "/" or any(norm.endswith(s) for s in RUNTIME_SOCKETS):
+    text = str(path)
+    if not text.startswith("/"):
+        return False
+    norm = "/" + posixpath.normpath(text).lstrip("/")
+    if norm in NODE_TAKEOVER_EXACT or norm.rsplit("/", 1)[-1] in RUNTIME_SOCKETS:
         return True
-    return any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_DIRS)
+    return any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_TREES)
 
 
 # --password=x / --token x / password=x style arguments (group 1: dashes, group 3: inline value). CREDENTIAL_FLAG_NAME
@@ -1827,8 +1843,11 @@ def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "security",
     Severity.HIGH,
     "Replace hostPath with a PVC, emptyDir, ConfigMap/Secret or a CSI ephemeral volume.",
-    "hostPath mounts let a container read or modify the node filesystem; container runtime sockets give full "
-    "node takeover.",
+    "hostPath mounts let a container read or modify the node filesystem. Critical where the path hands over the "
+    "node's credentials or API: `/`, `/etc`, `/proc` or `/var/lib/kubelet` themselves; `/etc/kubernetes`, "
+    "`/var/lib/kubelet/pki`, `/var/lib/kubelet/pods`, `/root` or `/var/lib/etcd` and anything under them; or a "
+    "container runtime socket (docker, containerd, cri-o, cri-dockerd, podman, dockershim) wherever it is mounted "
+    "from. Other host paths, such as CNI state, CA bundles or kube-proxy's xtables lock, are high.",
     ("k8s-pss",),
     ("Mounting Sensitive Host Directories", "Mount Container Runtime Socket"),
 )

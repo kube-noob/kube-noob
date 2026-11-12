@@ -397,7 +397,9 @@ def test_node_escape_legs_name_the_field_that_proves_them() -> None:
 def test_an_unexposed_workload_still_has_a_blast_radius() -> None:
     graph = _reach(SEEDED_DOCS, "cronjob/batch", "ops")
     assert graph["paths"] == [] and graph["exposure"] == []
-    assert "not reached by any exposure in the input" in graph["summary"]
+    # Read from files the exposure leg is open, and the summary says so rather than "not reached" (item 8).
+    assert "exposure not determined" in graph["summary"]
+    assert "not reached by any exposure" in _reach(SEEDED_DOCS, "cronjob/batch", "ops", whole_bundle=True)["summary"]
     assert any(e["to"] == "scope:cluster" for e in _edges(graph, "reaches"))
     assert "secrets:cluster" in {e["to"] for e in _edges(graph, "can read")}
 
@@ -1348,12 +1350,34 @@ def test_bootstrap_and_leader_election_rights_are_named_harmless_and_nothing_els
         assert _leg(one, "rbac")["status"] == "not determined", rule
 
 
-def test_a_resource_type_the_cluster_does_not_serve_is_an_answer_and_a_refusal_is_not() -> None:
-    """N2(b), N10: no Routes on vanilla Kubernetes is an answer, not "exposure not determined"; a refused list stays
-    open -- and a refused SCC list opens the RBAC leg once the account can create pods."""
+def test_a_list_the_cluster_did_not_answer_is_never_an_absence_live() -> None:
+    """N2(b), N10, revised by the third review: a 404 was read as "not served", and an Istio older than 1.22 (no
+    networking.istio.io/v1), a Gateway API older than v1.0 (HTTPRoute only at v1beta1), an unavailable
+    openshift-apiserver and the phrase inside a warning line all answer that way -- so a pod behind a
+    VirtualService read `exposure none, complete`. Without API discovery kube-noob cannot tell an absent group from
+    another version, so every failed list leaves its leg not determined; a refused SCC list opens the RBAC leg once
+    the account can create pods."""
     docs = [*_web(), *_bound([{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]}])]
     vanilla = br.reach(ap.collect_live(_NotServed(docs, ALL_UNSERVED), []), "deployment/web", "shop", live=True)
-    assert _leg(vanilla, "exposure")["status"] == "none" and vanilla["complete"] is True
+    assert _leg(vanilla, "exposure")["status"] == "not determined" and vanilla["complete"] is False
+    assert any("virtualservices" in r for r in _undetermined(vanilla))
+    assert not hasattr(ap, "not_served") and "notServed" not in ap.scan(ap.collect_live(_NotServed(docs, set()), []))
+    for words in (
+        "couldn't get resource list for route.openshift.io/v1: the server is currently unable to handle the request",
+        'Warning: something\nerror: the server doesn\'t have a resource type "virtualservices"',
+        "Not found: GET /apis/networking.istio.io/v1/namespaces/shop/virtualservices",
+    ):
+
+        class _Old(FakeBackend):
+            def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> Any:
+                from kube_noob.errors import ClusterAccessError
+
+                if resource in {"virtualservices", "httproutes", "routes"}:
+                    raise ClusterAccessError(words)  # noqa: B023 -- used inside this iteration only
+                return super().get(resource, name=name, namespace=namespace, **kw)
+
+        old = br.reach(ap.collect_live(_Old(docs, forbidden=set()), []), "deployment/web", "shop", live=True)
+        assert _leg(old, "exposure")["status"] == "not determined" and old["complete"] is False, words
     refused = br.reach(
         ap.collect_live(_NotServed(docs, ALL_UNSERVED - {"routes"}, forbidden={"routes"}), []),
         "deployment/web",
@@ -1371,13 +1395,9 @@ def test_a_resource_type_the_cluster_does_not_serve_is_an_answer_and_a_refusal_i
         "shop",
         live=True,
     )
-    assert any("securitycontextconstraints" in r and "privileged" in r for r in _undetermined(no_scc))
-    k8s = br.reach(ap.collect_live(_NotServed(pods, ALL_UNSERVED), []), "deployment/web", "shop", live=True)
-    assert not any("securitycontextconstraints" in r for r in _undetermined(k8s))
-    # The in-cluster backend's own 404 for a group the cluster does not serve is recognised as strictly.
-    assert ap.not_served("routes", "Not found: GET /apis/route.openshift.io/v1/namespaces/shop/routes")
-    assert not ap.not_served("routes", "Not found: GET /apis/route.openshift.io/v1/namespaces/shop/routes/x")
-    assert not ap.not_served("routes", "routes is forbidden: not found in cache")
+    scc = [r for r in _undetermined(no_scc) if "securitycontextconstraints" in r and "privileged" in r]
+    # The refusal is quoted whole or cut at a word, never mid-word.
+    assert scc and "is forbidden" in scc[0]
 
 
 def _httproute(backend: str = "web") -> dict[str, Any]:
@@ -1800,7 +1820,8 @@ def test_full_control_is_one_path_family_not_twelve() -> None:
 def test_two_different_workloads_of_one_name_keep_the_worse_in_the_threat_model() -> None:
     """Found diffing `vuln threat` against main: two Deployments shop/web, one benign and one privileged, kept the
     one last in the canonical order -- the benign one -- and the privileged node detail vanished. Main kept the last
-    in document order, so it depended on the file. The worse is kept, in any order, and the scan names the pair."""
+    in document order, so it depended on the file. Both are kept (their union, see the third review's test below),
+    in any order, and the scan names the pair."""
     benign = _web()[0]
     priv = copy.deepcopy(benign)
     priv["spec"]["template"]["spec"]["hostPID"] = True
@@ -1909,3 +1930,261 @@ def test_every_list_in_the_document_is_bounded_and_the_byte_cap_holds_for_any_in
         doc = _reach([_raycluster(groups, name_len)], "raycluster/rc", "shop", max_bytes=cap)
         assert len(json.dumps(doc)) <= cap, (groups, name_len, cap)
         jsonschema.validate(doc, br.SCHEMA, cls=jsonschema.Draft202012Validator)
+
+
+# --- third review (9445b1f) ----------------------------------------------------------------------------------------
+
+
+def _vs(name: str, ns: str, spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "apiVersion": "networking.istio.io/v1",
+        "kind": "VirtualService",
+        "metadata": {"name": name, "namespace": ns},
+        "spec": spec,
+    }
+
+
+def test_the_scan_calls_only_the_narrowed_paths_node_takeover() -> None:
+    """Item 1: the scan's "node takeover" label uses KN-S010's narrowed list, so kube-proxy's xtables lock is a host
+    path, not a takeover, and /etc/kubernetes/pki still is."""
+    for path, takeover in (("/run/xtables.lock", False), ("/etc/cni/net.d", False), ("/etc/kubernetes/pki", True)):
+        g = _reach(_web(volumes=[{"name": "h", "hostPath": {"path": path}}]), "deployment/web", "shop")
+        labels = [n["label"] for n in g["nodes"] if n["type"] == "capability"]
+        assert any(("node takeover" in x) is takeover for x in labels if path in x), (path, labels)
+
+
+def test_routes_from_namespaces_not_read_leave_exposure_open() -> None:
+    """Item 3: with --read-namespace shop, a VirtualService or HTTPRoute in another namespace can route to shop/web,
+    so `none` is not an answer; in files, an unmodelled routing object counts where its BACKEND is."""
+    live = br.reach(
+        ap.collect_live(FakeBackend([*_web(), _svc()], forbidden=set()), ["shop"]),
+        "deployment/web",
+        "shop",
+        live=True,
+        namespaces_read=["shop"],
+    )
+    assert _leg(live, "exposure")["status"] == "not determined"
+    assert "namespaces not read" in _leg(live, "exposure")["detail"]
+    grpc = {
+        "apiVersion": "gateway.networking.k8s.io/v1",
+        "kind": "GRPCRoute",
+        "metadata": {"name": "g", "namespace": "gw"},
+        "spec": {
+            "parentRefs": [{"name": "public"}],
+            "rules": [{"backendRefs": [{"name": "web", "namespace": "shop"}]}],
+        },
+    }
+    files = _reach([*_web(), _svc(), grpc], "deployment/web", "shop", whole_bundle=True)
+    assert (
+        _leg(files, "exposure")["status"] == "not determined" and "GRPCRoute/gw/g" in _leg(files, "exposure")["detail"]
+    )
+
+
+def test_two_workloads_of_one_name_are_both_kept_never_one_dropped() -> None:
+    """Item 4: "keep the worse" compared node weight before API rights, so a hostPID copy displaced a copy holding
+    cluster-admin's token, and `vuln threat` lost the identity. Both are kept, and the ambiguity is named."""
+    from kube_noob.vuln.threat import model
+
+    benign = _web()[0]
+    a = copy.deepcopy(benign)
+    a["spec"]["template"]["spec"]["hostPID"] = True
+    c = copy.deepcopy(benign)
+    c["spec"]["template"]["spec"]["serviceAccountName"] = "adm"
+    crb = _binding(
+        "ClusterRoleBinding",
+        "adm",
+        "ClusterRole",
+        "cluster-admin",
+        [{"kind": "ServiceAccount", "name": "adm", "namespace": "shop"}],
+    )
+    for docs in ([a, c, crb], [c, a, crb]):
+        r = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))["Deployment/shop/web"]
+        assert {x.name for x in r.node} == {"host namespace hostPID"}
+        assert "full control" in {cap.name for cap, _ in r.api} and r.copies == 2
+        text = "---\n".join(yaml.safe_dump(d) for d in docs)
+        out = model(text, platform="kubernetes")
+        ids = {i for app in out["applications"] for i in app["identities"]}
+        assert {"ServiceAccount/shop/adm", "ServiceAccount/shop/web"} <= ids
+        assert any("2 different objects named Deployment/shop/web" in n for n in out["ambiguous"])
+
+
+def _token_secret(name: str = "adm-token", account: str = "adm") -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "kubernetes.io/service-account-token",
+        "metadata": {"name": name, "namespace": "shop", "annotations": {"kubernetes.io/service-account.name": account}},
+    }
+
+
+def test_a_token_reaches_the_pod_by_every_secret_route_or_the_leg_is_open() -> None:
+    """Item 5: a projected `sources[].secret` of a token Secret is a token; an env or envFrom reference to a token
+    Secret, or to a Secret of unknown type, is not determined; read live (Secrets are never read), any Secret
+    reference leaves the leg open -- never "no ServiceAccount token is mounted"."""
+    off = {"automountServiceAccountToken": False}
+    projected = _web(
+        **off,
+        containers=[{"name": "c", "image": "i", "volumeMounts": [{"name": "t", "mountPath": "/creds"}]}],
+        volumes=[{"name": "t", "projected": {"sources": [{"secret": {"name": "adm-token"}}]}}],
+    )
+    g = _reach([*projected, _token_secret()], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "token")["status"] == "reached" and "ServiceAccount/shop/adm" in _leg(g, "token")["detail"]
+    env = [{"name": "T", "valueFrom": {"secretKeyRef": {"name": "adm-token", "key": "token"}}}]
+    for container in (
+        {"name": "c", "image": "i", "env": env},
+        {"name": "c", "image": "i", "envFrom": [{"secretRef": {"name": "adm-token"}}]},
+    ):
+        for extra in ([_token_secret()], []):  # a token Secret, and a Secret the input does not carry
+            g = _reach([*_web(**off, containers=[container]), *extra], "deployment/web", "shop", whole_bundle=True)
+            assert _leg(g, "token")["status"] == "not determined", (container, extra)
+    plain = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "Opaque",
+        "metadata": {"name": "adm-token", "namespace": "shop"},
+    }
+    g = _reach(
+        [*_web(**off, containers=[{"name": "c", "image": "i", "env": env}]), plain],
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert _leg(g, "token")["status"] == "none"
+    vol = _web(
+        **off,
+        containers=[{"name": "c", "image": "i", "volumeMounts": [{"name": "t", "mountPath": "/creds"}]}],
+        volumes=[{"name": "t", "secret": {"secretName": "db"}}],
+    )
+    live = br.reach(ap.collect_live(FakeBackend(vol, forbidden=set()), []), "deployment/web", "shop", live=True)
+    assert _leg(live, "token")["status"] == "not determined"
+
+
+def test_istio_delegates_and_mirrors_carry_the_parents_exposure() -> None:
+    """Item 6: a delegate VirtualService inherits its parent's gateways; an unresolved delegate is a gap; a mirror
+    sends traffic to the workload too."""
+    root = _vs(
+        "root",
+        "istio-system",
+        {
+            "gateways": ["istio-system/public"],
+            "hosts": ["x.example.com"],
+            "http": [{"delegate": {"name": "d", "namespace": "shop"}}],
+        },
+    )
+    child = _vs("d", "shop", {"http": [{"route": [{"destination": {"host": "web"}}]}]})
+    g = _reach([*_web(), _svc(), root, child], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "reached"
+    gap = _reach([*_web(), _svc(), root], "deployment/web", "shop", whole_bundle=True)
+    assert (
+        _leg(gap, "exposure")["status"] == "not determined"
+        and "VirtualService shop/d" in _leg(gap, "exposure")["detail"]
+    )
+    mirror = _vs(
+        "m",
+        "shop",
+        {
+            "gateways": ["istio-system/public"],
+            "http": [{"route": [{"destination": {"host": "other"}}], "mirror": {"host": "web"}}],
+        },
+    )
+    assert (
+        _leg(_reach([*_web(), _svc(), mirror], "deployment/web", "shop", whole_bundle=True), "exposure")["status"]
+        == "reached"
+    )
+
+
+def test_route_header_values_are_masked_before_they_leave_the_backend() -> None:
+    """Item 7: cluster_get on a VirtualService or HTTPRoute returned `Authorization: Basic ...` in clear."""
+    from kube_noob.debug.cluster import _redact_obj
+
+    hr = {
+        "kind": "HTTPRoute",
+        "spec": {
+            "rules": [
+                {
+                    "matches": [{"headers": [{"type": "Exact", "name": "x-api-key", "value": "k-123"}]}],
+                    "filters": [
+                        {"requestHeaderModifier": {"set": [{"name": "Authorization", "value": "Basic dXNlcjpwYXNz"}]}},
+                        {"responseHeaderModifier": {"add": [{"name": "x-token", "value": "t-456"}]}},
+                    ],
+                }
+            ]
+        },
+    }
+    vs = {
+        "kind": "VirtualService",
+        "spec": {"http": [{"headers": {"request": {"set": {"Authorization": "Bearer abc"}}}}]},
+    }
+    listed = {"items": [{k: v for k, v in vs.items() if k != "kind"}]}
+    from kube_noob.debug.cluster import _list_hint
+
+    for obj, hint in ((hr, None), (vs, None), (listed, _list_hint(listed, "virtualservices"))):
+        text = json.dumps(_redact_obj(obj, hint))
+        for secret in ("k-123", "dXNlcjpwYXNz", "t-456", "abc"):
+            assert secret not in text, (secret, text)
+        assert "Authorization" in text or "x-api-key" in text
+
+
+def test_the_summary_says_what_the_exposure_leg_says() -> None:
+    """Item 8: a hostPort pod's leg said reached and its summary "not reached by any exposure"."""
+    g = _reach(
+        _web(containers=[{"name": "c", "image": "i", "ports": [{"containerPort": 80, "hostPort": 8080}]}]),
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert _leg(g, "exposure")["status"] == "reached"
+    assert "not reached by any exposure" not in g["summary"] and "hostPort 8080" in g["summary"]
+
+
+def test_duplicates_the_scan_names_are_named_by_reach_too() -> None:
+    """Item 9: a duplicate RoleBinding (one copy binds web to cluster-admin) and a duplicate Ingress were named by
+    the scan and not by reach, which claimed complete."""
+    b1 = _binding("RoleBinding", "b", "ClusterRole", "cluster-admin", [{"kind": "User", "name": "bob"}])
+    b2 = _binding("RoleBinding", "b", "ClusterRole", "cluster-admin", [WEB])
+    g = _reach([*_web(), b1, b2], "deployment/web", "shop", whole_bundle=True)
+    assert any("2 different objects named RoleBinding/shop/b" in n for n in g["notRead"]) and g["complete"] is False
+    ing = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {"name": "i", "namespace": "shop"},
+        "spec": {"defaultBackend": {"service": {"name": "web", "port": {"number": 80}}}},
+    }
+    ing2 = copy.deepcopy(ing)
+    ing2["spec"]["rules"] = [{"host": "a.example.com"}]
+    g = _reach([*_web(), _svc(), ing, ing2], "deployment/web", "shop", whole_bundle=True)
+    assert any("2 different objects named Ingress/shop/i" in n for n in g["notRead"]) and g["complete"] is False
+
+
+def test_malformed_exposure_fields_are_unknowns_not_absences() -> None:
+    """Item 10: `gateways: gw` as a string, `parentRefs` as a string, `backendRefs` as a map and a Service
+    `selector: app=web` string read as nothing."""
+    cases = [
+        _vs("v", "shop", {"gateways": "istio-system/public", "http": [{"route": [{"destination": {"host": "web"}}]}]}),
+        {**_httproute(), "spec": {"parentRefs": "public", "rules": [{"backendRefs": [{"name": "web"}]}]}},
+        {**_httproute(), "spec": {"parentRefs": [{"name": "public"}], "rules": [{"backendRefs": {"name": "web"}}]}},
+    ]
+    for front in cases:
+        g = _reach([*_web(), _svc(), front], "deployment/web", "shop", whole_bundle=True)
+        assert _leg(g, "exposure")["status"] == "not determined", front
+        assert any("not a list" in n or "is not" in n for n in g["notRead"]), g["notRead"]
+    bad_svc = _svc(kind="LoadBalancer")
+    bad_svc["spec"]["selector"] = "app=web"
+    g = _reach([*_web(), bad_svc], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "not determined"
+    assert any("selector" in n for n in ap.scan(ap.Inventory.from_documents([*_web(), bad_svc]))["notRead"])
+
+
+def test_server_set_fields_do_not_make_two_objects() -> None:
+    """Minor: a `kubectl get -o yaml` copy and the applied file differ in resourceVersion, uid and status."""
+    a = _web()[0]
+    b = copy.deepcopy(a)
+    b["metadata"].update(
+        {"resourceVersion": "42", "uid": "u-1", "generation": 3, "creationTimestamp": "2026-01-01T00:00:00Z"}
+    )
+    b["status"] = {"replicas": 1}
+    g = _reach([*_web(), b], "deployment/web", "shop")  # no "2 different objects" error
+    assert g["anchor"]["resolved"] == ["Deployment/shop/web"]
+    none = _reach([*_web(), _svc()], "deployment/web", "shop", whole_bundle=True)
+    detail = _leg(none, "exposure")["detail"]
+    assert all(k in detail for k in ("Service", "Route", "Ingress", "HTTPRoute", "VirtualService")), detail

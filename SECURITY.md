@@ -63,7 +63,7 @@ each tier and what it needs.
 
 | Tier | Switch | Allows | Needs |
 |---|---|---|---|
-| R | `cluster.enabled` | get, list and logs on the allowlisted resources (including Roles, RoleBindings, ClusterRoles and ClusterRoleBindings for the attack-path scan, OLM ClusterServiceVersions and Subscriptions for the operator inventory, and Gateway API HTTPRoutes and Istio VirtualServices for the attack-path scan and the blast radius); Secrets never | get/list/watch RBAC |
+| R | `cluster.enabled` | get, list and logs on the allowlisted resources (including Roles, RoleBindings, ClusterRoles and ClusterRoleBindings for the attack-path scan, OLM ClusterServiceVersions and Subscriptions for the operator inventory, and Gateway API HTTPRoutes and Istio VirtualServices for the attack-path scan and the blast radius, with every header value a route sets or matches masked); Secrets never | get/list/watch RBAC |
 | R | `ci.githubEnabled` | GET of a repository's GitHub Actions runs, attempts and jobs, to `ci.githubApiUrl` only, no redirects | a token with `actions: read` in `$GITHUB_TOKEN` |
 | R | `rhacs.enabled` | GET of RHACS Central's policies (`/v1/policies`) and of the image scans you name (`/v1/images/<digest>`, `vuln report --rhacs-image`), to `rhacs.endpoint` only, no redirects | an RHACS API token that can read policies and images (for example the Analyst role) in `$ROX_API_TOKEN` |
 | P | `probe.enabled` | an ephemeral debug container or a probe Job | patch on `pods/ephemeralcontainers`; create and delete on Jobs (chart Role only when enabled) |

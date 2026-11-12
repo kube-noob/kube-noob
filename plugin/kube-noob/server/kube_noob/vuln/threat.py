@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kube_noob.attack_paths import Inventory, Reach, workload_reach
+from kube_noob.sanitize import visible
 from kube_noob.vuln import attack
 
 _STRIDE = {
@@ -366,8 +367,8 @@ def _workload_threats(
     if store:
         ev = _sorted(f for f in audit.by_namespace.get(r.namespace, []) if f["rule"] in TEMPLATES["TM-I01"].rules)
         out.append(Threat(TEMPLATES["TM-I01"], el, _status(ev), ev))
-    if r.token is not None:
-        sa, how = r.token
+    # Every token of every object of this name: two different Deployments of one name are both modelled (G273).
+    for sa, how in [t for t in (r.token, *r.other_tokens) if t is not None]:
         ev = _evidence(audit, [r.ref], TEMPLATES["TM-S02"].rules)
         out.append(
             Threat(TEMPLATES["TM-S02"], Element("identity", sa), "open", ev or [{"token": how}], f"mounted in {r.ref}")
@@ -469,7 +470,9 @@ def model(
                 "workloads": refs,
                 "entryPoints": [{"ref": k, "exposure": v} for k, v in sorted(entry_points.items())],
                 "dataStores": stores,
-                "identities": sorted({tok[0] for ref in refs if (tok := reach[ref].token)}),
+                "identities": sorted(
+                    {tok[0] for ref in refs for tok in (reach[ref].token, *reach[ref].other_tokens) if tok}
+                ),
                 "threats": rows,
                 "counts": {s: sum(1 for x in rows if x["status"] == s) for s in ("open", "mitigated", "not assessed")},
             }
@@ -481,6 +484,12 @@ def model(
         "attackVersion": attack.VERSION,
         "attribution": attack.ATTRIBUTION,
         "secretsIgnored": inv.dropped_unread,
+        # A name carried by different objects: which one runs is not known, so every one is modelled (G273).
+        "ambiguous": [
+            f"{reach[ref].copies} different objects named {ref} are in the input; all are modelled together"
+            for ref in sorted(reach)
+            if reach[ref].copies > 1
+        ],
         "statuses": {
             "open": "a mitigating rule fails on the element, or the right exists",
             "mitigated": "every mitigating rule passes on the element",
@@ -498,6 +507,8 @@ def _dedupe(threats: list[Threat]) -> list[Threat]:
 
 def render_markdown(out: dict[str, Any]) -> str:
     lines = [f"# Threat model ({out['platform']}{' ' + out['version'] if out.get('version') else ''})", ""]
+    for note in out.get("ambiguous") or []:
+        lines += [f"> {visible(note)}", ""]
     for app in out["applications"]:
         c = app["counts"]
         lines += [

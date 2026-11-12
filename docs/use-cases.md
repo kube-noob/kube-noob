@@ -871,9 +871,13 @@ matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what t
 a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway
 API routes), a Route or Ingress whose Service is not in the input, an RBAC object that is not the shape the API
 requires, and a name carried by two different objects (two Services of one name: each candidate's selector is
-followed and the path says which; two Roles of one name: neither is read). `notServed` lists the resource types
-a live cluster answered it does not serve, which is an answer, not a gap. OpenShift's legacy
-`authorization.openshift.io` Roles and bindings are read as the RBAC objects they proxy.
+followed and the path says which; two Roles of one name: neither is read), and an exposure field that is not
+the shape the API requires (a VirtualService `gateways` string, an HTTPRoute `backendRefs` map, a Service
+`selector` string). Read live, any list the cluster did not answer is in `notRead` -- a 404 included, because
+an Istio older than 1.22 or a Gateway API older than v1.0 answers 404 for the version kube-noob reads, and
+kube-noob does not read API discovery to tell them from a cluster without them. OpenShift's legacy
+`authorization.openshift.io` Roles and bindings are read as the RBAC objects they proxy. A VirtualService
+delegate takes its parent's gateways, and a mirror counts as a route.
 
 A workload whose pod spec is embedded in a CRD is scored per component, named `Kind/namespace/name[component]`: a
 Ray head and each worker group separately, a KServe predictor, transformer and explainer separately. Where the
@@ -916,9 +920,16 @@ rights is known to grant nothing ranked: self and access reviews (`selfsubjectac
 `tokenreviews` create, which tell the caller about authorization and identity and grant nothing to act with),
 leases (leader election), events, `<resource>/status` writes except `certificatesigningrequests/status`, role and
 binding writes without `bind` or `escalate`, impersonating only `userextras/*` (OpenShift binds every authenticated
-user to the scope one), and a TokenRequest for the account's own name. Anything else stays not determined. A
-resource type the cluster does not serve (no Routes on plain Kubernetes) is an answer; a refusal or a timeout is
-not. hostPort and hostNetwork put the pod on the node's network, and the exposure leg says so. Measured on an app
+user to the scope one), and a TokenRequest for the account's own name. Anything else stays not determined. Read
+live, a list the cluster did not answer leaves its leg not determined, 404 or refusal alike, so on a plain
+Kubernetes cluster a workload no Service reaches has its exposure not determined (no Routes, HTTPRoutes or
+VirtualServices could be listed); measured on the sets below read live from such a cluster, 18 of 25 legs are
+determined, against 22 when a 404 counted as an answer. Read with `--read-namespace`, an HTTPRoute or
+VirtualService in a namespace not read can route in, so exposure is not determined unless something read
+reaches the pod. With automount off, a Secret the pod reads by volume, projection or environment that may be
+a token (a token Secret, one the files do not carry, or any Secret read live) leaves the token leg not
+determined. hostPort and hostNetwork put the pod on the node's network, and the exposure leg and the summary say
+so. Two different workloads of one name are both kept (their union). Measured on an app
 with a leader-election Role, an operator with a typical ClusterRole and `system:auth-delegator`, and the bootstrap
 bindings every cluster carries (`--whole-bundle`): 8 of 10 legs are determined, against 6 of 10 before the named
 list; the two still open are the operator's writes to its own custom resource, which kube-noob cannot rank. A set of files cannot show the bindings, Services, Routes or

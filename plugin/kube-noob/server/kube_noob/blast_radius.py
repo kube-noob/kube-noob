@@ -94,6 +94,8 @@ _ALIASES = {
 }
 _PLURAL = {kind: plural for plural, kind in ap.LIVE_RESOURCES.items()}
 _EXPOSURE_READS = ("services", "routes", "ingresses", "httproutes", "virtualservices")
+_EXPOSURE_KINDS = ("Service", "Route", "Ingress", "HTTPRoute", "VirtualService")
+_EXPOSURE_NAMES = "Service, Route, Ingress, HTTPRoute or VirtualService"
 
 _EVIDENCE = {
     "type": "object",
@@ -457,6 +459,39 @@ def _readable_targets(g: _Graph, grant: ap.Grant) -> list[str]:
     return [g.node(f"secrets:namespace/{ns}", "secret", f"every Secret in namespace {ns}")]
 
 
+def _secret_refs(spec: dict[str, Any]) -> list[tuple[str, str]]:
+    """(Secret name, field) for every Secret the pod spec reads: a `secret` volume, a projected `secret` source,
+    `env[].valueFrom.secretKeyRef` and `envFrom[].secretRef`, in every kind of container."""
+    out: list[tuple[str, str]] = []
+    for i, v in enumerate(spec.get("volumes") or [] if isinstance(spec.get("volumes"), list) else []):
+        if not isinstance(v, dict):
+            continue
+        name = (v.get("secret") or {}).get("secretName") if isinstance(v.get("secret"), dict) else None
+        if isinstance(name, str) and name:
+            out.append((name, f"spec.volumes[{i}].secret"))
+        proj = v.get("projected")
+        sources = proj.get("sources") if isinstance(proj, dict) else None
+        for j, src in enumerate(sources if isinstance(sources, list) else []):
+            s = src.get("secret") if isinstance(src, dict) else None
+            if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"]:
+                out.append((s["name"], f"spec.volumes[{i}].projected.sources[{j}].secret"))
+    for key in ("initContainers", "containers", "ephemeralContainers"):
+        cs = spec.get(key)
+        for ci, c in enumerate(cs if isinstance(cs, list) else []):
+            if not isinstance(c, dict):
+                continue
+            for ei, e in enumerate(c.get("env") or [] if isinstance(c.get("env"), list) else []):
+                vf = e.get("valueFrom") if isinstance(e, dict) else None
+                ref = vf.get("secretKeyRef") if isinstance(vf, dict) else None
+                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]:
+                    out.append((ref["name"], f"spec.{key}[{ci}].env[{ei}].valueFrom.secretKeyRef"))
+            for ei, e in enumerate(c.get("envFrom") or [] if isinstance(c.get("envFrom"), list) else []):
+                ref = e.get("secretRef") if isinstance(e, dict) else None
+                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]:
+                    out.append((ref["name"], f"spec.{key}[{ci}].envFrom[{ei}].secretRef"))
+    return out
+
+
 def _unreadable_spec(spec: dict[str, Any]) -> list[str]:
     """The pod-spec fields the node leg reads that are not the shape the API requires: `containers` as a mapping
     read as no containers, and the leg said `none` (found rerunning the reviewer's mal.py, G273)."""
@@ -518,11 +553,37 @@ def _site_graph(
 
     # exposure: how an attacker arrives
     refused = _failed_reads(inv, *_EXPOSURE_READS)
-    # Fronts that name a Service of this namespace the input does not carry (N4), and routing objects of a kind
-    # this scan does not model (N3): either may put the pod on the network, so neither is "none".
-    dangling = [line for ns, line in ap.dangling(inv) if ns == r.namespace]
-    unmodelled = sorted({ref for ref in inv.unmodelled if ref.split("/")[1:2] == [r.namespace]})
+    # Fronts that name a Service of this namespace the input does not carry (N4), exposure fields that are not the
+    # shape the API requires, a delegate VirtualService not in the input, and routing objects of a kind this scan
+    # does not model (N3), counted where their backends are, not where they live (a GRPCRoute in `gw` routes into
+    # `shop`): each may put the pod on the network, so none of them is "none".
+    dangling = [line for ns, line in ap.dangling(inv) if ns in {r.namespace, "*"}]
+    unmodelled = sorted(
+        ref for ref in set(inv.unmodelled) if {r.namespace, "*"} & inv.unmodelled_ns.get(ref, {ref.split("/")[1]})
+    )
+    # Read live from some namespaces only: an HTTPRoute or VirtualService in a namespace not read can route into
+    # this one (cross-namespace backendRefs and destination hosts), so an empty answer is not "none".
+    unread_ns = (
+        [
+            "HTTPRoutes and VirtualServices in namespaces not read "
+            f"(read: {', '.join(sorted(namespaces_read))}) can route to it"
+        ]
+        if mode == "live" and namespaces_read
+        else []
+    )
     on_host = _host_network(site.spec)
+    # The same name carried by two different fronts or Services: which one the cluster holds is not known.
+    dup_refs = {ap.object_ref(objs[0]) for k in _EXPOSURE_KINDS for objs in inv.duplicates(k).values()}
+    for _i, _entry, steps in r.entries:
+        for ref in sorted(({s.source for s in steps} | {s.target for s in steps}) & dup_refs):
+            if ref:
+                g.undetermined(
+                    w,
+                    "exposure",
+                    f"{ref}#duplicates",
+                    f"different objects named {ref} are in the input; which one the cluster holds is not known",
+                    ref,
+                )
     if r.entries:
         best = sorted(r.entries, key=lambda e: (-e[1].weight, e[0]))[0][1]
         out.leg("exposure", "reached", f"{best.exposure} ({len(r.entries)} exposure(s) in the input)")
@@ -531,7 +592,7 @@ def _site_graph(
         # which Pod Security Baseline restricts for that reason
         # (https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline).
         out.leg("exposure", "reached", f"the node's network: {', '.join(on_host)}")
-    elif refused or dangling or unmodelled:
+    elif refused or dangling or unmodelled or unread_ns:
         for note in refused:
             g.undetermined(w, "exposure", note.split(":")[0], f"{note}: exposures through it are not known", r.object)
         for line in dangling:
@@ -544,7 +605,14 @@ def _site_graph(
                 f"{ref} is a routing object kube-noob does not read: exposure through it is not known",
                 ref,
             )
-        reasons = [*refused, *dangling, *(f"{ref} is a routing object kube-noob does not read" for ref in unmodelled)]
+        for line in unread_ns:
+            g.undetermined(w, "exposure", "namespaces-not-read", line, r.object)
+        reasons = [
+            *refused,
+            *dangling,
+            *(f"{ref} is a routing object kube-noob does not read" for ref in unmodelled),
+            *unread_ns,
+        ]
         out.leg("exposure", "not determined", "; ".join(reasons))
     elif r.embedded:
         out.leg(
@@ -557,10 +625,10 @@ def _site_graph(
         out.leg(
             "exposure",
             "not determined",
-            "no Service, Route or Ingress in these files reaches it; one outside them cannot be ruled out",
+            f"no {_EXPOSURE_NAMES} in these files reaches it; one outside them cannot be ruled out",
         )
     else:
-        out.leg("exposure", "none", "no Service, Route or Ingress read reaches it")
+        out.leg("exposure", "none", f"no {_EXPOSURE_NAMES} read reaches it, and the pod is not on the node's network")
 
     # node: what the pod spec itself gives an attacker on the host
     for cap in r.node:
@@ -592,6 +660,37 @@ def _site_graph(
             if spec.get("automountServiceAccountToken") is False
             else f"{sa_ref} sets automountServiceAccountToken=false"
         )
+        # A Secret the pod reads by volume, projection or environment may be a long-lived token. In files a Secret
+        # of another type is known not to be one; a token Secret, or one the files do not carry, leaves the leg
+        # open. Read live, Secrets are never read, so any Secret reference does (third review, item 5).
+        maybe = [
+            (name, at) for name, at in _secret_refs(spec) if inv.live or (r.namespace, name) not in inv.other_secrets
+        ]
+        if maybe:
+            for name, at in maybe[:MAX_NAMED]:
+                account = inv.legacy_accounts.get((r.namespace, name))
+                reason = (
+                    f"{at} reads Secret {r.namespace}/{name}, the token of ServiceAccount {account or 'not named'}, "
+                    "other than by a volume: whether the pod uses it to call the API is not known"
+                    if account is not None
+                    else f"{at} reads Secret {r.namespace}/{name}, "
+                    + (
+                        "whose type is not known (Secrets are never read live)"
+                        if inv.live
+                        else "which the input does not carry"
+                    )
+                    + ": whether it holds a ServiceAccount token is not known"
+                )
+                g.undetermined(w, "token", f"secret:{name}", reason, r.object)
+            out.leg(
+                "token",
+                "not determined",
+                f"automount is off ({where}), and the pod reads Secrets that may hold a token: "
+                + ", ".join(sorted({n for n, _ in maybe})[:MAX_NAMED]),
+            )
+            out.leg("rbac", "not determined", "the token leg is not determined")
+            out.leg("secrets", "not determined", "the token leg is not determined")
+            return out
         out.leg("token", "none", f"no ServiceAccount token is mounted or projected ({where})")
         out.leg("rbac", "none", "no token, so no API rights through it")
         out.leg("secrets", "none", "no token, so no Secrets reachable through it")
@@ -656,6 +755,21 @@ def _site_graph(
         g.undetermined(b, "rbac", gap.role_ref, gap.reason, gap.role_ref)
     # An RBAC-shaped object the input carries and this scan could not read -- a List whose items are not a list,
     # a binding of an API group it does not know -- may name the account. Not read is not "none" (N6).
+    # A binding that names this account and whose name two different objects carry: which one the cluster holds is
+    # not known; both are read, so a grant may be listed that the cluster does not hold (third review, item 9).
+    dup_bindings = {
+        ap.object_ref(objs[0]) for k in ("RoleBinding", "ClusterRoleBinding") for objs in inv.duplicates(k).values()
+    }
+    for ref in sorted({x.binding for x in grants} | {x.binding for x in gaps}):
+        if ref in dup_bindings:
+            g.undetermined(
+                sa,
+                "rbac",
+                f"{ref}#duplicates",
+                f"different objects named {ref} are in the input; which one the cluster holds is not known, and the "
+                "grants of both are listed",
+                ref,
+            )
     for i, note in enumerate(sorted(set(inv.rbac_unread))[:MAX_NAMED]):
         g.undetermined(sa, "rbac", f"rbac-unread-{i}", f"{note}: grants in it are not known", sa_ref)
     if unclassified:
@@ -1001,10 +1115,26 @@ def reach(
         # With a leg open, "none" would be a claim the input cannot support.
         else ("reaches no capability the input shows" if open_legs else "reaches no capability kube-noob ranks")
     )
+    # Said from the exposure leg, not from the entries alone: a hostPort pod's leg is reached through the node's
+    # network with no entry, and the summary said "not reached by any exposure" (third review, item 8).
+    expo_legs = [x for x in legs if x["leg"] == "exposure"]
+    on_node = next((x["detail"] for x in expo_legs if x["status"] == "reached"), "")
     reached_from = (
         f"exposed: {exposure[0]['kind']}, top path score {paths[0].score}"
         if exposure and paths
-        else (f"exposed: {exposure[0]['kind']}" if exposure else "not reached by any exposure in the input")
+        else (
+            f"exposed: {exposure[0]['kind']}"
+            if exposure
+            else (
+                f"exposed: {on_node}"
+                if on_node
+                else (
+                    "exposure not determined"
+                    if any(x["status"] == "not determined" for x in expo_legs)
+                    else "not reached by any exposure in the input"
+                )
+            )
+        )
     )
     open_note = f"; {len(open_legs)} leg(s) not determined" if open_legs else ""
     kind_named = str(obj.get("kind") or "object")
@@ -1017,6 +1147,8 @@ def reach(
         )
 
     resolved_all = [r.ref for _, r in pairs]
+    # What the scan names, reach names: failed reads, duplicates, fronts to nothing, malformed exposure fields.
+    not_read_all = sorted(set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in ap.dangling(inv)})
     worst = {"not determined": 0, "reached": 1, "none": 2}
 
     def build(n_cap: int, e_cap: int, list_cap: int, str_cap: int = MAX_STRING) -> dict[str, Any]:
@@ -1064,7 +1196,7 @@ def reach(
             "exposure": exposure[: min(MAX_LISTED, list_cap)],
             "paths": [p.as_dict(i + 1) for i, p in enumerate(paths[: min(MAX_LISTED, list_cap)])],
             "pathsWithheld": max(0, len(paths) - min(MAX_LISTED, list_cap)),
-            "notRead": sorted(set(inv.not_read))[: min(50, list_cap)],
+            "notRead": not_read_all[: min(50, list_cap)],
             "droppedUnread": inv.dropped_unread,
             "limitations": limitations,
         }

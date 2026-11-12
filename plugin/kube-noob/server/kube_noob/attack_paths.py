@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import posixpath
-import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -306,7 +305,26 @@ def _canonical_form(obj: Any) -> str:
         and str(obj.get("kind") or "") not in _CLUSTER_SCOPED_KINDS
     ):
         obj = {**obj, "metadata": {**obj["metadata"], "namespace": _ns(obj)}}
+    # Fields the API server sets are not the object: a `kubectl get -o yaml` copy beside the applied file differs in
+    # resourceVersion, uid, generation, timestamps, managedFields and status, and was "two different objects".
+    if isinstance(obj, dict):
+        meta = obj.get("metadata")
+        if isinstance(meta, dict):
+            meta = {k: v for k, v in meta.items() if k not in _SERVER_SET}
+            notes = meta.get("annotations")
+            if isinstance(notes, dict) and _LAST_APPLIED in notes:
+                meta["annotations"] = {k: v for k, v in notes.items() if k != _LAST_APPLIED} or None
+                if meta["annotations"] is None:
+                    del meta["annotations"]
+            obj = {**obj, "metadata": meta}
+        obj = {k: v for k, v in obj.items() if k != "status"}
     return json.dumps(_plain(obj), default=str)
+
+
+_SERVER_SET = frozenset(
+    {"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "deletionTimestamp"}
+)
+_LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
 
 
 _CLUSTER_SCOPED_KINDS = frozenset(
@@ -383,21 +401,51 @@ def _legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None,
     return converted, ""
 
 
+def _backend_namespaces(obj: dict[str, Any]) -> set[str]:
+    """The namespaces a routing object this scan does not model may send traffic into: its own, every value of a
+    `namespace` key anywhere in its spec (Gateway API backendRefs, Contour includes, Traefik services), and the
+    namespace in an Ambassador `service: name.namespace`. A spec that is not a mapping may route anywhere ("*")."""
+    out = {_ns(obj)}
+    spec = obj.get("spec")
+    if spec is None:
+        return out
+    if not isinstance(spec, dict):
+        return {"*"}
+    stack: list[Any] = [spec]
+    seen = 0
+    while stack and seen < 10_000:  # bounded walk
+        cur = stack.pop()
+        seen += 1
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k == "namespace" and isinstance(v, str) and v:
+                    out.add(v)
+                elif k == "service" and isinstance(v, str) and "." in v:
+                    out.add(v.split(":")[0].split(".")[1])
+                else:
+                    stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return out
+
+
 @dataclass
 class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
     dropped_unread: int = 0
-    #: Lists a live read was told the cluster does not serve (no Routes on vanilla Kubernetes): an answer, not a
-    #: failed read, so they are kept apart from `not_read` (G273).
-    not_served: list[str] = field(default_factory=list)
     #: RBAC objects (or lists of them) in the input that could not be read: each one opens the RBAC leg (G273).
     rbac_unread: list[str] = field(default_factory=list)
     #: Routing objects this scan does not read, present in the input, as Kind/namespace/name.
     unmodelled: list[str] = field(default_factory=list)
+    #: For each of those, the namespaces whose Services it may route to: its own and every namespace its spec
+    #: names ("*" when it cannot be told). A GRPCRoute in `gw` routes to `shop/web`, so it opens shop's exposure.
+    unmodelled_ns: dict[str, set[str]] = field(default_factory=dict)
     #: (namespace, Secret name) -> ServiceAccount, for Secrets of type kubernetes.io/service-account-token: the
     #: type and the annotation are metadata, kept; the Secret's data is never read and the object is dropped.
     legacy_accounts: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: (namespace, Secret name) of every other Secret in the input: only that it exists and is not a token Secret.
+    other_secrets: set[tuple[str, str]] = field(default_factory=set)
     #: Read from the cluster: an absence in a list that WAS read is the cluster's answer, not a gap in a file set.
     live: bool = False
 
@@ -412,9 +460,12 @@ class Inventory:
             if obj.get("type") == LEGACY_SA_TYPE:
                 account = _get(obj, "metadata", "annotations", "kubernetes.io/service-account.name")
                 self.legacy_accounts[(_ns(obj), _name(obj))] = str(account or "")
+            else:
+                self.other_secrets.add((_ns(obj), _name(obj)))
             return
         if k in UNMODELLED_EXPOSURE.get(group, ()):
             self.unmodelled.append(_ref(obj))
+            self.unmodelled_ns[_ref(obj)] = _backend_namespaces(obj)
             self.not_read.append(
                 f"{_ref(obj)}: a routing object this scan does not read, so exposure through it is not known"
             )
@@ -433,6 +484,7 @@ class Inventory:
             # A Knative `Route` (serving.knative.dev) routes traffic too, to objects this scan does not model: it is
             # not read as an OpenShift Route, and its namespace's exposure is not determined rather than none.
             self.unmodelled.append(_ref(obj))
+            self.unmodelled_ns[_ref(obj)] = _backend_namespaces(obj)
             self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_KIND_GROUPS[k]}, so it was ignored")
             return
         if k in _RBAC_KINDS and isinstance(api, str) and group != _RBAC_GROUP:
@@ -463,7 +515,10 @@ class Inventory:
         """Sort every kind's objects by their content, so that which of two equal-weight proofs a path names, and
         which of two same-named objects the scan meets first, does not depend on the order of the documents.
         Same input, same bytes -- for `posture scan` and the blast radius alike, since both read this (G273)."""
-        self.objects = {k: sorted(v, key=_canonical_form) for k, v in sorted(self.objects.items())}
+        self.objects = {
+            k: sorted(v, key=lambda o: (_canonical_form(o), json.dumps(_plain(o), default=str)))
+            for k, v in sorted(self.objects.items())
+        }
 
     def duplicates(self, kind: str) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """Objects of `kind` that share a namespace and name and DIFFER, by (namespace, name). Identical copies are
@@ -479,12 +534,16 @@ class Inventory:
         grants nothing either way."""
         what = {
             "Service": "every candidate's selector is followed and each path through it says so",
+            "Ingress": "both are read, so an exposure may be listed that the cluster does not have",
+            "Route": "both are read, so an exposure may be listed that the cluster does not have",
+            "HTTPRoute": "both are read, so an exposure may be listed that the cluster does not have",
+            "VirtualService": "both are read, so an exposure may be listed that the cluster does not have",
             "RoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
             "ClusterRoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
             "ServiceAccount": "a token is assumed mounted unless every copy turns automount off",
         }
         for kind in sorted(WORKLOAD_KINDS):
-            what.setdefault(kind, "each is scored, and the threat model keeps the worse")
+            what.setdefault(kind, "each is scored, and the threat model models them together")
         out: list[str] = []
         for kind, done in what.items():
             for objs in self.duplicates(kind).values():
@@ -816,28 +875,124 @@ def _fronts(inv: Inventory) -> list[_Front]:
                 )
     # Istio: a VirtualService bound to a gateway other than `mesh` takes traffic from outside the mesh; one bound
     # only to `mesh` (the default when `gateways` is omitted) routes sidecar traffic and exposes nothing.
+    by_name = {(_ns(v), _name(v)): v for v in inv.of("VirtualService")}
     for vs in inv.of("VirtualService"):
         gateways = [str(g) for g in _list(_get(vs, "spec", "gateways"))]
         outside = [g for g in gateways if g != "mesh"]
         if not outside:
             continue
+        # A delegate VirtualService has no gateways of its own: it takes its parent's
+        # (https://istio.io/latest/docs/reference/config/networking/virtual-service/#Delegate), so its routes are as
+        # exposed as the parent's. One level, as Istio supports.
+        sources = [(vs, "spec", "")]
+        for i, route in enumerate(_list(_get(vs, "spec", "http"))):
+            d = _get(route, "delegate")
+            if isinstance(d, dict) and d.get("name"):
+                child = by_name.get((str(d.get("namespace") or _ns(vs)), str(d["name"])))
+                if child is not None:
+                    sources.append((child, "spec", f" via {_ref(vs)} spec.http[{i}].delegate"))
+        for src, _spec, via in sources:
+            for section in ("http", "tcp", "tls"):
+                for i, route in enumerate(_list(_get(src, "spec", section))):
+                    dests = [
+                        (f"route[{j}].destination", _get(d, "destination"))
+                        for j, d in enumerate(_list(_get(route, "route")))
+                    ]
+                    # A mirror sends a copy of every request to the workload too: traffic reaches it.
+                    dests.append(("mirror", _get(route, "mirror")))
+                    dests += [
+                        (f"mirrors[{j}].destination", _get(m, "destination"))
+                        for j, m in enumerate(_list(_get(route, "mirrors")))
+                    ]
+                    for at, dest in dests:
+                        host = _get(dest, "host")
+                        target = _vs_service(str(host), _ns(src)) if isinstance(host, str) and host else None
+                        if target is None:
+                            continue
+                        out.append(
+                            _Front(
+                                src,
+                                target[0],
+                                target[1],
+                                "internet (Istio VirtualService)",
+                                3,
+                                f"VirtualService gateways {outside[:3]}{via}",
+                                f"spec.{section}[{i}].{at}.host={host}",
+                                "unbind the VirtualService from the ingress gateway or put authentication in front of "
+                                "it",
+                            )
+                        )
+    return out
+
+
+def _malformed_fronts(inv: Inventory) -> list[tuple[str, str]]:
+    """(namespace it may route into, sentence) for every exposure field that is not the shape the API requires: a
+    VirtualService `gateways` string, an HTTPRoute `parentRefs` string or `backendRefs` map, a Service `selector`
+    string. Read as nothing, each made exposure `none` (third review of G273). "*" where the object can route to
+    any namespace."""
+    out: list[tuple[str, str]] = []
+
+    def bad(obj: dict[str, Any], where: str, want: type, ns: str) -> None:
+        v = _get(obj, *where.split("."))
+        if v is not None and not isinstance(v, want):
+            shape = "a list" if want is list else "a mapping"
+            out.append((ns, f"{_ref(obj)}: {where} is not {shape}, so where it routes is not known"))
+
+    for s in inv.of("Service"):
+        bad(s, "spec.selector", dict, _ns(s))
+    for r in inv.of("Route"):
+        bad(r, "spec.to", dict, _ns(r))
+        bad(r, "spec.alternateBackends", list, _ns(r))
+    for ing in inv.of("Ingress"):
+        bad(ing, "spec.rules", list, _ns(ing))
+        for i, rule in enumerate(_list(_get(ing, "spec", "rules"))):
+            p = _get(rule, "http", "paths")
+            if p is not None and not isinstance(p, list):
+                out.append(
+                    (
+                        _ns(ing),
+                        f"{_ref(ing)}: spec.rules[{i}].http.paths is not a list, so where it routes is not known",
+                    )
+                )
+    for hr in inv.of("HTTPRoute"):
+        bad(hr, "spec.parentRefs", list, "*")
+        bad(hr, "spec.rules", list, "*")
+        for i, rule in enumerate(_list(_get(hr, "spec", "rules"))):
+            b = _get(rule, "backendRefs")
+            if b is not None and not isinstance(b, list):
+                out.append(
+                    ("*", f"{_ref(hr)}: spec.rules[{i}].backendRefs is not a list, so where it routes is not known")
+                )
+    for vs in inv.of("VirtualService"):
+        bad(vs, "spec.gateways", list, "*")
         for section in ("http", "tcp", "tls"):
+            bad(vs, f"spec.{section}", list, "*")
             for i, route in enumerate(_list(_get(vs, "spec", section))):
-                for j, dest in enumerate(_list(_get(route, "route"))):
-                    host = _get(dest, "destination", "host")
-                    target = _vs_service(str(host), _ns(vs)) if isinstance(host, str) and host else None
-                    if target is None:
-                        continue
+                r2 = _get(route, "route")
+                if r2 is not None and not isinstance(r2, list):
                     out.append(
-                        _Front(
-                            vs,
-                            target[0],
-                            target[1],
-                            "internet (Istio VirtualService)",
-                            3,
-                            f"VirtualService gateways {outside[:3]}",
-                            f"spec.{section}[{i}].route[{j}].destination.host={host}",
-                            "unbind the VirtualService from the ingress gateway or put authentication in front of it",
+                        ("*", f"{_ref(vs)}: spec.{section}[{i}].route is not a list, so where it routes is not known")
+                    )
+    return out
+
+
+def _unresolved_delegates(inv: Inventory) -> list[tuple[str, str]]:
+    """(namespace, sentence) for a gateway-bound VirtualService that delegates to one the input does not carry."""
+    names = {(_ns(v), _name(v)) for v in inv.of("VirtualService")}
+    out: list[tuple[str, str]] = []
+    for vs in inv.of("VirtualService"):
+        if not [g for g in _list(_get(vs, "spec", "gateways")) if g != "mesh"]:
+            continue
+        for i, route in enumerate(_list(_get(vs, "spec", "http"))):
+            d = _get(route, "delegate")
+            if isinstance(d, dict) and d.get("name"):
+                key = (str(d.get("namespace") or _ns(vs)), str(d["name"]))
+                if key not in names:
+                    out.append(
+                        (
+                            key[0],
+                            f"{_ref(vs)} spec.http[{i}] delegates to VirtualService {key[0]}/{key[1]}, which is not "
+                            "in the input",
                         )
                     )
     return out
@@ -846,15 +1001,21 @@ def _fronts(inv: Inventory) -> list[_Front]:
 def dangling(inv: Inventory) -> list[tuple[str, str]]:
     """(namespace of the Service, sentence) for every front that names a Service the files do not carry. Read from
     files, that is a gap -- the Service and the pods it selects may exist; read live, the Service list is the
-    cluster's own answer and a route to nothing exposes nothing (G273)."""
-    if inv.live:
-        return []
-    services = {(_ns(s), _name(s)) for s in inv.of("Service")}
+    cluster's own answer and a route to nothing exposes nothing (G273). Also every exposure field that is not the
+    shape the API requires, live or not, and a VirtualService delegate the files do not carry; "*" as the
+    namespace means it may route into any."""
     seen: dict[str, tuple[str, str]] = {}
+    for ns, line in _malformed_fronts(inv):
+        seen.setdefault(line, (ns, line))
+    if inv.live:
+        return sorted(seen.values())
+    services = {(_ns(s), _name(s)) for s in inv.of("Service")}
     for f in _fronts(inv):
         if (f.namespace, f.service) not in services:
             line = f"{_ref(f.obj)} routes to Service {f.namespace}/{f.service}, which is not in the input"
             seen.setdefault(line, (f.namespace, line))
+    for ns, line in _unresolved_delegates(inv):
+        seen.setdefault(line, (ns, line))
     return sorted(seen.values())
 
 
@@ -1903,6 +2064,18 @@ def _legacy_mount(
     for i, v in enumerate(_list(spec.get("volumes"))):
         if not isinstance(v, dict) or str(v.get("name")) not in paths:
             continue
+        # A projected volume can carry a Secret too (`sources[].secret`): a token Secret there is a token as much
+        # as in a `secret` volume (third review, item 5).
+        for j, src in enumerate(_list(_get(v, "projected", "sources"))):
+            name = _get(src, "secret", "name")
+            if isinstance(name, str) and (ns, name) in legacy_accounts:
+                account = legacy_accounts[(ns, name)] or sa
+                return Mount(
+                    account,
+                    f"{who}; volume {v.get('name')} projects Secret {name}, a service-account-token Secret of "
+                    f"ServiceAccount {account}",
+                    f"{base}volumes[{i}].projected.sources[{j}].secret.name",
+                )
         secret = _get(v, "secret", "secretName")
         if not isinstance(secret, str) or not secret:
             continue
@@ -2003,6 +2176,10 @@ class Reach:
     object: str = ""
     #: True when an operator merges in this pod's labels, so a non-match proves nothing about its exposure.
     embedded: bool = False
+    #: Tokens of the other different objects of the same name this reach stands for (see `workload_reach`).
+    other_tokens: tuple[tuple[str, str], ...] = ()
+    #: How many different objects of this name the reach is the union of; 1 for an unambiguous name.
+    copies: int = 1
 
     def paths_from(self, index: int) -> list[AttackPath]:
         out: list[AttackPath] = []
@@ -2176,20 +2353,35 @@ def workload_reach(inv: Inventory) -> dict[str, Reach]:
     out: dict[str, Reach] = {}
     for site in sites:
         r = _reach(inv, site, index, sa_caps)
-        # Two different objects of one name (or two pod specs under one reference): keep the worse, never the last
-        # in the canonical order -- that kept a benign Deployment and dropped the privileged one of the same name
-        # from the threat model (G273). Which one the cluster runs is not known; the scan names the duplicate.
-        if site.ref not in out or _severity(r) > _severity(out[site.ref]):
-            out[site.ref] = r
+        # Two different objects of one name: which one the cluster runs is not known, so neither is discarded. The
+        # last in canonical order dropped a privileged Deployment; "the worse" by node weight then dropped a
+        # cluster-admin token (third review). The union keeps every exposure, escape, right and token, and the
+        # reach says how many objects it stands for.
+        out[site.ref] = _union(out[site.ref], r) if site.ref in out else r
     return out
 
 
-def _severity(r: Reach) -> tuple[int, int, int, int]:
-    return (
-        max((c.weight for c in r.node), default=0),
-        max((c.weight for c, _ in r.api), default=0),
-        len(r.node) + len(r.api),
-        len(r.entries),
+def _union(a: Reach, b: Reach) -> Reach:
+    def distinct(items: list[Any], key: Any) -> list[Any]:
+        seen: dict[Any, Any] = {}
+        for x in items:
+            seen.setdefault(key(x), x)
+        return list(seen.values())
+
+    tokens = distinct([t for t in (a.token, *a.other_tokens, b.token, *b.other_tokens) if t], lambda t: t)
+    return Reach(
+        a.ref,
+        a.namespace,
+        sorted({*a.images, *b.images}),
+        distinct([*a.entries, *b.entries], lambda e: (e[0], [s.as_dict() for s in e[2]].__repr__())),
+        distinct([*a.node, *b.node], lambda c: (c.name, c.evidence)),
+        distinct([*a.api, *b.api], lambda x: (x[0].name, x[0].scope, x[1][0].target if x[1] else "")),
+        tokens[0] if tokens else None,
+        a.mount or b.mount,
+        a.object,
+        a.embedded or b.embedded,
+        other_tokens=tuple(tokens[1:]),
+        copies=a.copies + b.copies,
     )
 
 
@@ -2277,8 +2469,6 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
         # Service is not in the input: each is something the paths above could not account for (G273).
         "notRead": sorted(set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)})[:50],
-        # Resource types the cluster answered it does not serve: an answer, not a gap (G273, N2).
-        "notServed": sorted(set(inv.not_served)),
         "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
@@ -2291,29 +2481,24 @@ def scan_manifests(text: str, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
     return scan(Inventory.from_documents(d.data for d in docs), top=top)
 
 
-def not_served(resource: str, message: str) -> bool:
-    """True only when a failed list says the cluster does not serve the resource type, in the exact words the two
-    backends write: kubectl's "the server doesn't have a resource type" (recognised by `operators._not_served`, so
-    the two readers converge), or the in-cluster backend's "Not found" for this resource's own list path. Anything
-    else -- forbidden, a timeout, an auth plugin's "not found", a proxy's 404 -- is a read that failed, which stays
-    not determined (G273)."""
-    from kube_noob.debug.cluster import ALLOWED_RESOURCES
-    from kube_noob.operators import _not_served
-
-    if "forbidden" in message.lower():
-        return False
-    if _not_served(resource, message):
-        return True
-    rd = ALLOWED_RESOURCES.get(resource)
-    if rd is None:
-        return False
-    base = "/api/v1" if rd.group_version == "v1" else f"/apis/{rd.group_version}"
-    ns = r"(?:/namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?" if rd.namespaced else ""
-    return re.fullmatch(f"Not found: GET {re.escape(base)}{ns}/{re.escape(rd.plural)}", message.strip()) is not None
+def _clip_words(text: str, limit: int = 200) -> str:
+    """At most `limit` characters, cut at a word boundary with an ellipsis -- a refusal cut mid-word read as a
+    different resource ("securitycontextconstraints.sec")."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return f"{cut} ..."
 
 
 def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
-    """Read the inventory from the cluster through the read-only backend: never Secrets (not in its allowlist)."""
+    """Read the inventory from the cluster through the read-only backend: never Secrets (not in its allowlist).
+
+    Every failed list is not read, and what depends on it is not determined -- a 404 included. A 404 for
+    `networking.istio.io/v1` comes as much from an Istio older than 1.22 (serving only v1beta1) as from a cluster
+    without Istio, the same for Gateway API before v1.0.0, and an unavailable openshift-apiserver drops Routes from
+    discovery; telling those apart needs API discovery, which kube-noob does not read. Reading any of them as "not
+    served" said `exposure none, complete` for a pod behind a VirtualService (third review of G273)."""
     from kube_noob.errors import KubeNoobError
 
     inv = Inventory(live=True)
@@ -2323,12 +2508,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
             try:
                 data = backend.get(resource, namespace=ns)
             except KubeNoobError as exc:
-                where = f"{resource}{' in ' + ns if ns else ''}"
-                if not_served(resource, str(exc)):
-                    # No Routes on vanilla Kubernetes, no SCCs, no Istio: the cluster's answer, not a failed read.
-                    inv.not_served.append(f"{where}: not served by this cluster")
-                    break
-                inv.not_read.append(f"{where}: {str(exc)[:160]}")  # forbidden, a timeout: not determined
+                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {_clip_words(str(exc))}")
                 continue
             items = data.get("items") if isinstance(data, dict) else None
             if not isinstance(items, list):

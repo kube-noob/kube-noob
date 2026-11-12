@@ -112,11 +112,13 @@ ALLOWED_RESOURCES: dict[str, ResourceDef] = {
     "clusterserviceversions": ResourceDef("operators.coreos.com/v1alpha1", "clusterserviceversions", True),
     "subscriptions": ResourceDef("operators.coreos.com/v1alpha1", "subscriptions", True),
     # Routing objects that put a Service on the network, for the attack-path scan and the blast radius (G273):
-    # Gateway API HTTPRoute (gateway.networking.k8s.io/v1, Standard channel and GA since Gateway API v0.5.0,
-    # https://gateway-api.sigs.k8s.io/api-types/httproute/) and Istio VirtualService (networking.istio.io/v1,
-    # https://istio.io/latest/docs/reference/config/networking/virtual-service/). Namespaced; neither carries a
-    # credential. A cluster that does not serve the group answers 404, which is reported as not served -- an answer,
-    # distinct from a 403, which leaves the exposure not determined.
+    # Gateway API HTTPRoute (gateway.networking.k8s.io/v1, served at v1 since Gateway API v1.0.0, 2023-10-31; older
+    # installs serve only v1beta1, https://gateway-api.sigs.k8s.io/api-types/httproute/) and Istio VirtualService
+    # (networking.istio.io/v1, served since Istio 1.22; older releases serve v1beta1/v1alpha3,
+    # https://istio.io/latest/docs/reference/config/networking/virtual-service/). Namespaced. A route can set or
+    # match header values, which may be credentials (`Authorization`, an API key): `_redact_obj` masks every value
+    # under a header block. Any failed list -- a 404 included, since an older install serving another version
+    # answers it too -- leaves the exposure not determined; kube-noob does not read API discovery.
     "httproutes": ResourceDef("gateway.networking.k8s.io/v1", "httproutes", True),
     "virtualservices": ResourceDef("networking.istio.io/v1", "virtualservices", True),
 }
@@ -231,7 +233,26 @@ def _element_kind(kind: Any) -> str | None:
 
 
 def _kind_for(plural: str) -> str | None:
-    return {"configmaps": "ConfigMap"}.get(plural)
+    return {"configmaps": "ConfigMap", "httproutes": "HTTPRoute", "virtualservices": "VirtualService"}.get(plural)
+
+
+_ROUTING_KINDS = frozenset({"HTTPRoute", "VirtualService"})
+_HEADER_KEYS = frozenset({"requestHeaderModifier", "responseHeaderModifier", "headers"})
+
+
+def _mask_header_values(v: Any) -> Any:
+    """Every string under a header block masked, except a header's `name` and a match `type`."""
+    if isinstance(v, dict):
+        return {
+            k: (x if k in {"name", "type"} and isinstance(x, str) else _mask_header_values(x))
+            for k, x in v.items()
+            if k != "managedFields"
+        }
+    if isinstance(v, list):
+        return [_mask_header_values(x) for x in v]
+    if isinstance(v, str):
+        return "<redacted>"
+    return v
 
 
 def _redact_obj(obj: Any, kind_hint: str | None = None) -> Any:
@@ -259,6 +280,13 @@ def _redact_obj(obj: Any, kind_hint: str | None = None) -> Any:
                     )
                     for ak, av in v.items()
                 }
+                continue
+            if kind in _ROUTING_KINDS and k in _HEADER_KEYS:
+                # A route can set or match a header value -- `Authorization: Basic ...`, an `x-api-key` -- in Gateway
+                # API filters (requestHeaderModifier/responseHeaderModifier set/add, matches[].headers) and Istio
+                # (headers.request/response set/add, match headers). Every value under them is masked; header names
+                # stay (third review of G273: cluster_get returned them in clear).
+                out[k] = _mask_header_values(v)
                 continue
             if k == "env" and isinstance(v, list):
                 out[k] = [

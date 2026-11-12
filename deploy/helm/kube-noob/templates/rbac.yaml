@@ -49,8 +49,8 @@ rules:
     resources: [clusterserviceversions, subscriptions]
     verbs: [get, list]
   # Routing objects that put a Service on the network, for the attack-path scan and the blast radius: Gateway API
-  # HTTPRoutes and Istio VirtualServices. Namespaced, read-only, no credentials; a cluster without the group
-  # answers 404, reported as not served.
+  # HTTPRoutes and Istio VirtualServices. Namespaced, read-only; header values a route sets or matches can be
+  # credentials and are masked by the backend. A failed list, 404 included, leaves exposure not determined.
   - apiGroups: [gateway.networking.k8s.io]
     resources: [httproutes]
     verbs: [get, list]
