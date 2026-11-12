@@ -21,7 +21,9 @@ mutation (an SCC adding a UID), and tokens mounted by hand through projected vol
 
 The built-in ClusterRoles cluster-admin, admin, edit and view are known by their documented meaning when a bundle
 does not carry them (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#user-facing-roles: edit and admin
-can read Secrets and run pods as any ServiceAccount of the namespace; view cannot read Secrets).
+can read Secrets and run pods as any ServiceAccount of the namespace; view cannot read Secrets), and so are the two
+every aggregated API server binds: ClusterRole system:auth-delegator and Role
+kube-system/extension-apiserver-authentication-reader.
 """
 
 from __future__ import annotations
@@ -53,7 +55,8 @@ from kube_noob.yamlio import PathT
 STANDING_LIMITATIONS: tuple[str, ...] = (
     "NetworkPolicies on the entry edge are not applied: check a path with `kube-noob policy reach`.",
     "Cloud IAM, admission-time mutation and tokens mounted through projected volumes are not modelled.",
-    "Roles that are not in the input are reported in notRead; cluster-admin, admin, edit and view are known.",
+    "Roles that are not in the input are reported in notRead; cluster-admin, admin, edit, view, "
+    "system:auth-delegator and kube-system/extension-apiserver-authentication-reader are known.",
 )
 
 MAX_OBJECTS = 50_000
@@ -126,7 +129,49 @@ BUILTIN_CLUSTER_ROLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "view": [{"apiGroups": ["", "apps", "batch"], "resources": ["pods", "services", "deployments"], "verbs": ["get"]}],
+    # What every aggregated API server (metrics-server, kube-prometheus's adapter) binds: create TokenReviews and
+    # SubjectAccessReviews, nothing else. On every cluster, so a bundle that binds it is not missing anything (G276).
+    "system:auth-delegator": [
+        {"apiGroups": ["authentication.k8s.io"], "resources": ["tokenreviews"], "verbs": ["create"]},
+        {"apiGroups": ["authorization.k8s.io"], "resources": ["subjectaccessreviews"], "verbs": ["create"]},
+    ],
 }
+# The one built-in Role in the same position: read the ConfigMap that carries the front proxy's client CA.
+BUILTIN_ROLES: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ("kube-system", "extension-apiserver-authentication-reader"): [
+        {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "resourceNames": ["extension-apiserver-authentication"],
+            "verbs": ["get", "list", "watch"],
+        }
+    ],
+}
+
+
+# Kinds that carry a pod spec: the ones kube-noob reads, and well-known workload CRDs it reports as unread when their
+# pods are there to see (Argo, Kubeflow, Spark). A spec of the wrong shape in any of them is a refused object, not a
+# custom resource that happens to have a list for a spec (G276).
+_POD_SPEC_KINDS = (
+    frozenset(POD_SPEC_PATHS)
+    | frozenset(EMBEDDED_POD_SPEC_PATHS)
+    | frozenset(
+        {
+            "Rollout",
+            "Workflow",
+            "CronWorkflow",
+            "WorkflowTemplate",
+            "ClusterWorkflowTemplate",
+            "Notebook",
+            "PyTorchJob",
+            "TFJob",
+            "MPIJob",
+            "XGBoostJob",
+            "SparkApplication",
+            "ScheduledSparkApplication",
+        }
+    )
+)
 
 
 class ScanError(ValueError):
@@ -233,7 +278,15 @@ def _strs(value: Any) -> set[str]:
 class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
+    # The part of not_read that was REFUSED -- an object of the wrong shape, a read the cluster forbade or did not
+    # answer -- as opposed to absent: a CRD the cluster does not serve, a built-in role the bundle does not carry.
+    # A gate fails on these by default; on the rest only with --require-complete (G276).
+    refused: list[str] = field(default_factory=list)
     dropped_secrets: int = 0
+
+    def refuse(self, entry: str) -> None:
+        self.not_read.append(entry)
+        self.refused.append(entry)
 
     def add(self, obj: Any, kind: str | None = None) -> None:
         if not isinstance(obj, dict):
@@ -247,6 +300,10 @@ class Inventory:
         meta_ok = isinstance(obj.get("metadata") or {}, dict)
         if not meta_ok:
             obj = {**obj, "metadata": {"name": UNREADABLE_NAME}}
+        if k in _POD_SPEC_KINDS and k not in KINDS and not isinstance(obj.get("spec") or {}, dict):
+            # A Rollout with `spec: 7` used to vanish here unmentioned: the check below only knew the kinds it ranks.
+            self.refuse(f"{_ref(obj)}: spec is not a mapping, so it was not read")
+            return
         if k not in KINDS:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
             # One that carries a pod spec is different -- those pods can hold every capability this scan ranks,
@@ -258,10 +315,10 @@ class Inventory:
                 self.not_read.append(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked")
             return
         if not isinstance(obj.get("spec") or {}, dict):
-            self.not_read.append(f"{_ref(obj)}: spec is not a mapping, so it was not read")
+            self.refuse(f"{_ref(obj)}: spec is not a mapping, so it was not read")
             return
         if not meta_ok:
-            self.not_read.append(f"{_ref(obj)}: metadata is not a mapping, so it is ranked without its name")
+            self.refuse(f"{_ref(obj)}: metadata is not a mapping, so it is ranked without its name")
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:
             raise ScanError(f"more than {MAX_OBJECTS} objects; scan fewer namespaces")
         obj = {**obj, "kind": k}
@@ -666,6 +723,8 @@ def _role_rules(inv: Inventory) -> tuple[dict[tuple[str, str], list[Any]], dict[
             cluster_roles[_name(r)] = merged
     for name, rules in BUILTIN_CLUSTER_ROLES.items():
         cluster_roles.setdefault(name, rules)
+    for key, rules in BUILTIN_ROLES.items():
+        roles.setdefault(key, rules)
     return roles, cluster_roles
 
 
@@ -1049,6 +1108,9 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         "notRead": sorted(set(inv.not_read))[:50],
         # The list is capped; how many it leaves out is part of the answer (G276).
         **({"notReadWithheld": len(set(inv.not_read)) - 50} if len(set(inv.not_read)) > 50 else {}),
+        # What a gate fails on: objects refused on shape and reads the cluster refused. Also in notRead.
+        "refused": sorted(set(inv.refused))[:50],
+        **({"refusedWithheld": len(set(inv.refused)) - 50} if len(set(inv.refused)) > 50 else {}),
         "secretsIgnored": inv.dropped_secrets,
         "limitations": limitations,
     }
@@ -1072,8 +1134,32 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
             try:
                 data = backend.get(resource, namespace=ns)
             except KubeNoobError as exc:  # forbidden or not served (no Routes or SCCs on Kubernetes)
-                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
+                entry = f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}"
+                # Not served is normal -- no KServe, no Ray, no Routes on plain Kubernetes -- and failing a gate on
+                # it meant no live gate could pass without every CRD installed. Forbidden, a timeout or a server
+                # error is a read that should have worked.
+                if _not_served(str(exc)):
+                    inv.not_read.append(entry)
+                else:
+                    inv.refuse(entry)
+                continue
+            except ValueError as exc:  # an answer that is not JSON
+                inv.refuse(f"{resource}{' in ' + ns if ns else ''}: the answer was not JSON ({str(exc)[:120]})")
                 continue
             for item in _list(data.get("items")) if isinstance(data, dict) else []:
                 inv.add(item, kind)
     return inv
+
+
+def _not_served(message: str) -> bool:
+    """A 404 for a resource type the cluster does not serve, as kubectl and the API report it; never a 403."""
+    text = message.lower()
+    if "forbidden" in text or "403" in text:
+        return False
+    return (
+        "not found" in text
+        or "notfound" in text
+        or "could not find the requested resource" in text
+        or "doesn't have a resource type" in text
+        or "does not have a resource type" in text
+    )

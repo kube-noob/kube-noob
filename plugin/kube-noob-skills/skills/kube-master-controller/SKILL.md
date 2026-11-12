@@ -71,7 +71,9 @@ test -s "$KN/input.txt" && echo written
 
 Words you put on a command line yourself (a search phrase, a short request, a one-line cause) go in single quotes and
 may not contain a quote, `$` or a backtick: inside double quotes the shell would still run `$(...)` and backticks.
-Anything longer, and anything the user wrote, goes in a file instead.
+They may not start with `-` either. A phrase goes last, after `--`, which tells kube-noob that what follows is words
+and not an option; a cause or a fix is written `--cause='...'` with the `=`. Without that, a phrase such as
+`--help` prints usage instead of JSON. Anything longer, and anything the user wrote, goes in a file instead.
 
 When the work is done, or the user asks, remove the folder and everything pasted into it:
 
@@ -155,8 +157,8 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 them yourself. The request is a short phrase you write, in single quotes, with no quote, `$` or backtick in it.
 
 ```bash
-kube-noob protocol 'deploy orders-api on rosa hcp' --blueprint "$KN/blueprint.yaml" --format json
-kube-noob protocol 'review this deployment' -f "$KN/app.yaml" --platform openshift --version 4.20 --format json
+kube-noob protocol --blueprint "$KN/blueprint.yaml" --format json -- 'deploy orders-api on rosa hcp'
+kube-noob protocol -f "$KN/app.yaml" --platform openshift --version 4.20 --format json -- 'review this deployment'
 ```
 
 The steps one at a time: validate (schemas, apiVersion against kind, removed and OpenShift-only APIs), research in the
@@ -164,7 +166,7 @@ local knowledge, audit, red team, then the safe mechanical fixes and the generat
 
 ```bash
 kube-noob validate -f "$KN/app.yaml" --platform openshift --version 4.20 --format json
-kube-noob search 'restricted-v2 arbitrary uid' --format json
+kube-noob search --format json -- 'restricted-v2 arbitrary uid'
 kube-noob audit -f "$KN/app.yaml" --platform openshift --version 4.20 --format json
 kube-noob redteam -f "$KN/app.yaml" --platform openshift --version 4.20 --format json
 kube-noob fix -f "$KN/app.yaml" -o "$KN/fixed.yaml" --platform openshift --version 4.20 --format json

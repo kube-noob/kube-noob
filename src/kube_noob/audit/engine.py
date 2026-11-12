@@ -12,7 +12,7 @@ from kube_noob.audit.podspec import (
 )
 from kube_noob.audit.redteam import red_team
 from kube_noob.audit.rules import RULES, AuditContext, run_rules
-from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
+from kube_noob.catalog import KIND_API_VERSIONS, OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
 from kube_noob.yamlio import Document, load_documents
@@ -116,17 +116,27 @@ def analyze(
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
                 "audited."
             )
-    shapeless = [
+    unaudited = [f"document {d.index + 1} ({why})" for d in docs if (why := _not_an_object(d.data)) is not None]
+    if unaudited:
+        # `kind: [Pod]`, `kind: pod`, a document with no kind or one that is a bare number all used to count as an
+        # audited resource with nothing found: no rule recognised the kind, so none fired (G276).
+        report.assumptions.append(
+            f"{len(unaudited)} document(s) are not Kubernetes objects any rule can read, so they are NOT audited: "
+            f"{', '.join(unaudited[:10])}{f' and {len(unaudited) - 10} more' if len(unaudited) > 10 else ''}."
+        )
+    odd_api = [
         f"document {d.index + 1}"
         for d in docs
         if isinstance(d.data, dict)
-        and (not isinstance(d.data.get("kind"), str | None) or not isinstance(d.data.get("apiVersion"), str | None))
+        and isinstance(d.data.get("kind"), str)
+        and _not_an_object(d.data) is None
+        and not isinstance(d.data.get("apiVersion"), str | None)
     ]
-    if shapeless:
-        # `kind: [Pod]` used to audit as nothing at all, score 100: no rule recognised the kind, so none fired (G276).
+    if odd_api:
+        # The rules key on the kind, so these were audited; the API server would still refuse them.
         report.assumptions.append(
-            f"{len(shapeless)} document(s) have a kind or apiVersion that is not a string, so no rule could read "
-            f"them and they are NOT audited: {', '.join(shapeless[:10])}."
+            f"{len(odd_api)} document(s) have an apiVersion that is not a string: {', '.join(odd_api[:10])}. They "
+            "were audited by their kind, but kubectl and oc would refuse to apply them."
         )
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
@@ -244,3 +254,22 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
         f"nothing here is a Kubernetes manifest ({'this looks like ' + what if looks_like_values else what}): "
         f"no document has both apiVersion and kind, so none of the audit rules apply. {how}"
     )
+
+
+_KINDS_BY_FOLDED = {k.lower(): k for k in KIND_API_VERSIONS}
+
+
+def _not_an_object(data: object) -> str | None:
+    """Why no rule can read this document as a Kubernetes object, or None when one can (G276). A kind kube-noob does
+    not know (a CRD's) is an object: no rule is written for it, and that is not news. A kind that is a known one
+    spelt in another case or with spaces is not: the API server would refuse it, and every rule passed it by."""
+    if not isinstance(data, dict):
+        return "not a mapping"
+    kind = data.get("kind")
+    if kind is None or kind == "":
+        return "no kind"
+    if not isinstance(kind, str):
+        return f"kind is {type(kind).__name__}, not a string"
+    if kind not in KIND_API_VERSIONS and kind.strip().lower() in _KINDS_BY_FOLDED:
+        return f"kind {kind!r} is not {_KINDS_BY_FOLDED[kind.strip().lower()]!r}: kinds are exact"
+    return None

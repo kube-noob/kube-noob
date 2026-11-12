@@ -307,7 +307,12 @@ def _parse(line: str) -> tuple[list[str], set[str], argparse.ArgumentParser, lis
             break
         chain.append(tokens[0])
         parser = children[tokens.pop(0)]
-    flags = {t for t in tokens if t.startswith("-") and t != "-" and not t[1:].isdigit()}
+    flags: set[str] = set()
+    for t in tokens:
+        if t == "--":
+            break  # what follows is words, not options (a phrase that starts with `-`)
+        if t.startswith("-") and t != "-" and not t[1:].isdigit():
+            flags.add(t.split("=", 1)[0])
     return chain, flags, parser, tokens
 
 
@@ -832,7 +837,7 @@ def test_words_written_on_a_command_line_are_single_quoted_and_cannot_run(tmp_pa
         head = re.split(r" > | 2> |; ", line)[0]
         for quoted in re.findall(r'"([^"]*)"', head):
             assert quoted.startswith("$KN") or quoted.startswith("${TMPDIR"), f"double-quoted word in: {line}"
-    phrased = [ln for ln in lines if re.search(r"kube-noob (search|protocol) '", ln)]
+    phrased = [ln for ln in lines if re.search(r"kube-noob (search|protocol) .*-- '", ln)]
     assert phrased, "the search and protocol forms are what this test is about"
     marker = tmp_path / "pwned"
     for line in phrased:
@@ -840,3 +845,45 @@ def test_words_written_on_a_command_line_are_single_quoted_and_cannot_run(tmp_pa
         shell = hostile.replace("kube-noob ", "true ", 1).replace("$KN", str(tmp_path))
         subprocess.run(["bash", "-c", shell], check=False, capture_output=True)  # noqa: S607 -- the shell under test
         assert not marker.exists(), f"a phrase ran as a command in: {line}"
+
+
+def _phrase_lines() -> list[str]:
+    return [
+        line
+        for p in sorted(LITE.rglob("*.md"))
+        for _info, body in _fenced(p.read_text())
+        for line in body.splitlines()
+        if re.search(r"kube-noob (search|protocol|incidents confirm) ", line)
+    ]
+
+
+@pytest.mark.parametrize("phrase", ["--help", "-h", "--cluster-enabled", "--", "-f /etc/passwd"])
+def test_a_phrase_that_looks_like_an_option_is_still_read_as_words(phrase: str) -> None:
+    """`search '--help'` printed usage and no JSON, and the skill then said the engine was too old (third review,
+    G276). A phrase goes last, after `--`; a cause or fix is `--cause='...'`. Each documented form, with the phrase
+    swapped for one that looks like an option, still parses, and the phrase lands where the words go."""
+    import shlex
+
+    from kube_noob.cli import build_parser
+
+    lines = _phrase_lines()
+    assert len(lines) >= 6
+    for line in lines:
+        assert not re.search(r"--(cause|fix) '", line), f"a cause or fix without '=': {line}"
+        if "incidents confirm" in line:
+            argv = shlex.split(re.sub(r"--cause='[^']*'", f"--cause={shlex.quote(phrase)}", line))
+            ns = build_parser().parse_args(argv[1:])
+            assert ns.cause == phrase, line
+            continue
+        assert re.search(r" -- '[^']*'$", line), f"the phrase is not last, after --: {line}"
+        hostile = re.sub(r"'[^']*'$", shlex.quote(phrase), line)
+        ns = build_parser().parse_args(shlex.split(hostile.replace('"$KN', '"/tmp/kn'))[1:])
+        words = getattr(ns, "query", None) if " search " in line else getattr(ns, "request", None)
+        words = " ".join(words) if isinstance(words, list) else words
+        assert words == phrase, (line, words)
+        assert ns.format == "json" and not getattr(ns, "cluster_enabled", False), line
+
+
+def test_the_quoting_rule_forbids_a_leading_dash() -> None:
+    block = _section(_first_skill(), "### A private folder for the session")
+    assert "may not start with `-`" in block and "after `--`" in block

@@ -68,7 +68,9 @@ test -s "$KN/input.txt" && echo written
 
 Words you put on a command line yourself (a search phrase, a short request, a one-line cause) go in single quotes and
 may not contain a quote, `$` or a backtick: inside double quotes the shell would still run `$(...)` and backticks.
-Anything longer, and anything the user wrote, goes in a file instead.
+They may not start with `-` either. A phrase goes last, after `--`, which tells kube-noob that what follows is words
+and not an option; a cause or a fix is written `--cause='...'` with the `=`. Without that, a phrase such as
+`--help` prints usage instead of JSON. Anything longer, and anything the user wrote, goes in a file instead.
 
 When the work is done, or the user asks, remove the folder and everything pasted into it:
 
@@ -145,7 +147,7 @@ an empty result means the corpus is not installed or has nothing on it, not that
 ```bash
 kube-noob generate --blueprint "$KN/blueprint.yaml" -o "$KN/generated.yaml" --format json
 kube-noob audit -f "$KN/generated.yaml" --platform rosa-hcp --version 4.22 --format json
-kube-noob search 'efs access point storageclass' --source rosa-experts --format json
+kube-noob search --source rosa-experts --format json -- 'efs access point storageclass'
 ```
 
 ## What HCP changes

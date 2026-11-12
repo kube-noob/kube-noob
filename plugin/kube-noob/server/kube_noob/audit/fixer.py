@@ -503,11 +503,15 @@ class _Fixer:
 
 
 def _ensure_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
-    """``parent[key]`` as a dict; ``null`` or a missing key becomes ``{}`` (YAML ``securityContext:`` with no value)."""
+    """``parent[key]`` as a dict; ``null`` or a missing key becomes ``{}`` (YAML ``securityContext:`` with no value).
+    Any other value is refused with ``shape.WrongShape``: `securityContext: 7` used to be overwritten and recorded
+    as a change from nothing, so the fix discarded what the user wrote and said it had been empty (G276)."""
     value = parent.get(key)
-    if not isinstance(value, dict):
+    if value is None:
         value = {}
         parent[key] = value
+    elif not isinstance(value, dict):
+        raise shape.WrongShape(key, "a mapping", value)
     return value
 
 

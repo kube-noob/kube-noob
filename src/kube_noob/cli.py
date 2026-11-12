@@ -1823,7 +1823,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     posub = pos.add_subparsers(dest="posture_cmd", required=True)
     _patch(posub, common)
-    psc = posub.add_parser("scan", help="Rank the attack paths in manifests (-f) or the live cluster (--live)")
+    psc = posub.add_parser(
+        "scan",
+        help="Rank the attack paths in manifests (-f) or the live cluster (--live)",
+        description="Rank the attack paths in manifests (-f) or the live cluster (--live). With --fail-above: exit 1 "
+        "when a path scores above it; exit 5 when an object or a read was refused (an object of the wrong shape, "
+        "a read the cluster forbade or did not answer), listed under `refused`, because the gate did not see "
+        "everything; otherwise 0. What was absent rather than refused (a CRD the cluster does not serve, a role "
+        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete.",
+    )
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     psc.add_argument(
@@ -1831,7 +1839,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     psc.add_argument("--top", type=int, default=20, help="paths to show (1-200, default 20)")
     psc.add_argument(
-        "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
+        "--fail-above",
+        type=int,
+        default=None,
+        help="exit 1 when a path scores above this (CI gate; max score 30); exit 5 when something was refused",
+    )
+    psc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="with --fail-above: exit 5 when anything at all is under notRead, absent as well as refused",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -3364,7 +3380,10 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 _tprint(f"        {st['evidence']}")
             _tprint("    fix: " + "; or ".join(path["fix"]))
         if out["notRead"]:
-            _tprint("\nnot read: " + "; ".join(out["notRead"][:10]))
+            # The JSON caps the list at 50 and counts the rest; the text said neither (G276).
+            total = len(out["notRead"]) + int(out.get("notReadWithheld", 0))
+            more = f"; and {total - 10} more" if total > 10 else ""
+            _tprint(f"\n{total} object(s) not read: " + "; ".join(out["notRead"][:10]) + more)
         for note in (out.get("assumptions") or [])[:10]:
             _tprint(f"assumed: {note}")
         if out["secretsIgnored"]:
@@ -3381,10 +3400,16 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         return 0
     if top_score > a.fail_above:
         return 1
-    if out["notRead"]:
-        # A gate that read only part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
-        # privileged Deployment used to leave total 0 and exit 0.
-        print(f"incomplete: {len(out['notRead'])} object(s) not read; see notRead", file=sys.stderr)
+    # A gate that was refused part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
+    # privileged Deployment used to leave total 0 and exit 0. Only a refusal counts by default: a CRD the cluster
+    # does not serve or a built-in role the bundle does not carry is normal, and gating on it meant no live scan
+    # without KServe and Ray could ever pass. --require-complete gates on those too.
+    key = "notRead" if a.require_complete else "refused"
+    if out[key]:
+        withheld = int(out.get(f"{key}Withheld", 0))
+        what = "not read" if a.require_complete else "refused"
+        unlisted = f", {withheld} not listed" if withheld else ""
+        print(f"incomplete: {len(out[key]) + withheld} object(s) {what}{unlisted}; see {key}", file=sys.stderr)
         return 5
     return 0
 

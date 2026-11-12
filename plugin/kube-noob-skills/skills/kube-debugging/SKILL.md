@@ -73,7 +73,9 @@ test -s "$KN/input.txt" && echo written
 
 Words you put on a command line yourself (a search phrase, a short request, a one-line cause) go in single quotes and
 may not contain a quote, `$` or a backtick: inside double quotes the shell would still run `$(...)` and backticks.
-Anything longer, and anything the user wrote, goes in a file instead.
+They may not start with `-` either. A phrase goes last, after `--`, which tells kube-noob that what follows is words
+and not an option; a cause or a fix is written `--cause='...'` with the `=`. Without that, a phrase such as
+`--help` prints usage instead of JSON. Anything longer, and anything the user wrote, goes in a file instead.
 
 When the work is done, or the user asks, remove the folder and everything pasted into it:
 
@@ -193,7 +195,7 @@ When the fix is a manifest change, run the protocol on the corrected YAML before
 on this machine can reach, read its configuration:
 
 ```bash
-kube-noob protocol 'fix the failing deployment' -f "$KN/fixed.yaml" --platform openshift --format json
+kube-noob protocol -f "$KN/fixed.yaml" --platform openshift --format json -- 'fix the failing deployment'
 kube-noob config --format json
 ```
 
@@ -203,7 +205,7 @@ it. Run this only after they agree; it writes a one-line cause and fix to kube-n
 one line each that you write, in single quotes, with no quote, `$` or backtick in them:
 
 ```bash
-kube-noob incidents confirm INCIDENT_ID --cause 'memory limit below the working set' --fix 'raised the limit to 512Mi' --format json
+kube-noob incidents confirm INCIDENT_ID --cause='memory limit below the working set' --fix='raised the limit to 512Mi' --format json
 ```
 
 ## Evidence to ask for

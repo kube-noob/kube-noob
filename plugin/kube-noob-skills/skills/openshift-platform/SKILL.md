@@ -70,7 +70,9 @@ test -s "$KN/input.txt" && echo written
 
 Words you put on a command line yourself (a search phrase, a short request, a one-line cause) go in single quotes and
 may not contain a quote, `$` or a backtick: inside double quotes the shell would still run `$(...)` and backticks.
-Anything longer, and anything the user wrote, goes in a file instead.
+They may not start with `-` either. A phrase goes last, after `--`, which tells kube-noob that what follows is words
+and not an option; a cause or a fix is written `--cause='...'` with the `=`. Without that, a phrase such as
+`--help` prints usage instead of JSON. Anything longer, and anything the user wrote, goes in a file instead.
 
 When the work is done, or the user asks, remove the folder and everything pasted into it:
 
@@ -140,7 +142,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary` |
 | `diagnose` | always 0, even with denials found | `diagnoses`, `knownIssues` | `notes` |
 | `policy generate` | always 0 | `generated`, `documents` | `skipped` |
-| `posture scan` | 0, unless `--fail-above` is given | `paths`, `summary` | `notRead`, `limitations`, `secretsIgnored` |
+| `posture scan` | 0; with `--fail-above`, 1 when a path scores above it and 5 when an object or a read was refused | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
 | `rhacs compare` | always 0 | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
 | `build diagnose` | always 0 | `cause`, `fix`, `failingStep` | |
 | `build audit` | 1 = a finding at or above `--fail-on` (default high), so a medium finding exits 0 | `findings`, `counts` | `notChecked`, `notes` |

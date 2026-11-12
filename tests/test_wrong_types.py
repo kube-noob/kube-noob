@@ -339,7 +339,7 @@ def test_a_document_whose_kind_is_not_a_string_is_not_audited_as_clean(tmp_path:
     f = tmp_path / "k.yaml"
     f.write_text(_POD.replace("kind: Pod", "kind: [Pod]") + "    securityContext: {privileged: true}\n")
     _, out, _ = _run(["audit", "-f", str(f), "--format", "json"])
-    assert any("kind or apiVersion that is not a string" in a for a in json.loads(out)["assumptions"])
+    assert any("NOT audited" in a and "kind is list" in a for a in json.loads(out)["assumptions"])
 
 
 def test_one_unreadable_object_does_not_blind_a_rule_for_its_siblings(tmp_path: Path) -> None:

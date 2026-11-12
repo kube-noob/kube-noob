@@ -6,7 +6,9 @@ the evidence (finding ids / objects), blast radius, safeguards and the commands 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from kube_noob import shape
@@ -19,11 +21,25 @@ ScenarioFn = Callable[[AuditContext, list[Finding]], RedTeamScenario | None]
 
 
 # The rule ids the running scenario has read through `_ids`, so `red_team` can tell which of them were not evaluated.
-_READ: list[str] = []
+# A context variable, not a module list: the MCP and REST servers run tools in threads, and one shared list let a clean
+# run clear what a bad one had recorded, which turned an undecided scenario back into `mitigated` (G276).
+_READ: ContextVar[list[str] | None] = ContextVar("kube_noob_redteam_read", default=None)
+
+
+@contextmanager
+def _recording() -> Iterator[list[str]]:
+    read: list[str] = []
+    token = _READ.set(read)
+    try:
+        yield read
+    finally:
+        _READ.reset(token)
 
 
 def _ids(findings: list[Finding], *rule_ids: str) -> list[Finding]:
-    _READ.extend(rule_ids)
+    read = _READ.get()
+    if read is not None:
+        read.extend(rule_ids)
     return [f for f in findings if f.rule_id in rule_ids]
 
 
@@ -348,11 +364,9 @@ SCENARIOS: tuple[ScenarioFn, ...] = (
 
 def rules_read(fn: ScenarioFn, ctx: AuditContext, findings: list[Finding]) -> list[str]:
     """The rule ids ``fn`` reads, in the order it reads them."""
-    _READ.clear()
-    fn(ctx, findings)
-    read = list(dict.fromkeys(_READ))
-    _READ.clear()
-    return read
+    with _recording() as read:
+        fn(ctx, findings)
+    return list(dict.fromkeys(read))
 
 
 def red_team_with(
@@ -364,10 +378,9 @@ def red_team_with(
     rules it could not consult as well (G276)."""
     out: list[RedTeamScenario] = []
     for fn in scenarios:
-        _READ.clear()
-        s = fn(ctx, findings)
-        read = list(dict.fromkeys(_READ))
-        _READ.clear()
+        with _recording() as recorded:
+            s = fn(ctx, findings)
+        read = list(dict.fromkeys(recorded))
         if s is None:
             continue
         missing = [r for r in read if r in ctx.undecided]
