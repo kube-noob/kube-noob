@@ -137,13 +137,18 @@ def alias_problems(issues: list[Issue], aliases: dict[str, Alias] | None = None)
     went away), and a name that matches another package's name. Empty when the table is sound."""
     table = ALIASES if aliases is None else aliases
     problems: list[str] = []
+    if not issues:  # an empty corpus is a problem in itself, not a table every name of which went unchecked
+        problems.append("the corpus holds no release-note issues, so no alias name could be checked")
+    used = {
+        name for alias in table.values() for name in alias.names for i in issues if name_pattern(name).search(i.text)
+    }
     owner: dict[str, str] = {}
     for package, alias in sorted(table.items()):
         for name in alias.names:
             if name in owner:
                 problems.append(f"{name!r} is listed for two packages, {owner[name]} and {package}")
             owner.setdefault(name, package)
-            if not any(name_pattern(name).search(i.text) for i in issues):
+            if name not in used:
                 problems.append(f"{package}: no release-note issue uses the name {name!r}")
     for a, pa in sorted(owner.items()):
         for b, pb in sorted(owner.items()):
@@ -458,7 +463,7 @@ def _summary(
     if extra:
         head += "; " + ", ".join(extra)
     if verdict == "partial":
-        head += f" -- incomplete: the inventory is {inv['verdict']}" if not inv["complete"] else " -- incomplete"
+        head += " -- incomplete" if inv["complete"] else f" -- incomplete: the inventory is {inv['verdict']}"
         if release is None:
             head += "; the cluster's release is not known"
     return head

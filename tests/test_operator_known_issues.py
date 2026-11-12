@@ -119,6 +119,9 @@ def test_a_regenerated_corpus_missing_an_alias_target_is_reported() -> None:
     without = [i for i in issues if not oi.name_pattern("NUMA Resources Operator").search(i.text)]
     problems = oi.alias_problems(without)
     assert any("numaresources-operator" in p and "NUMA Resources Operator" in p for p in problems)
+    empty = oi.alias_problems([])
+    assert any("holds no release-note issues" in p for p in empty)
+    assert len(empty) == 1 + sum(len(a.names) for a in oi.ALIASES.values())
     shared = dict(oi.ALIASES)
     shared["metallb-operator-copy"] = oi.Alias(("MetalLB Operator",), "test")
     assert any("two packages" in p for p in oi.alias_problems(issues, shared))
