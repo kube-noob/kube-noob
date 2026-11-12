@@ -13,7 +13,7 @@ kube-noob examples list
 ```
 
 Running the copy again leaves identical files alone; a file you changed is refused unless you pass `--force`. On
-0.9.2 or older, which have no `examples copy`, the README shows a one-line fallback that uses kube-noob's own Python.
+releases without `examples copy` (from 0.9.3), the README shows a one-line fallback that uses kube-noob's own Python.
 
 ## No AI inside: three ways to use it
 

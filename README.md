@@ -23,7 +23,7 @@ kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f exa
 kube-noob policy explain -f examples/denial-multi.txt
 ```
 
-On 0.9.2 or older, which lack `examples copy`, use kube-noob's own Python:
+Before `examples copy` (from 0.9.3), use kube-noob's own Python:
 
 ```bash
 "$(sed -n '1s/^#!//p' "$(command -v kube-noob)")" -c 'import shutil;from kube_noob.demo import examples_dir as e;shutil.copytree(e(),"examples")'
