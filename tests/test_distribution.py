@@ -189,7 +189,9 @@ def test_homebrew_install_is_documented_tested_and_never_ahead_of_the_package() 
 
     import kube_noob
 
-    tap = "brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob"
+    # The two-argument form, because the formula lives in this repository and not in a `homebrew-kube-noob` one:
+    # only the one-argument form needs that name (docs.brew.sh/Taps). The URL is the organisation's (G275).
+    tap = "brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob"
     brew_wf = (ROOT / ".github/workflows/brew.yml").read_text()
     for text in ((ROOT / "README.md").read_text(), (ROOT / "docs/install.md").read_text(), brew_wf):
         assert tap in text and "brew install kube-noob" in text
@@ -197,6 +199,7 @@ def test_homebrew_install_is_documented_tested_and_never_ahead_of_the_package() 
     jobs = yaml.safe_load(brew_wf)["jobs"]
     assert "public-tap" in jobs and "kube-noob --version" in str(jobs["public-tap"])
     formula = (ROOT / "Formula/kube-noob.rb").read_text()
+    assert 'homepage "https://github.com/kube-noob/kube-noob"' in formula
     m = re.search(r'^  url ".*/kube_noob-([0-9][0-9.]*)\.tar\.gz"', formula, re.MULTILINE)
     assert m, "formula has no sdist url"
     assert Version(m.group(1)) <= Version(kube_noob.__version__)
@@ -512,3 +515,113 @@ def test_the_release_installs_dependencies_before_importing_the_package() -> Non
     assert min(installs) < min(importers), (
         f"step {min(importers)} imports kube_noob before step {min(installs)} installs its dependencies"
     )
+
+
+# --- the organisation move (G275) ---------------------------------------------------------------------------------
+# The project moved from a personal account into the `kube-noob` organisation. GitHub redirects the old repository
+# URLs, so a stale one keeps working and nothing fails -- it just tells every reader to type an owner the project no
+# longer has, and the next file copied from an old one carries it on. G266 repointed the forms that do NOT redirect;
+# this holds the rest. The old owner is written once, here, and every occurrence that stays names its reason.
+OLD_OWNER = "aashishmahajan"
+
+# (path, fragment, reason). A fragment is matched with `{old}` replaced by OLD_OWNER and is removed from the line
+# before the line is checked, so a line may keep one occurrence and still be refused for another.
+_KEPT_OLD_OWNER: tuple[tuple[str, str, str], ...] = (
+    # A person, not a location.
+    (".github/CODEOWNERS", "* @{old}", "the maintainer's GitHub account; code review is a person"),
+    ("deploy/openshift-catalog/OWNERS", "githubUsername: {old}", "the catalog requires the submitter's username"),
+    ("docs/openshift-release.md", "lists `githubUsername: {old}`", "describes the OWNERS file above"),
+    ("docs/openshift-catalog.md", "gh repo clone {old}/charts", "the submitter's own fork of openshift-helm-charts"),
+    ("docs/openshift-catalog.md", "--head {old}:kube-noob-", "a pull request from that fork's branch"),
+    # An artifact that really lives under the old owner: published before the move, and a signature cannot move.
+    ("SECURITY.md", "ghcr.io/{old}/kube-noob", "images 0.7.1 and earlier were pushed there (release run logs)"),
+    ("SECURITY.md", "https://github.com/{old}/kube-noob/.github/workflows/release.yml@", "their Fulcio identity"),
+    ("SECURITY.md", '"{old}/kube-noob"', "the publisher PyPI's provenance names for 0.7.1 and earlier"),
+    ("docs/openshift-release.md", "oci://ghcr.io/{old}/charts/kube-noob", "chart 0.7.0 and 0.7.1 were pushed there"),
+    # A migration step for someone who followed the instructions before the move.
+    ("docs/install.md", "`{old}/kube-noob`", "the tap name used before the move, which a user may still have"),
+    ("docs/install.md", "brew untap {old}/kube-noob", "removing that tap"),
+    ("docs/website-updates.md", "grep -rn {old} .", "the command that finds what the site still has"),
+    # A record of what was true when written.
+    ("AGENTS.md", "`{old}/kube-noob-www` is the wrong target", "records which site target was wrong"),
+    ("AGENTS.md", "CNAMEs to `{old}.github.io`", "the DNS record as it stands; an owner action"),
+    # Guards that name the old owner in order to refuse it.
+    ("tests/test_distribution.py", 'OLD_OWNER = "{old}"', "this guard"),
+    ("tests/test_brand.py", '"github.com/{old}/kube-noob" not in text', "refuses a hard-coded walkthrough URL"),
+    ("tests/test_plugin.py", '"/{old}/" not in url', "refuses it in the plugin manifest"),
+    ("tests/test_directory_plugin.py", 'if "{old}" in line', "refuses it in what the plugin directory shows"),
+)
+
+
+def _tracked_text_files() -> list[str]:
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None or not (ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
+    return subprocess.run(
+        ["git", "ls-files"],  # noqa: S607
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+
+
+def test_no_tracked_file_names_the_owner_the_project_moved_out_of() -> None:
+    """Every link and command a user copies names the organisation, and each occurrence that stays says why.
+
+    CHANGELOG.md is checked only above its first release heading: the entries below record what was true when
+    they were written, and history is added to, not rewritten.
+    """
+    kept: dict[str, list[str]] = {}
+    for path, fragment, _reason in _KEPT_OLD_OWNER:
+        kept.setdefault(path, []).append(fragment.format(old=OLD_OWNER))
+    used: set[tuple[str, str]] = set()
+    bad: list[str] = []
+    for rel in _tracked_text_files():
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if OLD_OWNER not in text:
+            continue
+        lines = text.splitlines()
+        if rel == "CHANGELOG.md":
+            first_release = next(i for i, line in enumerate(lines) if re.match(r"## \d", line))
+            lines = lines[:first_release]
+        for n, line in enumerate(lines, 1):
+            rest = line
+            for fragment in kept.get(rel, []):
+                if fragment in rest:
+                    used.add((rel, fragment))
+                    rest = rest.replace(fragment, "")
+            if OLD_OWNER in rest:
+                bad.append(f"{rel}:{n}: {line.strip()[:110]}")
+    assert not bad, "these name the previous owner; repoint them or add them, with a reason, to _KEPT_OLD_OWNER:\n" + (
+        "\n".join(bad)
+    )
+    stale = [f"{p}: {f}" for p, frags in kept.items() for f in frags if (p, f) not in used]
+    assert not stale, "allowlist entries that no longer match anything; remove them:\n" + "\n".join(stale)
+
+
+def test_the_commands_a_user_copies_name_the_organisation() -> None:
+    """The install commands are the ones copied most, so they are pinned exactly where they appear."""
+    marketplace = "/plugin marketplace add kube-noob/kube-noob"
+    for doc in ("README.md", "docs/install.md", "docs/openshift.md", "docs/release-readiness.md"):
+        assert marketplace in (ROOT / doc).read_text(encoding="utf-8"), doc
+    assert "/plugin install kube-noob@kube-noob" in (ROOT / "README.md").read_text(encoding="utf-8")
+    marketplace_json = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    assert marketplace_json["name"] == "kube-noob", "the name after @ in /plugin install"
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    urls = re.findall(r'^\w+ = "(https://github\.com/[^"]+)"', project, re.MULTILINE)
+    assert urls and all(u.startswith("https://github.com/kube-noob/kube-noob") for u in urls), urls
+    chart = yaml.safe_load((ROOT / "deploy/helm/kube-noob/Chart.yaml").read_text(encoding="utf-8"))
+    assert chart["home"] == "https://github.com/kube-noob/kube-noob"
+    assert chart["sources"] == ["https://github.com/kube-noob/kube-noob"]
+    for containerfile in ("Containerfile", "Containerfile.db"):
+        text = (ROOT / containerfile).read_text(encoding="utf-8")
+        assert 'org.opencontainers.image.source="https://github.com/kube-noob/kube-noob"' in text, containerfile

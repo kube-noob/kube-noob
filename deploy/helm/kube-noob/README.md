@@ -20,7 +20,7 @@ Clients connect to `http://<release>-kube-noob.<namespace>.svc:8080/mcp` with `A
 - Pods are written for `restricted-v2` (arbitrary UID, no capabilities, `RuntimeDefault` seccomp, read-only root
   filesystem). The Pod Security `restricted` half is enforced in CI; `restricted-v2` is an OpenShift SCC and
   every CI cluster is kind, so that half is the pod spec meeting the SCC's requirements rather than an SCC
-  admitting it -- [docs/roadmap.md](https://github.com/aashishmahajan/kube-noob/blob/main/docs/roadmap.md) tracks
+  admitting it -- [docs/roadmap.md](https://github.com/kube-noob/kube-noob/blob/main/docs/roadmap.md) tracks
   the OpenShift cluster that would close it.
 - NetworkPolicy: ingress only from the same namespace and the OpenShift router; egress to DNS only.
 - No web access, no cluster access and no model calls unless you turn them on.
@@ -55,7 +55,7 @@ Clients connect to `http://<release>-kube-noob.<namespace>.svc:8080/mcp` with `A
 | `resources` | 256Mi request, 512Mi limit | About 85 MiB peak with built-in knowledge, plus about 25 MiB per MB of indexed text |
 
 All values and their schema: `values.yaml` and `values.schema.json`. Guides for service, sidecar and OpenShift
-Lightspeed setups: <https://github.com/aashishmahajan/kube-noob/blob/main/docs/openshift.md>.
+Lightspeed setups: <https://github.com/kube-noob/kube-noob/blob/main/docs/openshift.md>.
 
 ## Test
 

@@ -172,7 +172,7 @@ db:
   # An init container copies the archive; kube-noob serve imports it on start when it is newer than the one the data
   # folder already has, so rolling out a newer digest refreshes every pod. Pinned by digest only. No egress needed.
   # Verify the signature first: cosign verify <repository>@<digest> --certificate-identity-regexp
-  # 'https://github.com/aashishmahajan/kube-noob/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  # 'https://github.com/kube-noob/kube-noob/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
   enabled: false
   image:
     repository: ghcr.io/kube-noob/kube-noob-db

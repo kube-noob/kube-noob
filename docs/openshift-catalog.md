@@ -34,11 +34,11 @@ gh repo clone aashishmahajan/charts ~/openshift-helm-charts -- --depth 1
 cd ~/openshift-helm-charts
 git switch -c kube-noob-owners
 mkdir -p charts/community/kube-noob/kube-noob
-curl -fsSL https://raw.githubusercontent.com/aashishmahajan/kube-noob/main/deploy/openshift-catalog/OWNERS -o charts/community/kube-noob/kube-noob/OWNERS
+curl -fsSL https://raw.githubusercontent.com/kube-noob/kube-noob/main/deploy/openshift-catalog/OWNERS -o charts/community/kube-noob/kube-noob/OWNERS
 git add charts/community/kube-noob/kube-noob/OWNERS
 git commit -s -m "Add OWNERS for the kube-noob community chart"
 git push -u origin kube-noob-owners
-gh pr create --repo openshift-helm-charts/charts --head aashishmahajan:kube-noob-owners --title "Add OWNERS for the kube-noob community chart" --body "Adds the OWNERS file for the kube-noob community chart (Apache-2.0, https://github.com/aashishmahajan/kube-noob). The chart follows in a separate pull request."
+gh pr create --repo openshift-helm-charts/charts --head aashishmahajan:kube-noob-owners --title "Add OWNERS for the kube-noob community chart" --body "Adds the OWNERS file for the kube-noob community chart (Apache-2.0, https://github.com/kube-noob/kube-noob). The chart follows in a separate pull request."
 ```
 
 After the OWNERS pull request merges:

@@ -114,4 +114,4 @@ kube-noob is not directed at children under 18.
 ## Contact
 
 Security reports: [SECURITY.md](SECURITY.md). Anything else:
-[GitHub issues](https://github.com/aashishmahajan/kube-noob/issues).
+[GitHub issues](https://github.com/kube-noob/kube-noob/issues).
