@@ -9,8 +9,9 @@
   is an answer), `not-determined` (it is not, with the reason) and `not-narrowed` (no usable version) -- in the text
   view, JSON, YAML and the MCP result. `diagnose`, `build diagnose`, `insight`, the incident watch, the live
   diagnostic bundle, the must-gather report and case draft, and the gate carry the same statement as
-  `knownIssuesCoverage`, and the gate lists the lookup under "Not run". No exit code changed: `known-issues` has no
-  `--require-complete`, and exit 5 means unreadable evidence, not a dated index, as for `notCheckedBeyond`.
+  `knownIssuesCoverage`, and the gate lists the lookup under "Not run". A version the index cannot answer for does
+  not change an exit code (`known-issues` has no `--require-complete`, and exit 5 means unreadable evidence, not a
+  dated index, as for `notCheckedBeyond`); the exit codes that did change are listed at the end of this entry.
 
   The README's headline commands named `examples/...` files that exist only in a checkout, so after `brew install`
   the first command a stranger copied answered `No such file or directory`. `kube-noob examples copy DIR` writes the
@@ -46,8 +47,35 @@
   The diagnose text view drops C1 controls and every invisible format character (`sanitize.one_line`), names causes
   the input did not single out "possible" rather than "likely", counts the causes and evidence it does not show,
   prints the approach and any injection flags, keeps an Alertmanager payload's own version beside a `--version`
-  that overrides it, and says when only the end of a long input was read. The README shows a one-line fallback for
-  0.9.2, which has no `examples copy`, and a test runs it against the v0.9.2 source.
+  that overrides it, and says when only the end of a long input was read.
+
+  A second review found what the first round left. The matcher read the HEAD of a long paste while `diagnose` and
+  `insight` read its end, so an issue described at the end of 105,515 characters answered "no reported issue"; it now
+  matches the last 100,000 characters, as they do, and says so (`inputTruncated`, coverage `not-determined`). Every
+  tool model and `selftest --cases` refused the pre-release, nightly and OKD versions this entry teaches the matcher
+  to read, with a raw validation dump: one version grammar (`kube_noob.versions`) now decides on every command and
+  tool, accepts a leading `v` and a release-image tag (`4.21.3-x86_64` is the release 4.21.3), and refuses anything
+  else with one sentence. `4.21` and `4.21.0` are the same release for `versionConflict`; `4.21` gets no z-stream
+  update advice. `examples copy` rolls back on Ctrl-C too, works relative to the directory it opened (so one swapped
+  for a link after the check is not followed), falls back to a rename where hard links are not supported, and refuses
+  invisible characters in the directory name. The README's fallback for releases without `examples copy` is now a
+  plain `curl` of the two files, which works in bash, zsh and fish whatever installed kube-noob; the earlier one
+  needed an absolute shebang and failed under `#!/usr/bin/env`, pyenv shims, pip's `/bin/sh` launcher and fish.
+  `sanitize.one_line` is now `sanitize.visible` plus a whitespace collapse, with no rule of its own; the diagnose text
+  view shows team memory's cause, commands (verbatim, needs-approval labelled), versions and risk acceptance; the gate
+  with an OpenShift platform and no `--version` says reported issues were not looked up; a live `debug` whose version
+  read failed says so instead of "No version was given"; `insight` carries an Alertmanager payload's version and any
+  conflict, and lists what it recognises in JSON too; `demo --list --format json` lists `posture` under `doctor`
+  (`aliases`) rather than as a demo of its own.
+
+  Exit codes that changed, measured against main: `known-issues`, `diagnose`, `insight`, `build diagnose` and
+  `ticket` with `--version v4.21.3`, `4.21.0-rc.1`, `4.20.0-okd-scos.6` or `4.21.3-x86_64` exited 4 with a
+  validation dump and now run (0; `ticket` 1 when the key is not in the local copy, as for any version). With text
+  that is not a version (`latest`, `4`, `4.20.x`) they exited 4 and now exit 2, the code for a bad flag value; `gate`
+  did the same for `latest` and `4` (4 to 2) and accepted `4.20.x` (1, findings) and now refuses it (2).
+  `selftest --cases --gate N` can now fail (1) where it passed (0), because a case whose answer depends on reported
+  issues for a version the index cannot answer for is scored `not-determined`, counted and not passed. Ctrl-C during
+  `examples copy` exits 130 with one line and nothing left behind; a write failure there exits 4.
 
 - **`audit --format sarif`, with the controls on the rules and the run's blind spots in the file (G269).** SARIF is a list of results, so a partial audit and a clean one differ only in length. The audit's `assumptions` (what it did not evaluate, for example because it was given part of a namespace) and its unreadable files now travel in the document as `toolExecutionNotifications`, where the JSON report already carried them and a format that replaces the report would have dropped them.
 

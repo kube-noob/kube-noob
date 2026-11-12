@@ -23,10 +23,10 @@ kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f exa
 kube-noob policy explain -f examples/denial-multi.txt
 ```
 
-Before `examples copy` (from 0.9.3), use kube-noob's own Python:
+Before `examples copy` (from 0.9.3), download the two files:
 
 ```bash
-"$(sed -n '1s/^#!//p' "$(command -v kube-noob)")" -c 'import shutil;from kube_noob.demo import examples_dir as e;shutil.copytree(e(),"examples")'
+curl --create-dirs -fsSL -o examples/netpol-admin-tiers.yaml https://raw.githubusercontent.com/kube-noob/kube-noob/main/examples/netpol-admin-tiers.yaml -o examples/denial-multi.txt https://raw.githubusercontent.com/kube-noob/kube-noob/main/examples/denial-multi.txt
 ```
 
 **Which policy governs this traffic?** `AdminNetworkPolicy` → `NetworkPolicy` → `BaselineAdminNetworkPolicy`, in

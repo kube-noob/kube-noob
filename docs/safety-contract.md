@@ -275,7 +275,6 @@ Where it is applied (found in the code):
 - `kube_noob/insight.py` `_json` calls `sanitize.json_nesting_ok`
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`
-- `kube_noob/known_issues.py` `shown_version` calls `sanitize.one_line`
 - `kube_noob/memory/importers.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
@@ -290,6 +289,7 @@ Where it is applied (found in the code):
 - `kube_noob/tickets.py` `_ticket_shards` calls `sanitize.loads_bounded`
 - `kube_noob/tool_runner.py` `call` calls `sanitize.result`
 - `kube_noob/upgrade_risks.py` `bundled` calls `sanitize.loads_bounded`
+- `kube_noob/versions.py` `shown_version` calls `sanitize.one_line`
 - `kube_noob/vuln/kev.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/reports.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/vex.py` `_corpus_records` calls `sanitize.loads_bounded`

@@ -658,15 +658,24 @@ def debug_workload(
     ev = collect_evidence(backend, namespace, kind, name, log_lines)
     blob = "\n".join(ev["summary"]) + "\n" + "\n".join(ev["logs"].values())
     blob += f"\nNamespace: {namespace}\n"
+    unread: str | None = None
     try:
         info: dict[str, Any] = cluster_info(backend)
-    except Exception:  # noqa: BLE001 - the version is a bonus; the diagnosis must not depend on it
-        info = {}
+    except Exception as exc:  # noqa: BLE001 - the version is a bonus; the diagnosis must not depend on it
+        info, unread = {}, str(exc)[:200] or type(exc).__name__
     platform = platform or ("openshift" if info.get("openshift") else None)
     result = diagnose(blob, platform=platform)
     if "pod" not in result.context:
         result.context["name"] = name
     reported = known_issue_match(blob, platform, info.get("openshift"), 3, data_dir)
+    if unread is not None and "versionCoverage" in reported:
+        # "No version was given" would blame the user for a read that failed (G277).
+        reported["versionCoverage"] = {
+            "status": "not-narrowed",
+            "versionUnreadable": unread,
+            "why": f"The cluster's version could not be read ({unread}), so the answer is not narrowed by version: "
+            "it covers every indexed release, including issues the cluster may already have the fix for.",
+        }
     denials = explain_denials(blob, platform)["denials"]
     return {
         "backend": backend.name,
@@ -799,13 +808,21 @@ MAX_TEXT_CHANGES = 3  # proposed changes shown for the top diagnosis; --format y
 MAX_TEXT_EVIDENCE = 3  # evidence lines shown for the top diagnosis; the rest are counted
 
 
+class _Verbatim(str):
+    """A line that is a command: its spacing is part of it, so the final pass makes it visible without collapsing
+    its whitespace (a newline in it still becomes a space, so it cannot start a line of its own)."""
+
+
 def _text_step(s: dict[str, Any], indent: str) -> list[str]:
-    out = [f"{indent}{s.get('command') or s.get('instruction', '')}"]
+    out: list[str] = (
+        [_Verbatim(f"{indent}{s['command']}")] if s.get("command") else [f"{indent}{s.get('instruction', '')}"]
+    )
     return out + ([f"{indent}  why: {s['why']}"] if s.get("why") else [])
 
 
 def _text_diagnosis(d: dict[str, Any], others: list[dict[str, Any]]) -> list[str]:
-    lines = [f"{d['id']}  {d['title']}  (confidence {d['confidence']})"]
+    # Fields joined by a separator the final whitespace collapse keeps (two spaces did not survive it).
+    lines = [f"{d['id']} \u00b7 {d['title']} \u00b7 confidence {d['confidence']}"]
     evidence = d.get("evidence") or []
     if evidence:
         lines.append("  evidence: " + "; ".join(str(e) for e in evidence[:MAX_TEXT_EVIDENCE]))
@@ -915,11 +932,55 @@ def _text_reported(result: dict[str, Any]) -> list[str]:
     if memory or result.get("memoryNotes"):
         lines.append("")
     for m in memory:
-        lines.append(f"team memory {m['citation']} ({m['state']}): {m['symptom']}")
-        lines += [f"  fix: {m['fix']['text']}"] if (m.get("fix") or {}).get("text") else []
-        lines += [f"  {m['outcomes']['summary']}"] if (m.get("outcomes") or {}).get("summary") else []
-        lines += [f"  note: {m['note']}"] if m.get("note") else []
+        lines += _text_memory(m)
     return lines + [f"team memory not read: {n}" for n in result.get("memoryNotes") or []]
+
+
+# One level down, as for a diagnosis: every field of a team-memory match is rendered or left out for a reason.
+MEMORY_RENDERED = frozenset(
+    {"citation", "state", "symptom", "cause", "fix", "versions", "outcomes", "note", "riskAccepted", "file", "owners"}
+)
+MEMORY_OMITTED = {
+    "id": "the citation carries it",
+    "status": "only approved entries are attached to an answer",
+    "kind": "the state says it (fix, runbook, tried and did not work, retired)",
+    "repository": "a local path; the file name is shown",
+    "platform": "the entry was matched for this platform",
+    "sources": "provenance links, in the entry file",
+    "evidence": "counted on the evidence line; listed in the entry file",
+    "matchedBy": "why it matched, not what it says; in --format yaml",
+}
+
+
+def _text_memory(m: dict[str, Any]) -> list[str]:
+    lines = [f"team memory {m['citation']} ({m['state']}): {m['symptom']}"]
+    if m.get("cause"):
+        lines.append(f"  cause: {m['cause']}")
+    fix = m.get("fix") or {}
+    if fix.get("text"):
+        lines.append(f"  fix: {fix['text']}")
+    for c in fix.get("commands") or []:
+        label = "read-only" if c.get("label") == "read-only" else "needs approval"
+        lines += [f"  {label}:", _Verbatim(f"    {c.get('command', '')}")]
+    if fix.get("patch"):
+        lines.append(f"  patch: {len(str(fix['patch']).splitlines())} lines (needs approval; --format yaml shows it)")
+    v = m.get("versions") or {}
+    if v:
+        lines.append("  versions: " + ", ".join(f"{k} {v[k]}" for k in sorted(v)))
+    if m.get("outcomes", {}).get("summary"):
+        lines.append(f"  {m['outcomes']['summary']}")
+    if m.get("riskAccepted"):
+        ra = m["riskAccepted"]
+        lines.append(f"  risk accepted by {ra.get('owner')}: {ra.get('reason')}")
+    if m.get("evidence"):
+        lines.append(f"  evidence: {len(m['evidence'])} item(s) in {m.get('file') or 'the entry'}")
+    elif m.get("file"):
+        lines.append(f"  entry: {m['file']}")
+    if m.get("owners"):
+        lines.append(f"  owners: {', '.join(m['owners'])}")
+    if m.get("note"):
+        lines.append(f"  note: {m['note']}")
+    return lines
 
 
 def _text_caveats(result: dict[str, Any]) -> list[str]:
@@ -973,6 +1034,12 @@ def render_text(result: dict[str, Any]) -> str:
         lines.pop(0)
     # Every element is one line: a newline or an invisible character inside a value from the input (a memory
     # symptom, an alert name, a denial message) would otherwise forge a line or hide text in one.
-    from kube_noob.sanitize import one_line
+    from kube_noob.sanitize import one_line, visible
 
-    return "\n".join(x[: len(x) - len(x.lstrip(" "))] + one_line(x) for x in lines)
+    def shown(x: str) -> str:
+        indent = x[: len(x) - len(x.lstrip(" "))]
+        if isinstance(x, _Verbatim):
+            return indent + visible(x.lstrip(" ")).replace("\n", " ").replace("\r", " ")
+        return indent + one_line(x)
+
+    return "\n".join(shown(x) for x in lines)

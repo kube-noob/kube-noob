@@ -1418,6 +1418,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
     # Whether "no reported issue" is an answer for the version asked (G277): the first analyser that consulted the
     # known-issue index says so, and the merged answer keeps it rather than dropping it with the analyser's output.
     ki_coverage: dict[str, Any] | None = None
+    payload_input: dict[str, Any] = {}  # an Alertmanager payload's own version, kept beside a --version (G277)
 
     doc = _json(text)
     if isinstance(doc, dict) and doc.get("kind") == "Status" and isinstance(doc.get("message"), str):
@@ -1429,6 +1430,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
         )
         d = d or {}
         ki_coverage = d.get("knownIssuesCoverage")
+        payload_input = d.get("input") or {}
         signals = list(d.get("signals") or [])
         for i, x in enumerate(d.get("diagnoses", [])[:3]):
             if "likelyCause" in x:  # cause-linked triage: the cause the input points at and its own fix
@@ -1820,6 +1822,9 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
         "context": context,
         "skipped": skipped,
         **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
+        **{k: v for k, v in payload_input.items() if k in {"payloadVersion", "payloadVersionFrom", "versionConflict"}},
+        # What to paste instead, for a caller that reads JSON as well as for the text view (G277).
+        **({} if kinds else {"recognises": [{"kind": k, "what": KIND_DESCRIPTIONS[k]} for k in KINDS]}),
         "approach": "Read-only first: every step listed here only reads; changes come from the playbook or rule "
         "with a person's approval."
         + (GATHER_NOTE if "gather" in ran else "")

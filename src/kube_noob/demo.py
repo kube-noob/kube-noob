@@ -400,7 +400,9 @@ def run(name: str, settings: Settings, emit: Emit = print, keep: Path | None = N
         work = keep if keep is not None else Path(tmp) / "work"
         scenario.run(tk.Toolkit(safe), emit, work)
         if keep is not None:
-            emit(f"\nKept in {keep}: cd there to rerun the commands above.")
+            import shlex
+
+            emit(f"\nKept in {keep}: cd {shlex.quote(str(keep))} to rerun the commands above.")
         return time.monotonic() - start
 
 
@@ -426,8 +428,10 @@ def _refuse_existing(keep: Path) -> None:
         raise ExamplesError(f"--keep {keep}: already holds {', '.join(taken)}; nothing was written. Pick a new DIR")
 
 
-def listing() -> list[dict[str, str]]:
-    rows = [{"name": s.name, "title": s.title, "for": s.audience} for s in SCENARIOS.values()]
-    for old, new in ALIASES.items():
-        rows.append({"name": old, "title": f"old name of `{new}`, kept so scripts and links keep working", "for": ""})
+def listing() -> list[dict[str, Any]]:
+    """One row per scenario; an old name is listed under the scenario it runs (``aliases``), not as a demo."""
+    rows: list[dict[str, Any]] = []
+    for s in SCENARIOS.values():
+        old = sorted(k for k, v in ALIASES.items() if v == s.name)
+        rows.append({"name": s.name, "title": s.title, "for": s.audience, **({"aliases": old} if old else {})})
     return rows

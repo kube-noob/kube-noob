@@ -13,7 +13,7 @@ kube-noob examples list
 ```
 
 Running the copy again leaves identical files alone; a file you changed is refused unless you pass `--force`. On
-releases without `examples copy` (from 0.9.3), the README shows a one-line fallback that uses kube-noob's own Python.
+releases without `examples copy` (from 0.9.3), the README shows a one-line `curl` of the two files it uses.
 
 ## No AI inside: three ways to use it
 
@@ -259,7 +259,11 @@ left out. A version outside the index (4.16, or a release newer than the snapsho
 not-determined` with the reason, in the text view too: no match there is not "no known issue". So is a
 pre-release or nightly build, an OKD build (the index is OpenShift Container Platform release notes, which do not say
 which OKD build has a fix), and a z-stream newer than the newest one the notes reach (`indexedThrough`). Matches are
-still narrowed by the version's minor and z-stream, and a fix in another release is stated without update advice. `diagnose`,
+still narrowed by the version's minor and z-stream, and a fix in another release is stated without update advice.
+Every command and tool that takes the cluster's version reads it the same way: `4.21`, `4.21.3`, `v4.21.3`,
+`4.21.0-rc.1`, a nightly, an OKD build or a release-image tag (`4.21.3-x86_64`, the release 4.21.3); anything else
+is refused with one sentence (exit 2). A paste longer than 100,000 characters is matched on its end, as `diagnose`
+reads it, and the result says what was not read (`inputTruncated`). `diagnose`,
 `insight`, `build diagnose`, the incident watch, the must-gather report and the gate carry the same statement as
 `knownIssuesCoverage`. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
 A match needs several rare words in common, so everyday errors such as OOMKilled never pull in an unrelated bug;

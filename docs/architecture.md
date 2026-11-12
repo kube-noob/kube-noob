@@ -142,9 +142,12 @@ flowchart LR
   else, into the directory the user names. Every target is checked before any is written: a file already there byte
   for byte is left alone, one that differs is refused unless `--force`, and a symbolic link (the directory itself,
   a dangling parent, or a target) or anything that is not a regular file is refused even then; a directory name with
-  a control character is refused. Files are written under unpredictable temporary names (`O_EXCL`, `O_NOFOLLOW`,
-  umask permissions) and moved into place only when all were written (a hard link, so a name that appeared
-  meanwhile is not replaced; `os.replace` under `--force`); a failure part way removes what the run wrote and exits 4.
+  a control or invisible character is refused. The directory is opened once (`O_DIRECTORY`, `O_NOFOLLOW`) and every
+  check, write and rename is relative to that descriptor, so a directory swapped for a link after the check is not
+  followed. Files are written under unpredictable temporary names (`O_EXCL`, `O_NOFOLLOW`, umask permissions) and
+  moved into place only when all were written (a hard link, so a name that appeared meanwhile is not replaced, or a
+  checked rename where the file system has no hard links; `os.replace` under `--force`); a failure part way, Ctrl-C
+  included, removes what the run wrote (exit 4, or 130 for Ctrl-C).
   `demo <name> --keep DIR` writes through the same code. Trust boundary: the user's own directory; the content is
   the package's.
 - `policy migrate-check` (CLI and the read-only `policy_migrate_check` tool; `kube_noob.kyverno_migrate`) reads legacy

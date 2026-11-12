@@ -28,13 +28,14 @@ import csv
 import io
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, field_validator
 
 from kube_noob import sanitize
 from kube_noob.config import Settings
+from kube_noob.versions import MAX_SHOWN, VERSION_FIELD_PATTERN, strip_version
 
 MAX_CASES = 2_000
 MAX_INPUT = 2_000_000
@@ -93,7 +94,9 @@ class Case(BaseModel):
     input: str = Field(..., min_length=3, max_length=MAX_INPUT)
     kind: Literal["auto", "diagnose", "search", "audit", "known-issues"] = "auto"
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: Annotated[str | None, BeforeValidator(strip_version)] = Field(
+        None, max_length=MAX_SHOWN, pattern=VERSION_FIELD_PATTERN
+    )
     source: str = Field("", max_length=300)
     expect: Expect = Field(default_factory=Expect)
 

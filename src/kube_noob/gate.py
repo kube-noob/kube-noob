@@ -220,7 +220,8 @@ def _admission_text(rule: str, severity: str, enforced: dict[str, str], not_gene
 def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path | None) -> list[dict[str, Any]]:
     """Open reported issues in the target release whose text names a kind these manifests deploy."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
-    from kube_noob.known_issues import get_index, read_version, vkey
+    from kube_noob.known_issues import get_index, vkey
+    from kube_noob.versions import read_version
 
     cv = read_version(version)
     if platform not in OPENSHIFT_FAMILY or cv is None:
@@ -242,12 +243,19 @@ def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path |
 
 
 def _known_coverage(platform: str, version: str | None, data_dir: Path | None) -> dict[str, Any] | None:
-    """Whether ``_known`` could answer for ``version``; ``None`` when it was not consulted with one."""
+    """Whether ``_known`` could answer for ``version``; ``None`` for a platform the index does not describe. With an
+    OpenShift platform and no version nothing was looked up, and that is said, not left as an empty list (G277)."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
     from kube_noob.known_issues import coverage
 
-    if platform not in OPENSHIFT_FAMILY or not version:
+    if platform not in OPENSHIFT_FAMILY:
         return None
+    if not version:
+        return {
+            "status": "not-determined",
+            "why": "No --version was given, so reported issues in the target OpenShift release were not looked up "
+            "(the audit assumed a default release). Give --version to look them up.",
+        }
     return coverage(version, data_dir)
 
 

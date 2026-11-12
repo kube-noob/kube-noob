@@ -173,7 +173,7 @@ def _emit(obj: Any, fmt: str) -> None:
     else:
         text = yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True)
         # A lone surrogate from a JSON escape in the input cannot be written as UTF-8; it is replaced, not fatal.
-        print(text.encode("utf-8", "replace").decode("utf-8") if _has_surrogate(text) else text, end="")
+        print(_SURROGATE.sub("\ufffd", text) if _has_surrogate(text) else text, end="")
 
 
 def _has_surrogate(text: str) -> bool:
@@ -185,6 +185,17 @@ def _has_surrogate(text: str) -> bool:
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
+
+
+def _known_issue_line(m: dict[str, Any], width: int = 300) -> str:
+    """One reported issue on one line: the status whole (it carries the version advice and its caveats), the summary
+    cut to what is left of ``width``."""
+    head = f"known issue {m.get('id')} ({m.get('status') or ''})"
+    summary = str(m.get("summary") or "")
+    room = width - len(head) - 2
+    if not summary or room < 8:
+        return head
+    return f"{head}: {summary if len(summary) <= room else summary[: room - 3].rstrip() + '...'}"
 
 
 def _input_cut(total: int, kept: int) -> dict[str, Any] | None:
@@ -208,6 +219,8 @@ def _print_insight(res: dict[str, Any]) -> None:
         _tprint("ran: " + ", ".join(res["ran"]))
     from kube_noob.known_issues import coverage_line
 
+    if res.get("versionConflict"):
+        _tprint(f"version conflict: {res['versionConflict']}")
     listed = any(f.get("source") == "reported-issue" for f in res["findings"])
     if line := coverage_line(res.get("knownIssuesCoverage"), listed):
         _tprint(line)
@@ -378,6 +391,9 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
 def _print_known_issues(out: dict[str, Any]) -> None:
     from kube_noob.known_issues import coverage_line
 
+    if out.get("inputTruncated"):
+        _tprint(f"input cut: {out['inputTruncated']['why']}")
+
     if line := coverage_line(out.get("versionCoverage"), listed=bool(out["matches"])):
         _tprint(line)
     for m in out["matches"]:
@@ -529,7 +545,27 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
-_GATE_VERSION = re.compile(r"\d{1,3}\.\d{1,3}(?:\.\d{1,5})?(?:[-+][0-9A-Za-z][0-9A-Za-z._-]{0,79})?")
+# Commands whose --version is the cluster's OpenShift version: read by kube_noob.versions here, once, so a value is
+# taken or refused the same way on every one of them and by every tool (G277).
+_OCP_VERSION_COMMANDS = frozenset({"known-issues", "diagnose", "insight", "ticket", "gate"})
+
+
+def _takes_ocp_version(a: argparse.Namespace) -> bool:
+    return (
+        a.cmd in _OCP_VERSION_COMMANDS
+        or (a.cmd == "build" and getattr(a, "build_cmd", None) == "diagnose")
+        or (a.cmd == "memory" and getattr(a, "memory_cmd", None) == "match")
+    )
+
+
+def _version_flag(value: str) -> str:
+    """The version as every reader takes it, or exit 2 with one sentence (never a validation dump)."""
+    from kube_noob.versions import read_version, refusal
+
+    cv = read_version(value)
+    if cv is None:
+        raise ConfigError(refusal(value))
+    return cv.shown
 
 
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
@@ -538,14 +574,6 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob.code import builds as cb
 
     repo = Path.cwd()
-    if a.pversion is not None:
-        # Read once and refused here, like known-issues: the Action passes inputs.version through, and " 4.20.0"
-        # or a 5,000-digit z-stream used to reach the audit and the known-issue lookup unequal (G277).
-        a.pversion = a.pversion.strip()
-        if not _GATE_VERSION.fullmatch(a.pversion):
-            raise ConfigError(
-                f"--version {a.pversion[:40]!r}: expected a version such as 4.20, 4.20.8, 4.20.0-rc.1 or 1.33"
-            )
     containerfiles: list[tuple[str, str]] = []
     code_builds = []
     unknown: list[str] = []
@@ -2232,6 +2260,11 @@ def main(argv: list[str] | None = None) -> int:
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         print(f"error: {msg}", file=sys.stderr)
         return 4
+    except KeyboardInterrupt:
+        # Ctrl-C: whatever was half-written has been rolled back by the code that wrote it (examples copy); one line
+        # and the shell's own code for an interrupt, never a traceback.
+        print("interrupted", file=sys.stderr)
+        return 130
     except BrokenPipeError:
         # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
         devnull = os.open(os.devnull, os.O_WRONLY)
@@ -2246,6 +2279,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     kit = tk.Toolkit(s)
     fmt = "yaml" if a.format == "text" else a.format
     platform = getattr(a, "platform", None) or s.default_platform
+    if getattr(a, "pversion", None) is not None and _takes_ocp_version(a):
+        a.pversion = _version_flag(a.pversion)
 
     if a.cmd == "completion":
         print(completion.script(a.shell, build_parser()), end="")
@@ -2478,7 +2513,14 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
-        out = kit.known_issues(tk.KnownIssuesIn(text=text, platform=a.platform, version=a.pversion, limit=a.limit))
+        total = len(text)
+        out = kit.known_issues(
+            tk.KnownIssuesIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion, limit=a.limit)
+        )
+        if total > tk.MAX_DIAGNOSE_TEXT and out.get("inputTruncated"):
+            from kube_noob.known_issues import truncation
+
+            out["inputTruncated"] = truncation(total)
         if a.format == "text":
             _print_known_issues(out)
         else:
@@ -2632,7 +2674,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
-                text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+                text += "\n" + _known_issue_line(m)
             from kube_noob.known_issues import coverage_line
 
             if ki_line := coverage_line(rep.get("knownIssuesCoverage"), listed=bool(rep["knownIssues"])):
@@ -2885,9 +2927,12 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.list_demos or not a.scenario:
             if a.format == "text":
                 rows = demo.listing()
-                width = max(len(d["name"]) for d in rows)  # `must-gather` is longer than the old fixed 10
+                aliases = [(old, new) for d in rows for old in d.get("aliases", []) for new in [d["name"]]]
+                width = max(len(n) for n in [*(d["name"] for d in rows), *(o for o, _ in aliases)])
                 for d in rows:
-                    print(f"{d['name']:{width}}  {d['title']}" + (f"  [{d['for']}]" if d["for"] else ""))
+                    print(f"{d['name']:{width}}  {d['title']}  [{d['for']}]")
+                for old, new in aliases:
+                    print(f"{old:{width}}  old name of `{new}`, kept so scripts and links keep working")
                 print("\nRun: kube-noob demo <name>   or   kube-noob demo all")
             else:
                 _emit(demo.listing(), fmt)
@@ -2960,6 +3005,7 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
+_SURROGATE = re.compile("[\ud800-\udfff]")  # a lone surrogate from a JSON escape cannot be written as UTF-8
 # C0 (but tab and newline), DEL and C1: an 8-bit CSI (\x9b) is as much a terminal escape as ESC [ (G277).
 _TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
@@ -2967,7 +3013,7 @@ _TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 def _tprint(text: str = "") -> None:
     """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped, and a lone
     surrogate (from a JSON escape) becomes U+FFFD instead of failing the write."""
-    print(_TERMINAL_CONTROL.sub("", text).encode("utf-8", "replace").decode("utf-8"))
+    print(_SURROGATE.sub("\ufffd", _TERMINAL_CONTROL.sub("", text)))
 
 
 def _print_denials(out: dict[str, Any]) -> None:

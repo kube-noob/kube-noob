@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from kube_noob.audit.engine import analyze, explain_rule, list_rules
 from kube_noob.audit.fixer import fix_manifests
@@ -53,6 +53,8 @@ from kube_noob.learn.tutor import Tutor
 from kube_noob.signals import alertmanager, for_text, playbooks_for
 from kube_noob.upgrade_risks import parse_version
 from kube_noob.upgrade_risks import risks as upgrade_risk_match
+from kube_noob.versions import MAX_SHOWN as MAX_VERSION
+from kube_noob.versions import VERSION_FIELD_PATTERN, same_release, strip_version
 
 PlatformT = Literal["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 MAX_MANIFEST_CHARS = 1_000_000
@@ -76,6 +78,11 @@ READABLE_CONTENT_TYPES = frozenset(
         "text/x-yaml",
     }
 )
+
+
+# Every tool reads a version as the command line does (kube_noob.versions, G277): the same values accepted, the
+# whitespace around one ignored, so a tool never refuses what `kube-noob ... --version` takes.
+VersionT = Annotated[str | None, BeforeValidator(strip_version)]
 
 
 class _In(BaseModel):
@@ -267,10 +274,10 @@ class DiagnoseIn(_In):
         "as text; an `openshift_version` or `version` label gives the version).",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version (4.20 or 4.20.8): leaves out reported issues already fixed there.",
     )
     limit: int = Field(5, ge=1, le=10)
@@ -283,23 +290,27 @@ class TicketIn(_In):
         pattern=r"^[A-Za-z][A-Za-z0-9_]{1,29}-\d{1,9}$",
         description="A Red Hat Jira key, e.g. OCPBUGS-12345 or ROX-30000.",
     )
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version: says whether the fix is already in it.",
     )
 
 
 class KnownIssuesIn(_In):
     text: str = Field(
-        ..., min_length=3, max_length=100_000, description="An error message, events, logs or a symptom in words."
+        ...,
+        min_length=3,
+        max_length=MAX_DIAGNOSE_TEXT,
+        description="An error message, events, logs or a symptom in words. Past 100,000 characters only the end is "
+        "matched, and the result says so (inputTruncated).",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version (4.20 or 4.20.8): keeps only issues that can affect it.",
     )
     limit: int = Field(3, ge=1, le=10)
@@ -348,10 +359,10 @@ class MemoryMatchIn(_In):
         max_length=MAX_SIGNAL_TEXT,
         description="An error, events, logs, a symptom in words or an Alertmanager webhook payload.",
     )
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version: entries already fixed there are shown as retired.",
     )
     platform: PlatformT | None = None
@@ -391,7 +402,7 @@ class InsightIn(_In):
         "build log, a Containerfile, an SBOM or scanner report, or a question.",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: VersionT = Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN)
 
 
 class TicketChangesIn(_In):
@@ -596,10 +607,10 @@ class BuildDiagnoseIn(_In):
         "build (oc logs build/<name>). The end of the log matters most: when cutting, keep the end.",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version, for reported issues that may apply.",
     )
 
@@ -746,7 +757,7 @@ class CodeReportIn(_In):
 class ThreatModelIn(_In):
     manifests: str = Field(..., min_length=10, max_length=MAX_MANIFEST_CHARS, description="The application's YAML.")
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: VersionT = Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN)
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
         max_length=10,
@@ -1251,7 +1262,7 @@ class Toolkit:
                 # The argument decides, but the payload's own version is kept and a disagreement is said: a flag
                 # silently replacing the alert's version hid which release the alert came from (G277).
                 given = {"payloadVersion": payload.version, "payloadVersionFrom": payload.version_from}
-                if payload.version.strip() != p.version.strip():
+                if not same_release(payload.version, p.version):
                     given["versionConflict"] = (
                         f"The version given ({p.version}) differs from the payload's {payload.version_from} "
                         f"({payload.version}); reported issues are matched for {p.version}."

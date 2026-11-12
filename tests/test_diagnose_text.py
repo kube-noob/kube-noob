@@ -182,7 +182,7 @@ def test_values_from_the_input_cannot_forge_a_line_or_hide_text() -> None:
     assert not any(line.startswith("DBG-FAKE") for line in text.splitlines())
     for ch in ("\u202e", "\u200b", "\U000e0041", "\u00ad"):
         assert ch not in text
-    assert "evilname" in text
+    assert "evil name" in text  # each invisible character became a space, collapsed to one
 
 
 def test_a_cut_list_of_changes_says_how_many_there_are_in_every_text_view(capsys: pytest.CaptureFixture[str]) -> None:

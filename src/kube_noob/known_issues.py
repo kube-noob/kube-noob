@@ -31,6 +31,7 @@ from typing import Any
 from kube_noob import sanitize
 from kube_noob.catalog import OPENSHIFT_FAMILY
 from kube_noob.knowledge.store import Chunk, KnowledgeStore, builtin_chunks, tokenize
+from kube_noob.versions import read_version, shown_version
 
 MIN_RARE_TERMS = 3  # rare words shared with the issue text before it counts as a match
 RARE_SHARE = 0.03  # a word in at most 3% of issues is rare
@@ -215,18 +216,27 @@ class Issue:
         version. Without ``advise`` the fix release is stated and no update path is suggested: a release the index
         does not hold may have the fix as a backport, which these release notes cannot show (G277)."""
         named = shown or running
+        if running and running.count(".") == 1:
+            # 4.21 names no z-stream: whether the cluster is before or after a 4.21.z fix is not known from it.
+            named, advise_z = f"{named} (no z-stream given)", False
+        else:
+            advise_z = True
         if self.kind == "known":
             if self.fixed_in:
                 msg = f"Known issue in OpenShift {self.minor}; fixed in {self.fixed_in}."
-                if running and advise and vkey(running) < vkey(self.fixed_in):
+                if running and advise and advise_z and vkey(running) < vkey(self.fixed_in):
                     msg += f" You run {named}: updating to {self.fixed_in} or later fixes it."
+                elif running and advise and not advise_z and _minor(self.fixed_in) == running:
+                    msg += f" You run {named}: {self.fixed_in} or later has the fix."
             else:
                 msg = f"Known issue in OpenShift {self.minor}; the release notes list no fix yet."
             if running and not advise:
                 msg += f" Whether {named} has it, or a fix for it, is not determined from these release notes."
             return msg
         msg = f"Reported and fixed in OpenShift {self.version}."
-        if running and advise and vkey(running) < vkey(self.version):
+        if running and advise and not advise_z:
+            msg += f" You run {named}: {self.version} or later has the fix."
+        elif running and advise and vkey(running) < vkey(self.version):
             msg += f" You run {named}: updating to {self.version} or later fixes it."
         elif running and not advise:
             msg += (
@@ -387,7 +397,12 @@ class Index:
         cv = read_version(version)
         out["versionCoverage"] = self.coverage(version)
         advise = out["versionCoverage"]["status"] == "determined"
-        text = text[:100_000]
+        if len(text) > MATCH_TEXT:
+            # The end, as diagnose and insight read it: the head of a long paste once decided alone, so an issue
+            # described at the end of 105,515 characters answered "no reported issue" (G277).
+            out["inputTruncated"] = truncation(len(text))
+            out["versionCoverage"] = cut_coverage(out["versionCoverage"], out["inputTruncated"])
+            text = text[-MATCH_TEXT:]
         running = cv.numeric if cv else None
         shown = cv.shown if cv else None
         signals = [x for x in extract(text) if x.kind in {"alert", "event_reason", "pod_reason"}] + infer(text)
@@ -471,42 +486,27 @@ class Index:
 
 
 COVERAGE = ("determined", "not-determined", "not-narrowed")
-# x.y, x.y.z, or either with a build after "-" or "+" (4.21.0-rc.1, 4.16.0-0.nightly-2024-05-01-111111,
-# 4.15.0-0.okd-2024-03-10-010116): each part bounded, so no label can make vkey or int() do unbounded work.
-_VERSION_TEXT = re.compile(r"(\d{1,3})\.(\d{1,3})(?:\.(\d{1,5}))?(?:[-+]([0-9A-Za-z][0-9A-Za-z._-]{0,79}))?")
-_OKD = re.compile(r"(?i)(?:^|[._-])okd(?:[._-]|$)")
+MATCH_TEXT = 100_000  # characters of a paste the matcher reads: the END, where diagnose and insight also look
 
 
-@dataclass(frozen=True)
-class ClusterVersion:
-    """A version as every known-issue reader uses it: read once, so the statement and the matching agree."""
-
-    shown: str  # as given, on one line and bounded
-    numeric: str  # 4.16.0 (or 4.16): what is compared
-    minor: str  # 4.16
-    has_z: bool
-    build: str  # "" for a release; rc.1, 0.nightly-..., 0.okd-... otherwise
-    okd: bool  # OKD is built from the same sources, but these are OpenShift Container Platform release notes
+def truncation(total: int, read: int = MATCH_TEXT) -> dict[str, Any]:
+    """What a result says when only the end of the text was matched."""
+    return {
+        "characters": total,
+        "read": read,
+        "why": f"the text is {total:,} characters and only the last {read:,} were matched against the release "
+        "notes (failures are usually at the end), so an issue described before them can be missed",
+    }
 
 
-def shown_version(raw: str | None) -> str | None:
-    """``raw`` on one visible line, bounded; ``None`` for nothing (an empty or blank value)."""
-    if raw is None:
-        return None
-    return sanitize.one_line(str(raw))[:80] or None
-
-
-def read_version(raw: str | None) -> ClusterVersion | None:
-    """The version in ``raw``, or ``None`` when there is none or it is not one (see ``shown_version``)."""
-    shown = shown_version(raw)
-    m = _VERSION_TEXT.fullmatch(shown) if shown else None
-    if shown is None or m is None:
-        return None
-    major, minor, z, build = m.groups()
-    numeric = f"{int(major)}.{int(minor)}" + (f".{int(z)}" if z is not None else "")
-    return ClusterVersion(
-        shown, numeric, f"{int(major)}.{int(minor)}", z is not None, build or "", bool(build and _OKD.search(build))
-    )
+def cut_coverage(cov: dict[str, Any], cut: dict[str, Any]) -> dict[str, Any]:
+    """``cov`` when the matcher read only part of the text: whatever the version, the list is not the whole answer."""
+    return {
+        **cov,
+        "status": "not-determined",
+        "inputTruncated": cut,
+        "why": f"Known issues NOT DETERMINED for this text: {cut['why']}. " + str(cov.get("why", "")),
+    }
 
 
 def version_coverage(
@@ -598,7 +598,7 @@ def coverage_line(cov: dict[str, Any] | None, listed: bool = True) -> str | None
     that WAS given and could not be used is always said: a supplied value is never dropped silently."""
     if not cov or cov.get("status") == "determined":
         return None
-    if cov.get("status") == "not-narrowed" and "version" not in cov and not listed:
+    if cov.get("status") == "not-narrowed" and "version" not in cov and "versionUnreadable" not in cov and not listed:
         return None
     return str(cov["why"])
 
