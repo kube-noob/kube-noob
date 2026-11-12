@@ -689,7 +689,7 @@ schema in this project's own CI.
 
 With the images' scanner output (`--scanner-report`, plus `--vex` and `--kev`), the gate also lists their
 vulnerabilities after Red Hat VEX, ranked against the manifests; a fixable or known-exploited one at `--fail-on`
-fails it, an unfixable one is reported without blocking. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own, with its own images, rights and token, and the output's `ambiguous` list names the name and each copy's ServiceAccount.
+fails it, an unfixable one is reported without blocking. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own as `Deployment/shop/web#1`, `#2`, with its own images, rights and token, counted once each, and the output's `ambiguous` list names each copy's ServiceAccount and the fields the copies differ in. `-n` places objects without a namespace as `kubectl apply -n` does (`vuln report -n`, `code report -n`, `gate -n`, and `namespace` on the MCP tools); without it an object with no namespace that bears on a workload is listed in `ambiguous` too.
 
 ```bash
 trivy image -f json --list-all-pkgs -o trivy.json quay.io/acme/shop:1.4
@@ -1010,7 +1010,7 @@ then removes what Red Hat says does not affect the image's product (or is alread
 and each removed finding cites the statement, its justification and the VEX document. SBOMs carry packages, not
 findings: their RPMs are matched against the same VEX statements. With the CISA KEV catalog (CC0) and the manifests
 that run the images, findings are ranked by base score x exposure (internet 3, node network 2, internal 1) x
-privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own, with its own images, rights and token, and the output's `ambiguous` list names the name and each copy's ServiceAccount. `code assess` places its findings the same way.
+privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own as `Deployment/shop/web#1`, `#2`, with its own images, rights and token, counted once each, and the output's `ambiguous` list names each copy's ServiceAccount and the fields the copies differ in. `-n` places objects without a namespace as `kubectl apply -n` does (`vuln report -n`, `code report -n`, `gate -n`, and `namespace` on the MCP tools); without it an object with no namespace that bears on a workload is listed in `ambiguous` too. `code assess` places its findings the same way.
 
 ```bash
 kube-noob corpus advisories --online --since 2026-10-01

@@ -203,6 +203,11 @@ _S010_CRITICAL = [
 #: machine id, kubelet plugin registration (the third review: a subtree rule made `gate --fail-on critical` fail on
 #: nearly every cluster).
 _S010_HIGH = [
+    # Fifth review: exact carve-outs from the /etc/kubernetes tree for what real charts mount there (the NFD worker
+    # chart and OpenShift NFD operator; the GCP secrets-store CSI provider).
+    "/etc/kubernetes/node-feature-discovery",
+    "/etc/kubernetes/node-feature-discovery/features.d",
+    "/etc/kubernetes/secrets-store-csi-providers",
     "/run/xtables.lock",
     "/var/run/calico",
     "/var/run/cilium",
@@ -244,6 +249,8 @@ def test_kn_s010_is_critical_for_credential_and_api_paths_only(path: str, critic
     assert takes_over_node(path) is critical, path
     text = str(explain_rule("KN-S010"))
     assert "/etc/kubernetes" in text and "/var/lib/etcd" in text
+    # A read-only mount still reads the kubelet's credentials and every pod's Secrets: not downgraded (fifth review).
+    assert "readOnly" in text and "node-feature-discovery" in text
 
 
 def test_fixer_flips_explicit_privilege_escalation_on_openshift_only() -> None:

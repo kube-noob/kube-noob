@@ -1512,6 +1512,10 @@ NODE_TAKEOVER_EXACT = ("/", "/etc", "/proc", "/var/lib/kubelet")
 #: client certificates and every pod's volumes, Secrets included (/var/lib/kubelet/pki, /var/lib/kubelet/pods),
 #: root's home (credentials, SSH keys) and etcd's data (every Secret of the cluster).
 NODE_TAKEOVER_TREES = ("/etc/kubernetes", "/var/lib/kubelet/pki", "/var/lib/kubelet/pods", "/root", "/var/lib/etcd")
+#: Directories under those trees that hold no credential and that well-known charts mount, carved out exactly (and
+#: what is under them), as `/etc/cni/net.d` is not `/etc`: node-feature-discovery's feature files (the NFD worker
+#: chart, the OpenShift NFD operator) and the secrets-store CSI provider socket directory (the GCP provider).
+NODE_TAKEOVER_CARVED = ("/etc/kubernetes/node-feature-discovery", "/etc/kubernetes/secrets-store-csi-providers")
 
 
 def takes_over_node(path: str) -> bool:
@@ -1531,6 +1535,8 @@ def takes_over_node(path: str) -> bool:
         norm = "/" + (proc_root.group(1) or "").lstrip("/")
     if norm in (*NODE_TAKEOVER_EXACT, *RUNTIME_SOCKET_DIRS) or norm.rsplit("/", 1)[-1] in RUNTIME_SOCKETS:
         return True
+    if any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_CARVED):
+        return False
     if any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_TREES):
         return True
     # A directory that holds a critical path holds it too: `/var` holds /var/lib/kubelet and /var/run, `/run`
@@ -1875,7 +1881,9 @@ def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "container runtime socket (docker, containerd, cri-o, cri-dockerd, podman, dockershim) wherever it is mounted "
     "from, or a runtime's socket directory (`/run`, `/var/run`, `/run/containerd`, ...); or a directory holding any "
     "of those (`/var`, `/var/lib`); `/proc/<pid>/root` is read as the path under it. Other host paths, such as CNI "
-    "state, CA bundles or kube-proxy's xtables lock, are high.",
+    "state, CA bundles or kube-proxy's xtables lock, are high, and so are `/etc/kubernetes/node-feature-discovery` "
+    "and `/etc/kubernetes/secrets-store-csi-providers`, which hold no credential. A readOnly mount is not "
+    "downgraded: read-only access to `/var` still reads the kubelet's credentials and every pod's Secrets.",
     ("k8s-pss",),
     ("Mounting Sensitive Host Directories", "Mount Container Runtime Socket"),
 )

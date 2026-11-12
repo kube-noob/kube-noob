@@ -464,6 +464,15 @@ def _readable_targets(g: _Graph, grant: ap.Grant) -> list[str]:
     return [g.node(f"secrets:namespace/{ns}", "secret", f"every Secret in namespace {ns}")]
 
 
+def _unplaced_limitation(inv: ap.Inventory) -> str:
+    names = sorted(inv.unplaced)
+    shown = ", ".join(names[:MAX_NAMED]) + (f" and {len(names) - MAX_NAMED} more" if len(names) > MAX_NAMED else "")
+    return (
+        f"{len(names)} object(s) have no namespace ({shown}): they are shown in `default`, but kubectl apply puts them "
+        "in the namespace given with -n or the context's; pass -n to place them"
+    )
+
+
 def _secret_refs(spec: dict[str, Any]) -> list[tuple[str, str]]:
     """(Secret name, field) for every Secret the pod spec reads: a `secret` volume, a projected `secret` source,
     `env[].valueFrom.secretKeyRef` and `envFrom[].secretRef`, in every kind of container."""
@@ -570,12 +579,19 @@ def _site_graph(
     # this one (cross-namespace backendRefs and destination hosts), so an empty answer is not "none".
     unread_ns = (
         [
-            "HTTPRoutes and VirtualServices in namespaces not read "
+            "HTTPRoutes, GRPCRoutes and VirtualServices in namespaces not read "
             f"(read: {', '.join(sorted(namespaces_read))}) can route to it"
         ]
         if mode == "live" and namespaces_read
         else []
     ) + ([UNLISTED_LIVE] if mode == "live" else [])
+    # A front or a Service with no namespace, given none (-n): placed in `default`, it may be in this namespace
+    # (fifth review, E1).
+    unread_ns += [
+        f"{u} has no namespace: whether it routes to this workload is not known; pass -n"
+        for u in sorted(inv.unplaced)
+        if u.split("/")[0] in _EXPOSURE_KINDS
+    ][:MAX_NAMED]
     on_host = _host_network(site.spec)
     # The same name carried by two different fronts or Services: which one the cluster holds is not known.
     dup_refs = {ap.object_ref(objs[0]) for k in _EXPOSURE_KINDS for objs in inv.duplicates(k).values()}
@@ -792,6 +808,11 @@ def _site_graph(
                 "grants of both are listed",
                 ref,
             )
+    # A Role or binding with no namespace, given none (-n): which accounts it binds is not known (fifth review, E1).
+    for u in sorted(u for u in inv.unplaced if u.split("/")[0] in {"Role", "RoleBinding"})[:MAX_NAMED]:
+        g.undetermined(
+            sa, "rbac", f"no-namespace:{u}", f"{u} has no namespace: which accounts it binds is not known; pass -n", u
+        )
     for i, note in enumerate(sorted(set(inv.rbac_unread))[:MAX_NAMED]):
         g.undetermined(sa, "rbac", f"rbac-unread-{i}", f"{note}: grants in it are not known", sa_ref)
     if unclassified:
@@ -1163,6 +1184,8 @@ def reach(
     differ_note = f"; the {kind_named} differs from its owner ({len(differs)} way(s))" if differs else ""
     completeness = {"files": _FILE_INPUT, "whole": _WHOLE_BUNDLE, "live": _LIVE}[mode]
     limitations = [completeness, *LIMITATIONS]
+    if inv.unplaced:
+        limitations.append(_unplaced_limitation(inv))
     if differs:
         limitations.insert(
             1, f"The {kind_named} is scored on its own spec; it differs from its owner: " + "; ".join(differs)

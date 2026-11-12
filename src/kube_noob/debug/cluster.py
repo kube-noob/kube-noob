@@ -246,13 +246,28 @@ def _kind_for(plural: str) -> str | None:
 
 
 _ROUTING_KINDS = frozenset({"HTTPRoute", "GRPCRoute", "VirtualService"})
-_HEADER_KEYS = frozenset({"requestHeaderModifier", "responseHeaderModifier", "headers", "queryParams"})
+_HEADER_KEYS = frozenset(
+    {"requestHeaderModifier", "responseHeaderModifier", "headers", "withoutHeaders", "queryParams"}
+)
 #: An nginx snippet that sets a credential header carries the credential itself (the fourth review; on main too).
 _SNIPPET_CREDENTIAL = re.compile(
     r"(?:proxy_set_header|more_set_input_headers|more_set_headers|add_header|grpc_set_header)[^;]*"
-    r"(?:authorization|cookie|x-api-key|api-key|token)",
+    r"(?:authorization|cookie|x-api-key|api-key|token)"
+    # nginx `set $var "<value>"` stores a value a later directive sends: the value may be the credential.
+    r"|\bset\s+\$\w+\s+\S",
     re.IGNORECASE,
 )
+#: In an annotation value: an `Authorization`-style scheme and its credential, and a JSON field named like a secret
+#: (the ALB `auth-idp-oidc` annotation carries `clientSecret`). Fifth review of G273.
+_ANNOTATION_CREDENTIAL = re.compile(r"(?i)\b(basic|bearer)\s+[A-Za-z0-9._~+/=-]+")
+_JSON_SECRET = re.compile(r"(?i)(\"[a-z_]*(?:secret|password|token|apikey|api_key)[a-z_]*\"\s*:\s*)\"[^\"]*\"")
+
+
+def _mask_annotation(value: str) -> str:
+    value = _ANNOTATION_CREDENTIAL.sub(lambda m: f"{m.group(1)} <redacted>", value)
+    return _JSON_SECRET.sub(lambda m: f'{m.group(1)}"<redacted>"', value)
+
+
 #: `user:password@` in a hostname or a URL a route rewrites to.
 _USERINFO = re.compile(r"[^/@\s:]+:[^/@\s]+@")
 
@@ -293,7 +308,9 @@ def _redact_obj(obj: Any, kind_hint: str | None = None) -> Any:
                         if "last-applied-configuration" in ak
                         or SENSITIVE_ENV.search(str(ak))
                         or (isinstance(av, str) and _SNIPPET_CREDENTIAL.search(av))
-                        else redact_text(av)
+                        # haproxy-ingress sets a header from an annotation: its value is the header value.
+                        or re.search(r"(?:^|\/)(?:request|response)-set-header$", str(ak)) is not None
+                        else _mask_annotation(redact_text(av))
                         if isinstance(av, str)
                         else av
                     )

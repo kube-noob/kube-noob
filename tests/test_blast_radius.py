@@ -1828,7 +1828,8 @@ def test_two_different_workloads_of_one_name_keep_the_worse_in_the_threat_model(
     priv["spec"]["template"]["spec"]["hostPID"] = True
     for docs in ([benign, priv], [priv, benign]):
         reach = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))
-        assert {c.name for c in reach["Deployment/shop/web"].node} == {"host namespace hostPID"}
+        # Fifth review: each copy is its own reach, `#1` and `#2`; the privileged one is not lost.
+        assert {"host namespace hostPID"} in [{c.name for c in r.node} for r in reach.values()]
     out = ap.scan(ap.Inventory.from_documents([benign, priv]))
     assert any("2 different objects named Deployment/shop/web" in n for n in out["notRead"])
 
@@ -2001,7 +2002,7 @@ def test_two_workloads_of_one_name_are_both_kept_never_one_dropped() -> None:
     )
     for docs in ([a, c, crb], [c, a, crb]):
         reach = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))
-        copies = [r for r in reach.values() if r.ref == "Deployment/shop/web"]
+        copies = [r for r in reach.values() if r.ref.startswith("Deployment/shop/web#")]
         assert len(copies) == 2 and all(r.copies == 2 for r in copies)
         assert {frozenset(x.name for x in r.node) for r in copies} == {
             frozenset({"host namespace hostPID"}),
@@ -2492,3 +2493,173 @@ def test_controller_set_annotations_do_not_make_two_objects() -> None:
         "kubectl.kubernetes.io/last-applied-configuration": "{}",
     }
     assert _reach([*_web(), b], "deployment/web", "shop")["anchor"]["resolved"] == ["Deployment/shop/web"]
+
+
+# --- fifth review (ef9cdec) ----------------------------------------------------------------------------------------
+
+
+def test_unplaced_fronts_and_bindings_open_the_legs_they_feed() -> None:
+    """E1: a Service, Route or RoleBinding with no namespace was placed in `default` silently, and reach of a
+    Deployment in `shop` said `none`, complete. Without -n they are unknowns that open exposure and RBAC, named."""
+    lb = _svc(kind="LoadBalancer")
+    del lb["metadata"]["namespace"]
+    g = _reach([*_web(), lb], "deployment/web", "shop", whole_bundle=True)
+    assert (
+        _leg(g, "exposure")["status"] == "not determined"
+        and "Service/web has no namespace" in _leg(g, "exposure")["detail"]
+    )
+    assert g["complete"] is False and any("no namespace" in x for x in g["limitations"])
+    rb = _binding("RoleBinding", "b", "Role", "r", [WEB])
+    del rb["metadata"]["namespace"]
+    role = _role("Role", "r", SECRET_READER)
+    del role["metadata"]["namespace"]
+    g = _reach([*_web(), rb, role], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "rbac")["status"] == "not determined"
+    assert any("RoleBinding/b has no namespace" in r for r in _undetermined(g))
+    # A binding in `shop` to an unplaced Role names that, not "Role/shop/r is not in the input".
+    g = _reach([*_web(), *(_bound(SECRET_READER)[1:]), role], "deployment/web", "shop", whole_bundle=True)
+    assert any("Role/r has no namespace" in r for r in _undetermined(g))
+    assert not any("Role/shop/r is not in the input" in r for r in _undetermined(g))
+    placed = br.reach(
+        ap.Inventory.from_documents(copy.deepcopy([*_web(), lb]), default_namespace="shop"),
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert _leg(placed, "exposure")["status"] == "reached"
+
+
+def _copies(same_sa: bool = False) -> list[dict[str, Any]]:
+    a = copy.deepcopy(_web()[0])
+    a["spec"]["template"]["spec"]["containers"] = [{"name": "c", "image": "quay.io/acme/vuln:2.0"}]
+    b = copy.deepcopy(a)
+    b["spec"]["template"]["spec"]["hostPID"] = True
+    if not same_sa:
+        b["spec"]["template"]["spec"]["serviceAccountName"] = "adm"
+    return [a, b, _svc(kind="LoadBalancer")]
+
+
+def _trivy(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "SchemaVersion": 2,
+                "ArtifactName": "quay.io/acme/vuln:2.0",
+                "ArtifactType": "container_image",
+                "Metadata": {"OS": {"Family": "debian", "Name": "12"}, "RepoTags": ["quay.io/acme/vuln:2.0"]},
+                "Results": [
+                    {
+                        "Target": "x",
+                        "Class": "os-pkgs",
+                        "Type": "debian",
+                        "Vulnerabilities": [
+                            {
+                                "VulnerabilityID": "CVE-2024-0001",
+                                "PkgName": "openssl",
+                                "InstalledVersion": "3.0.1",
+                                "FixedVersion": "3.0.2",
+                                "Severity": "CRITICAL",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    return path
+
+
+def test_copies_carry_their_own_reference_and_are_counted_once_each(tmp_path: Path) -> None:
+    """E3: both copies were `Deployment/shop/web`, so `vuln report` counted one CVE twice for that workload, the
+    SARIF said "Deployment/shop/web, Deployment/shop/web", and two copies with the same ServiceAccount were told
+    apart by nothing. Each copy is `ref#n`, counted once, and the note names the fields that differ."""
+    reach = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(_copies(same_sa=True))))
+    assert sorted(reach) == ["Deployment/shop/web#1", "Deployment/shop/web#2"]
+    assert sorted(r.ref for r in reach.values()) == ["Deployment/shop/web#1", "Deployment/shop/web#2"]
+    note = " ".join(ap.ambiguous_notes(reach))
+    assert "hostPID" in note
+    manifests = tmp_path / "m.yaml"
+    manifests.write_text(yaml.safe_dump_all(_copies()))
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main(
+            [
+                "--format",
+                "json",
+                "vuln",
+                "report",
+                "-r",
+                str(_trivy(tmp_path / "t.json")),
+                "-m",
+                str(manifests),
+                "--no-corpus-vex",
+            ]
+        )
+    out = json.loads(buf.getvalue())
+    assert out["ranking"]["workloads"] == {
+        "Deployment/shop/web#1": {"findings": 1, "fixableHighOrExploited": 1},
+        "Deployment/shop/web#2": {"findings": 1, "fixableHighOrExploited": 1},
+    }
+    assert any("serviceAccountName" in n for n in out["ranking"]["ambiguous"])
+
+
+def test_the_namespace_reaches_every_reader_and_unplaced_accounts_are_a_caveat(tmp_path: Path) -> None:
+    """E2: `-n` reached scan, reach and threat only; `vuln report`, `gate` and the MCP tools still put objects
+    without a namespace in `default`, and "privileges: none found" stood beside an unplaced account."""
+    import contextlib
+    import io
+
+    docs = copy.deepcopy(_unplaced())
+    docs[0]["spec"]["template"]["spec"]["containers"] = [{"name": "c", "image": "quay.io/acme/vuln:2.0"}]
+    m = tmp_path / "m.yaml"
+    m.write_text(yaml.safe_dump_all(docs))
+    report = _trivy(tmp_path / "t.json")
+    for extra, want in (([], "no namespace"), (["-n", "ops"], "full control")):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            main(["--format", "json", "vuln", "report", "-r", str(report), "-m", str(m), "--no-corpus-vex", *extra])
+        out = json.loads(buf.getvalue())
+        text = json.dumps(out["ranking"])
+        assert want in text, (extra, text[:400])
+    from kube_noob.toolkit import PostureScanIn, ThreatModelIn, VulnReportIn
+
+    for model in (PostureScanIn, ThreatModelIn, VulnReportIn):
+        assert "namespace" in model.model_fields, model
+    for bad in (["posture", "scan", "-f", str(m), "-n", "Bad_NS"], ["vuln", "threat", "-f", str(m), "-n", "a/b"]):
+        assert main(bad) == 2, bad
+
+
+def test_more_credential_carriers_are_masked() -> None:
+    """E5: Istio `withoutHeaders`, haproxy `request-set-header` annotations and an nginx `set $var "<value>"`."""
+    from kube_noob.debug.cluster import _redact_obj
+
+    key = "q7Zr9xLm2Pw4Kd8sVb1N"
+    vs = {
+        "kind": "VirtualService",
+        "spec": {"http": [{"match": [{"withoutHeaders": {"authorization": {"exact": key}}}]}]},
+    }
+    ing = {
+        "kind": "Ingress",
+        "metadata": {
+            "annotations": {
+                "haproxy.org/request-set-header": f"Authorization Bearer {key}",
+                "haproxy.org/response-set-header": f"X-Token {key}",
+                "nginx.ingress.kubernetes.io/configuration-snippet": (
+                    f'set $apikey "{key}"; proxy_set_header X-Secret $apikey;'
+                ),
+            }
+        },
+    }
+    for obj in (vs, ing):
+        assert key not in json.dumps(_redact_obj(obj)), obj["kind"]
+
+
+def test_httproute_filters_as_a_map_are_not_determined() -> None:
+    """E6a."""
+    hr = _hr("f", [{"backendRefs": [{"name": "web"}], "filters": {"type": "RequestMirror"}}])
+    g = _reach([*_web(), _svc(), hr], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "not determined" or any("filters" in n for n in g["notRead"])
+    assert any("filters is not a list" in n for n in g["notRead"])

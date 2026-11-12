@@ -310,8 +310,11 @@ def _canonical_form(obj: Any) -> str:
         and str(obj.get("kind") or "") not in _CLUSTER_SCOPED_KINDS
     ):
         obj = {**obj, "metadata": {**obj["metadata"], "namespace": _ns(obj)}}
-    # Fields the API server sets are not the object: a `kubectl get -o yaml` copy beside the applied file differs in
-    # resourceVersion, uid, generation, timestamps, managedFields and status, and was "two different objects".
+    # Only what the server or a controller writes into metadata (resourceVersion, uid, generation, timestamps,
+    # managedFields, the controller annotations below) and `status` are stripped. Fields the API server DEFAULTS in
+    # the spec (imagePullPolicy, dnsPolicy, terminationMessagePath, strategy, revisionHistoryLimit, ...) are not, so
+    # a full `kubectl get -o yaml` copy beside the file it was applied from is still reported as a second object --
+    # an ambiguity named, never a silent pick (fifth review, E6b).
     if isinstance(obj, dict):
         meta = obj.get("metadata")
         if isinstance(meta, dict):
@@ -1037,6 +1040,13 @@ def _malformed_fronts(inv: Inventory) -> list[tuple[str, str]]:
                 out.append(
                     ("*", f"{_ref(hr)}: spec.rules[{i}].backendRefs is not a list, so where it routes is not known")
                 )
+            # A filter can mirror traffic to another backend: filters that cannot be read hide one (fifth review).
+            filters = [(f"spec.rules[{i}].filters", _get(rule, "filters"))] + [
+                (f"spec.rules[{i}].backendRefs[{j}].filters", _get(ref, "filters")) for j, ref in enumerate(_list(b))
+            ]
+            for at, f in filters:
+                if f is not None and not isinstance(f, list):
+                    out.append(("*", f"{_ref(hr)}: {at} is not a list, so where it routes is not known"))
     for vs in inv.of("VirtualService"):
         bad(vs, "spec.gateways", list, "*")
         for section in ("http", "tcp", "tls"):
@@ -1598,6 +1608,16 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
             continue
         rules = book.get(role_ref)
         if rules is None:
+            kind_name = f"{role_ref.split('/', 1)[0]}/{rname}"
+            if role_ref.startswith("Role/") and kind_name in inv.unplaced:
+                # The Role is in the input, with no namespace: "not in the input" was false (fifth review, E1).
+                unplaced_why = (
+                    f"{kind_name} has no namespace: whether it is the {role_ref} this binding names is not known; "
+                    "pass -n"
+                )
+                inv.not_read.append(f"{unplaced_why} (bound by {_ref(b)})")
+                gap(b, who, f"subjects[{j}]", role_ref, unplaced_why)
+                continue
             inv.not_read.append(f"{role_ref} (bound by {_ref(b)}) is not in the input")
             gap(b, who, f"subjects[{j}]", role_ref, f"{role_ref} is not in the input")
             continue
@@ -2282,6 +2302,10 @@ class Reach:
     embedded: bool = False
     #: How many different objects carry this reference; 1 for an unambiguous name (see `workload_reach`).
     copies: int = 1
+    #: For a copy: the fields the copies of its name differ in.
+    differs: tuple[str, ...] = ()
+    #: Objects with no namespace that bear on this reach (its own, its account's, any unplaced Role or binding).
+    caveats: tuple[str, ...] = ()
 
     def paths_from(self, index: int) -> list[AttackPath]:
         out: list[AttackPath] = []
@@ -2450,42 +2474,93 @@ def _reach(
 def workload_reach(inv: Inventory) -> dict[str, Reach]:
     """Every workload (not owned by another) with its exposures, node and API capabilities, keyed by Kind/ns/name.
 
-    Two different objects of one name: which one the cluster runs is not known, so each is placed on its own -- the
-    first under the reference, the next under `reference#2` and so on, each with `copies` set and its own images,
-    rights and token. Keeping one dropped the other (rounds two and three); merging them (round three) joined one
-    copy's vulnerable image to the other copy's cluster-admin token in `vuln report` and `gate --scanner-report`,
-    a path neither object has (fourth review). `ambiguous_notes` says which names are ambiguous."""
+    Two different objects of one name: which one the cluster runs is not known, so each is placed on its own, as
+    `Kind/ns/name#1`, `#2`, ... -- in the key and in `Reach.ref`, so every consumer (rank, gate, assess, SARIF)
+    tells the copies apart and counts each once (fifth review: both copies were `Deployment/shop/web`, and one CVE
+    was counted twice for that workload). Keeping one dropped the other (rounds two and three); merging them
+    joined one copy's vulnerable image to the other copy's cluster-admin token (fourth review).
+    `ambiguous_notes` names each ambiguous name and the fields its copies differ in. Every reach also carries the
+    caveats of objects with no namespace that bear on it (`caveats`)."""
     sites = _sites(inv, owned=False)
     index = _Index.build(inv, _entries(inv), sites)
     sa_caps: dict[tuple[str, str], list[Capability]] = {}
     out: dict[str, Reach] = {}
-    seen: dict[str, int] = {}
-    objects_of: dict[str, set[int]] = {}
+    groups: dict[str, list[_Site]] = {}
     for site in sites:
-        objects_of.setdefault(site.ref, set()).add(id(site.obj))
-    for site in sites:
-        r = _reach(inv, site, index, sa_caps)
-        n = len(objects_of[site.ref])
-        seen[site.ref] = seen.get(site.ref, 0) + 1
-        r.copies = n
-        key = site.ref if seen[site.ref] == 1 else f"{site.ref}#{seen[site.ref]}"
-        out[key] = r
+        groups.setdefault(site.ref, []).append(site)
+    rbac_unplaced = sorted(u for u in inv.unplaced if u.split("/")[0] in {"Role", "RoleBinding"})
+    for ref, members in groups.items():
+        objects = list(dict.fromkeys(id(s.obj) for s in members))
+        differs = _copy_differences([next(s for s in members if id(s.obj) == o) for o in objects])
+        for site in members:
+            r = _reach(inv, site, index, sa_caps)
+            r.copies = len(objects)
+            if r.copies > 1:
+                r.ref = f"{ref}#{objects.index(id(site.obj)) + 1}"
+                r.differs = differs
+            r.caveats = _unplaced_caveats(inv, site, rbac_unplaced)
+            out[r.ref] = r
     return out
 
 
-def ambiguous_notes(reach: dict[str, Reach]) -> list[str]:
-    """One line per reference that stands for several different objects, naming each copy's identity."""
+def _copy_differences(copies: list[_Site]) -> tuple[str, ...]:
+    """The pod-spec fields the copies of one name disagree on, named, for the ambiguity note."""
+
+    def facts(site: _Site) -> dict[str, str]:
+        spec = site.spec
+        cs = [c for c in _list(spec.get("containers")) if isinstance(c, dict)]
+        return {
+            "serviceAccountName": str(spec.get("serviceAccountName") or spec.get("serviceAccount") or "default"),
+            "images": ", ".join(sorted(str(c.get("image")) for c in cs)),
+            "automountServiceAccountToken": str(spec.get("automountServiceAccountToken")),
+            "hostPID": str(spec.get("hostPID") is True),
+            "hostNetwork": str(spec.get("hostNetwork") is True),
+            "hostIPC": str(spec.get("hostIPC") is True),
+            "privileged": str(any(_get(c, "securityContext", "privileged") is True for c in cs)),
+            "hostPath": ", ".join(
+                sorted(str(_get(v, "hostPath", "path")) for v in _list(spec.get("volumes")) if _get(v, "hostPath"))
+            ),
+        }
+
+    seen = [facts(s) for s in copies]
+    out = []
+    for k in seen[0]:
+        values = [f[k] for f in seen]
+        if len(set(values)) > 1:
+            out.append(f"{k}: " + " / ".join(f"#{i} {v or '-'}" for i, v in enumerate(values, 1)))
+    return tuple(out) or ("other fields of the pod spec or the object",)
+
+
+def _unplaced_caveats(inv: Inventory, site: _Site, rbac_unplaced: list[str]) -> tuple[str, ...]:
+    if inv.live or not inv.unplaced:
+        return ()
+    spec = site.spec
+    sa = str(spec.get("serviceAccountName") or spec.get("serviceAccount") or "default")
+    mine = [u for u in (f"{site.obj.get('kind')}/{_name(site.obj)}", f"ServiceAccount/{sa}") if u in inv.unplaced]
+    out = [f"{u} has no namespace: whose subject its account is, is not known; pass -n" for u in mine]
+    out += [f"{u} has no namespace: which accounts it binds is not known; pass -n" for u in rbac_unplaced]
+    return tuple(out)
+
+
+def ambiguous_notes(reach: dict[str, Reach], limit: int = 20) -> list[str]:
+    """One line per name several different objects carry, naming the fields their copies differ in, then one per
+    object with no namespace that bears on a reach; at most `limit`, then how many were withheld."""
     by_ref: dict[str, list[Reach]] = {}
     for r in reach.values():
         if r.copies > 1:
-            by_ref.setdefault(r.ref, []).append(r)
+            by_ref.setdefault(r.ref.rsplit("#", 1)[0], []).append(r)
     out = []
     for ref, copies in sorted(by_ref.items()):
-        who = "; ".join(f"copy {i}: {r.token[0] if r.token else 'no token'}" for i, r in enumerate(copies, 1))
+        who = "; ".join(
+            f"{r.ref}: {r.token[0] if r.token else 'no token'}" for r in sorted(copies, key=lambda x: x.ref)
+        )
         out.append(
             f"{len(copies)} different objects named {ref} are in the input; which one runs is not known, so each "
-            f"is placed separately ({who})"
+            f"is placed separately as {ref}#n ({who}); they differ in {'; '.join(copies[0].differs)}"
         )
+    out += sorted({c for r in reach.values() for c in r.caveats})
+    if len(out) > limit:
+        return [*out[:limit], f"... and {len(out) - limit} more"]
     return out
 
 
@@ -2539,6 +2614,11 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         else []
     )
     limitations += scope_notes
+    if inv.unplaced:
+        limitations.append(
+            f"{len(inv.unplaced)} object(s) have no namespace: they are shown in default, but kubectl apply puts them "
+            "in the namespace given with -n or the context's; pass -n to place them (named in notRead)"
+        )
     scope_notes += [
         f"{n} has no namespace: it is placed in default; pass -n as kubectl apply -n would"
         for n in sorted(inv.unplaced)

@@ -578,6 +578,13 @@ class PostureScanIn(_In):
         "are dropped unread.",
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
 
 
 class ClusterPostureIn(_In):
@@ -702,6 +709,13 @@ _CPE = r"^cpe:/[aho]:[a-z0-9_.-]+:[a-z0-9_.-]+:[0-9][a-z0-9_.-]*(?::[A-Za-z0-9_.
 
 
 class VulnReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         ...,
         min_length=1,
@@ -775,6 +789,13 @@ class MustGatherIn(_In):
 
 
 class CodeReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     sarif: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
         max_length=10,
@@ -819,6 +840,13 @@ class ThreatModelIn(_In):
         default_factory=list,
         max_length=10,
         description="Optional scanner reports of its images, to assess public-facing exploits (threat TM-E01).",
+    )
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
     )
 
 
@@ -1535,7 +1563,7 @@ class Toolkit:
     def posture_scan(self, p: PostureScanIn) -> dict[str, Any]:
         from kube_noob import attack_paths
 
-        out = attack_paths.scan_manifests(p.manifests, top=p.top)
+        out = attack_paths.scan_manifests(p.manifests, top=p.top, default_namespace=p.namespace)
         self._observe([f"posture:{len(out['paths'])}"])
         return out
 
@@ -1632,7 +1660,13 @@ class Toolkit:
         return self._rhacs_out(policies, list(p.outcomes), {"input": "export"})
 
     def _vuln(
-        self, reports: list[str], vex_texts: list[str], kev_text: str | None, manifests: str | None, **kw: Any
+        self,
+        reports: list[str],
+        vex_texts: list[str],
+        kev_text: str | None,
+        manifests: str | None,
+        namespace: str | None = None,
+        **kw: Any,
     ) -> dict[str, Any]:
         from kube_noob.attack_paths import Inventory as PathInventory
         from kube_noob.attack_paths import workload_reach
@@ -1647,7 +1681,11 @@ class Toolkit:
             index = vexmod.load(self.settings.data_dir, texts=vex_texts, products=kw.get("products", ()))
             kev = kevmod.parse(kev_text, "KEV catalog") if kev_text else None
             reach = (
-                workload_reach(PathInventory.from_documents(d.data for d in load_documents(manifests)))
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(manifests)), default_namespace=namespace
+                    )
+                )
                 if manifests
                 else None
             )
@@ -1663,6 +1701,7 @@ class Toolkit:
             list(p.vex),
             p.kev,
             p.manifests,
+            namespace=p.namespace,
             products=tuple(p.products),
             image=p.image,
             top=p.top,
@@ -1745,7 +1784,13 @@ class Toolkit:
                 for c in p.containerfiles
             ]
             reach = (
-                dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(p.manifests))))
+                dict(
+                    workload_reach(
+                        PathInventory.from_documents(
+                            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+                        )
+                    )
+                )
                 if p.manifests
                 else None
             )
@@ -1771,11 +1816,17 @@ class Toolkit:
 
         vulnerable = None
         if p.reports:
-            out = self._vuln(list(p.reports), [], None, p.manifests)
+            out = self._vuln(list(p.reports), [], None, p.manifests, namespace=p.namespace)
             vulnerable = assess.summary_for_workloads(out)
         platform = p.platform or self.settings.default_platform
         try:
-            return threat.model(p.manifests, platform=platform, version=p.version, vulnerable_images=vulnerable)
+            return threat.model(
+                p.manifests,
+                platform=platform,
+                version=p.version,
+                vulnerable_images=vulnerable,
+                default_namespace=p.namespace,
+            )
         except threat.ThreatError as exc:
             raise ValueError(str(exc)) from exc
 

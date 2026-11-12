@@ -296,6 +296,7 @@ Latest drift and policy report. The newest daily report in this install's data f
 Attack paths in manifests. Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a compromised pod could do: node access (privileged, hostPath, host namespaces, dangerous capabilities) or Kubernetes API rights through its ServiceAccount token, automounted or projected (read Secrets, exec, create workloads, mint tokens, escalate, control webhooks). Score = exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are dropped unread.
 
 - `manifests`* (string): Routes, Ingresses, Services, workloads, ServiceAccounts and RBAC objects (YAML). Secret objects are dropped unread.
+- `namespace` (null/string): Where objects in the manifests without a namespace are placed, as kubectl apply -n does. Without it their namespace is not known and the answer says so.
 - `top` (integer): How many ranked paths to return.
 
 ## red_team
@@ -337,6 +338,7 @@ Search local knowledge. BM25 search over the built-in curated knowledge and the 
 STRIDE threat model of an application. From manifests: entry points, trust boundaries, data stores and identities, and per element the STRIDE threats with status (open, mitigated, not assessed), the evidence, the kube-noob rules, generated admission policies and RHACS policies that mitigate each, and MITRE ATT&CK for Containers technique ids. Deterministic; Secrets are dropped unread.
 
 - `manifests`* (string): The application's YAML.
+- `namespace` (null/string): Where objects in the manifests without a namespace are placed, as kubectl apply -n does. Without it their namespace is not known and the answer says so.
 - `platform` (null/string)
 - `reports` (array): Optional scanner reports of its images, to assess public-facing exploits (threat TM-E01).
 - `version` (null/string)
@@ -380,6 +382,7 @@ Assess scanner output: VEX, exploitation, reachability. Read Trivy or Grype JSON
 - `image` (null/string): Treat every report as this image (registry/repo:tag or @sha256:...).
 - `kev` (null/string): Optional: the CISA KEV catalog JSON (known_exploited_vulnerabilities.json, CC0).
 - `manifests` (null/string): Optional: the YAML that runs the images; findings are then ranked by exposure and privileges and shown with their attack path.
+- `namespace` (null/string): Where objects in the manifests without a namespace are placed, as kubectl apply -n does. Without it their namespace is not known and the answer says so.
 - `products` (array): Red Hat product CPE prefixes the images belong to (default: from the RHEL release in the report, e.g. cpe:/o:redhat:enterprise_linux:9).
 - `reports`* (array): Scanner output as JSON text: Trivy (trivy image -f json [--list-all-pkgs]), Grype (grype -o json), a CycloneDX or SPDX 2 JSON SBOM, or an RHACS image (GET /v1/images/{id}). Reports of the same image are assessed together.
 - `top` (integer): How many ranked findings to return.

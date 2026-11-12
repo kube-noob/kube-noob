@@ -24,6 +24,18 @@ from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, Ma
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
 
+_DNS_LABEL = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
+
+
+def _dns_label(value: str | None) -> str | None:
+    """A namespace given with -n, checked as Kubernetes checks one (an RFC 1123 label); exit 2 otherwise."""
+    if value is None:
+        return None
+    if not _DNS_LABEL.fullmatch(value):
+        raise ConfigError(f"-n {value[:80]!r} is not a namespace name (lower-case letters, digits and '-', 1-63)")
+    return value
+
+
 def _read(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
@@ -503,7 +515,11 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         code_builds.append(b)
     try:
         sources = gate.collect(a.file, _read) + gate.render(
-            a.chart, a.values, a.namespace, platform=a.platform or s.default_platform, version=a.pversion
+            a.chart,
+            a.values,
+            a.namespace or "default",
+            platform=a.platform or s.default_platform,
+            version=a.pversion,
         )
         report = gate.run(
             sources,
@@ -524,6 +540,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             sarif_reports=[(p, _read(p)) for p in a.sarif_report],
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
+            default_namespace=_dns_label(a.namespace),
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -737,7 +754,7 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 index = vexmod.load(s.data_dir)
                 reach = workload_reach(
                     PathInventory.from_documents(
-                        (d.data for d in load_documents(text)), default_namespace=a.threat_namespace
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.threat_namespace)
                     )
                 )
                 vulnerable = assess.summary_for_workloads(
@@ -748,7 +765,7 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 platform=a.platform or s.default_platform,
                 version=a.pversion,
                 vulnerable_images=vulnerable,
-                default_namespace=a.threat_namespace,
+                default_namespace=_dns_label(a.threat_namespace),
             )
             if a.format == "text":
                 _tprint(threat.render_markdown(out))
@@ -777,7 +794,13 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         placed: dict[str, Any] | None = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            placed = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            placed = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         out = assess.assess(
             reports,
             vex=index,
@@ -866,7 +889,13 @@ def _code_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         reach = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            reach = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            reach = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         scans = []
         for path in a.scanner_report:
             if Path(path).is_file() and Path(path).stat().st_size > vr.MAX_BYTES:
@@ -1120,7 +1149,13 @@ def build_parser() -> argparse.ArgumentParser:
     gt.add_argument("-f", "--file", action="append", default=[], help="manifests: a file, a directory, or -; repeat")
     gt.add_argument("--chart", action="append", default=[], help="a Helm chart directory to render; repeat")
     gt.add_argument("--values", action="append", default=[], help="values file for --chart; repeat")
-    gt.add_argument("--namespace", default="default", help="namespace to render charts into")
+    gt.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="namespace to render charts into (default: default), and where manifests without one are placed for "
+        "--scanner-report ranking, as kubectl apply -n does",
+    )
     gt.add_argument(
         "--containerfile",
         action="append",
@@ -1344,6 +1379,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="YAML that runs the images (a file or a directory); ranks findings by exposure and privileges; repeat",
     )
+    vr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
+    )
     vr.add_argument("--image", default=None, help="treat every report as this image (registry/repo:tag or digest)")
     vr.add_argument("--top", type=int, default=20, help="ranked findings to show (1-200)")
     vr.add_argument(
@@ -1407,6 +1448,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cr.add_argument(
         "-m", "--manifests", action="append", default=[], help="YAML that runs the images (file or directory); repeat"
+    )
+    cr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
     )
     cr.add_argument(
         "-r",
@@ -1755,7 +1802,13 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     psc.add_argument(
-        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+        "-n",
+        "--namespace",
+        dest="namespaces",
+        action="append",
+        default=[],
+        help="with --live: only these namespaces (repeat); with -f: the one namespace objects without one are "
+        "placed in, as kubectl apply -n does",
     )
     psc.add_argument("--top", type=int, default=20, help="paths to show (1-200, default 20)")
     psc.add_argument(
@@ -1777,7 +1830,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Kind/name with -n (deployment/web), or Kind/namespace/name as posture scan prints it; a Pod is "
         "scored on its own spec, with its owner chain as context",
     )
-    prc.add_argument("-n", "--namespace", default=None, help="the workload's namespace (default: default)")
+    prc.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="the workload's namespace (default: default); with -f also where objects without one are placed, as "
+        "kubectl apply -n does",
+    )
     prc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     prc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     prc.add_argument(
@@ -3380,7 +3439,7 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             out = ap.scan_manifests(
                 "\n---\n".join(_read(f) for f in a.file),
                 top=a.top,
-                default_namespace=(a.namespaces or [None])[0],
+                default_namespace=_dns_label((a.namespaces or [None])[0]),
             )
         except ap.ScanError as exc:
             raise ConfigError(str(exc)) from exc

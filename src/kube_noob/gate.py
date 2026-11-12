@@ -257,6 +257,7 @@ def run(
     unknown_builds: list[str] | None = None,
     repo: Path | None = None,
     cni: str | None = None,
+    default_namespace: str | None = None,
 ) -> dict[str, Any]:
     """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
@@ -364,7 +365,16 @@ def run(
                     "helpUri": (f.get("sources") or [{"url": INFO_URI}])[0]["url"],
                 }
             )
-    vulns = _vulnerabilities(scanner_reports, combined, vex_paths or [], kev_path, data_dir, fail_on, trust_report_vex)
+    vulns = _vulnerabilities(
+        scanner_reports,
+        combined,
+        vex_paths or [],
+        kev_path,
+        data_dir,
+        fail_on,
+        trust_report_vex,
+        default_namespace=default_namespace,
+    )
     findings.extend(vulns["findings"])
     if vulns["failing"]:
         failures.append(
@@ -562,6 +572,7 @@ def _vulnerabilities(
     data_dir: Path | None,
     fail_on: str,
     trust_report_vex: bool = False,
+    default_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Scanner findings as gate findings: VEX applied, KEV marked, ranked against the manifests. A finding fails the
     gate at ``fail_on`` only when it is fixable or known exploited (an unfixable finding is reported, not blocked)."""
@@ -580,7 +591,11 @@ def _vulnerabilities(
         index = vexmod.load(data_dir, vex_paths)
         kev = kevmod.load(kev_path) if kev_path else None
         reach = (
-            workload_reach(PathInventory.from_documents(d.data for d in load_documents(manifests)))
+            workload_reach(
+                PathInventory.from_documents(
+                    (d.data for d in load_documents(manifests)), default_namespace=default_namespace
+                )
+            )
             if manifests
             else None
         )
