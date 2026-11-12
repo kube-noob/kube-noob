@@ -42,20 +42,19 @@ refused, and the reasons are in [ideation-review.md](ideation-review.md).
 correctness, four adversarial passes, 49 defects, and eight guidance rows (G259-G266). The roadmap's own principle
 says that is the right order, but it means the differentiating work has not started.
 
-The queue, reconciled against the code on 2026-11-11: **22 shipped, 7 partial, 28 not started.**
+The queue, reconciled against the code on 2026-11-11: **23 shipped, 7 partial, 27 not started.**
 
 Sequence, with what each already has:
 
-1. **E2** installed-operator inventory. The must-gather analyser already parses ClusterServiceVersions. Unblocks
-   E1, R5 and the upgrade pre-mortem.
-2. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
-3. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
-4. **I1** Alertmanager receiver, the rest of it. The only item that makes the north-star claim measurable: *alert
+1. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
+2. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
+3. **I1** Alertmanager receiver, the rest of it. The only item that makes the north-star claim measurable: *alert
    to evidence pack in a minute*. The receiver route already ships and returns the signals in a payload; the
    per-alert report, its storage and the receipt-to-report clock do not exist.
 
 I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF
-outputs validated against the vendored OASIS schema.
+outputs validated against the vendored OASIS schema. E2 (installed-operator inventory) shipped the same day:
+`operators inventory` over manifests, a must-gather or the cluster, which unblocks E1, R5 and the upgrade pre-mortem.
 
 ## The proposals, with what exists today
 
@@ -67,7 +66,7 @@ outputs validated against the vendored OASIS schema.
 | **N2** | Must-gather node configuration | A standard must-gather carries every rendered `MachineConfig`: `kubelet.conf`, kernel arguments, `fips`, CRI-O config, signature policy |
 | **N8** | API-server configuration from a must-gather | TLS profile, audit policy, effective arguments. Field stability across 4.x needs a real bundle first |
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |
-| **R5** | Operator and add-on vulnerability surface | Gated on E2: match installed CSV versions against the known-issue corpus, which ships |
+| **R5** | Operator and add-on vulnerability surface | E2 shipped: each inventoried operator has a `package` and a labelled `version` to match against the known-issue corpus, which ships |
 | **R6** | Admission sees pod specs inside operator CRDs -- policies half | The webhook runs the audit and finds them; the generated policies do not. Needs a kind job |
 | **P10** | Host-networked pods selected by policies the spec says cannot select them | Found red-teaming P4. Changes shared v1alpha1 primitives, so deliberately not folded in |
 | **M6** | `net verify`: policy says allowed, packets say dropped | The roadmap calls this "the insurance on the policy wedge". Needs an OVN cluster to validate |

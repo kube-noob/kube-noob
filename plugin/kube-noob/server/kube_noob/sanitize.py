@@ -163,6 +163,25 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
     return json.loads(data)
 
 
+_TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]{0,256}(?:\x07|\x1b\\)?)")
+#: Character categories that never print: controls (Cc), format characters (Cf: bidi marks and overrides,
+#: zero-width characters, the soft hyphen, tag characters), surrogates (Cs), private use (Co), unassigned code points
+#: (Cn), and line and paragraph separators (Zl, Zp).
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def visible(text: str) -> str:
+    """``text`` with every character that does not print replaced by a space, and terminal escape sequences
+    removed. The one place a shown string from untrusted input is made printable: a hand-kept list of invisible
+    code points missed U+061C, the soft hyphen and the tag block, so this works on Unicode categories instead.
+    Callers collapse whitespace and cap the length themselves."""
+    if text.isascii():
+        stripped = _TERMINAL_ESCAPE.sub(" ", text)
+        return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in stripped)
+    stripped = _TERMINAL_ESCAPE.sub(" ", text)
+    return "".join(" " if unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped)
+
+
 def _chars(*points: int | tuple[int, int]) -> str:
     """A character class body from code points and ranges, so no invisible character sits in this source file."""
     out = []
