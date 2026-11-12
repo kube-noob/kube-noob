@@ -443,11 +443,12 @@ def test_target_down_names_the_target_service() -> None:
     "text",
     [
         "    Environment:\n      DB_PASSWORD:  <set to the key 'password' in secret 'orders-db'>  Optional: false\n",
-        "  DB_PASSWORD: orders-db/password",
         "  API_TOKEN: <set to the key 'token' of config map 'cfg'>",
     ],
 )
 def test_a_secret_reference_is_not_redacted_and_is_not_a_credential(text: str) -> None:
+    """Only the describe form: `DB_PASSWORD: orders-db/password` was exempted here by the third review and the fourth
+    found `password=prod-db/secret` leaking through the same shape, so a plain assignment is redacted again."""
     from kube_noob.debug.cluster import redact_text
     from kube_noob.learn.memory import contains_credential
 
@@ -623,3 +624,59 @@ def test_an_alert_about_a_prometheus_pod_keeps_its_pod() -> None:
     """The neighbour of the exporter rule: prometheus-k8s and alertmanager pods are subjects, not exporters."""
     ctx = _ctx(alertname="KubePodNotReady", namespace="openshift-monitoring", pod="prometheus-k8s-1")
     assert ctx == {"ns": "openshift-monitoring", "pod": "prometheus-k8s-1", "name": "prometheus-k8s-1"}
+
+
+# --- fourth review: a slash in a value is not proof of a reference ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password=prod-db/secret",
+        "password=changeme/secret",
+        "DB_PASSWORD=mysupersecret/key",
+        "secret=team-infra/access_key",
+        "  DB_PASSWORD: orders-db/password",
+    ],
+)
+def test_a_plain_assignment_whose_value_looks_like_a_reference_is_still_redacted(text: str) -> None:
+    from kube_noob.debug.cluster import redact_text
+    from kube_noob.learn.memory import contains_credential
+
+    out = redact_text(text)
+    assert out.endswith("***") and "/" not in out, out
+    assert contains_credential(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "    Environment:\n      DB_PASSWORD:  <set to the key 'password' in secret 'orders-db'>  Optional: false\n",
+        "  API_TOKEN: <set to the key 'token' of config map 'cfg'>",
+        "    - name: DB_PASSWORD\n      valueFrom:\n        secretKeyRef:\n          name: orders-db\n"
+        "          key: password\n",
+        "env DB_PASSWORD from secret 'orders-db' key 'password'",
+    ],
+)
+def test_an_explicit_kubernetes_reference_is_left_as_written(text: str) -> None:
+    from kube_noob.debug.cluster import redact_text
+    from kube_noob.learn.memory import contains_credential
+
+    assert redact_text(text) == text
+    assert not contains_credential(text.strip())
+
+
+def test_an_unknown_exporter_scraped_without_honor_labels_still_names_the_subject() -> None:
+    """`exported_pod` only exists when a relabel collided with the target's own `pod`, so it is the subject whatever
+    the exporter is called (class 11 residual)."""
+    ctx = _ctx(
+        alertname="AppPodCrashLooping",
+        job="acme-exporter",
+        namespace="tools",
+        pod="acme-exporter-5d9f-abcde",
+        exported_namespace="shop",
+        exported_pod="cart-1",
+    )
+    assert ctx.get("ns") == "shop" and ctx.get("pod") == "cart-1"
+    # The neighbour: an exported_* label with no plain counterpart is taken too.
+    assert _ctx(alertname="X", exported_namespace="shop").get("ns") == "shop"

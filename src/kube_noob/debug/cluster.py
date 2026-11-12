@@ -197,15 +197,16 @@ def _bearer(m: re.Match[str]) -> str:
     return m.group(1) + "***" if _has_digit_and_letter(m.group(2)) else m.group(0)
 
 
-#: `<secret name>/<key>`, where the key is itself a credential word: a reference to a Secret, not its value.
-_SECRET_REFERENCE = re.compile(
-    r"[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?/"
-    r"(?i:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|key|credentials?)\Z"
-)
+#: Text that proves a credential name is followed by a reference to a Secret rather than its value: what `kubectl
+#: describe` prints for an env var (`<set to the key 'password' in secret 'orders-db'>`), the same in words (`secret
+#: 'orders-db' key 'password'`), and the manifest's `valueFrom:`/`secretKeyRef:`. A value that merely looks like
+#: `<name>/<key>` is not proof: `password=prod-db/secret` is a password, and a third review's exemption for the shape
+#: leaked it (G274). Over-redact rather than leak.
+_REFERENCE_AHEAD = re.compile(r"(?i)<set to the key |(?:from )?(?:secret|config ?map) '[^']{1,253}' key '")
 
 
 def _named_value(m: re.Match[str]) -> str:
-    return m.group(0) if _SECRET_REFERENCE.match(m.group(3)) else m.group(1) + m.group(2) + "***"
+    return m.group(0) if _REFERENCE_AHEAD.match(m.group(3)) else m.group(1) + m.group(2) + "***"
 
 
 def _stripe(m: re.Match[str]) -> str:
@@ -230,12 +231,14 @@ _AFTER_JWT: list[tuple[re.Pattern[str], Any]] = [
     (re.compile(r'(?i)("private[_-]?key"\s*:\s*")(?:[^"\\\n]|\\.)*+("?)'), r"\1***\2"),
     # `password=x`, `"token": "x"`, and the same keys with a prefix: `client_secret=`, `aws_secret_access_key=`,
     # `DB_PASSWORD=` (the prefix is at most four words, so a long `a-a-a-...` run costs a bounded amount per word).
-    # Not a reference to a secret: `kubectl describe` prints `DB_PASSWORD: <set to the key 'password' in secret
-    # 'orders-db'>`, and `DB_PASSWORD: orders-db/password` names a Secret and its key -- neither holds the value (G274).
+    # Not a reference to a secret (`_REFERENCE_AHEAD`): `kubectl describe` prints `DB_PASSWORD: <set to the key
+    # 'password' in secret 'orders-db'>`, which holds no value. The value is matched with the spaces a reference needs,
+    # then `_named_value` keeps a reference and redacts the first token of anything else.
     (
         re.compile(
             r"(?i)\b((?:[a-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key))"
-            r"(\"?\s*[:=]\s*\"?)(?!<set to the key )([^\s\"',;]+)"
+            r"(\"?\s*[:=]\s*\"?)((?:<set to the key [^>\n]{0,300}>|(?:from )?(?:secret|config ?map) '[^'\n]{1,253}' "
+            r"key '[^'\n]{1,253}')|[^\s\"',;]+)"
         ),
         _named_value,
     ),

@@ -52,9 +52,11 @@ filter refuses any text it would change. It replaces with `***` (or a marker suc
   alphabets, with a digit or both cases), the whole value;
 - `name=value`, `name: value` and `"name": "value"` for `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`
   (`apikey`, `api-key`) and `access_key`, also with up to four words in front: `client_secret=`,
-  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`. A reference to a Secret is not its
-  value and is left as written: `kubectl describe`'s `<set to the key 'password' in secret 'orders-db'>`, and
-  `<secret name>/<key>` when the key is itself a word such as `password` (`orders-db/password`);
+  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`. A reference to a Secret is left as
+  written only where the text proves it is one: `kubectl describe`'s `<set to the key 'password' in secret
+  'orders-db'>`, the same in words (`secret 'orders-db' key 'password'`), and a manifest's `valueFrom`/`secretKeyRef`.
+  A value that merely looks like `<name>/<key>` (`DB_PASSWORD: orders-db/password`) is redacted, because
+  `password=prod-db/secret` has the same shape and is a password: this over-redacts rather than leaks;
 - `apikey <value>` and `access_key <value>` when the value is 16 characters or more with letters and digits (so
   "rotate the apikey whenever a teammate leaves" stays as written);
 - secrets passed as flags: `--password x`, `--db-password=x`, `--api-key x`, `--client-secret x`, `--token=x`, `--pwd x`,

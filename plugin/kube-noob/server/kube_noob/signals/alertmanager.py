@@ -207,15 +207,16 @@ def subject_labels(labels: dict[str, str]) -> dict[str, str]:
     it with ``honorLabels: true`` and no such drop, so a metric without a namespace of its own (``kube_node_*``) keeps
     ``namespace="openshift-monitoring"``; node-exporter is scraped without ``honorLabels``, so its series carry the
     exporter pod's ``pod`` and ``namespace``; and a scrape without ``honorLabels`` moves the subject's labels to
-    ``exported_namespace`` and ``exported_pod``. So: when ``pod`` or ``namespace`` name the exporter and ``exported_*``
-    exist, those are the subject; an exporter pod is never the subject; a node alert from an exporter in a monitoring
+    ``exported_namespace`` and ``exported_pod``. So: when ``exported_*`` exist they are the subject, whatever the
+    exporter is called; an exporter pod is never the subject; a node alert from an exporter in a monitoring
     namespace has no subject namespace; and ``service`` names the subject only when it is not the scrape target --
     except for TargetDown, whose subject IS the target."""
     out = dict(labels)
     pod, namespace = labels.get("pod", ""), labels.get("namespace", "")
     exporter_pod = pod.startswith(EXPORTER_POD_PREFIXES)
-    exported = labels.get("exported_namespace") or labels.get("exported_pod")
-    if exported and (exporter_pod or (_from_exporter(labels) and namespace in MONITORING_NAMESPACES)):
+    if labels.get("exported_namespace") or labels.get("exported_pod"):
+        # An `exported_` label exists only because a scrape without honorLabels found the target's own label in the
+        # way, whatever the exporter is called (fourth review): the exported one is the subject's.
         for label in ("namespace", "pod"):
             out.pop(label, None)
             if labels.get(f"exported_{label}"):

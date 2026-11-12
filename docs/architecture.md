@@ -142,7 +142,7 @@ flowchart LR
   verb and user, still from its text) and only when they are valid Kubernetes names; a `service` label that names the
   scrape target (kube-state-metrics, `job` equal to it, an `endpoint` label) is not the alert's service, except on
   TargetDown, whose subject is the target; an exporter's own pod and namespace (node-exporter, a monitoring namespace on
-  a node alert) are not the subject, and `exported_namespace`/`exported_pod` are when the plain ones name the exporter
+  a node alert) are not the subject, and `exported_namespace`/`exported_pod` are the subject whenever present
   (`signals.alertmanager.subject_labels`, which cites the upstream ServiceMonitors). A post gets
   `alertReports.budgetSeconds` of work counted from receipt, then the alerts not reached keep `not-evaluated` rows. At
   most two reports are built at once by the receiver and the `alert_report` MCP tool together (one set of slots in the
