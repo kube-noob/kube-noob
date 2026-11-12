@@ -111,6 +111,14 @@ ALLOWED_RESOURCES: dict[str, ResourceDef] = {
     # reports as "not an OLM cluster" -- distinct from a 403, which it reports as not determined.
     "clusterserviceversions": ResourceDef("operators.coreos.com/v1alpha1", "clusterserviceversions", True),
     "subscriptions": ResourceDef("operators.coreos.com/v1alpha1", "subscriptions", True),
+    # Routing objects that put a Service on the network, for the attack-path scan and the blast radius (G273):
+    # Gateway API HTTPRoute (gateway.networking.k8s.io/v1, Standard channel and GA since Gateway API v0.5.0,
+    # https://gateway-api.sigs.k8s.io/api-types/httproute/) and Istio VirtualService (networking.istio.io/v1,
+    # https://istio.io/latest/docs/reference/config/networking/virtual-service/). Namespaced; neither carries a
+    # credential. A cluster that does not serve the group answers 404, which is reported as not served -- an answer,
+    # distinct from a 403, which leaves the exposure not determined.
+    "httproutes": ResourceDef("gateway.networking.k8s.io/v1", "httproutes", True),
+    "virtualservices": ResourceDef("networking.istio.io/v1", "virtualservices", True),
 }
 
 ALIASES = {

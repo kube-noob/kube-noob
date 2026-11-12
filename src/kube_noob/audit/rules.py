@@ -1494,6 +1494,26 @@ SENSITIVE_ENV = re.compile(
     r"(PASS(WORD|WD)?|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY)", re.IGNORECASE
 )
 RUNTIME_SOCKETS = ("docker.sock", "containerd.sock", "crio.sock", "cri-dockerd.sock")
+#: Host directories that hand a container the node: the node's configuration and the cluster's PKI (/etc), the
+#: kubelet's state and every other pod's volumes (/var/lib/kubelet), the host's processes (/proc), root's home,
+#: and the runtime sockets (/var/run, /run). The directory itself or anything under it; `/` only as itself, since
+#: everything is under it. One list for the audit's KN-S010 and the attack-path scan, which kept two and disagreed
+#: (the scan scored /etc/kubernetes/pki as an ordinary host path, G273).
+NODE_TAKEOVER_DIRS = ("/etc", "/var/lib/kubelet", "/proc", "/root", "/var/run", "/run")
+
+
+def takes_over_node(path: str) -> bool:
+    """True when a hostPath at `path` gives the container the node: one of NODE_TAKEOVER_DIRS or anything under
+    it, `/` itself, or a container runtime socket. `/etc/../`, `//etc` and a trailing slash are what they resolve
+    to."""
+    import posixpath
+
+    norm = "/" + posixpath.normpath("/" + str(path)).lstrip("/")
+    if norm == "/" or any(norm.endswith(s) for s in RUNTIME_SOCKETS):
+        return True
+    return any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_DIRS)
+
+
 # --password=x / --token x / password=x style arguments (group 1: dashes, group 3: inline value). CREDENTIAL_FLAG_NAME
 # and EMBEDDED_CREDENTIAL are written for RE2 too: kube_noob.generate.policies puts them into admission CEL.
 CREDENTIAL_FLAG_NAME = r"[a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|credentials?)"
@@ -1818,7 +1838,7 @@ def _s010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             if not isinstance(v, dict) or not isinstance(v.get("hostPath"), dict):
                 continue
             p = str(v["hostPath"].get("path", ""))
-            crit = p in {"/", "/etc", "/var/lib/kubelet", "/proc"} or any(p.endswith(s) for s in RUNTIME_SOCKETS)
+            crit = takes_over_node(p)
             yield r.finding(
                 d,
                 (*pt.path, "volumes", i, "hostPath"),

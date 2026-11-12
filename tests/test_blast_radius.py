@@ -123,6 +123,8 @@ def test_a_pod_in_the_input_is_scored_on_its_own_spec_with_its_owner_chain_as_co
         "metadata": {
             "name": "web-5d8f-x7k2q",
             "namespace": "shop",
+            # pod-template-hash is the ReplicaSet controller's own label: not a difference worth stating (N12).
+            "labels": {"app": "web", "pod-template-hash": "5d8f"},
             "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d8f", "controller": True}],
         },
         "spec": {
@@ -160,10 +162,13 @@ def test_a_pod_in_the_input_is_scored_on_its_own_spec_with_its_owner_chain_as_co
     assert orphan["anchor"]["resolved"] == ["Pod/shop/web-5d8f-x7k2q"] and orphan["anchor"]["via"] == [
         "Pod/shop/web-5d8f-x7k2q"
     ]
-    # A ReplicaSet is a template, not what runs: it still resolves to the Deployment the scan scores.
-    assert _reach([*SEEDED_DOCS, rs], "rs/web-5d8f", "shop")["anchor"]["resolved"] == ["Deployment/shop/web"]
+    # The object named is the object scored (N5): a ReplicaSet is scored on its own template, its Deployment is
+    # context. (Round 2 resolved it to the Deployment, which hid a privileged ReplicaSet under a benign one.)
+    named_rs = _reach([*SEEDED_DOCS, rs], "rs/web-5d8f", "shop")
+    assert named_rs["anchor"]["resolved"] == ["ReplicaSet/shop/web-5d8f"]
+    assert named_rs["anchor"]["via"] == ["ReplicaSet/shop/web-5d8f", "Deployment/shop/web"]
     # An owner duplicated in the input (the review's a1.yaml): the Pod is still scored, the comparison is not made,
-    # and a ReplicaSet whose owner is ambiguous is refused rather than resolved to either.
+    # and a ReplicaSet whose owner is ambiguous is scored too, with the ambiguity said.
     twin = next(copy.deepcopy(d) for d in SEEDED_DOCS if d["kind"] == "Deployment" and d["metadata"]["name"] == "web")
     twin["spec"]["template"]["spec"]["hostPID"] = True
     dup = _reach([*SEEDED_DOCS, twin, rs, hostile], "pod/web-5d8f-x7k2q", "shop")
@@ -175,8 +180,12 @@ def test_a_pod_in_the_input_is_scored_on_its_own_spec_with_its_owner_chain_as_co
         "and the Pod is not compared with either"
     )
     assert any("ReplicaSet/shop/web-5d8f" in d for d in dup["anchor"]["ownerDiffers"][:-1])
-    with pytest.raises(br.ReachError, match="2 different Deployment objects named shop/web"):
-        _reach([*SEEDED_DOCS, twin, rs], "rs/web-5d8f", "shop")
+    amb = _reach([*SEEDED_DOCS, twin, rs], "rs/web-5d8f", "shop")
+    assert amb["anchor"]["resolved"] == ["ReplicaSet/shop/web-5d8f"]
+    assert amb["anchor"]["ownerDiffers"] == [
+        "2 different Deployment objects named shop/web are in the input, so the owner chain stops below them "
+        "and the ReplicaSet is not compared with either"
+    ]
 
 
 def test_a_reference_that_matches_nothing_is_an_error_and_not_an_empty_blast_radius(
@@ -853,7 +862,8 @@ def test_the_documented_escalation_rights_are_ranked() -> None:
             "Role",
         ),
         "mint long-lived ServiceAccount tokens (create a service-account-token Secret)": (
-            [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]}],
+            # N11: a minted token counts only with a way to use it -- here, a pod that mounts it.
+            [{"apiGroups": [""], "resources": ["secrets", "pods"], "verbs": ["create"]}],
             "Role",
         ),
         "control admission webhooks (read and change every admitted object)": (
@@ -1226,3 +1236,676 @@ def test_invisible_and_bidirectional_characters_are_removed_from_the_text_views(
     for ch in (chr(0x202E), chr(0x061C), chr(0x200B)):
         assert ch not in text
     assert br.flat("a" + chr(0x1B) + "[31mb" + chr(0x2028) + "c") == "a b c"
+
+
+# --- the second adversarial review (56235e3): fixes that moved a defect instead of closing it ---------------------
+
+
+class _NotServed(FakeBackend):
+    """A cluster that does not serve some resource types (vanilla Kubernetes has no Routes or SCCs), in the exact
+    words kubectl writes, plus one whose list is refused."""
+
+    def __init__(self, docs: list[dict[str, Any]], missing: set[str], forbidden: set[str] | None = None) -> None:
+        super().__init__(docs, forbidden=forbidden or set())
+        self.missing = missing
+
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
+        from kube_noob.errors import ClusterAccessError
+
+        if resource in self.missing:
+            raise ClusterAccessError(f'error: the server doesn\'t have a resource type "{resource}"')
+        return super().get(resource, name, namespace, **kw)
+
+
+ALL_UNSERVED = {"routes", "securitycontextconstraints", "httproutes", "virtualservices", "deploymentconfigs"} | {
+    "inferenceservices",
+    "rayclusters",
+    "rayservices",
+    "rayjobs",
+}
+
+
+def _svc(name: str = "web", kind: str = "ClusterIP", selector: dict[str, str] | None = None) -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "namespace": "shop"},
+        "spec": {"type": kind, "selector": selector or {"app": "web"}, "ports": [{"port": 80}]},
+    }
+
+
+def _caps(graph: dict[str, Any]) -> set[str]:
+    return {n["label"].rsplit(" (", 1)[0] for n in graph["nodes"] if n["type"] == "capability"}
+
+
+def test_subresource_wildcards_match_as_the_api_server_matches_them() -> None:
+    """N1: `*/exec`, `*/proxy` with `get` read as plain reads -- `rbac none`, complete, exit 0. Kubernetes matches a
+    rule's resource by `*`, by the exact name, or by `*/<subresource>` (ResourceMatches, v1.34.0)."""
+    star = [{"apiGroups": [""], "resources": ["*/proxy", "*/exec", "*/attach", "*/portforward"], "verbs": ["get"]}]
+    graph = _reach([*_web(), *_bound(star, kind="ClusterRole")], "deployment/web", "shop", whole_bundle=True)
+    assert {"exec into pods", "kubelet API through nodes/proxy"} <= _caps(graph)
+    assert _leg(graph, "rbac")["status"] == "not determined" and graph["complete"] is False
+    reason = next(r for r in _undetermined(graph) if "not classify" in r)
+    assert "*/portforward" in reason and "*/proxy" in reason
+    for resource in ("pods/proxy", "services/proxy", "pods/portforward"):
+        one = _reach(
+            [*_web(), *_bound([{"apiGroups": [""], "resources": [resource], "verbs": ["get"]}])],
+            "deployment/web",
+            "shop",
+            whole_bundle=True,
+        )
+        assert _leg(one, "rbac")["status"] == "not determined", resource
+    # Neighbour: `*/status` also matches certificatesigningrequests/status, which issues a certificate.
+    status = _reach(
+        [*_web(), *_bound([{"apiGroups": ["*"], "resources": ["*/status"], "verbs": ["update"]}], kind="ClusterRole")],
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert _leg(status, "rbac")["status"] == "not determined"
+    # The scan reads the same primitive.
+    scan = ap.scan(ap.Inventory.from_documents([*_web(), *_bound(star, kind="ClusterRole"), _svc(kind="LoadBalancer")]))
+    assert {"exec into pods", "kubelet API through nodes/proxy"} <= {
+        p["blastRadius"]["capability"] for p in scan["paths"]
+    }
+
+
+def test_bootstrap_and_leader_election_rights_are_named_harmless_and_nothing_else_is() -> None:
+    """N2(a): self-reviews bound to every authenticated user, a leader-elected controller's leases and events, token
+    and access reviews and a CR's own status made every real workload "not determined"."""
+    harmless = [
+        {
+            "apiGroups": ["authorization.k8s.io"],
+            "resources": ["selfsubjectaccessreviews", "selfsubjectrulesreviews"],
+            "verbs": ["create"],
+        },
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["selfsubjectreviews", "tokenreviews"],
+            "verbs": ["create"],
+        },
+        {"apiGroups": ["authorization.k8s.io"], "resources": ["subjectaccessreviews"], "verbs": ["create"]},
+        {
+            "apiGroups": ["coordination.k8s.io"],
+            "resources": ["leases"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        },
+        {"apiGroups": ["", "events.k8s.io"], "resources": ["events"], "verbs": ["create", "patch", "update"]},
+        {"apiGroups": ["example.io"], "resources": ["widgets/status"], "verbs": ["get", "update", "patch"]},
+        {"apiGroups": [""], "resources": ["pods/status"], "verbs": ["update", "patch"]},
+        {"nonResourceURLs": ["/healthz", "/version"], "verbs": ["get"]},
+    ]
+    graph = _reach([*_web(), *_bound(harmless, kind="ClusterRole")], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(graph, "rbac")["status"] == "none", _leg(graph, "rbac")["detail"]
+    assert graph["complete"] is True
+    # Neighbours stay open, each for a reason: config another workload reads, a certificate, every status.
+    for rule in (
+        {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["create", "update"]},
+        {"apiGroups": ["certificates.k8s.io"], "resources": ["certificatesigningrequests/status"], "verbs": ["update"]},
+        {"apiGroups": ["coordination.k8s.io"], "resources": ["*"], "verbs": ["update"]},
+    ):
+        one = _reach([*_web(), *_bound([rule], kind="ClusterRole")], "deployment/web", "shop", whole_bundle=True)
+        assert _leg(one, "rbac")["status"] == "not determined", rule
+
+
+def test_a_resource_type_the_cluster_does_not_serve_is_an_answer_and_a_refusal_is_not() -> None:
+    """N2(b), N10: no Routes on vanilla Kubernetes is an answer, not "exposure not determined"; a refused list stays
+    open -- and a refused SCC list opens the RBAC leg once the account can create pods."""
+    docs = [*_web(), *_bound([{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]}])]
+    vanilla = br.reach(ap.collect_live(_NotServed(docs, ALL_UNSERVED), []), "deployment/web", "shop", live=True)
+    assert _leg(vanilla, "exposure")["status"] == "none" and vanilla["complete"] is True
+    refused = br.reach(
+        ap.collect_live(_NotServed(docs, ALL_UNSERVED - {"routes"}, forbidden={"routes"}), []),
+        "deployment/web",
+        "shop",
+        live=True,
+    )
+    assert _leg(refused, "exposure")["status"] == "not determined"
+    pods = [*_web(), *_bound([{"apiGroups": [""], "resources": ["pods"], "verbs": ["create"]}])]
+    no_scc = br.reach(
+        ap.collect_live(
+            _NotServed(pods, ALL_UNSERVED - {"securitycontextconstraints"}, forbidden={"securitycontextconstraints"}),
+            [],
+        ),
+        "deployment/web",
+        "shop",
+        live=True,
+    )
+    assert any("securitycontextconstraints" in r and "privileged" in r for r in _undetermined(no_scc))
+    k8s = br.reach(ap.collect_live(_NotServed(pods, ALL_UNSERVED), []), "deployment/web", "shop", live=True)
+    assert not any("securitycontextconstraints" in r for r in _undetermined(k8s))
+    # The in-cluster backend's own 404 for a group the cluster does not serve is recognised as strictly.
+    assert ap.not_served("routes", "Not found: GET /apis/route.openshift.io/v1/namespaces/shop/routes")
+    assert not ap.not_served("routes", "Not found: GET /apis/route.openshift.io/v1/namespaces/shop/routes/x")
+    assert not ap.not_served("routes", "routes is forbidden: not found in cache")
+
+
+def _httproute(backend: str = "web") -> dict[str, Any]:
+    return {
+        "apiVersion": "gateway.networking.k8s.io/v1",
+        "kind": "HTTPRoute",
+        "metadata": {"name": "r", "namespace": "shop"},
+        "spec": {"parentRefs": [{"name": "public"}], "rules": [{"backendRefs": [{"name": backend, "port": 80}]}]},
+    }
+
+
+def test_gateway_api_and_mesh_routes_are_exposure_and_unread_kinds_are_not_none() -> None:
+    """N3: an HTTPRoute or an Istio VirtualService in front of the Service read as `exposure none`, complete."""
+    via_route = _reach([*_web(), _svc(), _httproute()], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(via_route, "exposure")["status"] == "reached"
+    assert via_route["exposure"][0]["kind"] == "internet (Gateway API HTTPRoute)"
+    vs = {
+        "apiVersion": "networking.istio.io/v1",
+        "kind": "VirtualService",
+        "metadata": {"name": "v", "namespace": "shop"},
+        "spec": {
+            "gateways": ["istio-system/public"],
+            "hosts": ["web.example.com"],
+            "http": [{"route": [{"destination": {"host": "web.shop.svc.cluster.local"}}]}],
+        },
+    }
+    assert (
+        _leg(_reach([*_web(), _svc(), vs], "deployment/web", "shop", whole_bundle=True), "exposure")["status"]
+        == "reached"
+    )
+    mesh_only = copy.deepcopy(vs)
+    mesh_only["spec"]["gateways"] = ["mesh"]
+    assert (
+        _leg(_reach([*_web(), _svc(), mesh_only], "deployment/web", "shop", whole_bundle=True), "exposure")["status"]
+        == "none"
+    )
+    other = {
+        "apiVersion": "projectcontour.io/v1",
+        "kind": "HTTPProxy",
+        "metadata": {"name": "p", "namespace": "shop"},
+        "spec": {},
+    }
+    unread = _reach([*_web(), _svc(), other], "deployment/web", "shop", whole_bundle=True)
+    assert (
+        _leg(unread, "exposure")["status"] == "not determined"
+        and "HTTPProxy/shop/p" in _leg(unread, "exposure")["detail"]
+    )
+    port = _reach(
+        _web(containers=[{"name": "c", "image": "i", "ports": [{"containerPort": 80, "hostPort": 8080}]}]),
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert _leg(port, "exposure")["status"] == "reached" and "hostPort 8080" in _leg(port, "exposure")["detail"]
+    host = _reach(_web(hostNetwork=True), "deployment/web", "shop", whole_bundle=True)
+    assert _leg(host, "exposure")["status"] == "reached" and "hostNetwork" in _leg(host, "exposure")["detail"]
+    assert {"httproutes", "virtualservices"} <= set(ap.LIVE_RESOURCES)
+
+
+def test_a_route_or_ingress_to_a_service_not_in_the_input_is_a_gap() -> None:
+    """N4: under --whole-bundle an Ingress whose backend Service is absent read as `exposure none`, complete."""
+    ing = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {"name": "i", "namespace": "shop"},
+        "spec": {
+            "rules": [
+                {
+                    "http": {
+                        "paths": [
+                            {
+                                "path": "/",
+                                "pathType": "Prefix",
+                                "backend": {"service": {"name": "web", "port": {"number": 80}}},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    }
+    route = {
+        "apiVersion": "route.openshift.io/v1",
+        "kind": "Route",
+        "metadata": {"name": "r", "namespace": "shop"},
+        "spec": {"to": {"kind": "Service", "name": "web"}},
+    }
+    for front in (ing, route, _httproute()):
+        graph = _reach([*_web(), front], "deployment/web", "shop", whole_bundle=True)
+        assert _leg(graph, "exposure")["status"] == "not determined", front["kind"]
+        assert "Service shop/web" in _leg(graph, "exposure")["detail"] and graph["complete"] is False
+        assert any(
+            "Service shop/web" in n and "not in the input" in n
+            for n in ap.scan(ap.Inventory.from_documents(copy.deepcopy([*_web(), front])))["notRead"]
+        )
+
+
+def test_the_object_named_is_the_object_scored_for_every_anchorable_kind() -> None:
+    """N5: a privileged ReplicaSet under a benign Deployment, or a Job under a CronJob, was answered with the
+    owner's spec. The named object is scored; the owner chain is context and its differences are stated."""
+    dep = _web()[0]
+    rs = {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "metadata": {
+            "name": "web-old",
+            "namespace": "shop",
+            "ownerReferences": [{"kind": "Deployment", "name": "web", "controller": True}],
+        },
+        "spec": {
+            "template": {
+                "metadata": {"labels": {"app": "web"}},
+                "spec": {
+                    "serviceAccountName": "web",
+                    "containers": [{"name": "c", "image": "i", "securityContext": {"privileged": True}}],
+                },
+            }
+        },
+    }
+    graph = _reach([*_web(), rs], "rs/web-old", "shop", whole_bundle=True)
+    assert graph["anchor"]["resolved"] == ["ReplicaSet/shop/web-old"] and _leg(graph, "node")["status"] == "reached"
+    assert any("node escape" in d for d in graph["anchor"]["ownerDiffers"])
+    cron = {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {"name": "c", "namespace": "shop"},
+        "spec": {
+            "schedule": "* * * * *",
+            "jobTemplate": {"spec": {"template": {"spec": {"containers": [{"name": "c", "image": "i"}]}}}},
+        },
+    }
+    job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": "c-1",
+            "namespace": "shop",
+            "ownerReferences": [{"kind": "CronJob", "name": "c", "controller": True}],
+        },
+        "spec": {"template": {"spec": {"hostPID": True, "containers": [{"name": "c", "image": "i"}]}}},
+    }
+    j = _reach([dep, cron, job], "job/c-1", "shop")
+    assert j["anchor"]["resolved"] == ["Job/shop/c-1"] and _leg(j, "node")["status"] == "reached"
+    assert any("CronJob/shop/c" in d for d in j["anchor"]["ownerDiffers"])
+
+
+def test_an_rbac_object_that_could_not_be_read_opens_the_rbac_leg() -> None:
+    """N6, R1: an RBAC-shaped object dropped into notRead left `rbac none`; and OpenShift's legacy
+    authorization.openshift.io bindings -- proxies of the same objects -- were dropped altogether."""
+    broken_list = {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBindingList", "items": {"a": 1}}
+    graph = _reach([*_web(), broken_list], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(graph, "rbac")["status"] == "not determined"
+    assert any("RoleBindingList" in r for r in _undetermined(graph))
+    foreign = _binding("ClusterRoleBinding", "x", "ClusterRole", "cluster-admin", [WEB])
+    foreign["apiVersion"] = "example.io/v1"
+    other = _reach([*_web(), foreign], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(other, "rbac")["status"] == "not determined"
+    legacy = {
+        "apiVersion": "authorization.openshift.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": {"name": "legacy"},
+        "subjects": [{"kind": "ServiceAccount", "name": "web", "namespace": "shop"}],
+        "roleRef": {"name": "cluster-admin"},
+    }
+    assert "full control" in _caps(_reach([*_web(), legacy], "deployment/web", "shop"))
+    by_name = {**legacy, "subjects": [], "userNames": ["system:serviceaccount:shop:web"], "groupNames": None}
+    assert "full control" in _caps(_reach([*_web(), by_name], "deployment/web", "shop"))
+    bad_ref = {**legacy, "roleRef": {"name": "cluster-admin", "namespace": "shop"}}
+    assert (
+        _leg(_reach([*_web(), bad_ref], "deployment/web", "shop", whole_bundle=True), "rbac")["status"]
+        == "not determined"
+    )
+
+
+def test_the_scan_reads_openshift_legacy_rbac_as_main_did_and_better() -> None:
+    """R1: main scored six paths (top 30) for a legacy ClusterRoleBinding to cluster-admin; the first round scored
+    none. The group's four kinds are served as proxies of rbac.authorization.k8s.io (openshift-apiserver)."""
+    legacy = {
+        "apiVersion": "authorization.openshift.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": {"name": "legacy"},
+        "subjects": [{"kind": "ServiceAccount", "name": "web", "namespace": "shop"}],
+        "roleRef": {"name": "cluster-admin"},
+    }
+    out = ap.scan(ap.Inventory.from_documents([*_web(), legacy, _svc(kind="LoadBalancer")]))
+    assert out["total"] == 6 and out["paths"][0]["score"] == 30
+
+
+def test_a_secret_mounted_service_account_token_is_a_token() -> None:
+    """N8: automount off and the legacy token Secret mounted at the ServiceAccount path read `token none`."""
+    sa_path = "/var/run/secrets/kubernetes.io/serviceaccount"
+    pod = {
+        "automountServiceAccountToken": False,
+        "containers": [{"name": "c", "image": "i", "volumeMounts": [{"name": "t", "mountPath": sa_path}]}],
+        "volumes": [{"name": "t", "secret": {"secretName": "adm-token"}}],
+    }
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "type": "kubernetes.io/service-account-token",
+        "metadata": {
+            "name": "adm-token",
+            "namespace": "shop",
+            "annotations": {"kubernetes.io/service-account.name": "adm"},
+        },
+        "data": {"token": "c2VjcmV0LXZhbHVl"},
+    }
+    admin = _binding(
+        "ClusterRoleBinding",
+        "adm",
+        "ClusterRole",
+        "cluster-admin",
+        [{"kind": "ServiceAccount", "name": "adm", "namespace": "shop"}],
+    )
+    graph = _reach([*_web(**pod), _sa("adm"), secret, admin], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(graph, "token")["status"] == "reached" and "ServiceAccount/shop/adm" in _leg(graph, "token")["detail"]
+    assert "full control" in _caps(graph) and "c2VjcmV0" not in json.dumps(graph)
+    # The Secret is not in the input: a Secret volume at the token path may carry any account's token.
+    blind = _reach([*_web(**pod), admin], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(blind, "token")["status"] == "not determined"
+
+
+def test_a_rule_is_classified_pair_by_pair() -> None:
+    """N9: a rule reading Secrets also patching nodes and deleting namespaces showed only the Secrets."""
+    rule = [{"apiGroups": [""], "resources": ["secrets", "nodes", "namespaces"], "verbs": ["get", "patch", "delete"]}]
+    graph = _reach([*_web(), *_bound(rule, kind="ClusterRole")], "deployment/web", "shop", whole_bundle=True)
+    assert "read Secrets (credentials, tokens of other ServiceAccounts)" in _caps(graph)
+    reason = next(r for r in _undetermined(graph) if "not classify" in r)
+    assert "patch, delete on secrets, nodes, namespaces" in reason
+
+
+def test_creating_a_secret_mints_a_token_only_with_a_way_to_read_it() -> None:
+    """N11: `secrets create` alone was ranked as minting a token; the token is only usable read back (get on
+    secrets) or mounted in a pod the account creates. A TokenRequest for its own account is no new right."""
+    alone = _reach(
+        [*_web(), *_bound([{"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]}])],
+        "deployment/web",
+        "shop",
+        whole_bundle=True,
+    )
+    assert not any("mint long-lived" in c for c in _caps(alone)) and _leg(alone, "rbac")["status"] == "not determined"
+    assert any("read it back" in r for r in _undetermined(alone))
+    with_get = _reach(
+        [*_web(), *_bound([{"apiGroups": [""], "resources": ["secrets"], "verbs": ["create", "get"]}])],
+        "deployment/web",
+        "shop",
+    )
+    assert any("mint long-lived" in c for c in _caps(with_get))
+    own = [{"apiGroups": [""], "resources": ["serviceaccounts/token"], "verbs": ["create"], "resourceNames": ["web"]}]
+    assert (
+        _leg(_reach([*_web(), *_bound(own)], "deployment/web", "shop", whole_bundle=True), "rbac")["status"] == "none"
+    )
+    other = [
+        {"apiGroups": [""], "resources": ["serviceaccounts/token"], "verbs": ["create"], "resourceNames": ["deployer"]}
+    ]
+    assert any("mint tokens" in c for c in _caps(_reach([*_web(), *_bound(other)], "deployment/web", "shop")))
+    # seeded.yaml's `edit` path stands: edit also reads Secrets.
+    assert any(
+        p["blastRadius"]["capability"].startswith("mint long-lived")
+        for p in ap.scan_manifests(SEEDED.read_text(encoding="utf-8"))["paths"]
+    )
+
+
+def test_owner_differences_name_images_and_labels_and_small_wording() -> None:
+    """N12."""
+    rs = {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "metadata": {
+            "name": "web-1",
+            "namespace": "shop",
+            "ownerReferences": [{"kind": "Deployment", "name": "web", "controller": True}],
+        },
+        "spec": {
+            "template": {
+                "metadata": {"labels": {"app": "web"}},
+                "spec": {"serviceAccountName": "web", "containers": [{"name": "c", "image": "i"}]},
+            }
+        },
+    }
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": "web-1-x",
+            "namespace": "shop",
+            "labels": {"app": "other"},
+            "ownerReferences": [{"kind": "ReplicaSet", "name": "web-1", "controller": True}],
+        },
+        "spec": {"serviceAccountName": "web", "containers": [{"name": "c", "image": "evil:1"}]},
+    }
+    differs = " | ".join(_reach([*_web(), rs, pod], "pod/web-1-x", "shop")["anchor"]["ownerDiffers"])
+    assert "evil:1" in differs and "i" in differs and "labels" in differs
+    rb = [
+        {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["rolebindings"],
+            "verbs": ["create", "update", "patch", "delete"],
+        }
+    ]
+    detail = _leg(_reach([*_web(), *_bound(rb)], "deployment/web", "shop", whole_bundle=True), "rbac")["detail"]
+    assert "plain reads" not in detail
+    for path in ("/etc/kubernetes/pki", "/var/lib/kubelet/pods"):
+        g = _reach(_web(volumes=[{"name": "h", "hostPath": {"path": path}}]), "deployment/web", "shop")
+        assert any(n.get("weight") == 9 for n in g["nodes"] if n["type"] == "capability"), path
+    from kube_noob.audit.rules import takes_over_node
+
+    assert takes_over_node("/etc/kubernetes/pki") and not takes_over_node("/var/log")
+
+
+def test_mermaid_refusal_points_to_posture_reach(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--format", "mermaid", "posture", "scan", "-f", str(SEEDED)]) == 2
+    err = capsys.readouterr().err
+    assert "`posture scan` has no graph to draw" in err and "kube-noob posture reach" in err
+
+
+def test_differing_duplicate_roles_are_an_ambiguity_not_a_union() -> None:
+    """R2: two Roles named shop/r -- one creates pods, the other uses SCC privileged -- made a "run privileged pods"
+    path that neither grants. A duplicate that differs is stated, and nothing is built from the union."""
+    one = _role("Role", "r", [{"apiGroups": [""], "resources": ["pods"], "verbs": ["create"]}])
+    two = _role(
+        "Role",
+        "r",
+        [
+            {
+                "apiGroups": ["security.openshift.io"],
+                "resources": ["securitycontextconstraints"],
+                "verbs": ["use"],
+                "resourceNames": ["privileged"],
+            }
+        ],
+    )
+    docs = [*_web(), one, two, _binding("RoleBinding", "r-b", "Role", "r", [WEB]), _svc(kind="LoadBalancer")]
+    out = ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs)))
+    assert not any("privileged pods" in p["blastRadius"]["capability"] for p in out["paths"])
+    assert any("2 different objects named Role/shop/r" in n for n in out["notRead"])
+    graph = _reach(docs, "deployment/web", "shop")
+    assert "run privileged pods" not in " ".join(_caps(graph)) and _leg(graph, "rbac")["status"] == "not determined"
+
+
+def test_differing_duplicate_services_keep_every_candidate_and_say_so() -> None:
+    """R3: two Services shop/web with different selectors behind one Route: main picked by document order, the
+    first round lost both paths."""
+    route = {
+        "apiVersion": "route.openshift.io/v1",
+        "kind": "Route",
+        "metadata": {"name": "r", "namespace": "shop"},
+        "spec": {"to": {"kind": "Service", "name": "web"}},
+    }
+    other = copy.deepcopy(_web()[0])
+    other["metadata"]["name"] = "api"
+    other["spec"]["template"]["metadata"]["labels"] = {"app": "api"}
+    other["spec"]["template"]["spec"]["containers"][0]["securityContext"] = {"privileged": True}
+    web = copy.deepcopy(_web()[0])
+    web["spec"]["template"]["spec"]["hostPID"] = True
+    docs = [web, other, route, _svc(), _svc(selector={"app": "api"})]
+    outs = set()
+    rng = random.Random(3)
+    for _ in range(8):
+        shuffled = copy.deepcopy(docs)
+        rng.shuffle(shuffled)
+        outs.add(json.dumps(ap.scan(ap.Inventory.from_documents(shuffled))))
+    assert len(outs) == 1
+    out = json.loads(outs.pop())
+    reached = {p["steps"][2]["to"] for p in out["paths"]}
+    assert reached == {"Deployment/shop/web", "Deployment/shop/api"}
+    assert any("2 different objects named Service/shop/web" in n for n in out["notRead"])
+    # The note sits on the step that depends on which object is meant: the Service's selector.
+    assert all("one of 2 different Services named shop/web" in p["steps"][2]["evidence"] for p in out["paths"])
+
+
+def test_openshift_scope_impersonation_is_not_a_capability() -> None:
+    """OpenShift binds system:authenticated to impersonate `userextras/scopes.authorization.openshift.io` only:
+    "purely tightening" (openshift-apiserver bootstrappolicy). It must not make every workload critical."""
+    scope = [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["userextras/scopes.authorization.openshift.io"],
+            "verbs": ["impersonate"],
+        }
+    ]
+    docs = [
+        *_web(),
+        _role("ClusterRole", "system:scope-impersonation", scope),
+        _binding(
+            "ClusterRoleBinding",
+            "system:scope-impersonation",
+            "ClusterRole",
+            "system:scope-impersonation",
+            [{"kind": "Group", "name": "system:authenticated"}],
+        ),
+        _svc(kind="LoadBalancer"),
+    ]
+    assert ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs)))["total"] == 0
+    assert _leg(_reach(docs, "deployment/web", "shop", whole_bundle=True), "rbac")["status"] == "none"
+
+
+def test_the_scan_names_malformed_rbac_instead_of_scoring_nothing_silently() -> None:
+    """Also on main: `verbs: "*"` as a scalar and `rules` as a mapping gave 0 paths and an empty notRead."""
+    scalar = _bound([{"apiGroups": "*", "resources": "*", "verbs": "*"}], kind="ClusterRole")
+    mapping = _role("Role", "m", [])
+    mapping["rules"] = {"verbs": ["*"]}
+    for extra in (scalar, [mapping, _binding("RoleBinding", "m-b", "Role", "m", [WEB])]):
+        out = ap.scan(ap.Inventory.from_documents(copy.deepcopy([*_web(), *extra, _svc(kind="LoadBalancer")])))
+        assert any("not a list" in n for n in out["notRead"]), out["notRead"]
+
+
+def test_full_control_is_one_path_family_not_twelve() -> None:
+    """A cluster-admin binding gave 12 paths per exposure in the first round (6 on main): the new capabilities a
+    full-control grant already covers are not listed again for the same grant and scope."""
+    docs = [
+        *_web(),
+        _binding("ClusterRoleBinding", "adm", "ClusterRole", "cluster-admin", [WEB]),
+        _svc(kind="LoadBalancer"),
+    ]
+    out = ap.scan(ap.Inventory.from_documents(docs))
+    assert out["total"] == 6
+
+
+def test_two_different_workloads_of_one_name_keep_the_worse_in_the_threat_model() -> None:
+    """Found diffing `vuln threat` against main: two Deployments shop/web, one benign and one privileged, kept the
+    one last in the canonical order -- the benign one -- and the privileged node detail vanished. Main kept the last
+    in document order, so it depended on the file. The worse is kept, in any order, and the scan names the pair."""
+    benign = _web()[0]
+    priv = copy.deepcopy(benign)
+    priv["spec"]["template"]["spec"]["hostPID"] = True
+    for docs in ([benign, priv], [priv, benign]):
+        reach = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))
+        assert {c.name for c in reach["Deployment/shop/web"].node} == {"host namespace hostPID"}
+    out = ap.scan(ap.Inventory.from_documents([benign, priv]))
+    assert any("2 different objects named Deployment/shop/web" in n for n in out["notRead"])
+
+
+def test_neighbours_found_rerunning_the_reproducers() -> None:
+    """Class 21, rerunning /tmp/rt-v3b/n: an old chart's Ingress (`serviceName`) routed to nothing; the same
+    Deployment in two files was scored twice by the scan and once by the blast radius; a Deployment written without
+    a namespace and the same one naming `default` were "two different objects"; and the capability the summary
+    names as top was not always one the truncated graph kept."""
+    legacy = {
+        "apiVersion": "extensions/v1beta1",
+        "kind": "Ingress",
+        "metadata": {"name": "i", "namespace": "shop"},
+        "spec": {"rules": [{"http": {"paths": [{"backend": {"serviceName": "web", "servicePort": 80}}]}}]},
+    }
+    graph = _reach([*_web(), _svc(), legacy], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(graph, "exposure")["status"] == "reached"
+    twice = [*_web(), _svc(kind="LoadBalancer"), *copy.deepcopy(_web())]
+    scan = ap.scan(ap.Inventory.from_documents(twice))
+    assert scan["total"] == len(_reach(twice, "deployment/web", "shop")["paths"]) and scan["workloads"] == 1
+    bare = copy.deepcopy(_web()[0])
+    bare["metadata"] = {"name": "web"}
+    spelled = copy.deepcopy(bare)
+    spelled["metadata"]["namespace"] = "default"
+    resolved = _reach([bare, spelled], "deployment/web", "default")["anchor"]["resolved"]  # no "2 different" error
+    assert len(resolved) == 1 and resolved[0].startswith("Deployment/") and resolved[0].endswith("/web")
+    many = [
+        doc
+        for i in range(150)
+        for doc in _bound(
+            [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]}], name=f"r{i:03d}", ns=f"ns{i:03d}"
+        )
+    ]
+    tied = _reach(
+        [*_web(), *many, *_bound([{"apiGroups": [""], "resources": ["pods"], "verbs": ["*"]}], name="zz", ns="zzz")],
+        "deployment/web",
+        "shop",
+    )
+    top = tied["summary"].split("(top: ")[1].split(");")[0]
+    assert top in {n["label"] for n in tied["nodes"] if n["type"] == "capability"}
+    # Unreadable shapes are unknowns, not absences: a subject that is a string or of a kind the API does not define,
+    # a binding whose metadata is a list (which crashed), and `containers` as a mapping.
+    for subject in ("system:serviceaccount:shop:web", {"kind": "serviceaccount", "name": "web"}):
+        bad = _binding("ClusterRoleBinding", "b", "ClusterRole", "cluster-admin", [subject])
+        g = _reach([*_web(), bad], "deployment/web", "shop", whole_bundle=True)
+        assert _leg(g, "rbac")["status"] == "not determined", subject
+    listed = _binding("ClusterRoleBinding", "b", "ClusterRole", "cluster-admin", [WEB])
+    listed["metadata"] = ["b"]
+    assert _reach([*_web(), listed], "deployment/web", "shop", whole_bundle=True)["legs"]
+    mapping = _web(containers={"c": {"image": "i", "securityContext": {"privileged": True}}})
+    assert _leg(_reach(mapping, "deployment/web", "shop", whole_bundle=True), "node")["status"] == "not determined"
+    # `deployments` in a group that does not serve Deployments is some CRD's resource: not "create workloads".
+    crd = [{"apiGroups": ["example.com"], "resources": ["deployments"], "verbs": ["create"]}]
+    other = _reach([*_web(), *_bound(crd)], "deployment/web", "shop", whole_bundle=True)
+    assert not _caps(other) and _leg(other, "rbac")["status"] == "not determined"
+
+
+def _raycluster(groups: int, name_len: int = 8) -> dict[str, Any]:
+    worker = {
+        "template": {
+            "spec": {
+                "hostPID": True,
+                "volumes": [{"name": "h", "hostPath": {"path": "/"}}],
+                "containers": [{"name": "w", "image": "ray", "securityContext": {"privileged": True}}],
+            }
+        }
+    }
+    return {
+        "apiVersion": "ray.io/v1",
+        "kind": "RayCluster",
+        "metadata": {"name": "rc", "namespace": "shop"},
+        "spec": {
+            "headGroupSpec": copy.deepcopy(worker),
+            "workerGroupSpecs": [
+                {**copy.deepcopy(worker), "groupName": f"g{i:04d}" + "x" * name_len} for i in range(groups)
+            ],
+        },
+    }
+
+
+def test_every_list_in_the_document_is_bounded_and_the_byte_cap_holds_for_any_input() -> None:
+    """N7: the byte loop halved nodes and edges only; 400 Ray worker groups gave 2,000 legs and 400 resolved
+    references, and the document went past MAX_BYTES. Every list is bounded, the open legs first, and what was
+    withheld is counted."""
+    graph = _reach([_raycluster(400)], "raycluster/rc", "shop")
+    assert len(json.dumps(graph)) <= br.MAX_BYTES
+    jsonschema.validate(graph, br.SCHEMA, cls=jsonschema.Draft202012Validator)
+    t = graph["truncated"]
+    assert t is not None and t["legsWithheld"] > 0 and t["resolvedWithheld"] > 0
+    assert len(graph["legs"]) + t["legsWithheld"] == 401 * 5
+    assert len(graph["anchor"]["resolved"]) + t["resolvedWithheld"] == 401
+    # The open legs come first: none of the withheld legs is `not determined` while a shown one is `none`.
+    statuses = [x["status"] for x in graph["legs"]]
+    assert statuses == sorted(statuses, key=lambda s: {"not determined": 0, "reached": 1, "none": 2}[s])
+    # Property: whatever the size and the cap, the document fits.
+    rng = random.Random(7)
+    for _ in range(12):
+        groups, name_len = rng.randint(0, 300), rng.randint(0, 400)
+        cap = rng.choice([4_000, 9_000, 20_000, br.MAX_BYTES])
+        doc = _reach([_raycluster(groups, name_len)], "raycluster/rc", "shop", max_bytes=cap)
+        assert len(json.dumps(doc)) <= cap, (groups, name_len, cap)
+        jsonschema.validate(doc, br.SCHEMA, cls=jsonschema.Draft202012Validator)

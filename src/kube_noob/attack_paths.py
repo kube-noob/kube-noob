@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -52,8 +53,8 @@ from kube_noob.audit.rules import (
     DANGEROUS_CAPS,
     ESCALATION_VERBS,
     INTERNAL_LB_ANNOTATIONS,
-    RUNTIME_SOCKETS,
     WORKLOAD_RESOURCES,
+    takes_over_node,
 )
 from kube_noob.yamlio import PathT
 
@@ -64,6 +65,10 @@ STANDING_LIMITATIONS: tuple[str, ...] = (
     "Cloud IAM and admission-time mutation are not modelled.",
     "Roles that are not in the input are reported in notRead; cluster-admin, admin, edit and view stand in by their "
     "documented rules, and admin, edit and view aggregate rules the input may not carry.",
+    "Exposure is read from Services, OpenShift Routes, Ingresses, Gateway API HTTPRoutes and Istio VirtualServices; "
+    "other routing objects in files are named in notRead, and a live scan does not list them.",
+    "One token per pod is followed: the automounted one, else a projected one, else a mounted token Secret; a "
+    "token passed in an environment variable or by a CSI driver's tokenRequests is not followed.",
 )
 
 MAX_OBJECTS = 50_000
@@ -74,6 +79,8 @@ DEFAULT_TOP = 20
 LIVE_RESOURCES: dict[str, str] = {
     "routes": "Route",
     "ingresses": "Ingress",
+    "httproutes": "HTTPRoute",
+    "virtualservices": "VirtualService",
     "services": "Service",
     "pods": "Pod",
     "deployments": "Deployment",
@@ -119,7 +126,6 @@ NODE_CHECKS = (
     f"({', '.join(sorted(DANGEROUS_CAPS))}); hostPath volumes; hostPID, hostNetwork, hostIPC; procMount Unmasked; "
     "windowsOptions.hostProcess (pod and container)"
 )
-_SYSTEM_PATHS = frozenset({"/", "/etc", "/var/lib/kubelet", "/proc", "/root", "/var/run", "/run"})
 PRIVILEGED_SCCS = frozenset(
     {"privileged", "hostaccess", "hostmount-anyuid", "hostnetwork", "hostnetwork-v2", "node-exporter"}
 )
@@ -201,6 +207,9 @@ class Entry:
     #: `serviceType: LoadBalancer` scored `0 attack paths from 0 exposures` -- an internet-facing Ray head with a
     #: privileged container, reported as nothing at all (G233).
     declared_on: tuple[str, PathT] | None = None
+    #: For a Service that is itself the exposure: that object's own selector, so two different Services of one
+    #: name each reach through their own (G273). None for a Route, Ingress or route that names a Service.
+    selector: dict[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -230,7 +239,7 @@ class AttackPath:
 
 
 def _ref(obj: dict[str, Any]) -> str:
-    meta = obj.get("metadata") or {}
+    meta = _meta(obj)
     ns = meta.get("namespace")
     return f"{obj.get('kind')}/{ns}/{meta.get('name')}" if ns else f"{obj.get('kind')}/{meta.get('name')}"
 
@@ -238,12 +247,17 @@ def _ref(obj: dict[str, Any]) -> str:
 object_ref = _ref  # Kind/namespace/name (Kind/name without a namespace), as audit findings name resources
 
 
+def _meta(obj: dict[str, Any]) -> dict[str, Any]:
+    meta = obj.get("metadata")
+    return meta if isinstance(meta, dict) else {}  # a list here crashed the scan (found rerunning mal.py, G273)
+
+
 def _ns(obj: dict[str, Any]) -> str:
-    return str((obj.get("metadata") or {}).get("namespace") or "default")
+    return str(_meta(obj).get("namespace") or "default")
 
 
 def _name(obj: dict[str, Any]) -> str:
-    return str((obj.get("metadata") or {}).get("name") or "")
+    return str(_meta(obj).get("name") or "")
 
 
 object_namespace = _ns  # "default" when the object names none, as kubectl would apply it
@@ -267,6 +281,7 @@ def _strs(value: Any) -> set[str]:
 
 
 strs = _strs
+get_path = _get
 
 
 def _plain(value: Any) -> Any:
@@ -282,10 +297,90 @@ def _plain(value: Any) -> Any:
 
 
 def _canonical_form(obj: Any) -> str:
+    # A namespaced object written without a namespace is the same object as one naming `default`, which is where
+    # every reader here puts it: two spellings of one object are not two objects.
+    if (
+        isinstance(obj, dict)
+        and isinstance(obj.get("metadata"), dict)
+        and not obj["metadata"].get("namespace")
+        and str(obj.get("kind") or "") not in _CLUSTER_SCOPED_KINDS
+    ):
+        obj = {**obj, "metadata": {**obj["metadata"], "namespace": _ns(obj)}}
     return json.dumps(_plain(obj), default=str)
 
 
+_CLUSTER_SCOPED_KINDS = frozenset(
+    {"ClusterRole", "ClusterRoleBinding", "Namespace", "Node", "PersistentVolume", "SecurityContextConstraints"}
+)
+
+
 canonical_form = _canonical_form  # one canonical form of an object, for ordering and for telling duplicates apart
+
+
+#: OpenShift's legacy RBAC group. It serves Role, RoleBinding, ClusterRole and ClusterRoleBinding as proxies of
+#: the rbac.authorization.k8s.io objects (openshift-apiserver pkg/authorization/apiserver/apiserver.go stores all
+#: four through the rbac/v1 client, commit 9fc0918d1c6908e8e8ceb8e215e86bde4aeaabec; the kinds are registered in
+#: openshift/api authorization/v1/register.go, commit 61403fc4e89fad877aba1b000d72a992f388f549). A legacy binding
+#: names its role by `roleRef: {name, namespace}` with no kind -- a namespace means a Role, none a ClusterRole --
+#: and its subjects as ObjectReferences whose kinds include SystemUser and SystemGroup, or as `userNames` and
+#: `groupNames`, which take precedence when set (rbacconversion/conversion.go at the same commit).
+_OPENSHIFT_RBAC_GROUP = "authorization.openshift.io"
+_LEGACY_SUBJECT_KINDS = {"ServiceAccount": "ServiceAccount", "User": "User", "SystemUser": "User", "Group": "Group"}
+_LEGACY_SUBJECT_KINDS["SystemGroup"] = "Group"
+#: Routing objects that can put a workload on a network and that this scan does not read: present in the input,
+#: they make the exposure of the workloads in their namespace not determined rather than "none" (G273).
+UNMODELLED_EXPOSURE: dict[str, frozenset[str]] = {
+    "gateway.networking.k8s.io": frozenset({"GRPCRoute", "TLSRoute", "TCPRoute", "UDPRoute"}),
+    "projectcontour.io": frozenset({"HTTPProxy"}),
+    "traefik.io": frozenset({"IngressRoute", "IngressRouteTCP", "IngressRouteUDP"}),
+    "traefik.containo.us": frozenset({"IngressRoute", "IngressRouteTCP", "IngressRouteUDP"}),
+    "getambassador.io": frozenset({"Mapping"}),
+}
+#: The groups the routing kinds this scan does read belong to: a kind of the same name in another group is not one.
+_KIND_GROUPS: dict[str, str] = {
+    "HTTPRoute": "gateway.networking.k8s.io",
+    "VirtualService": "networking.istio.io",
+    "Route": "route.openshift.io",
+}
+LEGACY_SA_TYPE = "kubernetes.io/service-account-token"
+
+
+def _legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None, str]:
+    """An authorization.openshift.io object in the rbac.authorization.k8s.io shape the rest of this module reads,
+    converted the way openshift-apiserver converts it; or (None, why) when the server would refuse it."""
+    if kind in {"Role", "ClusterRole"}:
+        return {**obj, "apiVersion": f"{_RBAC_GROUP}/v1"}, ""
+    ref = obj.get("roleRef")
+    if not isinstance(ref, dict) or not ref.get("name"):
+        return None, "roleRef does not name a role"
+    ref_ns = str(ref.get("namespace") or "")
+    if kind == "ClusterRoleBinding" and ref_ns:
+        return None, f"a ClusterRoleBinding cannot reference a role in namespace {ref_ns}"
+    if kind == "RoleBinding" and ref_ns and ref_ns != _ns(obj):
+        return None, f"a RoleBinding cannot reference a role in namespace {ref_ns}"
+    users, groups = obj.get("userNames"), obj.get("groupNames")
+    subjects: list[dict[str, Any]] = []
+    if isinstance(users, list) or isinstance(groups, list):
+        subjects += [{"kind": "User", "name": str(u)} for u in _list(users)]
+        subjects += [{"kind": "Group", "name": str(g)} for g in _list(groups)]
+    else:
+        for s in _list(obj.get("subjects")):
+            if not isinstance(s, dict) or s.get("kind") not in _LEGACY_SUBJECT_KINDS:
+                return (
+                    None,
+                    f"subject kind {s.get('kind') if isinstance(s, dict) else s!r} is not one OpenShift accepts",
+                )
+            subject = {"kind": _LEGACY_SUBJECT_KINDS[str(s["kind"])], "name": str(s.get("name") or "")}
+            if subject["kind"] == "ServiceAccount" and s.get("namespace"):
+                subject["namespace"] = str(s["namespace"])
+            subjects.append(subject)
+    converted = {
+        **{k: v for k, v in obj.items() if k not in {"userNames", "groupNames"}},
+        "apiVersion": f"{_RBAC_GROUP}/v1",
+        "subjects": subjects,
+        "roleRef": {"apiGroup": _RBAC_GROUP, "kind": "Role" if ref_ns else "ClusterRole", "name": str(ref["name"])},
+    }
+    return converted, ""
 
 
 @dataclass
@@ -293,13 +388,36 @@ class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
     dropped_unread: int = 0
+    #: Lists a live read was told the cluster does not serve (no Routes on vanilla Kubernetes): an answer, not a
+    #: failed read, so they are kept apart from `not_read` (G273).
+    not_served: list[str] = field(default_factory=list)
+    #: RBAC objects (or lists of them) in the input that could not be read: each one opens the RBAC leg (G273).
+    rbac_unread: list[str] = field(default_factory=list)
+    #: Routing objects this scan does not read, present in the input, as Kind/namespace/name.
+    unmodelled: list[str] = field(default_factory=list)
+    #: (namespace, Secret name) -> ServiceAccount, for Secrets of type kubernetes.io/service-account-token: the
+    #: type and the annotation are metadata, kept; the Secret's data is never read and the object is dropped.
+    legacy_accounts: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: Read from the cluster: an absence in a list that WAS read is the cluster's answer, not a gap in a file set.
+    live: bool = False
 
     def add(self, obj: Any, kind: str | None = None) -> None:
         if not isinstance(obj, dict):
             return
         k = kind or str(obj.get("kind") or "")
+        api = obj.get("apiVersion")
+        group = api.split("/")[0] if isinstance(api, str) and "/" in api else ""
         if k == "Secret":
             self.dropped_unread += 1  # never analysed, never echoed
+            if obj.get("type") == LEGACY_SA_TYPE:
+                account = _get(obj, "metadata", "annotations", "kubernetes.io/service-account.name")
+                self.legacy_accounts[(_ns(obj), _name(obj))] = str(account or "")
+            return
+        if k in UNMODELLED_EXPOSURE.get(group, ()):
+            self.unmodelled.append(_ref(obj))
+            self.not_read.append(
+                f"{_ref(obj)}: a routing object this scan does not read, so exposure through it is not known"
+            )
             return
         if k not in KINDS:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
@@ -311,11 +429,28 @@ class Inventory:
             if unread_pod_specs(Document(index=0, data=obj)):
                 self.not_read.append(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked")
             return
-        api = obj.get("apiVersion")
-        if k in _RBAC_KINDS and isinstance(api, str) and api.split("/")[0] != _RBAC_GROUP:
-            # A CRD that happens to be called Role is not RBAC: reading it as one would invent rights (G270's lesson).
-            self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_RBAC_GROUP}, so it was ignored")
+        if k in _KIND_GROUPS and isinstance(api, str) and group and group != _KIND_GROUPS[k]:
+            # A Knative `Route` (serving.knative.dev) routes traffic too, to objects this scan does not model: it is
+            # not read as an OpenShift Route, and its namespace's exposure is not determined rather than none.
+            self.unmodelled.append(_ref(obj))
+            self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_KIND_GROUPS[k]}, so it was ignored")
             return
+        if k in _RBAC_KINDS and isinstance(api, str) and group != _RBAC_GROUP:
+            if group == _OPENSHIFT_RBAC_GROUP:
+                converted, why = _legacy_rbac(obj, k)
+                if converted is None:
+                    note = f"{_ref(obj)}: {why}, so it was not read"
+                    self.not_read.append(note)
+                    self.rbac_unread.append(note)
+                    return
+                obj = converted
+            else:
+                # A CRD that happens to be called Role is not RBAC: reading it as one would invent rights (G270's
+                # lesson). It still opens the RBAC leg: an RBAC-shaped object this scan could not read.
+                note = f"{_ref(obj)}: apiVersion {api} is not {_RBAC_GROUP}, so it was ignored"
+                self.not_read.append(note)
+                self.rbac_unread.append(note)
+                return
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:
             raise ScanError(f"more than {MAX_OBJECTS} objects; scan fewer namespaces")
         obj = {**obj, "kind": k}
@@ -330,6 +465,35 @@ class Inventory:
         Same input, same bytes -- for `posture scan` and the blast radius alike, since both read this (G273)."""
         self.objects = {k: sorted(v, key=_canonical_form) for k, v in sorted(self.objects.items())}
 
+    def duplicates(self, kind: str) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """Objects of `kind` that share a namespace and name and DIFFER, by (namespace, name). Identical copies are
+        one object. The API keeps one per name; which one, the input does not say (G273)."""
+        groups: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        for o in self.of(kind):
+            groups.setdefault((_ns(o), _name(o)), {})[_canonical_form(o)] = o
+        return {key: list(found.values()) for key, found in sorted(groups.items()) if len(found) > 1}
+
+    def duplicate_notes(self) -> list[str]:
+        """One line per name carried by two different objects, saying what the scan did with them (G273, R2/R3).
+        Roles and ClusterRoles are said where a binding uses them (the gap names the binding); an unbound one
+        grants nothing either way."""
+        what = {
+            "Service": "every candidate's selector is followed and each path through it says so",
+            "RoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
+            "ClusterRoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
+            "ServiceAccount": "a token is assumed mounted unless every copy turns automount off",
+        }
+        for kind in sorted(WORKLOAD_KINDS):
+            what.setdefault(kind, "each is scored, and the threat model keeps the worse")
+        out: list[str] = []
+        for kind, done in what.items():
+            for objs in self.duplicates(kind).values():
+                out.append(
+                    f"{len(objs)} different objects named {_ref(objs[0])} are in the input; which one the cluster "
+                    f"holds is not known; {done}"
+                )
+        return out
+
     @classmethod
     def from_documents(cls, docs: Iterable[Any]) -> Inventory:
         inv = cls()
@@ -339,11 +503,19 @@ class Inventory:
                 # `kubectl get rolebindings -o yaml` writes a `List`; the typed form (`RoleBindingList`) carries
                 # items without a kind of their own. Dropping either left "no RoleBinding is in the input" (G273).
                 items = d.get("items")
-                if not isinstance(items, list):
-                    inv.not_read.append(f"{kind}: items is not a list, so none of its objects were read")
-                    continue
                 item_kind = kind.removesuffix("List") or None
+                if not isinstance(items, list):
+                    note = f"{kind}: items is not a list, so none of its objects were read"
+                    inv.not_read.append(note)
+                    if item_kind in _RBAC_KINDS or item_kind is None:
+                        inv.rbac_unread.append(note)
+                    continue
                 for item in items:
+                    if not isinstance(item, dict) and item_kind in _RBAC_KINDS:
+                        note = f"{kind}: an item is a {type(item).__name__}, not an object, so it was not read"
+                        inv.not_read.append(note)
+                        inv.rbac_unread.append(note)
+                        continue
                     inv.add(item, None if isinstance(item, dict) and item.get("kind") else item_kind)
             else:
                 inv.add(d)
@@ -414,7 +586,19 @@ def _sites(inv: Inventory, *, owned: bool = True) -> list[_Site]:
     """Every pod spec in the inventory's workloads, in workload order. ``owned=False`` drops the workloads another
     controller owns, as the scan does so that a Deployment's ReplicaSets and Pods are not counted three times."""
     present = frozenset((str(o.get("kind")), _name(o)) for k in POD_SPEC_PATHS for o in inv.of(k))
-    return [site for obj in inv.of(*_WORKLOAD_KINDS) if owned or not _owned(obj, present) for site in _sites_of(obj)]
+    # The same object twice (two files that both carry it) is one workload: scoring it twice doubled its paths,
+    # where the blast radius counted it once (found by the reviewer's scan-versus-reach agreement check, G273).
+    seen: set[str] = set()
+    out: list[_Site] = []
+    for obj in inv.of(*_WORKLOAD_KINDS):
+        if not owned and _owned(obj, present):
+            continue
+        form = _canonical_form(obj)
+        if form in seen:
+            continue
+        seen.add(form)
+        out += _sites_of(obj)
+    return out
 
 
 def _owned(obj: dict[str, Any], present: frozenset[tuple[str, str]] | None = None) -> bool:
@@ -529,59 +713,177 @@ def _service_exposure(svc: dict[str, Any]) -> tuple[str, int, str, str] | None:
     return None
 
 
-def _entries(inv: Inventory) -> list[Entry]:
-    services = {(_ns(s), _name(s)) for s in inv.of("Service")}
-    out: list[Entry] = []
+@dataclass(frozen=True)
+class _Front:
+    """One object that routes traffic to a Service by name: a Route, an Ingress, an HTTPRoute, a VirtualService."""
+
+    obj: dict[str, Any]
+    namespace: str  # the Service's namespace
+    service: str
+    label: str
+    weight: int
+    exposed: str  # evidence for "exposed by"
+    routes: str  # evidence for "routes to"
+    fix: str
+
+
+def _vs_service(host: str, vs_ns: str) -> tuple[str, str] | None:
+    """(namespace, name) of the Kubernetes Service an Istio destination host names, or None for a host outside the
+    cluster. A short name is read in the VirtualService's own namespace ("Istio will interpret the short name based
+    on the namespace of the rule", https://istio.io/latest/docs/reference/config/networking/virtual-service/)."""
+    parts = host.split(".")
+    if len(parts) == 1:
+        return vs_ns, parts[0]
+    if len(parts) == 2:
+        return parts[1], parts[0]
+    if len(parts) >= 3 and parts[2] == "svc":
+        return parts[1], parts[0]
+    return None
+
+
+def _fronts(inv: Inventory) -> list[_Front]:
+    out: list[_Front] = []
     for r in inv.of("Route"):
         backends = [_get(r, "spec", "to")] + _list(_get(r, "spec", "alternateBackends"))
         host = _get(r, "spec", "host") or "the router's default host"
         for b in backends:
             if isinstance(b, dict) and b.get("name") and (b.get("kind") or "Service") == "Service":
                 svc = str(b["name"])
-                step = Step("internet", _ref(r), "exposed by", f"Route host {host}")
-                step2 = Step(_ref(r), f"Service/{_ns(r)}/{svc}", "routes to", f"spec.to.name={svc}")
-                if (_ns(r), svc) in services:
-                    out.append(
-                        Entry(
-                            "internet (Route)",
-                            3,
-                            (step, step2),
-                            _ns(r),
-                            svc,
-                            "remove the Route or put authentication in front of it",
-                        )
+                out.append(
+                    _Front(
+                        r,
+                        _ns(r),
+                        svc,
+                        "internet (Route)",
+                        3,
+                        f"Route host {host}",
+                        f"spec.to.name={svc}",
+                        "remove the Route or put authentication in front of it",
                     )
+                )
     for ing in inv.of("Ingress"):
         names: list[str] = []
-        default = _get(ing, "spec", "defaultBackend", "service", "name")
+        # networking.k8s.io/v1 names the backend `service.name`; the v1beta1 and extensions/v1beta1 Ingress (gone
+        # from the API since 1.22, still in old charts) named it `serviceName`, and its default backend `backend`.
+        # Reading only the first made an old chart's Ingress route to nothing (G273, class 21 neighbour of N4).
+        default = _get(ing, "spec", "defaultBackend", "service", "name") or _get(ing, "spec", "backend", "serviceName")
         if default:
             names.append(str(default))
         for rule in _list(_get(ing, "spec", "rules")):
             for p in _list(_get(rule, "http", "paths")):
-                n = _get(p, "backend", "service", "name")
+                n = _get(p, "backend", "service", "name") or _get(p, "backend", "serviceName")
                 if n:
                     names.append(str(n))
+        hosts = [str(_get(x, "host")) for x in _list(_get(ing, "spec", "rules")) if _get(x, "host")]
         for svc in dict.fromkeys(names):
-            if (_ns(ing), svc) in services:
-                hosts = [str(_get(x, "host")) for x in _list(_get(ing, "spec", "rules")) if _get(x, "host")]
-                step = Step("internet", _ref(ing), "exposed by", f"Ingress hosts {hosts[:3] or ['*']}")
-                step2 = Step(_ref(ing), f"Service/{_ns(ing)}/{svc}", "routes to", f"backend.service.name={svc}")
+            out.append(
+                _Front(
+                    ing,
+                    _ns(ing),
+                    svc,
+                    "internet (Ingress)",
+                    3,
+                    f"Ingress hosts {hosts[:3] or ['*']}",
+                    f"backend.service.name={svc}",
+                    "remove the Ingress rule or put authentication in front of it",
+                )
+            )
+    # Gateway API: a backendRef defaults to kind Service in the core group and to the route's own namespace
+    # (https://gateway-api.sigs.k8s.io/reference/spec/, BackendObjectReference). A route attached to no Gateway
+    # (no parentRefs) carries no traffic.
+    for hr in inv.of("HTTPRoute"):
+        parents = [str(_get(p, "name")) for p in _list(_get(hr, "spec", "parentRefs")) if isinstance(p, dict)]
+        if not parents:
+            continue
+        for i, rule in enumerate(_list(_get(hr, "spec", "rules"))):
+            for j, ref in enumerate(_list(_get(rule, "backendRefs"))):
+                if not isinstance(ref, dict) or not ref.get("name"):
+                    continue
+                if (ref.get("kind") or "Service") != "Service" or (ref.get("group") or "") != "":
+                    continue
+                svc = str(ref["name"])
                 out.append(
-                    Entry(
-                        "internet (Ingress)",
-                        3,
-                        (step, step2),
-                        _ns(ing),
+                    _Front(
+                        hr,
+                        str(ref.get("namespace") or _ns(hr)),
                         svc,
-                        "remove the Ingress rule or put authentication in front of it",
+                        "internet (Gateway API HTTPRoute)",
+                        3,
+                        f"HTTPRoute parentRefs {parents[:3]}",
+                        f"spec.rules[{i}].backendRefs[{j}].name={svc}",
+                        "detach the HTTPRoute from the Gateway or put authentication in front of it",
                     )
                 )
+    # Istio: a VirtualService bound to a gateway other than `mesh` takes traffic from outside the mesh; one bound
+    # only to `mesh` (the default when `gateways` is omitted) routes sidecar traffic and exposes nothing.
+    for vs in inv.of("VirtualService"):
+        gateways = [str(g) for g in _list(_get(vs, "spec", "gateways"))]
+        outside = [g for g in gateways if g != "mesh"]
+        if not outside:
+            continue
+        for section in ("http", "tcp", "tls"):
+            for i, route in enumerate(_list(_get(vs, "spec", section))):
+                for j, dest in enumerate(_list(_get(route, "route"))):
+                    host = _get(dest, "destination", "host")
+                    target = _vs_service(str(host), _ns(vs)) if isinstance(host, str) and host else None
+                    if target is None:
+                        continue
+                    out.append(
+                        _Front(
+                            vs,
+                            target[0],
+                            target[1],
+                            "internet (Istio VirtualService)",
+                            3,
+                            f"VirtualService gateways {outside[:3]}",
+                            f"spec.{section}[{i}].route[{j}].destination.host={host}",
+                            "unbind the VirtualService from the ingress gateway or put authentication in front of it",
+                        )
+                    )
+    return out
+
+
+def dangling(inv: Inventory) -> list[tuple[str, str]]:
+    """(namespace of the Service, sentence) for every front that names a Service the files do not carry. Read from
+    files, that is a gap -- the Service and the pods it selects may exist; read live, the Service list is the
+    cluster's own answer and a route to nothing exposes nothing (G273)."""
+    if inv.live:
+        return []
+    services = {(_ns(s), _name(s)) for s in inv.of("Service")}
+    seen: dict[str, tuple[str, str]] = {}
+    for f in _fronts(inv):
+        if (f.namespace, f.service) not in services:
+            line = f"{_ref(f.obj)} routes to Service {f.namespace}/{f.service}, which is not in the input"
+            seen.setdefault(line, (f.namespace, line))
+    return sorted(seen.values())
+
+
+def _entries(inv: Inventory) -> list[Entry]:
+    services = {(_ns(s), _name(s)) for s in inv.of("Service")}
+    out: list[Entry] = []
+    for f in _fronts(inv):
+        if (f.namespace, f.service) not in services:
+            continue
+        step = Step("internet", _ref(f.obj), "exposed by", f.exposed)
+        step2 = Step(_ref(f.obj), f"Service/{f.namespace}/{f.service}", "routes to", f.routes)
+        out.append(Entry(f.label, f.weight, (step, step2), f.namespace, f.service, f.fix))
     for s in inv.of("Service"):
         exp = _service_exposure(s)
         if exp:
             label, weight, evidence, fix = exp
             src = label.split(" (")[0]
-            out.append(Entry(label, weight, (Step(src, _ref(s), "exposed by", evidence),), _ns(s), _name(s), fix))
+            sel = _get(s, "spec", "selector")
+            out.append(
+                Entry(
+                    label,
+                    weight,
+                    (Step(src, _ref(s), "exposed by", evidence),),
+                    _ns(s),
+                    _name(s),
+                    fix,
+                    selector=sel if isinstance(sel, dict) else {},
+                )
+            )
     out += _declared_entries(inv)
     return out
 
@@ -740,9 +1042,9 @@ def _node_capabilities(w: dict[str, Any], spec: dict[str, Any], site: _Site | No
     for vi, v in enumerate(_list(spec.get("volumes"))):
         path = _get(v, "hostPath", "path")
         if isinstance(path, str):
-            # `/etc/../`, `//etc` and `/var/run/docker.sock/` are the paths they resolve to.
-            norm = "/" + posixpath.normpath("/" + path).lstrip("/")
-            worst = norm in _SYSTEM_PATHS or any(norm.endswith(s) for s in RUNTIME_SOCKETS)
+            # One list with the audit's KN-S010: the node's configuration and PKI, the kubelet's pods, a runtime
+            # socket, the directory or anything under it (`/etc/../` and `//etc` are what they resolve to).
+            worst = takes_over_node(path)
             out.append(
                 Capability(
                     f"host path {path}" + (": node takeover" if worst else ""),
@@ -829,18 +1131,20 @@ def _labels(obj: dict[str, Any]) -> dict[str, str]:
 
 def _role_book(inv: Inventory) -> RoleBook:
     book = RoleBook()
-    seen: dict[str, int] = {}
+    seen: dict[str, set[str]] = {}
     labels: dict[str, dict[str, str]] = {}
     selectors: dict[str, list[dict[str, Any]]] = {}
     for r in inv.of("Role", "ClusterRole"):
         cluster = r.get("kind") == "ClusterRole"
         ref = f"ClusterRole/{_name(r)}" if cluster else f"Role/{_ns(r)}/{_name(r)}"
-        seen[ref] = seen.get(ref, 0) + 1
+        form = _canonical_form(r)
+        if form in seen.setdefault(ref, set()):
+            continue  # the same object twice is one object
+        seen[ref].add(form)
         raw = r.get("rules")
         if raw is not None and not isinstance(raw, list):
             book.unreadable.add(ref)
             book.open[ref] = f"{ref}: rules is a {type(raw).__name__}, not a list, so what it grants is not known"
-        # Two objects of one name: the API keeps one, the input does not say which, so both count (the worst case).
         book.rules.setdefault(ref, []).extend(_list(raw))
         if cluster:
             labels[ref] = {**labels.get(ref, {}), **_labels(r)}
@@ -850,9 +1154,17 @@ def _role_book(inv: Inventory) -> RoleBook:
                 if not isinstance(sel, list):
                     book.open[ref] = f"{ref}: aggregationRule.clusterRoleSelectors is not a list"
                 selectors.setdefault(ref, []).extend(s for s in _list(sel) if isinstance(s, dict))
-    for ref, n in seen.items():
-        if n > 1:
-            book.open.setdefault(ref, f"{n} objects named {ref} are in the input; the rules of all of them are counted")
+    for ref, forms in seen.items():
+        if len(forms) > 1:
+            # Two DIFFERENT objects of one name: the API keeps one and the input does not say which. Their union
+            # is neither -- it once made "run privileged pods" out of a Role that creates pods and another that
+            # uses SCC privileged (R2). Neither is read; the binding to the name is a gap.
+            book.rules[ref] = []
+            book.unreadable.add(ref)
+            book.open[ref] = (
+                f"{len(forms)} different objects named {ref} are in the input; which one the cluster holds is not "
+                "known, so neither is read"
+            )
     stand_ins: set[str] = set()
     for name, rules in BUILTIN_CLUSTER_ROLES.items():
         ref = f"ClusterRole/{name}"
@@ -871,8 +1183,10 @@ def _role_book(inv: Inventory) -> RoleBook:
     }
     own = {ref: list(rules) for ref, rules in book.rules.items()}
     for ref in sorted(selectors):
+        if ref in book.unreadable:
+            continue  # an ambiguous or unreadable role is not filled from its sources either
         reached: list[str] = []
-        todo = list(sources.get(ref, []))
+        todo = [s for s in sources.get(ref, []) if s not in book.unreadable]
         while todo:
             nxt = todo.pop(0)
             if nxt in reached or nxt == ref:
@@ -934,6 +1248,16 @@ def _subject_matches(subj: Any, sa_ns: str, sa: str, binding_ns: str | None) -> 
     return None
 
 
+def _subject_readable(subj: Any) -> bool:
+    """A subject of a kind the API defines, with a string name and, if any, a string namespace."""
+    return (
+        isinstance(subj, dict)
+        and subj.get("kind") in {"ServiceAccount", "User", "Group"}
+        and isinstance(subj.get("name"), str)
+        and isinstance(subj.get("namespace"), (str, type(None)))
+    )
+
+
 def _malformed_rule(rule: Any) -> str | None:
     """Why a rule cannot be read, or None. A scalar where the API requires a list (`verbs: "*"`) read as no verbs at
     all, so a rule granting everything scored nothing (G273)."""
@@ -950,9 +1274,13 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
     book = _role_book(inv)
     out: list[Grant] = []
 
-    def gap(b: dict[str, Any], who: str, at: str, role_ref: str, reason: str) -> None:
+    def gap(b: dict[str, Any], who: str, at: str, role_ref: str, reason: str, *, unread: bool = False) -> None:
         if gaps is not None:
             gaps.append(Gap(_ref(b), who, at, role_ref, reason))
+        if unread:
+            # Something the input carries and this scan could not read: the scan says so in notRead, instead of
+            # scoring the binding as nothing with an empty notRead (as main did for `verbs: "*"`, G273).
+            inv.not_read.append(f"{reason} (bound by {_ref(b)})" if _ref(b) not in reason else reason)
 
     for b in inv.of("RoleBinding", "ClusterRoleBinding"):
         cluster = b.get("kind") == "ClusterRoleBinding"
@@ -973,6 +1301,7 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
                 "subjects",
                 role_ref,
                 f"{_ref(b)}: subjects is not a list, so whom it binds is not known",
+                unread=True,
             )
             continue
         # No shortcut on the binding's namespace: a RoleBinding in another namespace grants this account rights
@@ -984,10 +1313,23 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
             None,
         )
         if matched is None:
+            # A subject this scan cannot read -- a bare string, a kind the API does not define ("serviceaccount"),
+            # a name that is a list -- may be this account. Read as "names nobody", it made the RBAC leg `none`
+            # (N6 neighbour, found rerunning the reviewer's mal.py).
+            bad = next((j for j, s in enumerate(_list(subjects)) if not _subject_readable(s)), None)
+            if bad is not None:
+                gap(
+                    b,
+                    "subject unreadable",
+                    f"subjects[{bad}]",
+                    role_ref,
+                    f"{_ref(b)}: subjects[{bad}] is not a subject this scan can read, so whom it binds is not known",
+                    unread=True,
+                )
             continue
         j, who = matched
         if not isinstance(ref, dict) or not rname:
-            gap(b, who, f"subjects[{j}]", role_ref, f"{_ref(b)}: roleRef does not name a role")
+            gap(b, who, f"subjects[{j}]", role_ref, f"{_ref(b)}: roleRef does not name a role", unread=True)
             continue
         rules = book.get(role_ref)
         if rules is None:
@@ -1000,11 +1342,18 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
                 inv.not_read.append(
                     f"{role_ref} (bound by {_ref(b)}) aggregates ClusterRoles by label and none in the input matches"
                 )
-            gap(b, who, f"subjects[{j}]", role_ref, reason)
+            gap(b, who, f"subjects[{j}]", role_ref, reason, unread=role_ref in book.unreadable)
         for i, rule in enumerate(rules):
             why = _malformed_rule(rule)
             if why is not None:
-                gap(b, who, f"subjects[{j}]", role_ref, f"{role_ref} rules[{i}] {why}, so what it grants is not known")
+                gap(
+                    b,
+                    who,
+                    f"subjects[{j}]",
+                    role_ref,
+                    f"{role_ref} rules[{i}] {why}, so what it grants is not known",
+                    unread=True,
+                )
                 continue
             out.append(
                 Grant(
@@ -1060,46 +1409,215 @@ def _privileged_scc_names(inv: Inventory) -> set[str]:
     return names
 
 
+def resource_matches(rule_resources: set[str], requested: str) -> bool:
+    """Whether a rule's `resources` cover a requested resource, exactly as the API server decides it: `*`, the exact
+    name (subresources included, `pods/exec`), or `*/<subresource>` for any resource's subresource of that name.
+    From Kubernetes `pkg/apis/rbac/v1/evaluation_helpers.go` `ResourceMatches`, tag v1.34.0. An exact-name test
+    read `*/exec` with `get` as a plain read (G273, N1)."""
+    if "*" in rule_resources or requested in rule_resources:
+        return True
+    if "/" in requested:
+        return "*/" + requested.split("/", 1)[1] in rule_resources
+    return False
+
+
+def _core(groups: set[str]) -> bool:
+    return bool(groups & {"", "*"}) or not groups
+
+
 def reads_secrets(rule: dict[str, Any]) -> bool:
     """True when an RBAC rule lets its holder read Secret objects (get, list or watch, or every verb)."""
     verbs, res, groups = _strs(rule.get("verbs")), _strs(rule.get("resources")), _strs(rule.get("apiGroups"))
-    core = bool(groups & {"", "*"}) or not groups
-    return core and bool(res & {"*", "secrets"}) and bool(verbs & {"*", "get", "list", "watch"})
+    return _core(groups) and resource_matches(res, "secrets") and bool(verbs & {"*", "get", "list", "watch"})
 
 
 _READ = frozenset({"get", "list", "watch"})
-#: Reads that are not reads: Secret contents, exec and attach over WebSocket (an HTTP GET, so the verb is `get`:
-#: https://kubernetes.io/blog/2024/08/20/websockets-transition/ and the verb table at
-#: https://kubernetes.io/docs/reference/access-authn-authz/authorization/#determine-the-request-verb), port-forward
-#: the same way, and the kubelet API through nodes/proxy ("get permission on nodes/proxy is not a read-only
-#: permission", https://kubernetes.io/docs/concepts/security/rbac-good-practices/).
-_NOT_READ_ONLY = frozenset({"secrets", "pods/exec", "pods/attach", "pods/portforward", "nodes/proxy"})
+_WRITE = ("create", "update", "patch", "delete", "deletecollection")
 _RBAC_OBJECTS = frozenset({"roles", "rolebindings", "clusterroles", "clusterrolebindings"})
+#: Requests that can grant more than a plain read or write, matched against wildcard resources: (group, resource,
+#: verbs, capability key or "" when no ranked capability covers it). A wildcard rule reading `*` is classified
+#: only when every one of these it covers is ranked.
+_SENSITIVE: tuple[tuple[str, str, frozenset[str], str], ...] = (
+    ("", "secrets", _READ, "read"),
+    ("", "secrets", frozenset({"create"}), "mint-secret"),
+    ("", "pods/exec", frozenset({"get", "create"}), "exec"),
+    ("", "pods/attach", frozenset({"get", "create"}), "exec"),
+    ("", "pods/portforward", frozenset({"get", "create"}), ""),
+    ("", "pods/proxy", frozenset({"get", "create", "update", "patch", "delete"}), ""),
+    ("", "services/proxy", frozenset({"get", "create", "update", "patch", "delete"}), ""),
+    ("", "nodes/proxy", frozenset({"get", "create", "update", "patch", "delete"}), "kubelet"),
+    ("", "pods/ephemeralcontainers", frozenset({"patch", "update"}), "ephemeral"),
+    ("", "serviceaccounts/token", frozenset({"create"}), "token"),
+    ("certificates.k8s.io", "certificatesigningrequests/status", frozenset({"update", "patch"}), ""),
+)
+#: Writes this module knows grant nothing it would rank, each with why. Verified against the Kubernetes RBAC
+#: good-practices page (https://kubernetes.io/docs/concepts/security/rbac-good-practices/#privilege-escalation-risks,
+#: read 2026-11-12), whose escalation list none of them is on, and the default roles that hand them to everyone
+#: (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#default-roles-and-role-bindings):
+#: - selfsubjectaccessreviews, selfsubjectrulesreviews, selfsubjectreviews `create`: asking what the caller itself
+#:   may do -- system:basic-user grants them to every authenticated user;
+#: - subjectaccessreviews, localsubjectaccessreviews `create`: asking what ANOTHER identity may do. Information
+#:   about authorization, not a right to act -- system:auth-delegator grants it to add-on API servers;
+#: - tokenreviews `create`: asking whom a token the caller already holds belongs to;
+#: - leases (coordination.k8s.io): leader election. A holder can take another controller's lease -- a denial of
+#:   service on that controller, not a right it did not have;
+#: - events: writing event records;
+#: - `<resource>/status`: reporting an object's state, except certificatesigningrequests/status, which carries the
+#:   issued certificate. A wildcard `*/status` covers that one too and is not harmless.
+#: Not in the set, so not determined: ConfigMap writes (another workload's configuration -- on some platforms the
+#: map that grants cluster access), and every other write.
+_HARMLESS_CREATE = {
+    "authorization.k8s.io": frozenset(
+        {"selfsubjectaccessreviews", "selfsubjectrulesreviews", "subjectaccessreviews", "localsubjectaccessreviews"}
+    ),
+    "authentication.k8s.io": frozenset({"selfsubjectreviews", "tokenreviews"}),
+}
+_HARMLESS_WRITE_GROUPS = {"events": frozenset({"", "events.k8s.io"}), "leases": frozenset({"coordination.k8s.io"})}
+#: Capabilities this change added. A grant that already has full control in a scope does not list them again for
+#: that scope: they are inside it, and listing twelve paths where main listed six was noise (G273).
+_SUBSUMED_BY_FULL = frozenset({"ephemeral", "token", "mint-secret", "pv", "webhooks", "csr"})
+#: OpenShift binds system:authenticated to impersonate `userextras/scopes.authorization.openshift.io` only: "purely
+#: tightening ... does not grant access to impersonate in general" (openshift-apiserver pkg/bootstrappolicy/
+#: policy.go, ScopeImpersonationRoleName, commit 9fc0918d1c6908e8e8ceb8e215e86bde4aeaabec). Impersonating extras
+#: alone is not impersonating a user.
+_EXTRAS_PREFIX = "userextras/"
 
 
-def _known_harmless(rule: dict[str, Any]) -> bool:
-    """A rule this scan knows grants nothing it ranks. Everything else that matched no capability is reported as
-    not classified, never as "nothing" (G273)."""
-    verbs, res = _strs(rule.get("verbs")), _strs(rule.get("resources"))
-    if not verbs:
-        return True  # a rule with no verbs grants nothing
-    if "*" in verbs:
-        return False
-    if not res and rule.get("nonResourceURLs") is not None:
-        return verbs <= _READ  # /healthz, /metrics, /version
-    if verbs <= _READ:
-        return "*" not in res and not res & _NOT_READ_ONLY
-    # Creating or changing roles and bindings is not an escalation without `escalate` or `bind`: the API refuses a
-    # role or binding carrying rights the caller does not already hold
-    # (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#privilege-escalation-prevention-and-bootstrapping).
-    if res and res <= _RBAC_OBJECTS and not verbs & ESCALATION_VERBS:
-        return True
-    return bool(res) and res <= {"events"} and "*" not in res
+def _covers_group(groups: set[str], group: str) -> bool:
+    return "*" in groups or group in groups or (group == "" and not groups)
 
 
-def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Grant] | None = None) -> list[Capability]:
-    """What the grants let the account do. ``unclassified`` collects the grants that matched no capability and are
-    not known to be harmless: the blast radius reports those as not determined instead of as "nothing" (G273).
+#: The API groups that serve each workload resource. `deployments` under `example.com` is some CRD's resource, not
+#: a Deployment, and was ranked as "create workloads" (found rerunning the reviewer's rb.py, G273): it is now not
+#: classified. extensions served Deployments, ReplicaSets and DaemonSets until 1.16.
+_WORKLOAD_GROUPS: dict[str, frozenset[str]] = {
+    "pods": frozenset({""}),
+    "replicationcontrollers": frozenset({""}),
+    "deployments": frozenset({"apps", "extensions"}),
+    "replicasets": frozenset({"apps", "extensions"}),
+    "daemonsets": frozenset({"apps", "extensions"}),
+    "statefulsets": frozenset({"apps"}),
+    "jobs": frozenset({"batch"}),
+    "cronjobs": frozenset({"batch"}),
+    "deploymentconfigs": frozenset({"apps.openshift.io", ""}),
+}
+
+
+def _workload_in(groups: set[str], resource: str) -> bool:
+    return any(_covers_group(groups, grp) for grp in _WORKLOAD_GROUPS.get(resource, frozenset({""})))
+
+
+@dataclass(frozen=True)
+class Unclassified:
+    """A grant whose rule allows (resource, verb) pairs that no ranked capability and no known-harmless entry
+    explains. Classified pair by pair: a rule that reads Secrets and patches nodes is not "read Secrets" (N9)."""
+
+    grant: Grant
+    verbs: tuple[str, ...]
+    resources: tuple[str, ...]
+    why: str = ""
+
+    def text(self) -> str:
+        return (
+            f"{self.grant.role_ref} {self.grant.rule_at} ({', '.join(self.verbs)} on {', '.join(self.resources)})"
+            + (f": {self.why}" if self.why else "")
+        )
+
+
+def _pair_open(g: Grant, r: str, v: str, have: set[str], own: tuple[str, str] | None) -> str | None:
+    """None when the pair (resource r, verb v) of the grant's rule is explained -- by a capability `have` holds for
+    this grant, or as known harmless; otherwise a short reason ("" for the generic one)."""
+    groups = _strs(g.rule.get("apiGroups"))
+    if "full" in have:
+        return None  # every verb on every resource of every group: nothing in the rule is left to explain
+    if v in ESCALATION_VERBS:
+        if v == "impersonate" and r.startswith(_EXTRAS_PREFIX):
+            return None
+        return None if "escalate" in have else ""
+    if v == "use" and r == "securitycontextconstraints":
+        return None
+    if v == "approve" and r == "signers":
+        return None if "csr" in have else ""
+    if r == "signers" and v not in {"approve", "sign", "*"}:
+        # `signers` is checked for approve and sign only
+        # (https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/#authorization)
+        return None
+    verbs = list(_READ) + list(_WRITE) if v == "*" else [v]
+    wildcard = r == "*" or r.startswith("*/")
+    for ev in verbs:
+        if wildcard:
+            for group, res, svs, key in _SENSITIVE:
+                if ev in svs and _covers_group(groups, group) and resource_matches({r}, res):
+                    if key == "kubelet" and not g.cluster:
+                        continue  # nodes are cluster-scoped: a RoleBinding grants nothing on them
+                    if not key or key not in have:
+                        return ""
+            if ev not in _READ and not (r == "*" and "full" in have):
+                return ""
+            continue
+        reason = _concrete_open(g, groups, r, ev, have, own)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _concrete_open(
+    g: Grant, groups: set[str], r: str, ev: str, have: set[str], own: tuple[str, str] | None
+) -> str | None:
+    core = _core(groups)
+    if "full" in have:
+        return None
+    for group, res, svs, key in _SENSITIVE:
+        if r == res and ev in svs and _covers_group(groups, group):
+            if key == "kubelet" and not g.cluster:
+                return None
+            if key == "token" and own is not None:
+                names = _strs(g.rule.get("resourceNames"))
+                if names == {own[1]} and not g.cluster and g.namespace == own[0]:
+                    return None  # a TokenRequest for its own account is no new right
+            if key == "mint-secret" and key not in have:
+                return (
+                    "creating a Secret mints a long-lived token only if the account can read it back (get on "
+                    "secrets) or mount it in a pod it creates"
+                )
+            return None if key and key in have else ""
+    if ev in _READ:
+        return "" if r.endswith("/proxy") else None
+    if r in WORKLOAD_RESOURCES and ev in {"create", "patch", "update"} and _workload_in(groups, r):
+        return None if "workloads" in have else ""
+    if core and r == "persistentvolumes" and ev == "create":
+        return None if "pv" in have or not g.cluster else ""
+    if r in {"validatingwebhookconfigurations", "mutatingwebhookconfigurations"} and ev in {
+        "create",
+        "update",
+        "patch",
+    }:
+        return None if "webhooks" in have else ""
+    if r in {"certificatesigningrequests", "certificatesigningrequests/approval"}:
+        return None if "csr" in have else ""
+    if ev == "create" and any(r in rs and _covers_group(groups, grp) for grp, rs in _HARMLESS_CREATE.items()):
+        return None
+    if r in _HARMLESS_WRITE_GROUPS and any(_covers_group(groups, grp) for grp in _HARMLESS_WRITE_GROUPS[r]):
+        return None
+    if r.endswith("/status") and r != "certificatesigningrequests/status":
+        return None
+    if r in _RBAC_OBJECTS:
+        # Without escalate or bind the API refuses a role or binding carrying rights the caller lacks
+        # (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#privilege-escalation-prevention-and-bootstrapping).
+        return None
+    return ""
+
+
+def _api_capabilities(
+    inv: Inventory,
+    grants: list[Grant],
+    unclassified: list[Unclassified] | None = None,
+    account: tuple[str, str] | None = None,
+) -> list[Capability]:
+    """What the grants let the account do. ``unclassified`` collects, rule by rule, the (resource, verb) pairs no
+    ranked capability explains and no named harmless entry covers: the blast radius reports those as not determined
+    instead of as "nothing" (G273). ``account`` is the ServiceAccount the grants belong to, for the one case where
+    the answer depends on it (a TokenRequest for itself).
 
     The escalation rights are the ones the Kubernetes RBAC good-practices page names
     (https://kubernetes.io/docs/concepts/security/rbac-good-practices/#privilege-escalation-risks, read 2026-11-12):
@@ -1107,23 +1625,35 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
     creation with approval, TokenRequest (`serviceaccounts/token` create) and control of admission webhooks; plus
     exec and attach (`create`, or `get` over WebSocket), ephemeral containers (`patch`/`update` on
     `pods/ephemeralcontainers`, which "run arbitrary commands" in an existing Pod:
-    https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/) and creating a Secret, which mints a
-    long-lived token for any ServiceAccount named in its annotation
+    https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/) and creating a Secret of type
+    service-account-token, which mints a long-lived token for any ServiceAccount named in its annotation -- usable
+    only read back or mounted, so ranked only when the account can also read Secrets or create pods in that scope
     (https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
-    #manually-create-a-long-lived-api-token-for-a-serviceaccount).
+    #manually-create-a-long-lived-api-token-for-a-serviceaccount). Resources match as the API server matches them
+    (`resource_matches`).
     """
     found: dict[tuple[str, str], Capability] = {}
+    have: dict[int, set[str]] = {}
     workload_grant: Grant | None = None
     scc_grant: tuple[Grant, str] | None = None
     csr_create: Grant | None = None
     csr_approve: Grant | None = None
+    minters: list[Grant] = []
     privileged = _privileged_scc_names(inv)
-    used: set[int] = set()
 
     def add(
-        name: str, g: Grant, cluster_w: int, ns_w: int, fix: str, named: bool = False, implies_reads: bool = False
+        key: str,
+        name: str,
+        g: Grant,
+        cluster_w: int,
+        ns_w: int,
+        fix: str,
+        named: bool = False,
+        implies_reads: bool = False,
     ) -> None:
-        used.add(id(g))
+        have.setdefault(id(g), set()).add(key)
+        if key in _SUBSUMED_BY_FULL and "full" in have[id(g)]:
+            return
         scope = "cluster" if g.cluster else f"namespace {g.namespace}"
         weight = (cluster_w if g.cluster else ns_w) - (2 if named else 0)
         cap = Capability(
@@ -1135,15 +1665,15 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             grants=(g,),
             implies_reads=implies_reads and not named,
         )
-        key = (cap.name, scope)
-        if key not in found or found[key].weight < weight:
-            found[key] = cap
+        ckey = (cap.name, scope)
+        if ckey not in found or found[ckey].weight < weight:
+            found[ckey] = cap
 
     for g in grants:
         verbs, res = _strs(g.rule.get("verbs")), _strs(g.rule.get("resources"))
         groups, names = _strs(g.rule.get("apiGroups")), _strs(g.rule.get("resourceNames"))
         any_res, any_verb = "*" in res, "*" in verbs
-        core = bool(groups & {"", "*"}) or not groups
+        core = _core(groups)
         builtin = g.role_ref.removeprefix("ClusterRole/") in BUILTIN_CLUSTER_ROLES or ":" in g.role_ref.split("/")[-1]
         narrow = (
             f"bind a narrower Role than the built-in {g.role_ref}"
@@ -1151,16 +1681,17 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             else f"narrow {g.evidence.split(' -> ')[-1]}"
         )
 
-        def has(*resources: str) -> bool:
-            return any_res or bool(res & set(resources))  # noqa: B023 -- called inside this iteration only
+        def has(*requested: str) -> bool:
+            return any(resource_matches(res, r) for r in requested)  # noqa: B023 -- called inside this iteration
 
         def can(*vs: str) -> bool:
             return any_verb or bool(verbs & set(vs))  # noqa: B023 -- called inside this iteration only
 
         if any_res and any_verb and "*" in groups:
-            add("full control", g, 10, 7, f"bind a narrower role than {g.role_ref}", implies_reads=True)
+            add("full", "full control", g, 10, 7, f"bind a narrower role than {g.role_ref}", implies_reads=True)
         if reads_secrets(g.rule):
             add(
+                "read",
                 "read Secrets (credentials, tokens of other ServiceAccounts)",
                 g,
                 8,
@@ -1168,8 +1699,10 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
                 f"{narrow}: drop secrets",
                 named=bool(names),
             )
-        if verbs & ESCALATION_VERBS or (any_verb and (any_res or res & _IDENTITY_RESOURCES)):
+        impersonates = {r for r in res if not r.startswith(_EXTRAS_PREFIX)} if "impersonate" in verbs else set()
+        if verbs & {"escalate", "bind"} or impersonates or (any_verb and (any_res or res & _IDENTITY_RESOURCES)):
             add(
+                "escalate",
                 "escalate, bind or impersonate",
                 g,
                 9,
@@ -1178,17 +1711,20 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
                 implies_reads=True,
             )
         if core and has("pods/exec", "pods/attach") and can("create", "get"):
-            add("exec into pods", g, 7, 5, f"{narrow}: drop pods/exec and pods/attach")
+            add("exec", "exec into pods", g, 7, 5, f"{narrow}: drop pods/exec and pods/attach")
         if core and has("pods/ephemeralcontainers") and can("patch", "update"):
             add(
+                "ephemeral",
                 "add containers to running pods (pods/ephemeralcontainers)",
                 g,
                 7,
                 5,
                 f"{narrow}: drop patch/update on pods/ephemeralcontainers",
             )
-        if has(*WORKLOAD_RESOURCES) and can("create", "patch", "update"):
+        workloads = [w for w in WORKLOAD_RESOURCES if _workload_in(groups, w)]
+        if has(*workloads) and can("create", "patch", "update"):
             add(
+                "workloads",
                 "create or change workloads (run as any ServiceAccount of the namespace)",
                 g,
                 7,
@@ -1198,25 +1734,30 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             )
             workload_grant = workload_grant or g
         if core and has("serviceaccounts/token") and can("create"):
-            add(
-                "mint tokens for its ServiceAccounts (serviceaccounts/token create)",
-                g,
-                7,
-                5,
-                f"{narrow}: drop create on serviceaccounts/token",
+            own = (
+                account is not None
+                and names == {account[1]}
+                and not g.cluster
+                and g.namespace == account[0]
+                and not any_res
             )
+            if not own:
+                add(
+                    "token",
+                    "mint tokens for its ServiceAccounts (serviceaccounts/token create)",
+                    g,
+                    7,
+                    5,
+                    f"{narrow}: drop create on serviceaccounts/token",
+                    named=bool(names),
+                )
         if core and has("secrets") and can("create"):
-            add(
-                "mint long-lived ServiceAccount tokens (create a service-account-token Secret)",
-                g,
-                7,
-                5,
-                f"{narrow}: drop create on secrets",
-            )
+            minters.append(g)
         if core and has("nodes/proxy") and can("get", "create") and g.cluster:
-            add("kubelet API through nodes/proxy", g, 8, 8, f"{narrow}: drop nodes/proxy")
+            add("kubelet", "kubelet API through nodes/proxy", g, 8, 8, f"{narrow}: drop nodes/proxy")
         if g.cluster and core and has("persistentvolumes") and can("create"):
             add(
+                "pv",
                 "create PersistentVolumes (a hostPath on a node)",
                 g,
                 8,
@@ -1231,6 +1772,7 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             and can("create", "update", "patch")
         ):
             add(
+                "webhooks",
                 "control admission webhooks (read and change every admitted object)",
                 g,
                 9,
@@ -1246,9 +1788,28 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             usable = names & privileged if names else privileged
             if usable:
                 scc_grant = (g, sorted(usable)[0])
+
+    # A Secret it creates mints a token it can use only if it can read the Secret back or mount it in a pod it
+    # creates, in the same scope. `edit` and `admin` grant both; `secrets create` alone grants neither (N11).
+    def readable_in(g: Grant) -> bool:
+        return any(
+            ("read" in have.get(id(h), set()) or "workloads" in have.get(id(h), set()))
+            and (h.cluster or (not g.cluster and h.namespace == g.namespace))
+            for h in grants
+        )
+
+    for g in minters:
+        if readable_in(g):
+            add(
+                "mint-secret",
+                "mint long-lived ServiceAccount tokens (create a service-account-token Secret)",
+                g,
+                7,
+                5,
+                f"bind a narrower role than {g.role_ref}: drop create on secrets",
+            )
     if workload_grant and scc_grant:
         g, scc = scc_grant
-        used.add(id(g))
         found[("run privileged pods", "node")] = Capability(
             f"run privileged pods (SCC {scc} + create workloads)",
             "node",
@@ -1258,18 +1819,44 @@ def _api_capabilities(inv: Inventory, grants: list[Grant], unclassified: list[Gr
             grants=(g, workload_grant),
         )
     if csr_create and csr_approve:
-        used.update({id(csr_create), id(csr_approve)})
-        found[("issue client certificates", "cluster")] = Capability(
-            "issue client certificates (create and approve CertificateSigningRequests)",
-            "cluster",
-            9,
-            f"{csr_create.evidence}; and {csr_approve.evidence}",
-            "remove create on certificatesigningrequests or update on certificatesigningrequests/approval",
-            grants=(csr_create, csr_approve),
-        )
+        for g in (csr_create, csr_approve):
+            have.setdefault(id(g), set()).add("csr")
+        if not ({"full"} & have.get(id(csr_create), set()) and {"full"} & have.get(id(csr_approve), set())):
+            found[("issue client certificates", "cluster")] = Capability(
+                "issue client certificates (create and approve CertificateSigningRequests)",
+                "cluster",
+                9,
+                f"{csr_create.evidence}; and {csr_approve.evidence}",
+                "remove create on certificatesigningrequests or update on certificatesigningrequests/approval",
+                grants=(csr_create, csr_approve),
+            )
     if unclassified is not None:
-        unclassified += [g for g in grants if id(g) not in used and not _known_harmless(g.rule)]
+        for g in grants:
+            unclassified += _open_pairs(g, have.get(id(g), set()), account)
     return list(found.values())
+
+
+def _open_pairs(g: Grant, have: set[str], account: tuple[str, str] | None) -> list[Unclassified]:
+    """The rule's unexplained (resource, verb) pairs, as one entry per distinct reason, in the rule's own order."""
+    verbs = [str(v) for v in _list(g.rule.get("verbs"))]
+    res = [str(r) for r in _list(g.rule.get("resources"))]
+    urls = [str(u) for u in _list(g.rule.get("nonResourceURLs"))]
+    by_reason: dict[str, tuple[list[str], list[str]]] = {}
+    if not res and urls:
+        open_verbs = [v for v in verbs if v not in _READ]
+        if open_verbs:
+            by_reason[""] = (open_verbs, urls)
+    for r in res:
+        for v in verbs:
+            why = _pair_open(g, r, v, have, account)
+            if why is None:
+                continue
+            vs, rs = by_reason.setdefault(why, ([], []))
+            if v not in vs:
+                vs.append(v)
+            if r not in rs:
+                rs.append(r)
+    return [Unclassified(g, tuple(vs), tuple(rs), why) for why, (vs, rs) in by_reason.items()]
 
 
 @dataclass(frozen=True)
@@ -1281,10 +1868,73 @@ class Mount:
     evidence: str
     at: str
     audience: str = ""
+    #: Why whose token this is cannot be told from the input ("" when it can): a Secret volume at the token path
+    #: whose Secret is not in the input (G273, N8).
+    unknown: str = ""
+
+
+#: Where the kubelet mounts a ServiceAccount token, and where a hand-mounted one is read from by every client library
+#: (https://kubernetes.io/docs/tasks/run-application/access-api-from-pod/#directly-accessing-the-rest-api).
+#: Only ever compared with the mount paths a manifest declares; never opened. Joined from parts because the plugin
+#: tests (and the plugin directory's scan they mirror) flag the literal as a read of the machine's own token
+#: (tests/test_plugin.py), and this module ships in the plugin.
+SA_MOUNT_DIR = posixpath.join("/var/run", "secrets", "kubernetes.io", "serviceaccount")
+
+
+def _legacy_mount(
+    spec: dict[str, Any],
+    site: _Site | None,
+    ns: str,
+    sa: str,
+    who: str,
+    base: str,
+    legacy_accounts: dict[tuple[str, str], str],
+) -> Mount | None:
+    """A legacy token Secret mounted as a volume: a Secret of type service-account-token (its annotation names the
+    account), or any Secret volume at the token path. Before 1.24 every account had one; they can still be made by
+    hand (https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
+    #manually-create-a-long-lived-api-token-for-a-serviceaccount). Missing it read `token: none` for a pod holding a
+    cluster-admin token (G273, N8). Only the Secret's type and annotation are read, never its data."""
+    paths: dict[str, list[str]] = {}
+    for _at, c in _located_containers(spec, site):
+        for m in _list(c.get("volumeMounts")):
+            if isinstance(m, dict):
+                paths.setdefault(str(m.get("name")), []).append(posixpath.normpath(str(m.get("mountPath") or "/")))
+    for i, v in enumerate(_list(spec.get("volumes"))):
+        if not isinstance(v, dict) or str(v.get("name")) not in paths:
+            continue
+        secret = _get(v, "secret", "secretName")
+        if not isinstance(secret, str) or not secret:
+            continue
+        at = f"{base}volumes[{i}].secret.secretName"
+        at_token_dir = SA_MOUNT_DIR in paths[str(v.get("name"))]
+        if (ns, secret) in legacy_accounts:
+            account = legacy_accounts[(ns, secret)] or sa
+            return Mount(
+                account,
+                f"{who}; volume {v.get('name')} mounts Secret {secret}, a service-account-token Secret of "
+                f"ServiceAccount {account}",
+                at,
+            )
+        if at_token_dir:
+            return Mount(
+                sa,
+                f"{who}; volume {v.get('name')} mounts Secret {secret} at {SA_MOUNT_DIR}",
+                at,
+                unknown=(
+                    f"Secret {ns}/{secret} is mounted at {SA_MOUNT_DIR} and is not in the input: whose token it "
+                    f"holds is not known; ServiceAccount {sa}'s rights are listed"
+                ),
+            )
+    return None
 
 
 def _token(
-    no_automount: set[tuple[str, str]], w: dict[str, Any], spec: dict[str, Any], site: _Site | None = None
+    no_automount: set[tuple[str, str]],
+    w: dict[str, Any],
+    spec: dict[str, Any],
+    site: _Site | None = None,
+    legacy_accounts: dict[tuple[str, str], str] | None = None,
 ) -> Mount | None:
     """The token mount when the pod has one, else None. ``no_automount``: the ServiceAccounts that turn automount
     off, by (namespace, name).
@@ -1325,7 +1975,7 @@ def _token(
                     f"{base}volumes[{i}].projected.sources[{j}].serviceAccountToken",
                     audience,
                 )
-    return None
+    return _legacy_mount(spec, site, _ns(w), sa, who, base, legacy_accounts or {})
 
 
 # --- the scan ----------------------------------------------------------------------------------------------------
@@ -1393,36 +2043,53 @@ class _Index:
     entry against every workload) and which ServiceAccounts turn token automount off. Looking these up per
     workload made the scan cubic in the size of the input (red team, VUL1)."""
 
-    selects: dict[int, list[tuple[int, Entry, dict[str, Any]]]]  # id(site) -> (entry index, entry, selector)
+    selects: dict[int, list[tuple[int, Entry, dict[str, Any], str]]]  # id(site) -> (entry index, entry, selector, note)
     no_automount: set[tuple[str, str]]
 
     @classmethod
     def build(cls, inv: Inventory, entries: list[Entry], sites: list[_Site]) -> _Index:
-        services: dict[tuple[str, str], dict[str, Any]] = {}
+        # Every distinct Service of a name: the API keeps one, and which one the input does not say, so each
+        # candidate is evaluated and its paths say they depend on it. Keeping "the first" made the answer depend on
+        # document order on main, and losing both lost real paths (R3, G273).
+        services: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for s in inv.of("Service"):
-            services.setdefault((_ns(s), _name(s)), s)  # the first of a duplicated name, as kubectl apply would keep
+            found = services.setdefault((_ns(s), _name(s)), [])
+            if all(_canonical_form(s) != _canonical_form(o) for o in found):
+                found.append(s)
         by_label: dict[tuple[str, str, str], list[int]] = {}
         for n, site in enumerate(sites):
             for k, v in site.labels.items():
                 by_label.setdefault((_ns(site.obj), k, v), []).append(n)
-        selects: dict[int, list[tuple[int, Entry, dict[str, Any]]]] = {}
+        selects: dict[int, list[tuple[int, Entry, dict[str, Any], str]]] = {}
         by_target = {(site.ref.split("[")[0], site.path): n for n, site in enumerate(sites)}
         for i, e in enumerate(entries):
             if e.declared_on is not None:
                 target_n = by_target.get(e.declared_on)
                 if target_n is not None:
-                    selects.setdefault(id(sites[target_n]), []).append((i, e, {}))
+                    selects.setdefault(id(sites[target_n]), []).append((i, e, {}, ""))
                 continue
-            svc = services.get((e.namespace, e.service))
-            selector = _get(svc, "spec", "selector") if svc else None
-            if not isinstance(selector, dict) or not selector:
-                continue
-            candidates = min((by_label.get((e.namespace, str(k), str(v)), []) for k, v in selector.items()), key=len)
-            for n in candidates:
-                # True only. A None ("the operator merges in labels this input does not show") must not become
-                # an edge the report presents as proven; it becomes a named limitation instead (G231).
-                if selector_decides({"matchLabels": selector}, sites[n].template) is True:
-                    selects.setdefault(id(sites[n]), []).append((i, e, selector))
+            candidates_svc = services.get((e.namespace, e.service), [])
+            # A Service-type entry is one object and reaches through its own selector; a Route or Ingress names
+            # the Service and reaches through whichever candidate is real.
+            selectors = (
+                [e.selector] if e.selector is not None else [_get(s, "spec", "selector") for s in candidates_svc]
+            )
+            note = (
+                f" (one of {len(candidates_svc)} different Services named {e.namespace}/{e.service} in the input)"
+                if len(candidates_svc) > 1
+                else ""
+            )
+            for selector in selectors:
+                if not isinstance(selector, dict) or not selector:
+                    continue
+                candidates = min(
+                    (by_label.get((e.namespace, str(k), str(v)), []) for k, v in selector.items()), key=len
+                )
+                for n in candidates:
+                    # True only. A None ("the operator merges in labels this input does not show") must not become
+                    # an edge the report presents as proven; it becomes a named limitation instead (G231).
+                    if selector_decides({"matchLabels": selector}, sites[n].template) is True:
+                        selects.setdefault(id(sites[n]), []).append((i, e, selector, note))
         # Off only when EVERY object of that name turns it off: two ServiceAccounts with one name that disagree are
         # an ambiguity, and the scan takes the worst case -- the token is mounted (G273).
         flags: dict[tuple[str, str], set[bool]] = {}
@@ -1440,7 +2107,7 @@ def _reach(
 ) -> Reach:
     w, spec, ref = site.obj, site.spec, site.ref
     reach_entries: list[tuple[int, Entry, list[Step]]] = []
-    for i, entry, selector in index.selects.get(id(site), []):
+    for i, entry, selector, note in index.selects.get(id(site), []):
         if entry.declared_on is not None:
             # The object asked for the exposure itself, so there is no Service in this input to step through.
             # Reusing the selector step here printed `Service/ns/ --selects--> ...  (selector {} matches ...)`:
@@ -1456,16 +2123,19 @@ def _reach(
                 f"Service/{entry.namespace}/{entry.service}",
                 ref,
                 "selects",
-                f"selector {selector} matches the pod template labels",
+                f"selector {selector} matches the pod template labels{note}",
             )
-        reach_entries.append((i, entry, [*entry.steps, to_w]))
+        steps = [*entry.steps, to_w]
+        if any(j == i and s == steps for j, _e, s in reach_entries):
+            continue  # two candidate Services with one selector reach the pod by one path, listed once
+        reach_entries.append((i, entry, steps))
     api: list[tuple[Capability, list[Step]]] = []
-    mount = _token(index.no_automount, w, spec, site)
+    mount = _token(index.no_automount, w, spec, site, inv.legacy_accounts)
     if mount is not None:
         sa, evidence = mount.service_account, mount.evidence
         key = (_ns(w), sa)
         if key not in sa_caps:
-            sa_caps[key] = _api_capabilities(inv, _grants(inv, *key))
+            sa_caps[key] = _api_capabilities(inv, _grants(inv, *key), account=key)
         sa_ref = f"ServiceAccount/{key[0]}/{sa}"
         for cap in sa_caps[key]:
             # The scope of the GRANT, not the account's namespace: a RoleBinding in `other` gives rights in `other`,
@@ -1505,8 +2175,22 @@ def workload_reach(inv: Inventory) -> dict[str, Reach]:
     sa_caps: dict[tuple[str, str], list[Capability]] = {}
     out: dict[str, Reach] = {}
     for site in sites:
-        out[site.ref] = _reach(inv, site, index, sa_caps)
+        r = _reach(inv, site, index, sa_caps)
+        # Two different objects of one name (or two pod specs under one reference): keep the worse, never the last
+        # in the canonical order -- that kept a benign Deployment and dropped the privileged one of the same name
+        # from the threat model (G273). Which one the cluster runs is not known; the scan names the duplicate.
+        if site.ref not in out or _severity(r) > _severity(out[site.ref]):
+            out[site.ref] = r
     return out
+
+
+def _severity(r: Reach) -> tuple[int, int, int, int]:
+    return (
+        max((c.weight for c in r.node), default=0),
+        max((c.weight for c, _ in r.api), default=0),
+        len(r.node) + len(r.api),
+        len(r.entries),
+    )
 
 
 def reach_of(inv: Inventory, obj: dict[str, Any]) -> list[tuple[_Site, Reach]]:
@@ -1526,10 +2210,11 @@ def grants_of(inv: Inventory, namespace: str, service_account: str) -> tuple[lis
     return _grants(inv, namespace, service_account, gaps), gaps
 
 
-def unclassified_of(inv: Inventory, grants: list[Grant]) -> list[Grant]:
-    """The grants that matched no capability this scan ranks and are not known to be harmless (G273)."""
-    out: list[Grant] = []
-    _api_capabilities(inv, grants, out)
+def unclassified_of(inv: Inventory, grants: list[Grant], account: tuple[str, str] | None = None) -> list[Unclassified]:
+    """The (resource, verb) pairs of the grants that no capability this scan ranks explains and no named harmless
+    entry covers, rule by rule (G273)."""
+    out: list[Unclassified] = []
+    _api_capabilities(inv, grants, out, account)
     return out
 
 
@@ -1589,7 +2274,11 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         # and four pod specs in the paths (G229).
         "workloads": len({id(site.obj) for site in sites}),
         "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
-        "notRead": sorted(set(inv.not_read))[:50],
+        # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
+        # Service is not in the input: each is something the paths above could not account for (G273).
+        "notRead": sorted(set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)})[:50],
+        # Resource types the cluster answered it does not serve: an answer, not a gap (G273, N2).
+        "notServed": sorted(set(inv.not_served)),
         "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
@@ -1602,18 +2291,44 @@ def scan_manifests(text: str, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
     return scan(Inventory.from_documents(d.data for d in docs), top=top)
 
 
+def not_served(resource: str, message: str) -> bool:
+    """True only when a failed list says the cluster does not serve the resource type, in the exact words the two
+    backends write: kubectl's "the server doesn't have a resource type" (recognised by `operators._not_served`, so
+    the two readers converge), or the in-cluster backend's "Not found" for this resource's own list path. Anything
+    else -- forbidden, a timeout, an auth plugin's "not found", a proxy's 404 -- is a read that failed, which stays
+    not determined (G273)."""
+    from kube_noob.debug.cluster import ALLOWED_RESOURCES
+    from kube_noob.operators import _not_served
+
+    if "forbidden" in message.lower():
+        return False
+    if _not_served(resource, message):
+        return True
+    rd = ALLOWED_RESOURCES.get(resource)
+    if rd is None:
+        return False
+    base = "/api/v1" if rd.group_version == "v1" else f"/apis/{rd.group_version}"
+    ns = r"(?:/namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?" if rd.namespaced else ""
+    return re.fullmatch(f"Not found: GET {re.escape(base)}{ns}/{re.escape(rd.plural)}", message.strip()) is not None
+
+
 def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     """Read the inventory from the cluster through the read-only backend: never Secrets (not in its allowlist)."""
     from kube_noob.errors import KubeNoobError
 
-    inv = Inventory()
+    inv = Inventory(live=True)
     for resource, kind in LIVE_RESOURCES.items():
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:
             try:
                 data = backend.get(resource, namespace=ns)
-            except KubeNoobError as exc:  # forbidden or not served (no Routes or SCCs on Kubernetes)
-                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
+            except KubeNoobError as exc:
+                where = f"{resource}{' in ' + ns if ns else ''}"
+                if not_served(resource, str(exc)):
+                    # No Routes on vanilla Kubernetes, no SCCs, no Istio: the cluster's answer, not a failed read.
+                    inv.not_served.append(f"{where}: not served by this cluster")
+                    break
+                inv.not_read.append(f"{where}: {str(exc)[:160]}")  # forbidden, a timeout: not determined
                 continue
             items = data.get("items") if isinstance(data, dict) else None
             if not isinstance(items, list):

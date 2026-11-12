@@ -55,7 +55,7 @@ I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on
 outputs validated against the vendored OASIS schema. E2 (installed-operator inventory) shipped the same day:
 `operators inventory` over manifests, a must-gather or the cluster, which unblocks E1, R5 and the upgrade pre-mortem.
 
-V3 (blast radius) shipped on 2026-11-11: `posture reach` anchors on one workload, `--format json|yaml` is a capped,
+V3 (blast radius) shipped on 2026-11-11: `posture reach` anchors on the one workload object named, `--format json|yaml` is a capped,
 schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it, and `posture_reach` /
 `cluster_posture_reach` serve it over MCP (G273).
 

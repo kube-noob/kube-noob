@@ -93,7 +93,7 @@ _ALIASES = {
     "isvc": "InferenceService",
 }
 _PLURAL = {kind: plural for plural, kind in ap.LIVE_RESOURCES.items()}
-_EXPOSURE_READS = ("services", "routes", "ingresses")
+_EXPOSURE_READS = ("services", "routes", "ingresses", "httproutes", "virtualservices")
 
 _EVIDENCE = {
     "type": "object",
@@ -225,6 +225,8 @@ SCHEMA: dict[str, Any] = {
                         "nodesWithheld",
                         "edgesWithheld",
                         "notDeterminedWithheld",
+                        "legsWithheld",
+                        "resolvedWithheld",
                         "stringsClipped",
                         "maxNodes",
                         "maxEdges",
@@ -234,6 +236,8 @@ SCHEMA: dict[str, Any] = {
                         "nodesWithheld": {"type": "integer", "minimum": 0},
                         "edgesWithheld": {"type": "integer", "minimum": 0},
                         "notDeterminedWithheld": {"type": "integer", "minimum": 0},
+                        "legsWithheld": {"type": "integer", "minimum": 0},
+                        "resolvedWithheld": {"type": "integer", "minimum": 0},
                         "stringsClipped": {"type": "integer", "minimum": 0},
                         "maxNodes": {"type": "integer", "minimum": 1},
                         "maxEdges": {"type": "integer", "minimum": 1},
@@ -254,8 +258,9 @@ SCHEMA: dict[str, Any] = {
 LIMITATIONS: tuple[str, ...] = (
     *ap.STANDING_LIMITATIONS,
     "hostPort is not a node escape: it opens the pod on the node's network, which is an exposure.",
-    "Only the escalation rights the Kubernetes RBAC good-practices page names are ranked; any other bound rule "
-    "that is not a plain read is reported as not classified.",
+    "Only the escalation rights the Kubernetes RBAC good-practices page names are ranked. A short named list is "
+    "known to grant nothing ranked (self and access reviews, token reviews, leases, events, status writes); any "
+    "other bound resource and verb that is not a plain read is reported as not classified.",
 )
 _FILE_INPUT = (
     "File input: a set of files cannot show the bindings, Services, Routes or Ingresses it leaves out, so "
@@ -379,16 +384,11 @@ def _resolve(
         cur = owner
         chain.append(ap.object_ref(cur))
         top = cur
-    if kind == "Pod":
-        # The Pod is what runs: an admission webhook can add a container, a person can edit it, a stale ReplicaSet
-        # can differ from its Deployment. Its own spec is scored; the owners are context (G273).
-        return obj, m["component"] or "", chain, top, ambiguous
-    if ambiguous:
-        raise ReachError(
-            f"{ambiguous}; which one {ap.object_ref(obj)} belongs to, and so which spec runs, is not known"
-        )
-    # Any other owned object (a ReplicaSet) is a template: the scan scores its owner, and so does this.
-    return cur, m["component"] or "", chain, None, ""
+    # The object named is what is scored, whatever its kind: a Pod is what runs (an admission webhook can add a
+    # container, a person can edit it), and an old ReplicaSet or a Job a CronJob made can differ from the template
+    # that owns it -- answering with the owner's spec missed a privileged ReplicaSet under a benign Deployment
+    # (N5). The owner chain is context; how its top differs is stated.
+    return obj, m["component"] or "", chain, top, ambiguous
 
 
 # --- the graph -----------------------------------------------------------------------------------------------------
@@ -457,10 +457,39 @@ def _readable_targets(g: _Graph, grant: ap.Grant) -> list[str]:
     return [g.node(f"secrets:namespace/{ns}", "secret", f"every Secret in namespace {ns}")]
 
 
-def _rule_text(grant: ap.Grant) -> str:
-    verbs = ",".join(sorted(ap.strs(grant.rule.get("verbs")))) or "-"
-    res = ",".join(sorted(ap.strs(grant.rule.get("resources")) | ap.strs(grant.rule.get("nonResourceURLs")))) or "-"
-    return f"{grant.role_ref} {grant.rule_at} ({verbs} on {res})"
+def _unreadable_spec(spec: dict[str, Any]) -> list[str]:
+    """The pod-spec fields the node leg reads that are not the shape the API requires: `containers` as a mapping
+    read as no containers, and the leg said `none` (found rerunning the reviewer's mal.py, G273)."""
+    out = []
+    for key in ("containers", "initContainers", "ephemeralContainers", "volumes"):
+        v = spec.get(key)
+        if v is not None and (not isinstance(v, list) or not all(isinstance(x, dict) for x in v)):
+            out.append(f"spec.{key}")
+    for key in ("securityContext",):
+        v = spec.get(key)
+        if v is not None and not isinstance(v, dict):
+            out.append(f"spec.{key}")
+    for key in ("containers", "initContainers", "ephemeralContainers"):
+        for i, c in enumerate(spec.get(key) or [] if isinstance(spec.get(key), list) else []):
+            if (
+                isinstance(c, dict)
+                and c.get("securityContext") is not None
+                and not isinstance(c["securityContext"], dict)
+            ):
+                out.append(f"spec.{key}[{i}].securityContext")
+    return out[:10]
+
+
+def _host_network(spec: dict[str, Any]) -> list[str]:
+    """`hostNetwork` and each container's `hostPort`, as the exposure leg names them (N3)."""
+    out = ["hostNetwork"] if spec.get("hostNetwork") is True else []
+    for key in ("initContainers", "containers", "ephemeralContainers"):
+        for c in spec.get(key) or []:
+            for p in (c.get("ports") or []) if isinstance(c, dict) else []:
+                port = p.get("hostPort") if isinstance(p, dict) else None
+                if isinstance(port, int) and not isinstance(port, bool) and port > 0:
+                    out.append(f"hostPort {port}")
+    return list(dict.fromkeys(out))[:20]
 
 
 class _Site:
@@ -489,13 +518,34 @@ def _site_graph(
 
     # exposure: how an attacker arrives
     refused = _failed_reads(inv, *_EXPOSURE_READS)
+    # Fronts that name a Service of this namespace the input does not carry (N4), and routing objects of a kind
+    # this scan does not model (N3): either may put the pod on the network, so neither is "none".
+    dangling = [line for ns, line in ap.dangling(inv) if ns == r.namespace]
+    unmodelled = sorted({ref for ref in inv.unmodelled if ref.split("/")[1:2] == [r.namespace]})
+    on_host = _host_network(site.spec)
     if r.entries:
         best = sorted(r.entries, key=lambda e: (-e[1].weight, e[0]))[0][1]
         out.leg("exposure", "reached", f"{best.exposure} ({len(r.entries)} exposure(s) in the input)")
-    elif refused:
+    elif on_host:
+        # hostPort and hostNetwork put the pod on the node's own addresses: reachable by whatever reaches the node,
+        # which Pod Security Baseline restricts for that reason
+        # (https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline).
+        out.leg("exposure", "reached", f"the node's network: {', '.join(on_host)}")
+    elif refused or dangling or unmodelled:
         for note in refused:
             g.undetermined(w, "exposure", note.split(":")[0], f"{note}: exposures through it are not known", r.object)
-        out.leg("exposure", "not determined", "; ".join(refused))
+        for line in dangling:
+            g.undetermined(w, "exposure", line.split(" ")[0], f"{line}: exposure through it is not known", r.object)
+        for ref in unmodelled:
+            g.undetermined(
+                w,
+                "exposure",
+                ref,
+                f"{ref} is a routing object kube-noob does not read: exposure through it is not known",
+                ref,
+            )
+        reasons = [*refused, *dangling, *(f"{ref} is a routing object kube-noob does not read" for ref in unmodelled)]
+        out.leg("exposure", "not determined", "; ".join(reasons))
     elif r.embedded:
         out.leg(
             "exposure",
@@ -517,10 +567,17 @@ def _site_graph(
         c = g.node(f"capability:node:{cap.name}", "capability", _cap_label(cap), scope="node", weight=cap.weight)
         g.edge(w, "escapes through", c, r.object, cap.at or None, cap.evidence)
         g.edge(c, "reaches", _scope_node(g, "node"), r.object, cap.at or None, cap.evidence)
+    unreadable = _unreadable_spec(site.spec)
+    for field_name in unreadable:
+        g.undetermined(
+            w, "node", field_name, f"{field_name} is not the shape the API requires, so it was not read", r.object
+        )
     out.leg(
         "node",
-        "reached" if r.node else "none",
-        "; ".join(sorted({c.evidence for c in r.node})) if r.node else f"none of: {ap.NODE_CHECKS}",
+        "reached" if r.node else ("not determined" if unreadable else "none"),
+        "; ".join(sorted({c.evidence for c in r.node}))
+        if r.node
+        else (f"not read: {', '.join(unreadable)}" if unreadable else f"none of: {ap.NODE_CHECKS}"),
     )
 
     spec = site.spec
@@ -540,13 +597,23 @@ def _site_graph(
         out.leg("secrets", "none", "no token, so no Secrets reachable through it")
         return out
 
+    # A mounted token Secret can belong to another account than the pod's own (N8): its rights are the ones held.
+    sa_name = mount.service_account
+    sa_ref = f"ServiceAccount/{r.namespace}/{sa_name}"
     sa = g.node(f"sa:{r.namespace}/{sa_name}", "serviceaccount", sa_ref)
     g.edge(w, "uses token of", sa, r.object, mount.at, mount.evidence)
     mount_open = False
+    if mount.unknown:
+        g.undetermined(w, "token", f"{sa_ref}#secret-volume", mount.unknown, r.object)
+        mount_open = True
     accounts = [
         o for o in inv.of("ServiceAccount") if ap.object_namespace(o) == r.namespace and ap.object_name(o) == sa_name
     ]
-    automount_matters = spec.get("automountServiceAccountToken") is not True and "projected" not in mount.at
+    automount_matters = (
+        spec.get("automountServiceAccountToken") is not True
+        and "projected" not in mount.at
+        and ".secret." not in mount.at
+    )
     if not accounts and automount_matters:
         refused_sa = _failed_reads(inv, "serviceaccounts")
         reason = (
@@ -580,15 +647,19 @@ def _site_graph(
     out.leg("token", "not determined" if mount_open else "reached", f"{sa_ref}: {mount.evidence}")
 
     grants, gaps = ap.grants_of(inv, r.namespace, sa_name)
-    unclassified = ap.unclassified_of(inv, grants)
+    unclassified = ap.unclassified_of(inv, grants, (r.namespace, sa_name))
     bindings: set[str] = set()
     for gap in gaps:
         b = g.node(f"binding:{gap.binding}", "binding", gap.binding)
         bindings.add(b)
         g.edge(sa, "bound by", b, gap.binding, gap.subject_at, gap.subject)
         g.undetermined(b, "rbac", gap.role_ref, gap.reason, gap.role_ref)
+    # An RBAC-shaped object the input carries and this scan could not read -- a List whose items are not a list,
+    # a binding of an API group it does not know -- may name the account. Not read is not "none" (N6).
+    for i, note in enumerate(sorted(set(inv.rbac_unread))[:MAX_NAMED]):
+        g.undetermined(sa, "rbac", f"rbac-unread-{i}", f"{note}: grants in it are not known", sa_ref)
     if unclassified:
-        named = "; ".join(_rule_text(x) for x in unclassified[:MAX_NAMED])
+        named = "; ".join(x.text() for x in unclassified[:MAX_NAMED])
         more = f" and {len(unclassified) - MAX_NAMED} more" if len(unclassified) > MAX_NAMED else ""
         g.undetermined(
             sa,
@@ -602,6 +673,17 @@ def _site_graph(
         for resource in ("rolebindings", "clusterrolebindings", "roles", "clusterroles"):
             for note in _failed_reads(inv, resource):
                 g.undetermined(sa, "rbac", note.split(":")[0], f"{note}: grants through it are not known", sa_ref)
+        # An account that creates pods runs privileged ones if an SCC lets it; with the SCC list refused, that is
+        # not known. A cluster that does not serve SCCs (not OpenShift) answered, and nothing is open (N10).
+        if any(c.name.startswith("create or change workloads") for c, _ in r.api):
+            for note in _failed_reads(inv, "securitycontextconstraints"):
+                g.undetermined(
+                    sa,
+                    "rbac",
+                    "securitycontextconstraints",
+                    f"{note}: whether an SCC lets {sa_ref}'s pods run privileged is not known, and it can create pods",
+                    sa_ref,
+                )
         if namespaces_read:
             g.undetermined(
                 sa,
@@ -684,7 +766,7 @@ def _site_graph(
         out.leg(
             "rbac",
             "none",
-            f"bound by {', '.join(bound)}, to rules that are plain reads"
+            f"bound by {', '.join(bound)}, to rules kube-noob knows grant nothing it ranks"
             if bound
             else f"no binding read names {sa_ref} or a group it is in",
         )
@@ -713,7 +795,8 @@ def _site_graph(
 def _owner_differences(
     inv: ap.Inventory, pod: dict[str, Any], owner: dict[str, Any] | None, pod_reach: list[Any]
 ) -> list[str]:
-    """What about the Pod differs from its owner's template in a way the blast radius depends on."""
+    """What about the named object differs from its top owner's template in a way the blast radius depends on:
+    the token's account, the node escapes, the images (named, N12) and the pod labels Services select on."""
     if owner is None:
         return []
     mine = [r for _, r in pod_reach]
@@ -721,21 +804,61 @@ def _owner_differences(
     if not mine or not theirs:
         return []
     a, b = mine[0], theirs[0]
+    me, them = f"the {pod.get('kind') or 'object'}", ap.object_ref(owner)
     out = []
     sa_a = a.mount.service_account if a.mount else "(no token)"
     sa_b = b.mount.service_account if b.mount else "(no token)"
     if sa_a != sa_b:
-        out.append(f"ServiceAccount token: the Pod {sa_a}, {ap.object_ref(owner)} {sa_b}")
+        out.append(f"ServiceAccount token: {me} {sa_a}, {them} {sa_b}")
     node_a, node_b = sorted({c.name for c in a.node}), sorted({c.name for c in b.node})
     if node_a != node_b:
+        out.append(f"node escape: {me} {', '.join(node_a) or 'none'}; {them} {', '.join(node_b) or 'none'}")
+    only_a = sorted(set(a.images) - set(b.images))[:10]
+    only_b = sorted(set(b.images) - set(a.images))[:10]
+    if only_a or only_b or sorted(a.images) != sorted(b.images):
         out.append(
-            f"node escape: the Pod {', '.join(node_a) or 'none'}; {ap.object_ref(owner)} {', '.join(node_b) or 'none'}"
+            f"images: {me} runs {', '.join(only_a) or 'no image'} that {them} does not declare; {them} declares "
+            f"{', '.join(only_b) or 'no image'} that {me} does not run"
         )
-    if sorted(a.images) != sorted(b.images):
-        out.append(
-            f"containers: the Pod runs {len(a.images)} image(s), {ap.object_ref(owner)} declares {len(b.images)}"
-        )
+    labels_a = _pod_labels(pod)
+    labels_b = _pod_labels(owner)
+    if labels_a is not None and labels_b is not None and labels_a != labels_b:
+        changed = sorted(k for k in set(labels_a) | set(labels_b) if labels_a.get(k) != labels_b.get(k))[:10]
+        pairs = [f"{k}={labels_a.get(k, '(unset)')} vs {labels_b.get(k, '(unset)')}" for k in changed]
+        out.append(f"labels: {', '.join(pairs)} ({me} vs {them}); the Services that select it may differ")
     return out
+
+
+def _pod_labels(obj: dict[str, Any]) -> dict[str, str] | None:
+    """The labels its pods carry: a Pod's own, or the pod template's. None when it is not one of those shapes."""
+    if obj.get("kind") == "Pod":
+        raw = ap.get_path(obj, "metadata", "labels")
+    else:
+        raw = ap.get_path(obj, "spec", "template", "metadata", "labels")
+        if raw is None and ap.get_path(obj, "spec", "jobTemplate") is not None:
+            raw = ap.get_path(obj, "spec", "jobTemplate", "spec", "template", "metadata", "labels")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        return None
+    return {str(k): str(v) for k, v in raw.items() if str(k) not in _CONTROLLER_LABELS}
+
+
+#: Labels a controller adds to the pods it creates, so a Pod always differs from its owner's template in them
+#: (https://kubernetes.io/docs/reference/labels-annotations-taints/): not a difference worth stating.
+_CONTROLLER_LABELS = frozenset(
+    {
+        "pod-template-hash",
+        "controller-revision-hash",
+        "statefulset.kubernetes.io/pod-name",
+        "apps.kubernetes.io/pod-index",
+        "controller-uid",
+        "job-name",
+        "batch.kubernetes.io/controller-uid",
+        "batch.kubernetes.io/job-name",
+        "batch.kubernetes.io/job-completion-index",
+    }
+)
 
 
 def _units(g: _Graph) -> list[list[str]]:
@@ -752,7 +875,8 @@ def _units(g: _Graph) -> list[list[str]]:
     units: list[list[str]] = [
         [n["id"]] for t in ("workload", "serviceaccount") for n in sorted(by_type.get(t, []), key=lambda n: n["id"])
     ]
-    caps = sorted(by_type.get("capability", []), key=lambda n: (-int(n.get("weight", 0)), n["id"]))
+    # The same order as the summary's "top:", so the capability the summary names is the first one kept.
+    caps = sorted(by_type.get("capability", []), key=lambda n: (-int(n.get("weight", 0)), n["label"], n["id"]))
     node_caps = [c for c in caps if c.get("scope") == "node"]
     api_caps = [c for c in caps if c.get("scope") != "node"]
 
@@ -799,18 +923,18 @@ def _bounded(g: _Graph, max_nodes: int, max_edges: int) -> tuple[list[dict[str, 
     return nodes, edges, len(g.nodes) - len(nodes), len(g.edges) - len(edges)
 
 
-def _clip(value: Any, counter: list[int]) -> Any:
-    """Every string in the document cut to MAX_STRING, keeping a hash of the whole so two long strings stay apart."""
+def _clip(value: Any, counter: list[int], limit: int = MAX_STRING) -> Any:
+    """Every string in the document cut to `limit`, keeping a hash of the whole so two long strings stay apart."""
     if isinstance(value, str):
-        if len(value) <= MAX_STRING:
+        if len(value) <= limit:
             return value
         counter[0] += 1
         digest = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:12]
-        return f"{value[: MAX_STRING - 24]}...[sha256:{digest}]"
+        return f"{value[: max(0, limit - 24)]}...[sha256:{digest}]"
     if isinstance(value, dict):
-        return {k: _clip(v, counter) for k, v in value.items()}
+        return {k: _clip(v, counter, limit) for k, v in value.items()}
     if isinstance(value, list):
-        return [_clip(v, counter) for v in value]
+        return [_clip(v, counter, limit) for v in value]
     return value
 
 
@@ -844,7 +968,7 @@ def reach(
     g = _Graph()
     sites = [_site_graph(g, inv, site, r, mode=mode, namespaces_read=list(namespaces_read or [])) for site, r in pairs]
     differs = _owner_differences(inv, obj, owner, pairs) + (
-        [f"{ambiguous}, so the owner chain stops below them and the Pod is not compared with either"]
+        [f"{ambiguous}, so the owner chain stops below them and the {obj.get('kind')} is not compared with either"]
         if ambiguous
         else []
     )
@@ -883,14 +1007,29 @@ def reach(
         else (f"exposed: {exposure[0]['kind']}" if exposure else "not reached by any exposure in the input")
     )
     open_note = f"; {len(open_legs)} leg(s) not determined" if open_legs else ""
-    differ_note = f"; the Pod differs from its owner ({len(differs)} way(s))" if differs else ""
+    kind_named = str(obj.get("kind") or "object")
+    differ_note = f"; the {kind_named} differs from its owner ({len(differs)} way(s))" if differs else ""
     completeness = {"files": _FILE_INPUT, "whole": _WHOLE_BUNDLE, "live": _LIVE}[mode]
     limitations = [completeness, *LIMITATIONS]
     if differs:
-        limitations.insert(1, "The Pod is scored on its own spec; it differs from its owner: " + "; ".join(differs))
+        limitations.insert(
+            1, f"The {kind_named} is scored on its own spec; it differs from its owner: " + "; ".join(differs)
+        )
 
-    def build(n_cap: int, e_cap: int, list_cap: int) -> dict[str, Any]:
+    resolved_all = [r.ref for _, r in pairs]
+    worst = {"not determined": 0, "reached": 1, "none": 2}
+
+    def build(n_cap: int, e_cap: int, list_cap: int, str_cap: int = MAX_STRING) -> dict[str, Any]:
         nodes, edges, nodes_cut, edges_cut = _bounded(g, n_cap, e_cap)
+        # Every list is bounded, not only the graph (N7): the open legs first, then the reached ones, so what is cut
+        # is never an unknown while a `none` is kept.
+        legs_cap = max(1, list_cap * len(LEGS))
+        legs_shown = (
+            legs
+            if len(legs) <= legs_cap
+            else sorted(legs, key=lambda x: (worst[x["status"]], x["workload"], LEGS.index(x["leg"])))[:legs_cap]
+        )
+        resolved_shown = resolved_all[:list_cap]
         kept = {n["id"] for n in nodes}
         sources = {e["to"]: e["from"] for e in g.edges.values() if e["kind"] == "not determined"}
         nd = [
@@ -910,14 +1049,14 @@ def reach(
             "anchor": {
                 "query": workload,
                 "object": anchor,
-                "resolved": [r.ref for _, r in pairs],
+                "resolved": resolved_shown,
                 "via": via,
                 "ownerDiffers": differs,
             },
             "summary": "",
             "complete": False,
             "completeness": completeness,
-            "legs": legs,
+            "legs": legs_shown,
             "nodes": nodes,
             "edges": edges,
             "notDetermined": nd_shown,
@@ -930,13 +1069,16 @@ def reach(
             "limitations": limitations,
         }
         clipped = [0]
-        doc = _clip(doc, clipped)
+        doc = _clip(doc, clipped, str_cap)
         nd_cut = len(nd) - len(nd_shown)
-        if nodes_cut or edges_cut or nd_cut or clipped[0]:
+        legs_cut, resolved_cut = len(legs) - len(legs_shown), len(resolved_all) - len(resolved_shown)
+        if nodes_cut or edges_cut or nd_cut or clipped[0] or legs_cut or resolved_cut:
             doc["truncated"] = {
                 "nodesWithheld": nodes_cut,
                 "edgesWithheld": edges_cut,
                 "notDeterminedWithheld": nd_cut,
+                "legsWithheld": legs_cut,
+                "resolvedWithheld": resolved_cut,
                 "stringsClipped": clipped[0],
                 "maxNodes": n_cap,
                 "maxEdges": e_cap,
@@ -945,20 +1087,28 @@ def reach(
         t = doc["truncated"]
         cut = (
             f"; truncated: {t['nodesWithheld']} node(s), {t['edgesWithheld']} edge(s), "
-            f"{t['notDeterminedWithheld']} not-determined reason(s) withheld, {t['stringsClipped']} string(s) clipped"
+            f"{t['notDeterminedWithheld']} not-determined reason(s), {t['legsWithheld']} leg(s) withheld, "
+            f"{t['stringsClipped']} string(s) clipped"
             if t
             else ""
         )
-        doc["summary"] = f"{anchor}: if compromised, {head}; {reached_from}{open_note}{differ_note}{cut}"
+        summary = f"{anchor}: if compromised, {head}; {reached_from}{open_note}{differ_note}{cut}"
+        doc["summary"] = _clip(summary, [0], max(str_cap, 400))
         doc["complete"] = mode != "files" and not open_legs and not undetermined_all and t is None
         return doc
 
-    n_cap, e_cap, list_cap = max_nodes, max_edges, max(max_nodes, 50)
+    n_cap, e_cap, list_cap, str_cap = max_nodes, max_edges, max(max_nodes, 50), MAX_STRING
     doc = build(n_cap, e_cap, list_cap)
-    # Bounded in bytes as well as in count: halve until it fits, and the document says what went.
-    while len(json.dumps(doc)) > max_bytes and (n_cap > 4 or list_cap > 4):
-        n_cap, e_cap, list_cap = max(4, n_cap // 2), max(4, e_cap // 2), max(4, list_cap // 2)
-        doc = build(n_cap, e_cap, list_cap)
+    # Bounded in bytes as well as in count: halve the graph and every list until it fits, then the strings, and the
+    # document says what went. The floor (one of each, 80-character strings) fits the smallest cap allowed (N7).
+    while len(json.dumps(doc)) > max_bytes and (n_cap > 1 or e_cap > 1 or list_cap > 1 or str_cap > 80):
+        if n_cap > 1 or e_cap > 1 or list_cap > 1:
+            n_cap, e_cap, list_cap = max(1, n_cap // 2), max(1, e_cap // 2), max(1, list_cap // 2)
+        else:
+            str_cap = max(80, str_cap // 2)
+        doc = build(n_cap, e_cap, list_cap, str_cap)
+    if len(json.dumps(doc)) > max_bytes:  # pragma: no cover -- the floor is sized to fit the smallest cap
+        raise ReachError(f"the blast-radius document cannot be made to fit {max_bytes} bytes")
     return doc
 
 

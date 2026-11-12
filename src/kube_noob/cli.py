@@ -2200,8 +2200,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     if a.format == "mermaid" and (a.cmd, getattr(a, "posture_cmd", None)) != ("posture", "reach"):
+        sub = getattr(a, f"{a.cmd}_cmd", None)
+        command = f"{a.cmd} {sub}" if isinstance(sub, str) and sub else a.cmd
         print(
-            f"error: --format mermaid is for `kube-noob posture reach`; `{a.cmd}` has no graph to draw",
+            f"error: --format mermaid is for `kube-noob posture reach`; `{command}` has no graph to draw",
             file=sys.stderr,
         )
         return 2
@@ -3377,6 +3379,8 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
             _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
+        if out.get("notServed"):
+            _tprint("not served by this cluster: " + "; ".join(flat(n) for n in out["notServed"][:10]))
         for note in (out.get("assumptions") or [])[:10]:
             _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:
