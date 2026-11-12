@@ -122,14 +122,24 @@ def test_every_command_the_documents_name_exists() -> None:
                     part = raw.strip().removeprefix("$ ")
                     if not part.startswith("kube-noob "):
                         continue  # `kube-noob` as an argument to another program is not an invocation
-                    words = [w for w in part.split()[1:] if not w.startswith("-")][:4]
+                    toks = part.split()[1:]
+                    # The global options that take a value (`--config X`, `--format json`) come off first, so the
+                    # first word left is the subcommand -- `any` word being one let `kube-noob net verify` pass the
+                    # day `verify` became a command (G280).
+                    while toks[:1] and toks[0] in {"--config", "--format"}:
+                        toks = toks[2:]
+                    while toks[:1] and toks[0].startswith("-"):
+                        toks = toks[1:]
+                    words = toks[:1]
                     if not words:
                         continue  # `kube-noob --version` is a real invocation with no subcommand in it
                     if not any(w in subs for w in words):
                         bad.append(f"{path.name}: {part[:70]}")
     assert bad == [], f"documented invocations whose command does not exist: {bad}"
-    # Proof the check can fail: the shape it was written for. `net` was advertised and never existed.
-    assert "net" not in subs and "verify" not in subs
+    # Proof the check can fail: the shape it was written for. `net` was advertised and never existed. (`verify`
+    # was the second example until G280 made it a real command; `net verify` still names no command, since the
+    # check reads the first word.)
+    assert "net" not in subs
 
 
 def test_the_free_list_names_nothing_that_is_not_built() -> None:
