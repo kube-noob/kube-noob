@@ -768,12 +768,35 @@ TEXT_RENDERED = frozenset(
         "memoryNotes",
         "policyDenials",
         "approach",
+        "inputTruncated",
+        "untrusted",
+        "injectionSignals",
+        "injectionSignalsTruncated",
     }
 )
 TEXT_OMITTED = {
-    "knowledgeAsOf": "added by the MCP and REST surfaces, not by the CLI",
+    "knowledgeAsOf": "added by the MCP and REST surfaces, not by the CLI; `kube-noob doctor` prints the dates",
 }
+# One level down: every field of a diagnosis, decided the same way (rendered, or counted with where to see it).
+DIAGNOSIS_RENDERED = frozenset(
+    {
+        "id",
+        "title",
+        "confidence",
+        "evidence",
+        "likelyCause",
+        "likelyFixes",
+        "rootCauses",
+        "readOnlyNextSteps",
+        "diagnosticCommands",
+        "proposedChanges",
+        "relatedRules",
+        "knowledge",
+    }
+)
+DIAGNOSIS_OMITTED: dict[str, str] = {}
 MAX_TEXT_CHANGES = 3  # proposed changes shown for the top diagnosis; --format yaml has every one
+MAX_TEXT_EVIDENCE = 3  # evidence lines shown for the top diagnosis; the rest are counted
 
 
 def _text_step(s: dict[str, Any], indent: str) -> list[str]:
@@ -783,11 +806,23 @@ def _text_step(s: dict[str, Any], indent: str) -> list[str]:
 
 def _text_diagnosis(d: dict[str, Any], others: list[dict[str, Any]]) -> list[str]:
     lines = [f"{d['id']}  {d['title']}  (confidence {d['confidence']})"]
+    evidence = d.get("evidence") or []
+    if evidence:
+        lines.append("  evidence: " + "; ".join(str(e) for e in evidence[:MAX_TEXT_EVIDENCE]))
+        if len(evidence) > MAX_TEXT_EVIDENCE:
+            lines[-1] += f" (+{len(evidence) - MAX_TEXT_EVIDENCE} more: --format yaml)"
+    causes = list(d.get("rootCauses") or [])
     if d.get("likelyCause"):
+        # The input pointed at this cause; the playbook's others are still possible and are counted, not dropped.
         lines.append(f"  likely cause: {d['likelyCause']}")
-    elif d.get("rootCauses"):
-        more = len(d["rootCauses"]) - 1
-        lines.append(f"  likely cause: {d['rootCauses'][0]}" + (f" ({more} other causes)" if more else ""))
+        rest = [c for c in causes if c != d["likelyCause"]]
+        if rest:
+            lines.append(f"  other possible causes: {len(rest)} (--format yaml lists them)")
+    elif causes:
+        # Nothing in the input singled one out: the first cause is the playbook's order, not a finding.
+        lines.append(f"  possible causes ({len(causes)}, not narrowed by the input): {causes[0]}")
+        if len(causes) > 1:
+            lines.append(f"    +{len(causes) - 1} more: --format yaml lists them")
     n = 0
     if d.get("readOnlyNextSteps"):
         n += 1
@@ -809,6 +844,8 @@ def _text_diagnosis(d: dict[str, Any], others: list[dict[str, Any]]) -> list[str
             lines.append(f"     ({total} proposed changes in all: --format yaml lists every one)")
     if d.get("relatedRules"):
         lines.append(f"  caught before deploy by: {', '.join(d['relatedRules'])} (kube-noob audit)")
+    if d.get("knowledge"):
+        lines.append(f"  docs: {', '.join(d['knowledge'])} (kube-noob search)")
     if others:
         also = "; ".join(f"{x['id']} {x['title']} ({x['confidence']})" for x in others)
         lines.append(f"also possible: {also}. Their steps: --format yaml")
@@ -886,7 +923,18 @@ def _text_reported(result: dict[str, Any]) -> list[str]:
 
 
 def _text_caveats(result: dict[str, Any]) -> list[str]:
-    tail = [f"note: {n}" for n in result.get("notes") or []]
+    tail: list[str] = []
+    cut = result.get("inputTruncated") or {}
+    if cut:
+        tail.append(f"input cut: {cut['why']}")
+    if result.get("untrusted"):
+        kinds = ", ".join(sorted({str(x.get("kind")) for x in result.get("injectionSignals") or []}))
+        more = result.get("injectionSignalsTruncated")
+        tail.append(
+            f"untrusted: text from the input was neutralised ({kinds or 'see injectionSignals'})"
+            + (f", {more} more signals not listed" if more else "")
+        )
+    tail += [f"note: {n}" for n in result.get("notes") or []]
     tail += [f"exit code {code}: {meaning}" for code, meaning in (result.get("exitCodes") or {}).items()]
     payload = result.get("input") or {}
     if payload:
@@ -895,6 +943,10 @@ def _text_caveats(result: dict[str, Any]) -> list[str]:
         version = f"; version {payload['version']}{source}" if payload.get("version") else "; no version in it"
         tail.append(f"input: {payload.get('kind')}, {payload.get('alerts')} alerts, {payload.get('firing')} firing")
         tail[-1] += f" ({names}){version}"
+        if payload.get("payloadVersion") and payload.get("versionFrom") == "argument":
+            tail.append(f"the payload says {payload['payloadVersion']} (from the {payload.get('payloadVersionFrom')})")
+        if payload.get("versionConflict"):
+            tail.append(f"version conflict: {payload['versionConflict']}")
     # An error template's name is a hash that means nothing to a reader; its kind and the line it came from do.
     shown = [f"{x['kind']} {x['name']}" for x in result.get("signals") or [] if x["kind"] != "error_template"]
     tail += ["signals: " + ", ".join(shown)] if shown else []
@@ -915,11 +967,8 @@ def render_text(result: dict[str, Any]) -> str:
     for p in result.get("policyDenials") or []:
         lines += _text_denial(p)
     lines += _text_reported(result) + _text_caveats(result)
-    if diagnoses or result.get("cephHealth") or result.get("policyDenials"):
-        lines += [
-            "",
-            "Read-only steps first; (needs approval) marks what executes in a container or changes the cluster.",
-        ]
+    if result.get("approach") and (diagnoses or result.get("cephHealth") or result.get("policyDenials")):
+        lines += ["", f"{result['approach']} Here they are marked (needs approval)."]
     while lines and not lines[0]:
         lines.pop(0)
     # Every element is one line: a newline or an invisible character inside a value from the input (a memory

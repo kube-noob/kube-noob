@@ -12,6 +12,9 @@ kube-noob examples copy examples
 kube-noob examples list
 ```
 
+Running the copy again leaves identical files alone; a file you changed is refused unless you pass `--force`. On
+0.9.2 or older, which have no `examples copy`, the README shows a one-line fallback that uses kube-noob's own Python.
+
 ## No AI inside: three ways to use it
 
 kube-noob is the rulebook, not the chatbot. Its audit rules, playbooks, docs index and graders give the same answer
@@ -253,7 +256,10 @@ kube-noob search 'CVE-2023-44487 openshift haproxy router'
 notes: known issues, and the issues each update fixed. You get the issue link, whether a fix exists and in which
 version, the workaround, and the release-notes file it came from. Pass your version and issues already fixed there are
 left out. A version outside the index (4.16, or a release newer than the snapshot) is answered `versionCoverage:
-not-determined` with the reason, in the text view too: no match there is not "no known issue". `diagnose`,
+not-determined` with the reason, in the text view too: no match there is not "no known issue". So is a
+pre-release or nightly build, an OKD build (the index is OpenShift Container Platform release notes, which do not say
+which OKD build has a fix), and a z-stream newer than the newest one the notes reach (`indexedThrough`). Matches are
+still narrowed by the version's minor and z-stream, and a fix in another release is stated without update advice. `diagnose`,
 `insight`, `build diagnose`, the incident watch, the must-gather report and the gate carry the same statement as
 `knownIssuesCoverage`. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
 A match needs several rare words in common, so everyday errors such as OOMKilled never pull in an unrelated bug;
@@ -565,7 +571,7 @@ kube-noob insight -f ceph-health-detail.txt --platform openshift
 name and still works; `kube-noob posture` is the attack-path scan).
 
 ```bash
-kube-noob demo posture
+kube-noob demo doctor
 helm install kube-noob deploy/helm/kube-noob --set auth.existingSecret=kube-noob-token --set config.offline=true
 kube-noob doctor
 ```

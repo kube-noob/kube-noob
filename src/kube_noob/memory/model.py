@@ -75,7 +75,7 @@ def _whole(pattern: re.Pattern[str]) -> str:
 
 def vkey(version: str) -> tuple[int, ...]:
     """Numeric parts of a version, ignoring a build suffix ("4.16.0-202410011135" -> (4, 16, 0))."""
-    return tuple(int(p) for p in re.findall(r"\d+", version.split("-", 1)[0].lstrip("v"))[:3])
+    return tuple(int(p[:9]) for p in re.findall(r"\d+", version[:200].split("-", 1)[0].lstrip("v"))[:3])
 
 
 def _prose(field: str, value: str, limit: int) -> str:

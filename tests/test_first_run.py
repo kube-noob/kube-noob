@@ -103,6 +103,7 @@ def test_the_cli_lists_copies_and_refuses_with_exit_2(tmp_path: Path, capsys: py
     assert main(["examples", "copy", str(tmp_path / "ex")]) == 0
     out = capsys.readouterr().out
     assert f"wrote {len(_bundled())} files" in out and "kube-noob policy reach" in out
+    (tmp_path / "ex" / "events-scc.txt").write_text("edited", encoding="utf-8")  # identical files are left alone
     assert main(["examples", "copy", str(tmp_path / "ex")]) == 2
     assert "--force" in capsys.readouterr().err
     assert main(["examples", "copy", str(tmp_path / "ex"), "--force"]) == 0

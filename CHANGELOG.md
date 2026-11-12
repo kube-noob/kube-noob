@@ -28,7 +28,26 @@
   in this repository already passes `--format json`). `insight` given text it does not recognise now lists what it
   recognises, from the router's own table, and a bundled sample that works, instead of only "nothing recognised".
   `demo --list` keeps its columns aligned past `must-gather`, and `demo doctor` is the new name of the demo that runs
-  `doctor` (`kube-noob posture` is the attack-path scan); `demo posture` still runs it and says so.
+  `doctor` (`kube-noob posture` is the attack-path scan); `demo posture` still runs it and says so, and its recording
+  is now `doctor.gif` (`demos/posture.tape` is gone).
+
+  A review of the above found seventeen more ways to get the same wrong answer, all fixed. A pre-release, nightly or
+  OKD version (`4.16.0-0.nightly-...`, `4.15.0-0.okd-...`) was "not narrowed" and printed nothing, so a nightly
+  must-gather printed the old "None of the findings matches a known issue"; versions are now read once, by their
+  minor and z-stream, for the statement, the matching and the gate alike, and such builds are `not-determined` (OKD
+  is never answered from OpenShift Container Platform release notes). A z-stream newer than the newest one the
+  notes reach (4.22.40 against 4.22.18) is `not-determined` with `indexedThrough`. " 4.20.0" matched nothing while
+  the statement said `determined`, and a 5,000-digit z-stream exited 4; `gate --version` is now checked. A fix in
+  another release is no longer phrased as update advice for a version the index cannot answer for. `selftest
+  --cases` scores such a case `not-determined` rather than passed. `build diagnose`, the incident headline and every
+  other text view say it, and a test finds every consumer of the index in the code. `examples copy` turns a full disk,
+  a dangling link or a control character into exit 4 or 2 with nothing left behind (it wrote a 0-byte file before),
+  leaves identical files alone so running it twice works, and quotes the directory in the commands it suggests.
+  The diagnose text view drops C1 controls and every invisible format character (`sanitize.one_line`), names causes
+  the input did not single out "possible" rather than "likely", counts the causes and evidence it does not show,
+  prints the approach and any injection flags, keeps an Alertmanager payload's own version beside a `--version`
+  that overrides it, and says when only the end of a long input was read. The README shows a one-line fallback for
+  0.9.2, which has no `examples copy`, and a test runs it against the v0.9.2 source.
 
 - **`audit --format sarif`, with the controls on the rules and the run's blind spots in the file (G269).** SARIF is a list of results, so a partial audit and a clean one differ only in length. The audit's `assumptions` (what it did not evaluate, for example because it was given part of a namespace) and its unreadable files now travel in the document as `toolExecutionNotifications`, where the JSON report already carried them and a format that replaces the report would have dropped them.
 

@@ -171,14 +171,39 @@ def _emit(obj: Any, fmt: str) -> None:
     if fmt == "json":
         print(json.dumps(obj, indent=2, default=str))
     else:
-        print(yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True), end="")
+        text = yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True)
+        # A lone surrogate from a JSON escape in the input cannot be written as UTF-8; it is replaced, not fatal.
+        print(text.encode("utf-8", "replace").decode("utf-8") if _has_surrogate(text) else text, end="")
+
+
+def _has_surrogate(text: str) -> bool:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
 
 
+def _input_cut(total: int, kept: int) -> dict[str, Any] | None:
+    """What a command says when it read only the end of its input: "No playbook matched" for a 1 MB paste was
+    an answer about its last 400,000 characters, and nothing said so (G277)."""
+    if total <= kept:
+        return None
+    return {
+        "characters": total,
+        "read": kept,
+        "why": f"the input is {total:,} characters and only the last {kept:,} were read (failures are usually at "
+        "the end), so nothing before them was diagnosed; pass the part that matters",
+    }
+
+
 def _print_insight(res: dict[str, Any]) -> None:
     _tprint("input: " + "; ".join(f"{k['kind']} ({k['evidence']})" for k in res["kinds"]))
+    if res.get("inputTruncated"):
+        _tprint(f"input cut: {res['inputTruncated']['why']}")
     if res.get("ran"):
         _tprint("ran: " + ", ".join(res["ran"]))
     from kube_noob.known_issues import coverage_line
@@ -353,7 +378,7 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
 def _print_known_issues(out: dict[str, Any]) -> None:
     from kube_noob.known_issues import coverage_line
 
-    if line := coverage_line(out.get("versionCoverage")):
+    if line := coverage_line(out.get("versionCoverage"), listed=bool(out["matches"])):
         _tprint(line)
     for m in out["matches"]:
         _tprint(f"{m['id']}  {m['status']}")
@@ -504,12 +529,23 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
+_GATE_VERSION = re.compile(r"\d{1,3}\.\d{1,3}(?:\.\d{1,5})?(?:[-+][0-9A-Za-z][0-9A-Za-z._-]{0,79})?")
+
+
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
     from kube_noob.code import builds as cb
 
     repo = Path.cwd()
+    if a.pversion is not None:
+        # Read once and refused here, like known-issues: the Action passes inputs.version through, and " 4.20.0"
+        # or a 5,000-digit z-stream used to reach the audit and the known-issue lookup unequal (G277).
+        a.pversion = a.pversion.strip()
+        if not _GATE_VERSION.fullmatch(a.pversion):
+            raise ConfigError(
+                f"--version {a.pversion[:40]!r}: expected a version such as 4.20, 4.20.8, 4.20.0-rc.1 or 1.33"
+            )
     containerfiles: list[tuple[str, str]] = []
     code_builds = []
     unknown: list[str] = []
@@ -605,7 +641,13 @@ def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
             if out["errorTemplate"]:
                 _tprint(f"error template {out['errorTemplate']['id']}: {out['errorTemplate']['text'][:200]}")
             for m in out.get("knownIssues", []):
-                _tprint(f"reported issue {m.get('id')}: {m.get('title')}")
+                _tprint(f"reported issue {m.get('id')}: {m.get('title') or m.get('summary')}")
+                if m.get("status"):
+                    _tprint(f"  {m['status']}")
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(out.get("knownIssuesCoverage"), listed=bool(out.get("knownIssues"))):
+                _tprint(ki_line)
             for m in out.get("memory", []):
                 _tprint(f"team memory {m.get('citation') or m.get('id')}: {m.get('symptom')}")
             for f in out["fix"]:
@@ -2140,6 +2182,7 @@ def build_parser() -> argparse.ArgumentParser:
         "where a command line can name them. Example: kube-noob examples copy examples",
     )
     exs_sub = exs.add_subparsers(dest="examples_cmd", required=True)
+    _patch(exs_sub, common)  # `examples list --format json` takes the common options after the subcommand too
     exs_sub.add_parser("list", help="Name each bundled example and what it is for")
     exs_copy = exs_sub.add_parser("copy", help="Write the bundled examples into DIR (created if missing)")
     exs_copy.add_argument("dir", metavar="DIR", help="where to write them, e.g. examples")
@@ -2396,6 +2439,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if len(text.strip()) < 3:
             raise ConfigError("nothing to read: pass the text in quotes, a file with -f, or pipe it in")
         found = kit.insight(tk.InsightIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion))
+        if cut := _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT):
+            found["inputTruncated"] = cut
         if a.format == "text":
             _print_insight(found)
         else:
@@ -2407,11 +2452,16 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
         if len(text.strip()) < 3:
             raise ConfigError("nothing to diagnose: pass the error text in quotes, a file with -f, or pipe it in")
+        cut = None
         if len(text) > tk.MAX_DIAGNOSE_TEXT:  # a long Alertmanager payload keeps every alert's labels and summary
-            text = alertmanager.compact(text) or text[-tk.MAX_DIAGNOSE_TEXT :]
+            compacted = alertmanager.compact(text)
+            cut = None if compacted else _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT)
+            text = compacted or text[-tk.MAX_DIAGNOSE_TEXT :]
         result = kit.diagnose(
             tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
         )
+        if cut:
+            result["inputTruncated"] = cut
         if a.format == "text":  # the family's default, as for policy explain, known-issues and insight (G277)
             from kube_noob.debug.diagnose import render_text as diagnose_text
 
@@ -2423,7 +2473,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "known-issues":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "known-issues")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
         out = kit.known_issues(tk.KnownIssuesIn(text=text, platform=a.platform, version=a.pversion, limit=a.limit))
@@ -2509,7 +2561,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "signals":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "signals")
         if len(text) > tk.MAX_SIGNAL_TEXT:
             text = alertmanager.compact(text) or text[-tk.MAX_SIGNAL_TEXT :]
         out = kit.extract_signals(tk.SignalsIn(text=text))
@@ -2908,12 +2960,14 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
-_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# C0 (but tab and newline), DEL and C1: an 8-bit CSI (\x9b) is as much a terminal escape as ESC [ (G277).
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped."""
-    print(_TERMINAL_CONTROL.sub("", text))
+    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped, and a lone
+    surrogate (from a JSON escape) becomes U+FFFD instead of failing the write."""
+    print(_TERMINAL_CONTROL.sub("", text).encode("utf-8", "replace").decode("utf-8"))
 
 
 def _print_denials(out: dict[str, Any]) -> None:
@@ -3002,7 +3056,9 @@ def _policy(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if a.policy_cmd == "explain":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "policy explain")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to explain: pass the denial in quotes, a file with -f, or pipe it in")
         out = kit.explain_denial(tk.PolicyExplainIn(text=text, platform=getattr(a, "platform", None)))
@@ -3154,19 +3210,39 @@ def _examples_cmd(a: argparse.Namespace, fmt: str) -> int:
             print(f"{r['name']:{width}}  {r['what']}")
         print("\nWrite them where a command can name them: kube-noob examples copy examples")
         return 0
-    written = examples.copy(Path(a.dir), overwrite=a.force)
+    r = examples.copy_report(Path(a.dir), overwrite=a.force)
+    written, present = [p.name for p in r["written"]], [p.name for p in r["present"]]
     if a.format != "text":
-        _emit({"directory": a.dir, "written": [p.name for p in written]}, fmt)
+        _emit({"directory": a.dir, "written": written, "alreadyPresent": present}, fmt)
         return 0
-    _tprint(f"wrote {len(written)} files to {a.dir}: {', '.join(p.name for p in written)}")
-    d = a.dir.rstrip("/") or "/"
+    if written:
+        _tprint(f"wrote {len(written)} files to {a.dir}: {', '.join(written)}")
+    if present:
+        _tprint(f"already in {a.dir}, unchanged: {', '.join(present)}")
     _tprint("Try:")
-    _tprint(
-        f"  kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f {d}/netpol-admin-tiers.yaml"
-    )
-    _tprint(f"  kube-noob policy explain -f {d}/denial-multi.txt")
-    _tprint(f"  kube-noob diagnose -f {d}/events-scc.txt")
+    for line in _example_commands(a.dir):
+        _tprint(f"  {line}")
     return 0
+
+
+def _example_commands(directory: str) -> list[str]:
+    """The commands `examples copy` suggests, with the directory quoted for a POSIX shell: a name with a space or
+    a quote stays one word, and one that starts with `-` is not read as a flag (G277)."""
+    import shlex
+
+    d = directory.rstrip("/") or "/"
+    if d.startswith("-"):
+        d = f"./{d}"
+
+    def path(name: str) -> str:
+        return shlex.quote(f"{d}/{name}")
+
+    return [
+        "kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f "
+        + path("netpol-admin-tiers.yaml"),
+        f"kube-noob policy explain -f {path('denial-multi.txt')}",
+        f"kube-noob diagnose -f {path('events-scc.txt')}",
+    ]
 
 
 def _write_migration(report: dict[str, Any], out_dir: str) -> int:
@@ -3497,7 +3573,9 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if cmd == "match":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "memory match")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
         dirs = a.dirs or [str(d) for d in s.memory.paths]

@@ -220,20 +220,24 @@ def _admission_text(rule: str, severity: str, enforced: dict[str, str], not_gene
 def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path | None) -> list[dict[str, Any]]:
     """Open reported issues in the target release whose text names a kind these manifests deploy."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
-    from kube_noob.known_issues import get_index, vkey
+    from kube_noob.known_issues import get_index, read_version, vkey
 
-    if platform not in OPENSHIFT_FAMILY or not version:
+    cv = read_version(version)
+    if platform not in OPENSHIFT_FAMILY or cv is None:
         return []
-    minor = ".".join(version.split(".")[:2])
+    index = get_index(data_dir)
+    # The same reading of the version as the coverage statement beside it (G277): " 4.20.0" once matched nothing
+    # here while the statement said "determined".
+    advise = index.coverage(version)["status"] == "determined"
     out: list[dict[str, Any]] = []
-    for issue in get_index(data_dir).issues:
-        if issue.kind != "known" or issue.minor != minor:
+    for issue in index.issues:
+        if issue.kind != "known" or issue.minor != cv.minor:
             continue
-        if issue.fixed_in and vkey(version) >= vkey(issue.fixed_in):
+        if issue.fixed_in and vkey(cv.numeric) >= vkey(issue.fixed_in):
             continue
         named = sorted(k for k in kinds if _DISTINCT_KIND.match(k) and re.search(rf"\b{k}s?\b", issue.text))
         if named:
-            out.append({**issue.as_dict(version, 1.0), "kinds": named})
+            out.append({**issue.as_dict(cv.numeric, 1.0, advise, cv.shown), "kinds": named})
     return out[:20]
 
 

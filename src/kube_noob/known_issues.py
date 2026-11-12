@@ -172,7 +172,8 @@ _general: dict[str, KnowledgeStore] = {}
 
 
 def vkey(version: str) -> tuple[int, ...]:
-    return tuple(int(p) for p in re.findall(r"\d+", version))
+    # Bounded: a 5,000-digit number in a label is not a version, and int() of it raises past Python's digit limit.
+    return tuple(int(p[:9]) for p in re.findall(r"\d+", version[:200])[:6])
 
 
 def _minor(version: str) -> str:
@@ -209,27 +210,41 @@ class Issue:
     def url(self) -> str:
         return f"https://redhat.atlassian.net/browse/{self.id}"
 
-    def status(self, running: str | None) -> str:
+    def status(self, running: str | None, advise: bool = True, shown: str | None = None) -> str:
+        """What the issue is, and, when ``advise`` (the index can answer for ``running``), what it means for that
+        version. Without ``advise`` the fix release is stated and no update path is suggested: a release the index
+        does not hold may have the fix as a backport, which these release notes cannot show (G277)."""
+        named = shown or running
         if self.kind == "known":
             if self.fixed_in:
                 msg = f"Known issue in OpenShift {self.minor}; fixed in {self.fixed_in}."
-                if running and vkey(running) < vkey(self.fixed_in):
-                    msg += f" You run {running}: updating to {self.fixed_in} or later fixes it."
-                return msg
-            return f"Known issue in OpenShift {self.minor}; the release notes list no fix yet."
+                if running and advise and vkey(running) < vkey(self.fixed_in):
+                    msg += f" You run {named}: updating to {self.fixed_in} or later fixes it."
+            else:
+                msg = f"Known issue in OpenShift {self.minor}; the release notes list no fix yet."
+            if running and not advise:
+                msg += f" Whether {named} has it, or a fix for it, is not determined from these release notes."
+            return msg
         msg = f"Reported and fixed in OpenShift {self.version}."
-        if running and vkey(running) < vkey(self.version):
-            msg += f" You run {running}: updating to {self.version} or later fixes it."
+        if running and advise and vkey(running) < vkey(self.version):
+            msg += f" You run {named}: updating to {self.version} or later fixes it."
+        elif running and not advise:
+            msg += (
+                f" Not update advice for {named}: whether it has this fix is not determined from these release "
+                "notes (a backport may exist)."
+            )
         return msg
 
-    def as_dict(self, running: str | None, score: float) -> dict[str, Any]:
+    def as_dict(
+        self, running: str | None, score: float, advise: bool = True, shown: str | None = None
+    ) -> dict[str, Any]:
         return {
             "id": self.id,
             "url": self.url,
             "kind": self.kind,
             "foundIn": self.minor if self.kind == "known" else None,
             "fixedIn": self.fixed_in if self.kind == "known" else self.version,
-            "status": self.status(running),
+            "status": self.status(running, advise, shown),
             "summary": self.summary,
             "workaround": self.workaround,
             "source": self.source,
@@ -263,6 +278,7 @@ class Index:
         )
         self.by_chunk = {f"{i.id}@{i.version}#{n}": i for n, i in enumerate(issues)}
         self._token_cache: dict[str, set[str]] = {}
+        self._newest: dict[str, str] | None = None
 
     def knowledge(self) -> dict[str, Any]:
         minors = sorted({i.minor for i in self.issues}, key=vkey)
@@ -272,10 +288,21 @@ class Index:
             "issues": len(self.issues),
         }
 
+    def newest(self) -> dict[str, str]:
+        """The newest z-stream release each indexed minor's notes reach (``4.22`` -> ``4.22.18``)."""
+        if self._newest is None:
+            out: dict[str, str] = {}
+            for i in self.issues:
+                for v in (i.version, i.fixed_in or ""):
+                    if v.count(".") == 2 and _minor(v) == i.minor and vkey(v) > vkey(out.get(i.minor, "0.0.0")):
+                        out[i.minor] = v
+            self._newest = out
+        return self._newest
+
     def coverage(self, version: str | None) -> dict[str, Any]:
         """Whether the index can answer for ``version`` (see ``version_coverage``)."""
         k = self.knowledge()
-        return version_coverage(version, k["openshiftReleases"], k["knownIssuesAsOf"])
+        return version_coverage(version, k["openshiftReleases"], k["knownIssuesAsOf"], self.newest())
 
     def _tokens(self, issue: Issue) -> set[str]:
         key = f"{issue.id}@{issue.version}"
@@ -355,9 +382,14 @@ class Index:
         from kube_noob.signals import extract
         from kube_noob.signals.catalogue import infer, terms_for
 
+        # One reading of the version for the coverage statement and the matching alike (G277): a version that is
+        # cleaned for the one and raw for the other answered "determined" while matching nothing.
+        cv = read_version(version)
         out["versionCoverage"] = self.coverage(version)
+        advise = out["versionCoverage"]["status"] == "determined"
         text = text[:100_000]
-        running = version if version and _VERSION.fullmatch(version) else None
+        running = cv.numeric if cv else None
+        shown = cv.shown if cv else None
         signals = [x for x in extract(text) if x.kind in {"alert", "event_reason", "pod_reason"}] + infer(text)
         sig_terms = terms_for(signals)
         text = strip_templates(text)  # the fixed words of component messages are not evidence for any one issue
@@ -402,7 +434,11 @@ class Index:
             if not accepted:
                 continue
             top = top or score
-            match = {**issue.as_dict(running, score), "sharedTerms": (r_text + r_sig)[:8], "exactError": quoted}
+            match = {
+                **issue.as_dict(running, score, advise, shown),
+                "sharedTerms": (r_text + r_sig)[:8],
+                "exactError": quoted,
+            }
             if r_sig:
                 match["signals"] = sorted({f"{x.kind}:{x.name}" for x in signals})[:5]
             out["matches"].append(match)
@@ -411,7 +447,7 @@ class Index:
         if not out["matches"] and out["versionCoverage"]["status"] == "not-determined":
             out["note"] = (
                 f"Nothing in the indexed release notes ({', '.join(out['knowledge']['openshiftReleases'])}) matches "
-                f"this text, and that is not an answer for {version}: see versionCoverage."
+                f"this text, and that is not an answer for {shown}: see versionCoverage."
             )
         elif not out["matches"]:
             out["note"] = (
@@ -434,56 +470,120 @@ class Index:
         return vkey(running) < vkey(issue.version)
 
 
-_VERSION = re.compile(r"\d+\.\d+(\.\d+)?")
 COVERAGE = ("determined", "not-determined", "not-narrowed")
+# x.y, x.y.z, or either with a build after "-" or "+" (4.21.0-rc.1, 4.16.0-0.nightly-2024-05-01-111111,
+# 4.15.0-0.okd-2024-03-10-010116): each part bounded, so no label can make vkey or int() do unbounded work.
+_VERSION_TEXT = re.compile(r"(\d{1,3})\.(\d{1,3})(?:\.(\d{1,5}))?(?:[-+]([0-9A-Za-z][0-9A-Za-z._-]{0,79}))?")
+_OKD = re.compile(r"(?i)(?:^|[._-])okd(?:[._-]|$)")
 
 
-def version_coverage(version: str | None, releases: list[str], as_of: str | None) -> dict[str, Any]:
+@dataclass(frozen=True)
+class ClusterVersion:
+    """A version as every known-issue reader uses it: read once, so the statement and the matching agree."""
+
+    shown: str  # as given, on one line and bounded
+    numeric: str  # 4.16.0 (or 4.16): what is compared
+    minor: str  # 4.16
+    has_z: bool
+    build: str  # "" for a release; rc.1, 0.nightly-..., 0.okd-... otherwise
+    okd: bool  # OKD is built from the same sources, but these are OpenShift Container Platform release notes
+
+
+def shown_version(raw: str | None) -> str | None:
+    """``raw`` on one visible line, bounded; ``None`` for nothing (an empty or blank value)."""
+    if raw is None:
+        return None
+    return sanitize.one_line(str(raw))[:80] or None
+
+
+def read_version(raw: str | None) -> ClusterVersion | None:
+    """The version in ``raw``, or ``None`` when there is none or it is not one (see ``shown_version``)."""
+    shown = shown_version(raw)
+    m = _VERSION_TEXT.fullmatch(shown) if shown else None
+    if shown is None or m is None:
+        return None
+    major, minor, z, build = m.groups()
+    numeric = f"{int(major)}.{int(minor)}" + (f".{int(z)}" if z is not None else "")
+    return ClusterVersion(
+        shown, numeric, f"{int(major)}.{int(minor)}", z is not None, build or "", bool(build and _OKD.search(build))
+    )
+
+
+def version_coverage(
+    version: str | None, releases: list[str], as_of: str | None, newest: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Whether "no match" can mean "no reported issue" for ``version``: three-valued, never left to a note.
 
-    ``determined``: the version's minor release is in the index, so issues that cannot affect it were left out and an
-    empty list is an answer for it. ``not-determined``: the minor is outside the index; an empty list (or a short one,
-    for a newer release that still carries an older one's open issues) says nothing about that release's own notes.
-    ``not-narrowed``: no usable version, so the answer lists issues from every indexed release, including ones a
-    cluster may already have the fix for.
+    ``determined``: an OpenShift release whose minor is in the index and whose z-stream the notes reach, so issues
+    that cannot affect it were left out and an empty list is an answer for it. ``not-determined``: the index cannot
+    answer for it -- its minor is not indexed, its z-stream is newer than the newest one the notes reach, or it is a
+    pre-release, nightly or OKD build that the OpenShift release notes do not describe; matches are still narrowed
+    by its minor and z, but no list here is the whole answer. ``not-narrowed``: no version, or text that is not one,
+    so the answer covers every indexed release, including issues a cluster may already have the fix for.
     """
     held = ", ".join(releases) or "no release"
-    # A version can come from an alert label or a must-gather: shown on one line, visibly, and bounded.
-    version = sanitize.one_line(version)[:40] if version else version
     dated = f" as of {as_of}" if as_of else ""
-    if not version:
+    shown = shown_version(version)
+    cv = read_version(version)
+    if shown is None:
         return {
             "status": "not-narrowed",
             "why": f"No version was given, so the answer is not narrowed by version: it covers every indexed release "
             f"({held}{dated}), including issues already fixed in yours. Give the version to leave those out.",
         }
-    if not _VERSION.fullmatch(version):
+    if cv is None:
         return {
             "status": "not-narrowed",
-            "version": version,
-            "why": f"{version} is not an x.y or x.y.z OpenShift version, so the answer is not narrowed by version: "
-            f"it covers every indexed release ({held}{dated}).",
+            "version": shown,
+            "why": f"{shown} is not an OpenShift version (x.y or x.y.z, optionally with a build such as -rc.1), so "
+            f"the answer is not narrowed by version: it covers every indexed release ({held}{dated}).",
         }
-    minor = _minor(version)
-    if minor in releases:
+    minor = cv.minor
+    fix = f"Read the OpenShift {minor} release notes, or refresh the index (kube-noob corpus known-issues --online)."
+
+    def undetermined(reason: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
-            "status": "determined",
-            "version": version,
-            "why": f"OpenShift {minor} is in the index ({held}{dated}): issues that cannot affect {version} are left "
-            "out, so no match means none of its reported issues matches.",
+            "status": "not-determined",
+            "version": shown,
+            **(extra or {}),
+            "why": f"Known issues NOT DETERMINED for OpenShift {shown}: {reason} {fix}",
         }
-    newer = bool(releases) and vkey(minor) > vkey(releases[-1])
-    return {
-        "status": "not-determined",
-        "version": version,
-        "why": f"Known issues NOT DETERMINED for OpenShift {version}: the index holds the release notes of {held}"
-        f"{dated}, and {minor} is not one of them. "
-        + (
-            f"Issues still open in an older release are listed, but {minor}'s own release notes were not read. "
-            if newer
-            else "No match here does not mean no reported issue. "
+
+    if minor not in releases:
+        newer = bool(releases) and vkey(minor) > vkey(releases[-1])
+        return undetermined(
+            f"the index holds the release notes of {held}{dated}, and {minor} is not one of them. "
+            + (
+                f"Issues still open in an older release are listed, but {minor}'s own release notes were not read."
+                if newer
+                else "No match here does not mean no reported issue."
+            )
         )
-        + f"Read the OpenShift {minor} release notes, or refresh the index (kube-noob corpus known-issues --online).",
+    if cv.okd:
+        return undetermined(
+            f"{shown} is an OKD build, and the index holds OpenShift Container Platform release notes, which do "
+            f"not say which OKD build carries a fix. Matches are narrowed as for {cv.numeric}; none of them, and no "
+            "absence of them, is an answer for this build."
+        )
+    if cv.build:
+        return undetermined(
+            f"{shown} is a pre-release or nightly build, and release notes describe released versions. Matches are "
+            f"narrowed as for {cv.numeric}, but whether a fix listed for {cv.numeric} or later is in this build is "
+            "not known."
+        )
+    through = (newest or {}).get(minor)
+    if cv.has_z and through and vkey(cv.numeric) > vkey(through):
+        return undetermined(
+            f"the {minor} release notes in the index reach {through}{dated}, and {shown} is newer. Issues fixed in "
+            f"{through} or earlier are left out correctly, but an open issue listed here may have been fixed after "
+            f"{through}, and issues first reported after {through} are not in the index.",
+            {"indexedThrough": through},
+        )
+    return {
+        "status": "determined",
+        "version": shown,
+        "why": f"OpenShift {minor} is in the index ({held}{dated}): issues that cannot affect {shown} are left "
+        "out, so no match means none of its reported issues matches.",
     }
 
 
@@ -494,11 +594,21 @@ def coverage(version: str | None, data_dir: Path | None = None) -> dict[str, Any
 
 def coverage_line(cov: dict[str, Any] | None, listed: bool = True) -> str | None:
     """The sentence a text view prints, or ``None`` when there is nothing to warn about: the version was covered, or
-    (``listed`` false: a view that shows reported issues only as part of a wider answer, and showed none) the answer
-    was not narrowed by version but listed nothing that a version would have left out."""
-    if not cov or cov.get("status") == "determined" or (cov.get("status") == "not-narrowed" and not listed):
+    no version was given and (``listed`` false) nothing was listed that a version would have left out. A version
+    that WAS given and could not be used is always said: a supplied value is never dropped silently."""
+    if not cov or cov.get("status") == "determined":
+        return None
+    if cov.get("status") == "not-narrowed" and "version" not in cov and not listed:
         return None
     return str(cov["why"])
+
+
+def issue_status(issue: Issue, version: str | None, data_dir: Path | None = None) -> str:
+    """``issue.status`` for a version from outside (a ticket key looked up directly): advice only where the index
+    can answer for that version."""
+    cv = read_version(version)
+    advise = get_index(data_dir).coverage(version)["status"] == "determined"
+    return issue.status(cv.numeric if cv else None, advise, cv.shown if cv else None)
 
 
 def _distinct(words: list[str]) -> list[str]:

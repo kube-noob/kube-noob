@@ -556,13 +556,48 @@ def detect(text: str) -> list[Finding]:
     return clean(text)[1]
 
 
+# Characters that are not control or format characters by category but show as nothing, or as a blank, in a
+# terminal: Braille blank, Khmer inherent vowels, Hangul fillers, combining grapheme joiner, variation selectors.
+_BLANK_LOOKING = frozenset([0x2800, 0x17B4, 0x17B5, 0x3164, 0xFFA0, 0x115F, 0x1160, 0x034F])
+_JOINERS = frozenset([0x200C, 0x200D])  # ZWNJ, ZWJ: meaningful inside some scripts' words and emoji sequences
+
+
+def _keeps_joiner(prev: str, nxt: str) -> bool:
+    """A ZWJ or ZWNJ is part of the text only between two non-ASCII letters, marks or symbols (Persian and Indic
+    words, emoji sequences); anywhere else it hides a break between characters a reader sees as adjacent."""
+    ok = ("L", "M", "S")
+    return (
+        bool(prev and nxt)
+        and ord(prev) > 0x7F
+        and ord(nxt) > 0x7F
+        and unicodedata.category(prev)[0] in ok
+        and unicodedata.category(nxt)[0] in ok
+    )
+
+
 def one_line(text: str) -> str:
-    """``text`` for one line of a text view: every run of whitespace (newlines included) is one space, and the
-    characters a terminal shows as nothing (Unicode tags, bidi controls, zero-width, soft hyphen, fillers) are gone,
-    so a value read from input can neither start a forged line nor hide text in one."""
-    for rx in (_TAGS, _BIDI, _ZERO_WIDTH, _SPLITTERS, _FILLERS):
-        text = rx.sub("", text)
-    return " ".join(text.replace(ZWJ, "").split())
+    """``text`` for one line of a text view, so a value read from input can neither start a forged line nor hide
+    text in one: every run of whitespace (newlines included) becomes one space, and these are removed -- every
+    character of category Cc (C0 and C1 controls, DEL), Cs (lone surrogates), Co (private use) and Cf (format: bidi
+    controls, zero-width, soft hyphen, the Arabic and Syriac number signs, interlinear annotation, invisible math and
+    musical formatting, tags), except a ZWJ or ZWNJ between two non-ASCII letters, marks or symbols; the blank-looking
+    characters in ``_BLANK_LOOKING``; and variation selectors U+FE00-FE0F unless they follow a non-ASCII symbol (an
+    emoji presentation). Visible text is never changed. Written as a filter over categories so that it can delegate
+    to the shared ``visible`` sanitiser once that exists, keeping only the whitespace collapse."""
+    out: list[str] = []
+    for i, ch in enumerate(text):
+        o = ord(ch)
+        cat = unicodedata.category(ch)
+        if o in _JOINERS:
+            if _keeps_joiner(out[-1] if out else "", text[i + 1] if i + 1 < len(text) else ""):
+                out.append(ch)
+            continue
+        if cat in {"Cs", "Co", "Cf"} or (cat == "Cc" and not ch.isspace()) or o in _BLANK_LOOKING:
+            continue
+        if 0xFE00 <= o <= 0xFE0F and not (out and ord(out[-1]) > 0x7F and unicodedata.category(out[-1]) == "So"):
+            continue
+        out.append(ch)
+    return " ".join("".join(out).split())
 
 
 def result(value: Any) -> Any:

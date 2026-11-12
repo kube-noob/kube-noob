@@ -1246,8 +1246,20 @@ class Toolkit:
         version = p.version or (payload.version if payload else None)
         out = diagnose(text, platform=p.platform, limit=p.limit, signals=for_text(p.text)).as_dict()
         if payload:
+            given: dict[str, Any] = {}
+            if p.version and payload.version:
+                # The argument decides, but the payload's own version is kept and a disagreement is said: a flag
+                # silently replacing the alert's version hid which release the alert came from (G277).
+                given = {"payloadVersion": payload.version, "payloadVersionFrom": payload.version_from}
+                if payload.version.strip() != p.version.strip():
+                    given["versionConflict"] = (
+                        f"The version given ({p.version}) differs from the payload's {payload.version_from} "
+                        f"({payload.version}); reported issues are matched for {p.version}."
+                    )
             out = {
-                "input": {**payload.summary(), "version": version} | ({"versionFrom": "argument"} if p.version else {}),
+                "input": {**payload.summary(), "version": version}
+                | ({"versionFrom": "argument"} if p.version else {})
+                | given,
                 **out,
             }
         self._observe([f"playbook:{d['id']}" for d in out.get("diagnoses", [])])

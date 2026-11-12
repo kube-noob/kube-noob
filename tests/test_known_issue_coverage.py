@@ -68,11 +68,11 @@ def test_no_version_says_the_answer_is_not_narrowed_by_version() -> None:
     assert "not narrowed by version" in cov["why"]
 
 
-def test_a_version_that_is_not_x_y_z_is_not_narrowed() -> None:
-    # The Alertmanager label and a must-gather can carry versions like 4.21.0-rc.1, which the matcher does not use
-    # to filter: saying "determined" for them would claim a narrowing that did not happen.
-    cov = known_issues.match(ETCD, "openshift", "4.21.0-rc.1")["versionCoverage"]
-    assert cov["status"] == "not-narrowed" and cov["version"] == "4.21.0-rc.1"
+def test_text_that_is_not_a_version_is_not_narrowed_and_says_so() -> None:
+    # A pre-release (4.21.0-rc.1) is a version now (see test_first_run_review.py); words are not.
+    cov = known_issues.match(ETCD, "openshift", "latest")["versionCoverage"]
+    assert cov["status"] == "not-narrowed" and cov["version"] == "latest"
+    assert known_issues.coverage_line(cov, listed=False) == cov["why"]
 
 
 def test_a_version_from_a_label_is_shown_on_one_line_and_visibly() -> None:
