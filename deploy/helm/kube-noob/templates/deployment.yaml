@@ -15,6 +15,30 @@
 {{- fail "posture.report.enabled writes one report a day from one pod: set replicaCount: 1" }}
 {{- end }}
 {{- end }}
+{{- with .Values.alertReports }}
+{{- if .store }}
+{{- if gt (int $.Values.replicaCount) 1 }}
+{{- fail "alertReports.store keeps reports on one pod's volume, so a report stored by one replica is not found through the Service on another: set replicaCount: 1" }}
+{{- end }}
+{{- /* Each report on disk is its body (maxReportBytes) plus up to 16 KiB of receipt and a summary file of up to 16 KiB. */}}
+{{- $worst := mul (int .maxReports) (add (int .maxReportBytes) 32768) }}
+{{- if not $.Values.persistence.enabled }}
+{{- if gt $worst 536870912 }}
+{{- fail "alertReports: maxReports x (maxReportBytes + 32 KiB) is over 512 MiB on the pod's emptyDir: lower them or set persistence.enabled: true" }}
+{{- end }}
+{{- else }}
+{{- $size := toString $.Values.persistence.size }}
+{{- $digits := regexFind "^[0-9]+" $size }}
+{{- $unit := get (dict "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "K" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000) (trimPrefix $digits $size) }}
+{{- if or (not $digits) (not $unit) }}
+{{- fail "alertReports.store checks its worst case against persistence.size: write the size as a whole number with Ki, Mi, Gi, Ti, K, M, G or T (5Gi)" }}
+{{- end }}
+{{- if gt (mul $worst 2) (mul ($digits | int64) $unit) }}
+{{- fail "alertReports: maxReports x (maxReportBytes + 32 KiB) is over half of persistence.size, which the corpus shares: lower them or raise persistence.size" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.rhacs.enabled }}
 {{- if not .Values.rhacs.tokenSecret.name }}
 {{- fail "rhacs.enabled needs rhacs.tokenSecret.name: a Secret with an RHACS API token that can read policies" }}
