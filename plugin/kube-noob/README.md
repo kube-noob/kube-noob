@@ -56,6 +56,17 @@ fixed to an exact version and SHA-256 hash in the `uv.lock` beside this file, an
 any of it. The trade is a slower listing for an install that is identical on every machine and auditable before it
 runs, and that is the right way round for a tool people point at production clusters.
 
+### The pre-action hook
+
+`hooks/hooks.json` registers a PreToolUse hook on Bash and PowerShell that is off until you turn on
+`verify_cluster_commands` in `/config`. While it is off, the hook is a POSIX `sh` guard that reads that option from
+the environment Claude Code gives it and exits at once: it starts no program, uv included (about 2 ms). Turned on,
+it runs the bundled `kube-noob verify` through the same `uv run` launcher as the server, which costs about 1 s per
+Bash command with uv's cache warm; a deny is blocked, a change it cannot decide asks you, and a hook that cannot start
+blocks (`"onFailure": "block"`, Claude Code v2.1.295 or later; older versions let the command through). On Windows the
+guard needs Git Bash; without it, Claude Code runs the hook in PowerShell, where it blocks every Bash and PowerShell
+call, so install Git for Windows or use `kube-noob hook install` from the CLI instead.
+
 ### What the vendored copy is
 
 The server source in `server/` is the modules of the

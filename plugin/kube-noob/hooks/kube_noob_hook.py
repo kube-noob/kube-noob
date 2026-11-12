@@ -1,10 +1,11 @@
 """The kube-noob plugin's PreToolUse hook, run by hooks/hooks.json with ``uv run --frozen --isolated``.
 
-It loads the readable server copy in ``../server/kube_noob`` (the same code the MCP server runs) and calls
-``kube_noob.hook.plugin_main``: it does nothing until the user turns on the plugin's ``verify_cluster_commands``
-option, and then runs ``kube-noob verify`` before a Bash command that changes cluster state and blocks it (exit 2)
-unless the answer is allow. It never runs the command, never reads outside the working directory the hook input
-names, makes no network call and reads no credential.
+hooks/hooks.json starts this file only when the user has turned on the plugin's ``verify_cluster_commands`` option:
+its shell guard reads the option first, so a user who has not opted in never starts uv or Python. This file checks the
+option again with the same rule, loads the readable server copy in ``../server/kube_noob`` (the same code the MCP
+server runs) and calls ``kube_noob.hook.plugin_main``, which runs ``kube-noob verify`` before a Bash command that
+changes cluster state: a deny blocks (exit 2), a change it cannot decide asks the user. It never runs the command,
+never reads outside the working directory the hook input names, makes no network call and reads no credential.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 {
-  "description": "kube-noob verify before a kubectl, oc or helm command changes a cluster. Off until you turn on verify_cluster_commands in /config.",
+  "description": "kube-noob verify before a kubectl, oc or helm command changes a cluster. Off until you turn on verify_cluster_commands in /config; while off, the hook is a POSIX sh guard that starts no program.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,20 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv",
-            "args": [
-              "run",
-              "--frozen",
-              "--exact",
-              "--isolated",
-              "--quiet",
-              "--project",
-              "${CLAUDE_PLUGIN_ROOT}",
-              "python",
-              "-I",
-              "-B",
-              "${CLAUDE_PLUGIN_ROOT}/hooks/kube_noob_hook.py"
-            ],
+            "command": "case \"$CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS\" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exec uv run --frozen --exact --isolated --quiet --project \"$CLAUDE_PLUGIN_ROOT\" python -I -B \"$CLAUDE_PLUGIN_ROOT/hooks/kube_noob_hook.py\";; esac",
             "timeout": 60,
             "onFailure": "block"
           }
