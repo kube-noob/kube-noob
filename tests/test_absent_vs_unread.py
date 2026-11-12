@@ -205,10 +205,18 @@ def _reach(cluster: Cluster) -> dict[str, Any]:
 
 
 def test_a_cluster_whose_api_says_calico_is_not_served_answers_as_before() -> None:
-    """The genuine 404 stays what it was: no Calico, OVN-Kubernetes semantics, the AdminNetworkPolicy denies."""
-    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    """The genuine 404 stays what it was -- no Calico, not a failed read -- and on a cluster that serves
+    OVN-Kubernetes' EgressFirewall the AdminNetworkPolicy denies, as before. Without that, "no Calico" no longer
+    means "so OVN-Kubernetes" (review D3): the CNI was not identified, which is not the same as not read."""
+    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP], egressfirewalls={"items": []}))
     assert out["verdict"] == "denied" and out["ingress"]["tier"] == "AdminNetworkPolicy"
-    assert not any("CNI" in n for n in out.get("notes", []))
+    assert not any("could not be read" in n for n in out.get("notes", []))
+    assert any("OVN-Kubernetes" in n for n in out["notes"])
+
+    unknown = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    assert unknown["verdict"] == "undetermined"
+    assert any("CNI was not identified" in n for n in unknown["notes"])
+    assert not any("could not be read" in n for n in unknown["notes"])
 
 
 @pytest.mark.parametrize(
@@ -329,13 +337,28 @@ def _stub_kubectl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) 
     return KubectlBackend("kubectl", None, 5)
 
 
+def _list_case(res: str, body: dict[str, Any]) -> str:
+    """A shell case arm answering ``kubectl get RES [--namespace NS] --output json`` with ``body``; a namespaced
+    list answers with only the items in the namespace asked for, as the API server does (review D9)."""
+    items = body["items"]
+    if not any((i.get("metadata") or {}).get("namespace") for i in items):
+        return f"  {res})\n    echo '{json.dumps(body)}'; exit 0;;\n"
+    arms = ""
+    for ns in sorted({i["metadata"]["namespace"] for i in items}):
+        mine = {**body, "items": [i for i in items if i["metadata"]["namespace"] == ns]}
+        arms += f"      {ns}) echo '{json.dumps(mine)}'; exit 0;;\n"
+    empty = json.dumps({**body, "items": []})
+    return f"  {res})\n    case \"$4\" in\n{arms}      *) echo '{empty}'; exit 0;;\n    esac;;\n"
+
+
 def _kubectl_script(clusterinformations: str) -> str:
     lists = {
         "networkpolicies.networking.k8s.io": {"kind": "List", "items": [ALLOW_ALL]},
         "adminnetworkpolicies.policy.networking.k8s.io": {"kind": "List", "items": [ANP]},
         "baselineadminnetworkpolicies.policy.networking.k8s.io": {"kind": "List", "items": []},
+        "egressfirewalls.k8s.ovn.org": {"kind": "List", "items": []},  # an OVN-Kubernetes cluster (review D3)
     }
-    cases = [f"  {res})\n    echo '{json.dumps(body)}'; exit 0;;\n" for res, body in lists.items()]
+    cases = [_list_case(res, body) for res, body in lists.items()]
     cases.append('  deployments.apps)\n    case "$3" in\n')
     for d in WORKLOADS[2:]:
         cases.append(f"      {d['metadata']['name']}) echo '{json.dumps(d)}'; exit 0;;\n")

@@ -148,10 +148,18 @@ def test_a_version_that_still_enforces_leaves_the_tier_deciding() -> None:
 
 
 def test_a_cluster_without_calico_behaves_exactly_as_before() -> None:
-    """An absent CRD is a 404 and means Calico is not installed. It must not add a note or change a verdict."""
-    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    """An absent CRD is a 404 and means Calico is not installed. With the CNI named it must not add a note about
+    Calico or change a verdict. With nothing named and nothing identified, "no Calico" is no longer taken for
+    "OVN-Kubernetes" (review D3): the admin tier decides this answer, so it is undetermined and says why."""
+    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]), "ovn-kubernetes")
     assert out["verdict"] == "denied" and "inertPolicies" not in out
     assert not any("calico" in n.lower() for n in out.get("notes", []))
+
+    # This double serves CiliumClusterwideNetworkPolicy, so the CNI is read as Cilium, which documents no support
+    # for AdminNetworkPolicy: the tier that decides this answer may not be enforced.
+    unknown = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    assert unknown["verdict"] == "undetermined" and "inertPolicies" not in unknown
+    assert any("CNI read from the cluster: Cilium" in n for n in unknown["notes"]), unknown["notes"]
 
 
 def test_a_forbidden_read_says_so_and_withholds_an_answer_the_admin_tier_decides() -> None:

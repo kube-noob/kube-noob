@@ -658,7 +658,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
         scopes: list[str | None] = [None] if cluster or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                items = list_items(backend.get(resource, namespace=ns), resource)
+                items = list_items(backend.get(resource, namespace=ns), resource, ns)
             except KubeNoobError as exc:
                 not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue

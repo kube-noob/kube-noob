@@ -20,6 +20,7 @@ import yaml
 from kube_noob import __version__, completion, sanitize
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
@@ -167,11 +168,32 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+def _raw_stdout() -> Any:
+    """The stream under the text boundary: a document goes here, byte for byte, so `cmd > f` equals `cmd -o f`."""
+    return getattr(sys.stdout, "_inner", sys.stdout)
+
+
+def _workflow_command(line: str) -> None:
+    """A GitHub workflow command kube-noob builds on purpose (``gate --github-annotations``): the one kind of line
+    the output boundary lets through as a command (G279)."""
+    out = sys.stdout
+    if isinstance(out, _VisibleStream):
+        out.workflow_command(line)
+    else:  # called outside main(): no boundary to pass
+        print(line)
+
+
 def _emit(obj: Any, fmt: str) -> None:
+    """A document (JSON or YAML), written past the text sanitiser: JSON escapes every non-ASCII character
+    (``ensure_ascii``), and the YAML dumper escapes any string holding a character that would not print, so both
+    are terminal-safe and load back to exactly the data (G279)."""
+    from kube_noob.yamlio import dump_yaml
+
+    out = _raw_stdout()
     if fmt == "json":
-        print(json.dumps(obj, indent=2, default=str))
+        out.write(json_document(obj, indent=2, default=str) + "\n")
     else:
-        print(yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True), end="")
+        out.write(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
@@ -245,7 +267,16 @@ def _write_html(path: str | None, report: dict[str, Any]) -> None:
         return
     from kube_noob import report_html
 
-    Path(path).write_text(report_html.render(report), encoding="utf-8", errors="replace")
+    Path(path).write_text(_html_without_commands(report_html.render(report)), encoding="utf-8", errors="replace")
+
+
+#: In HTML, "##[" as "##&#91;" and a line-leading "::" as "&#58;:" render the same and are no workflow command
+#: in a log that prints the file (G279). Entities do not decode inside <style>, which holds only kube-noob's CSS.
+_HTML_COMMAND = re.compile(r"##\[|^([^\S\n]*):(?=:)", re.MULTILINE)
+
+
+def _html_without_commands(text: str) -> str:
+    return _HTML_COMMAND.sub(lambda m: "##&#91;" if m.group(0) == "##[" else f"{m.group(1)}&#58;", text)
 
 
 def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
@@ -533,7 +564,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         # Before the report, and on stdout: Actions reads workflow commands from the step's output, and a caller
         # parsing --format json filters the `::` lines (the test does exactly that).
         for line in gate.github_annotations(report):
-            print(line)
+            _workflow_command(line)
     quiet_pass = getattr(a, "quiet", False) and report["passed"]
     if getattr(a, "oscal", False):
         from kube_noob.oscal import assessment_results, check_import_ap
@@ -2146,21 +2177,39 @@ def _settings(a: argparse.Namespace) -> Settings:
 
 
 class _VisibleStream:
-    """stdout or stderr, with every write passed through ``sanitize.visible_lines`` (G279).
+    """stdout or stderr, with every TEXT write passed through ``sanitize.visible_lines`` (G279).
 
-    The boundary every text writer shares: the text view, ``--compact``, the YAML view (`yaml.safe_dump` with
-    ``allow_unicode`` passes format characters through), GitHub workflow commands and every error message. A
-    name from a manifest or a cluster can no longer move the cursor, write the clipboard (OSC 52), hide a link
-    (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate. Output with none of
-    these characters is unchanged. Binary writers use ``.buffer``, which passes through untouched -- the MCP stdio
-    transport among them, whose results ``sanitize.clean`` has already cleaned."""
+    The boundary kube-noob's own text writers share: the text view, ``--compact``, GitHub workflow commands and
+    every error message. A name from a manifest or a cluster can no longer move the cursor, write the clipboard
+    (OSC 52), hide a link (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate;
+    a hidden character inside a name is shown as ``<U+200B>``. Documents do not go through it: ``_emit`` (JSON,
+    YAML), the manifests ``fix`` and ``generate`` print, ``policy generate`` and ``--format sarif`` write to
+    ``_raw_stdout()``, because their encoders already escape what would not print and the bytes must equal what
+    ``-o`` writes. Argument parsing (help, usage, argparse's colour) happens before the boundary is in place, and
+    the long-running servers (``serve``, ``mcp``, ``admission serve``, ``watch``) are not wrapped at all: their
+    logs are uvicorn's and the MCP transport writes to ``.buffer``. Output with none of these characters is
+    unchanged.
+
+    It also keeps every line from being read as a GitHub Actions workflow command (``sanitize.CommandGuard``:
+    ``##[`` anywhere becomes ``## [``, a line-leading ``::`` becomes ``: :``), always, because a log is replayed.
+    The one deliberate exception is :meth:`workflow_command`, which ``gate --github-annotations`` uses for the
+    annotations it builds and escapes itself."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
+        self._guard = sanitize.CommandGuard()
 
     def write(self, text: str) -> int:
-        self._inner.write(sanitize.visible_lines(text))
+        self._inner.write(self._guard.feed(sanitize.visible_lines(text, mark=True)))
         return len(text)
+
+    def workflow_command(self, line: str) -> None:
+        """One workflow command kube-noob wrote on purpose, on a line of its own, past the guard (not past
+        ``visible_lines``)."""
+        if not self._guard.at_line_start:
+            self._inner.write("\n")
+        self._inner.write(sanitize.visible_lines(line, mark=True) + "\n")
+        self._guard.reset()
 
     def writelines(self, lines: Any) -> None:
         for line in lines:
@@ -2173,18 +2222,24 @@ class _VisibleStream:
         return getattr(self._inner, name)
 
 
+#: Commands that run until stopped and write logs, not answers: their streams are left alone.
+_UNWRAPPED = {("serve",), ("mcp",), ("watch",), ("admission", "serve")}
+
+
 def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
+    if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
+        return _main(a)
     out, err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
     try:
-        return _main(argv)
+        return _main(a)
     finally:
         sys.stdout, sys.stderr = out, err
 
 
-def _main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    a = parser.parse_args(argv)
+def _main(a: argparse.Namespace) -> int:
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
@@ -2279,7 +2334,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
                 # The document carries what was not read and not evaluated as notifications, and the operator
                 # still gets the notice on stderr: a partial audit must not look clean on either channel.
-                print(json.dumps(sarif_of_audit(rep), indent=2))
+                _raw_stdout().write(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":
@@ -2324,8 +2379,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             )
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
-        else:
-            print(res["manifests"], end="")
+        else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
+            _raw_stdout().write(res["manifests"])
         print(
             yaml.safe_dump(
                 {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
@@ -2373,7 +2428,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
             else:
-                print(out["manifests"], end="")
+                _raw_stdout().write(out["manifests"])
             print(
                 yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
                 file=sys.stderr,
@@ -3108,7 +3163,7 @@ def _policy_generate(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(body, fmt)
         return 0
     if not a.output:
-        sys.stdout.write(text)
+        _raw_stdout().write(text)  # the document: safe_dump_all escapes every non-ASCII character
     rules = sorted({row["ruleId"] for row in g.generated})
     lines = [
         f"{len(g.documents)} policies for {len(rules)} rules ({', '.join(engines)}, mode {a.mode}, {platform})"

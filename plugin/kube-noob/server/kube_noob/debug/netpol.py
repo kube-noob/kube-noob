@@ -211,6 +211,11 @@ def policy_problem(pol: dict[str, Any]) -> str | None:
     why = selector_problem(spec.get("podSelector"))
     if why:
         return f"spec.podSelector: {why}"
+    types = spec.get("policyTypes")
+    # A scalar is not a list of directions: iterating "Ingress" yields letters, so the policy read as selecting no
+    # direction and the answer as allowed (G279). The API server accepts only these two values.
+    if types is not None and (not isinstance(types, list) or any(t not in ("Ingress", "Egress") for t in types)):
+        return f"spec.policyTypes is {types!r:.60}, not a list of Ingress and Egress"
     for direction in ("ingress", "egress"):
         rules = spec.get(direction)
         if rules is None:
@@ -221,13 +226,18 @@ def policy_problem(pol: dict[str, Any]) -> str | None:
             if not isinstance(rule, dict):
                 return f"spec.{direction}[{i}] is {type(rule).__name__}, not a mapping"
             peers = rule.get("from") if direction == "ingress" else rule.get("to")
+            side = "from" if direction == "ingress" else "to"
+            if peers is not None and not isinstance(peers, list):
+                return f"spec.{direction}[{i}].{side} is {type(peers).__name__}, not a list"
+            ports = rule.get("ports")
+            if ports is not None and not isinstance(ports, list):
+                return f"spec.{direction}[{i}].ports is {type(ports).__name__}, not a list"
             for j, peer in enumerate(peers or []):
                 if not isinstance(peer, dict):
                     continue
                 for sel_field in ("podSelector", "namespaceSelector"):
                     why = selector_problem(peer.get(sel_field))
                     if why:
-                        side = "from" if direction == "ingress" else "to"
                         return f"spec.{direction}[{i}].{side}[{j}].{sel_field}: {why}"
     return None
 
@@ -290,12 +300,14 @@ class Inventory:
         cni: str | None = None,
         *,
         cni_unread: bool = False,
+        cni_unknown: str = "could not be read",
     ) -> None:
         self.default_namespace = default_namespace
         # Set when the live read of the CNI failed (G279). Not the same as no CNI being named: with no name the
         # OVN-Kubernetes semantics are the documented default, and with a failed read this may be the Calico
         # 3.32 cluster that ignores the admin tier. See _cni_not_read.
         self.cni_unread = cni_unread
+        self.cni_unknown = cni_unknown  # "could not be read", or "was not identified" (G279)
         self.policies: list[dict[str, Any]] = []
         self.workloads: dict[tuple[str, str, str], Endpoint] = {}
         self.namespace_labels: dict[str, dict[str, str]] = {}
@@ -321,6 +333,8 @@ class Inventory:
         self.unknown_apis: set[str] = set()
         # Namespaces whose labels a live read could not get (G279); see _reads_namespace_labels.
         self.namespace_unread: list[str] = []
+        # Namespaces whose NetworkPolicy list a live read could not get: a direction there is not evaluated (G279).
+        self.np_unread: list[str] = []
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
@@ -438,10 +452,10 @@ class Inventory:
             self.unknown_apis.add("v1alpha2")
         self.enforcement_unknown += refs
         self.enforcement_unknown_why = (
-            "the cluster's CNI could not be read, so whether it enforces that tier is not known"
+            f"the cluster's CNI {self.cni_unknown}, so whether it enforces that tier is not known"
         )
         self.notes.append(
-            f"{', '.join(refs)}: the cluster's CNI could not be read, so whether it enforces this tier is not known."
+            f"{', '.join(refs)}: the cluster's CNI {self.cni_unknown}, so whether it enforces this tier is not known."
         )
 
     def _apply_cni_to_cnp(self, name: str, version: str | None) -> None:
@@ -766,6 +780,17 @@ def _networkpolicy_tier(
             "tier": "NetworkPolicy",
             "allowed": True,
             "reason": f"{subject.describe()} is outside the cluster; no NetworkPolicy governs its {word}.",
+        }
+    if subject.namespace in inv.np_unread:
+        # The list that would decide this direction was never read. "No NetworkPolicy selects it, so all traffic
+        # is allowed" was the reason this direction gave, under an undetermined verdict (G279).
+        return {
+            "evaluated": False,
+            "tier": "NetworkPolicy",
+            "allowed": None,
+            "undetermined": True,
+            "reason": f"The NetworkPolicies in {subject.namespace} could not be read, so whether they let this "
+            f"{word} through is not known.",
         }
     if subject.host_network:
         return {
@@ -1415,6 +1440,18 @@ def _namespace_labels_read(backend: Any, ns: str) -> tuple[dict[str, Any] | None
         return None, str(exc)
 
 
+def _serves(backend: Any, resource: str, namespace: str) -> bool:
+    """Whether a list of ``resource`` in ``namespace`` was read: the API is served. A failed read says nothing."""
+    from kube_noob.debug.cluster import list_items, read
+    from kube_noob.errors import ClusterAccessError
+
+    try:
+        list_items(read(backend, resource, namespace=namespace), resource, namespace)
+    except ClusterAccessError:
+        return False
+    return True
+
+
 def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str | None = None) -> Inventory:
     """Read (never write) the NetworkPolicies, namespaces and workloads the two endpoints need.
 
@@ -1429,6 +1466,7 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
     notes: list[str] = []
     unreadable: list[str] = []
     namespace_unread: list[str] = []
+    np_unread: list[str] = []
     for spec in (source, destination):
         s = spec.strip()
         if ":" in s and "=" in s:
@@ -1453,10 +1491,11 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
         # verdict, as an unreadable tier does: a namespace-scoped token reads one namespace and not the other, and
         # naming the one it could not read is more use than an error (G279).
         try:
-            policies = list_items(read(backend, "networkpolicies", namespace=ns), "networkpolicies")
+            policies = list_items(read(backend, "networkpolicies", namespace=ns), "networkpolicies", ns)
         except ClusterAccessError as exc:
             notes.append(f"NetworkPolicies in namespace {ns} could not be read ({exc})")
             unreadable.append(f"NetworkPolicy in namespace {ns}")
+            np_unread.append(ns)
             policies = []
         objects += [{**item, "kind": "NetworkPolicy"} for item in policies]
         nso, why = _namespace_labels_read(backend, ns)
@@ -1476,6 +1515,8 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
     # your cluster and decides nothing" needs the policy in hand.
     admin_tier_inert = False
     cni_unread = False
+    caller_cni = bool(cni)
+    ccnp_served = False
     if not cni:
         # `--cni` is the caller's claim; on a live cluster the fact is readable. Calico publishes its version in
         # `clusterinformations.crd.projectcalico.org` ("set automatically by calico/node").
@@ -1513,9 +1554,30 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
                 )
                 unreadable.append(tier_kind)
             continue
+        ccnp_served = ccnp_served or tier_plural == "ciliumclusterwidenetworkpolicies"
         objects += [{**item, "kind": tier_kind} for item in items]
-    inv = Inventory(objects, cni=cni, cni_unread=cni_unread)
+    cni_unknown = "could not be read"
+    if not caller_cni and not cni and not cni_unread:
+        # No Calico. "So OVN-Kubernetes" was the assumption here, and on Cilium -- which states no support for
+        # AdminNetworkPolicy -- or kindnet, flannel or OpenShift SDN it decided an answer the CNI may not enforce
+        # (G279). The CNI is identified from what the cluster serves, or it is not identified.
+        if ccnp_served:
+            cni = "cilium"
+            notes.append("CNI read from the cluster: Cilium (ciliumclusterwidenetworkpolicies.cilium.io is served)")
+        elif namespaces and _serves(backend, "egressfirewalls", namespaces[0]):
+            cni = "ovn-kubernetes"
+            notes.append("CNI read from the cluster: OVN-Kubernetes (egressfirewalls.k8s.ovn.org is served)")
+        else:
+            cni_unread, cni_unknown = True, "was not identified"
+            notes.append(
+                "the cluster's CNI was not identified: none of Calico's clusterinformations, Cilium's clusterwide "
+                "policy or OVN-Kubernetes' EgressFirewall is served (or readable), so whether it enforces "
+                "AdminNetworkPolicy, BaselineAdminNetworkPolicy and ClusterNetworkPolicy is not known and an answer "
+                "one of them decides is undetermined. Pass --cni if you know it"
+            )
+    inv = Inventory(objects, cni=cni, cni_unread=cni_unread, cni_unknown=cni_unknown)
     inv.notes.extend(notes)
     inv.tier_unreadable = unreadable
     inv.namespace_unread = namespace_unread
+    inv.np_unread = np_unread
     return inv

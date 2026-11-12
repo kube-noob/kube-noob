@@ -271,6 +271,8 @@ Where it is applied (found in the code):
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
 - `kube_noob/build/oci.py` `_json` calls `sanitize.loads_bounded`
+- `kube_noob/cli.py` `_VisibleStream.__init__` calls `sanitize.CommandGuard`
+- `kube_noob/cli.py` `_VisibleStream.workflow_command` calls `sanitize.visible_lines`
 - `kube_noob/cli.py` `_VisibleStream.write` calls `sanitize.visible_lines`
 - `kube_noob/cli.py` `_tprint` calls `sanitize.visible_lines`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
@@ -325,7 +327,7 @@ Where it is applied (found in the code):
 - `kube_noob/vuln/vex.py` `_documents` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/vex.py` `load` calls `sanitize.loads_bounded`
 
-Finding kinds it reports (read from its source): `bidi-override`, `instruction`, `instruction-hint`, `markdown-image`, `markdown-link`, `role-marker`, `tool-call`, `unicode-tags`, `zero-width`.
+Finding kinds it reports (read from its source): `instruction`, `instruction-hint`, `markdown-image`, `markdown-link`, `role-marker`, `tool-call`.
 
 What each does, shown by running the sanitiser on a probe built for the purpose (the document does not quote attack text):
 

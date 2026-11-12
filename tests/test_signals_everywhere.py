@@ -250,7 +250,7 @@ class _Cluster:
             return {"metadata": {"name": "api"}, "spec": {"selector": {"matchLabels": {"app": "api"}}}, "status": {}}
         if resource == "pods":
             pod = {
-                "metadata": {"name": "api-1"},
+                "metadata": {"name": "api-1", "namespace": "shop"},  # the API server always sends it (D9)
                 "spec": {"nodeName": "w1"},
                 "status": {
                     "phase": "Running",

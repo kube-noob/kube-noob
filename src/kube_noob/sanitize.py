@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import html
 import json
 import re
@@ -163,15 +164,21 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
     return json.loads(data)
 
 
-# Terminal control sequences, removed whole: CSI (ESC [ ... final), the string sequences OSC (ESC ], which carries
-# OSC 8 hyperlinks and OSC 52 clipboard writes), DCS (ESC P), SOS (ESC X), PM (ESC ^) and APC (ESC _), each to BEL
-# or ST, and the two-character escapes. A lone ESC that starts none of these is a control character like any other.
+# Terminal control sequences, removed whole (to nothing: a space would split what the sequence sat inside): CSI
+# (ESC [ ... final), the string sequences OSC (ESC ], which carries OSC 8 hyperlinks and OSC 52 clipboard writes), DCS
+# (ESC P), SOS (ESC X), PM (ESC ^) and APC (ESC _), each to BEL or ST, and the two-character escapes. A lone ESC that
+# starts none of these is a control character like any other.
 _TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]{0,512}(?:\x07|\x1b\\)?|[ -/]*[0-~])")
+
+
+def _ranges(*spans: tuple[int, int]) -> str:
+    return "".join(re.escape(chr(lo)) + ("-" + re.escape(chr(hi)) if hi != lo else "") for lo, hi in spans)
+
 
 #: Format characters (Unicode general category Cf), FIXED here rather than read from ``unicodedata``: the
 #: interpreter's Unicode table differs across the supported Pythons (3.11 has Unicode 14, 3.13 has 15.1), and output
-#: must not. This is the Cf set of Unicode 15.1, plus the whole tag block; a test fails if this interpreter knows a
-#: Cf character the list lacks. Anything the interpreter merely does not know (category Cn) is kept, not blanked.
+#: must not. This is the Cf set of Unicode 15.1 plus the whole tag block; a test fails if this interpreter knows a Cf
+#: character the list lacks.
 _FORMAT_RANGES = (
     (0x00AD, 0x00AD),  # soft hyphen
     (0x0600, 0x0605),  # Arabic prepended concatenation marks
@@ -194,75 +201,189 @@ _FORMAT_RANGES = (
     (0x1D173, 0x1D17A),  # musical symbol beam and phrase controls
     (0xE0000, 0xE007F),  # the tag block
 )
+#: Default-ignorable characters that are not Cf but print nothing, and the unassigned default-ignorable ranges: the
+#: Hangul fillers, the combining grapheme joiner, variation selectors, Mongolian free variation selectors, and
+#: U+2065, U+FFF0-FFF8, U+E0080-E0FFF (reserved by Unicode as default-ignorable). Removed like format characters,
+#: except where the text needs them (see :func:`_keep_in_context`).
+_IGNORABLE_RANGES = (
+    (0x034F, 0x034F),  # combining grapheme joiner
+    (0x115F, 0x1160),  # Hangul choseong and jungseong fillers
+    (0x17B4, 0x17B5),  # Khmer inherent vowels
+    (0x180B, 0x180D),  # Mongolian free variation selectors
+    (0x180F, 0x180F),
+    (0x2065, 0x2065),
+    (0x3164, 0x3164),  # Hangul filler
+    (0xFE00, 0xFE0F),  # variation selectors
+    (0xFFA0, 0xFFA0),  # halfwidth Hangul filler
+    (0xFFF0, 0xFFF8),
+    (0xE0080, 0xE0FFF),  # variation selectors supplement (E0100-E01EF) and the reserved rest
+)
+#: Replaced like controls: line and paragraph separators, surrogates, private use (what it shows is the reader's
+#: font's business), noncharacters, and the braille blank, which prints as a space.
+_REPLACED_RANGES = (
+    (0x2028, 0x2029),
+    (0x2800, 0x2800),
+    (0xD800, 0xF8FF),  # surrogates, then the BMP private use area
+    (0xFDD0, 0xFDEF),
+    (0xFFFE, 0xFFFF),
+    (0xF0000, 0x10FFFF),
+)
+#: Combining marks whose runs are capped: the blocks "Zalgo" text stacks. A run longer than this many is cut.
+_COMBINING_RANGES = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+MAX_COMBINING = 4
+
 _FORMAT = frozenset(c for lo, hi in _FORMAT_RANGES for c in range(lo, hi + 1))
+_IGNORABLE = frozenset(c for lo, hi in _IGNORABLE_RANGES for c in range(lo, hi + 1))
 _JOINERS = frozenset({0x200C, 0x200D})  # ZWNJ and ZWJ: kept after a printing non-ASCII character
+_BIDI_CODES = frozenset([*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C])
+_TAG_CODES = frozenset(range(0xE0000, 0xE0080))
+#: Every character the rule may change, as one class: a text without one is returned as it is, in one regex pass.
+_NONASCII_SPECIAL = re.compile(
+    "["
+    + _ranges((0x80, 0x9F), *_FORMAT_RANGES, *_IGNORABLE_RANGES, *_REPLACED_RANGES)
+    + "]|["
+    + _ranges(*_COMBINING_RANGES)
+    + "]{"
+    + str(MAX_COMBINING + 1)
+    + ",}"
+)
+_ASCII_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _controlish(o: int) -> bool:
-    """C0 and C1 controls, DEL, line and paragraph separators, lone surrogates and private-use characters: replaced,
-    never removed, so what they separated stays separated. Private use is in the list because what it shows depends
-    on the reader's font, so what the reader sees cannot be known; the ranges are fixed by Unicode, not by the
-    interpreter's table."""
-    return (
-        o < 0x20
-        or 0x7F <= o <= 0x9F
-        or o in (0x2028, 0x2029)
-        or 0xD800 <= o <= 0xF8FF  # surrogates, then the BMP private use area
-        or o >= 0xF0000
-    )
+@functools.lru_cache(maxsize=16)
+def _controls(keep: str) -> re.Pattern[str]:
+    """The ASCII control characters other than those in ``keep``, as one class."""
+    chars = "".join(re.escape(chr(c)) for c in [*range(0x20), 0x7F] if chr(c) not in keep)
+    return re.compile("[" + chars + "]")
+
+
+#: An ASCII identifier character: a removed character with one of these on both sides sat inside a name, a path or
+#: an id, and is shown as a marker so that "web<U+200B>x" cannot pass for "webx".
+_IDENT = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-")
+
+#: The core's per-call statistics, for tests that count operations instead of timing them.
+STATS = {"special": 0}
+
+
+def _replaced(o: int) -> bool:
+    return o < 0x20 or 0x7F <= o <= 0x9F or any(lo <= o <= hi for lo, hi in _REPLACED_RANGES)
 
 
 def _printing_non_ascii(ch: str) -> bool:
     o = ord(ch)
-    return o > 0x7F and not _controlish(o) and o not in _FORMAT
+    return o > 0x7F and not _replaced(o) and o not in _FORMAT and o not in _IGNORABLE
 
 
-def visible(text: str, *, replacement: str = " ", keep: str = "") -> str:
-    """``text`` as it should reach a terminal or a file a person reads. The rule (G279):
+def _keep_in_context(text: str, i: int, o: int) -> bool:
+    """A format or ignorable character the text needs where it stands. ZWJ and ZWNJ after a printing non-ASCII
+    character (emoji sequences; Devanagari, Sinhala, Kannada, Malayalam, Persian). VS15/VS16 after one, or between
+    a keycap base and U+20E3. Other variation selectors after one (standardized and ideographic variation
+    sequences). The Mongolian vowel separator and free variation selectors after a Mongolian letter."""
+    prev = text[i - 1] if i > 0 else ""
+    # a variation selector belongs to the glyph before it: "\u2764\ufe0f" + ZWJ + "\U0001f525" is one emoji
+    j = i - 1
+    while j > 0 and (0xFE00 <= ord(text[j]) <= 0xFE0F or 0xE0100 <= ord(text[j]) <= 0xE01EF):
+        j -= 1
+    base = text[j] if j >= 0 and i > 0 else ""
+    after_non_ascii = bool(base) and _printing_non_ascii(base) and (base == prev or o in _JOINERS)
+    if o in _JOINERS or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF:
+        if after_non_ascii:
+            return True
+        return o in (0xFE0E, 0xFE0F) and prev in "0123456789#*" and text[i + 1 : i + 2] == "\u20e3"
+    if o in (0x180B, 0x180C, 0x180D, 0x180E, 0x180F):
+        return bool(prev) and 0x1820 <= ord(prev) <= 0x18AF
+    return False
 
-    * terminal control sequences (CSI, OSC -- hyperlinks and clipboard writes --, DCS, APC, PM, SOS) are replaced
-      by ``replacement``; so is every C0 and C1 control character, DEL, the line and paragraph separators and a
-      lone surrogate. CR LF counts as one line break. ``keep`` names characters left alone (the newline and the
-      tab for ``visible_lines``);
-    * format characters are REMOVED without a space: bidi overrides, embeddings, isolates and marks (LRM, RLM,
-      ALM), the tag block, the soft hyphen, the BOM, zero-width spaces, interlinear annotation marks. They print
-      nothing, so removing them changes no visible text, and a space would split a word;
-    * ZWJ and ZWNJ are kept after a printing non-ASCII character -- inside an emoji sequence, in the scripts
-      that need them (Devanagari, Sinhala, Kannada conjuncts, a Malayalam chillu at the end of a word, Persian
-      ZWNJ) -- and removed after ASCII or at the start, where they only split a word. ``clean`` keeps them in the
-      same places;
-    * private-use characters are replaced like controls (their glyph is whatever the reader's font says);
-    * everything else is kept, including code points this interpreter's Unicode table does not know yet, so the
-      result is the same on every supported Python.
 
-    Callers collapse whitespace and cap the length themselves. Text with none of these characters is returned
-    unchanged.
-    """
-    if text.isascii() and "\x1b" not in text and all(" " <= ch < "\x7f" or ch in keep for ch in text):
+def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, int] | None = None) -> str:
+    """The one rule every output and every MCP result follows (``visible`` and ``clean`` both call it)."""
+    if "\x1b" in text:
+        text = _TERMINAL_ESCAPE.sub("", text)
+        if stats is not None:
+            stats["escape"] = stats.get("escape", 0) + 1
+    if "\r\n" in text:
+        text = text.replace("\r\n", "\n" if "\n" in keep else replacement)
+    controls = _controls(keep)
+    if text.isascii():
+        if not controls.search(text):
+            return text
+        return controls.sub(replacement, text)
+    has_controls = controls.search(text) is not None
+    if not has_controls and not _NONASCII_SPECIAL.search(text):
         return text
-    stripped = _TERMINAL_ESCAPE.sub(replacement, text) if "\x1b" in text else text
     out: list[str] = []
-    n = len(stripped)
-    i = 0
-    while i < n:
-        ch = stripped[i]
-        o = ord(ch)
-        if ch in keep:
-            out.append(ch)
-        elif ch == "\r" and i + 1 < n and stripped[i + 1] == "\n":
-            out.append("\n" if "\n" in keep else replacement)
-            i += 1
-        elif _controlish(o):
+    pos = 0
+    last = ""  # the last character written, for the marker's left neighbour
+    pattern = _NONASCII_SPECIAL if not has_controls else _ANY_SPECIAL
+    for m in pattern.finditer(text):
+        STATS["special"] += 1
+        start, end = m.span()
+        if start > pos:
+            out.append(text[pos:start])
+            last = text[start - 1]
+        pos = end
+        seg = m.group(0)
+        if len(seg) > 1:  # a run of combining marks: the first MAX_COMBINING stay
+            out.append(seg[:MAX_COMBINING])
+            last = seg[MAX_COMBINING - 1]
+            if stats is not None:
+                stats["combining"] = stats.get("combining", 0) + len(seg) - MAX_COMBINING
+            continue
+        o = ord(seg)
+        if seg in keep:
+            out.append(seg)
+            last = seg
+        elif o < 0x20 or o == 0x7F or _replaced(o):
             out.append(replacement)
-        elif o in _JOINERS:
-            if i > 0 and _printing_non_ascii(stripped[i - 1]):
-                out.append(ch)
-        elif o in _FORMAT:
-            pass
+            last = replacement[-1:]
+            if stats is not None:
+                stats["control"] = stats.get("control", 0) + 1
+        elif _keep_in_context(text, start, o):
+            out.append(seg)
+            last = seg
         else:
-            out.append(ch)
-        i += 1
+            if stats is not None:
+                kind = "tag" if o in _TAG_CODES else "bidi" if o in _BIDI_CODES else "format"
+                stats[kind] = stats.get(kind, 0) + 1
+            if mark:
+                j = end
+                while j < len(text) and (ord(text[j]) in _FORMAT or ord(text[j]) in _IGNORABLE):
+                    j += 1
+                after = text[j : j + 1]
+                if last and after and last in _IDENT and after in _IDENT:
+                    marker = f"<U+{o:04X}>"
+                    out.append(marker)
+                    last = ">"
+    out.append(text[pos:])
     return "".join(out)
+
+
+_ANY_SPECIAL = re.compile(_NONASCII_SPECIAL.pattern + r"|[\x00-\x1f\x7f]")
+
+
+def visible(text: str, *, replacement: str = " ", keep: str = "", mark: bool = False) -> str:
+    """``text`` as it should reach a terminal or a file a person reads. The rule (G279), shared with ``clean``:
+
+    * terminal control sequences (CSI, OSC -- hyperlinks and clipboard writes --, DCS, APC, PM, SOS) are removed;
+    * C0 and C1 controls, DEL, the line and paragraph separators, lone surrogates, private use, noncharacters and
+      the braille blank are replaced by ``replacement``. CR LF counts as one line break. ``keep`` names characters
+      left alone (the newline and the tab for ``visible_lines``);
+    * format and default-ignorable characters are removed: bidi overrides, embeddings, isolates and marks (LRM,
+      RLM, ALM), the tag block, the soft hyphen, the BOM, zero-width spaces, interlinear annotation marks, the
+      Hangul fillers, the combining grapheme joiner, variation selectors and the reserved default-ignorables. With
+      ``mark``, one that sat inside an ASCII name (an identifier character on both sides) is shown as ``<U+200B>``
+      instead, so ``web<U+200B>x`` cannot pass for ``webx``;
+    * kept where the text needs them: ZWJ and ZWNJ, variation selectors after a printing non-ASCII character (emoji
+      sequences, Devanagari, Sinhala, Malayalam, Persian, ideographic variation sequences), VS16 in a keycap, and
+      the Mongolian selectors after a Mongolian letter;
+    * a run of more than four combining marks from the diacritical blocks is cut to four;
+    * everything else is kept, including code points this interpreter does not know yet, so the result is the same
+      on every supported Python.
+
+    Callers collapse whitespace and cap the length themselves. Text with none of these characters is returned as
+    it is, after one regular-expression pass.
+    """
+    return _core(text, replacement, keep, mark)
 
 
 def replace_surrogates(text: str) -> str:
@@ -273,32 +394,93 @@ def replace_surrogates(text: str) -> str:
     return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
 
 
-def visible_lines(text: str) -> str:
+def visible_lines(text: str, *, mark: bool = False) -> str:
     """``visible`` for multi-line text -- a terminal line, a log, a whole Markdown document: the newline and the tab
     are kept (CR LF becomes a newline), everything else that does not print is handled as ``visible`` says."""
-    return visible(text, keep="\n\t")
+    return _core(text, " ", "\n\t", mark)
 
 
 def visible_squeezed(text: str) -> str:
     """``visible`` for one line, where each RUN of replaced characters becomes a single space -- what a
     C0-range substitution did, so a scanner's CR LF still reads as one space. Ordinary spaces are untouched."""
-    out: list[str] = []
-    run = False
-    for ch in visible(text, replacement="\x00"):
-        if ch == "\x00":
-            if not run:
-                out.append(" ")
-            run = True
-        else:
-            out.append(ch)
-            run = False
-    return "".join(out)
+    v = _core(text, "\x00", "", True)
+    return re.sub("\x00+", " ", v) if "\x00" in v else v
+
+
+def one_line(text: str) -> str:
+    """``visible`` with every run of white space collapsed to one space: a name or a message on one line."""
+    return " ".join(_core(text, " ", "", True).split())
+
+
+#: The legacy workflow-command prefix: actions/runner (v2.321.0, src/Runner.Common/ActionCommand.cs, TryParse)
+#: takes ``##[`` ANYWHERE in a line, up to the next ``]``, as a command.
+_LEGACY_COMMAND = re.compile(r"(?<=##)\[")
+
+
+class CommandGuard:
+    """Keeps text from being read as a GitHub Actions workflow command (G279, review CP3-Q3).
+
+    The runner reads a command from every line a step writes: ``TryParseV2`` takes a line that, after leading
+    white space, starts with ``::``; the legacy ``TryParse`` takes ``##[`` anywhere in a line. A ConfigMap key in an
+    audit line (``p##[stop-commands]token``) could stop command processing, forge an annotation, set a step output
+    or mask text. This makes both visible and inert, in plain ASCII: ``##[`` becomes ``## [`` and a line-leading
+    ``::`` becomes ``: :``. Nothing else changes. Applied always, not only under GITHUB_ACTIONS: a log is replayed.
+
+    Stateful, because a stream is written in pieces (``print`` writes the newline separately): it remembers the
+    last two characters and whether the current line so far is white space and at most one ``:``."""
+
+    def __init__(self) -> None:
+        self._tail = ""
+        self._lead: str | None = ""
+
+    @property
+    def at_line_start(self) -> bool:
+        return self._lead == ""
+
+    def reset(self) -> None:
+        """The next character starts a line (a command written on purpose has just ended one)."""
+        self._tail, self._lead = "", ""
+
+    def feed(self, text: str) -> str:
+        prev = self._tail
+        if "[" in text:
+            # An insertion can only land at or after len(prev): the look-behind needs two characters before "[".
+            text = _LEGACY_COMMAND.sub(" [", prev + text)[len(prev) :]
+        lead = self._lead
+        if lead is None and "\n" not in text:  # the common case: the middle of a line
+            self._tail = (prev + text)[-2:]
+            return text
+        parts = text.split("\n")
+        for i, part in enumerate(parts):
+            if i:
+                lead = ""
+            if lead is None:
+                continue
+            head = lead + part
+            body = head.lstrip()  # Python's white space is a superset of what .NET's TrimStart() removes
+            if body.startswith("::"):
+                cut = len(head) - len(body) + 1 - len(lead)
+                parts[i] = part[:cut] + " " + part[cut:]
+                lead = None
+            elif body in ("", ":"):
+                lead = head
+            else:
+                lead = None
+        self._lead = lead
+        out = "\n".join(parts)
+        self._tail = (prev + out)[-2:]
+        return out
+
+
+def defuse_workflow_commands(text: str) -> str:
+    """``text`` (whole lines) with no workflow command in it: see :class:`CommandGuard`."""
+    return CommandGuard().feed(text)
 
 
 def has_invisible(text: str, *, keep: str = "") -> bool:
     """Whether ``visible`` would change ``text`` (other than for the characters in ``keep``). For refusing a value
     outright -- a file name, a remembered command -- rather than cleaning it."""
-    return visible(text, keep=keep) != text
+    return _core(text, " ", keep, False) != text
 
 
 def _chars(*points: int | tuple[int, int]) -> str:
@@ -314,16 +496,7 @@ def _chars(*points: int | tuple[int, int]) -> str:
 
 ZWJ = chr(0x200D)
 BOM = chr(0xFEFF)
-_TAGS = re.compile("[" + _chars((0xE0000, 0xE007F)) + "]")
-_BIDI = re.compile("[" + _chars((0x202A, 0x202E), (0x2066, 0x2069), 0x200E, 0x200F, 0x061C) + "]")
-ZWNJ = chr(0x200C)
-_ZERO_WIDTH = re.compile("[" + _chars(0x200B, 0x200C, 0x2060, 0xFEFF, 0x180E, (0x2061, 0x2064)) + "]")
 _SPLITTERS = re.compile("[" + _chars(0x00AD, 0x034F) + "]")  # soft hyphen, combining grapheme joiner
-# ZWJ or ZWNJ after a non-ASCII character -- inside an emoji sequence, in a script that needs them (Persian,
-# Devanagari, Sinhala, Malayalam): kept, the same places `visible` keeps them. After ASCII they only split a word.
-_EMOJI_JOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWJ)
-_SCRIPT_NONJOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWNJ)
-_VS_AFTER_ASCII = re.compile(r"(?<=[A-Za-z0-9])[" + _chars((0xFE00, 0xFE0F)) + "]")  # never part of an emoji
 _FILLERS = re.compile("[" + _chars(0x3164, 0xFFA0, 0x115F, 0x1160) + "]")  # Hangul fillers look like spaces
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _ENTITY = re.compile(r"&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z]{2,10});")
@@ -621,23 +794,14 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     if head.startswith(BOM):
         head = head[1:]  # a byte-order mark from a Windows editor: dropped, not a finding
-    kept_joins = (
-        _SCRIPT_NONJOIN.sub("\x01", _EMOJI_JOIN.sub("\x00", head))
-        if (ZWJ in head or ZWNJ in head) and "\x00" not in head and "\x01" not in head
-        else None
-    )
-    work = kept_joins if kept_joins is not None else head
-    for rx, kind in ((_TAGS, "unicode-tags"), (_BIDI, "bidi-override")):
-        n = len(rx.findall(work))
-        if n:
-            findings.append(Finding(kind, f"{n} character(s) removed", field))
-            work = rx.sub("", work)
-    zero = len(_ZERO_WIDTH.findall(work)) + work.count(ZWJ) + len(_VS_AFTER_ASCII.findall(work))
-    split = len(_SPLITTERS.findall(work))
-    if zero or split:
-        findings.append(Finding("zero-width", f"{zero + split} character(s) removed", field))
-        work = _VS_AFTER_ASCII.sub("", _SPLITTERS.sub("", _ZERO_WIDTH.sub("", work.replace(ZWJ, ""))))
-    head = work.replace("\x00", ZWJ).replace("\x01", ZWNJ) if kept_joins is not None else work
+    # The same rule `visible` applies, from the same function, so an MCP result and a terminal line cannot disagree
+    # about a character (G279): escapes and format characters removed, controls replaced, joiners kept where a
+    # script or an emoji needs them.
+    stats: dict[str, int] = {}
+    head = _core(head, " ", "\n\t", False, stats)
+    for kind, label in (("tag", "unicode-tags"), ("bidi", "bidi-override"), ("format", "zero-width")):
+        if stats.get(kind):
+            findings.append(Finding(label, f"{stats[kind]} character(s) removed", field))
 
     def sub(rx: re.Pattern[str], kind: str, repl: Any) -> None:
         nonlocal head

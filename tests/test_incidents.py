@@ -117,6 +117,7 @@ def snapshot() -> dict[str, list[dict[str, Any]]]:
                 "reason": "FailedCreate",
                 "message": PSA_MSG,
                 "lastTimestamp": ts(2),
+                "metadata": {"name": "ev-1", "namespace": "shop"},
                 "involvedObject": {"kind": "ReplicaSet", "name": "reports-6d9f7c"},
             },
             {
@@ -124,6 +125,7 @@ def snapshot() -> dict[str, list[dict[str, Any]]]:
                 "reason": "Unhealthy",
                 "message": "Readiness probe failed: HTTP 500 password=hunter2",
                 "lastTimestamp": ts(3),
+                "metadata": {"name": "ev-2", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "orders-api-7d9f8c6b5-x2kq9"},
             },
             {
@@ -131,9 +133,16 @@ def snapshot() -> dict[str, list[dict[str, Any]]]:
                 "reason": "BackOff",
                 "message": "Back-off restarting failed container",
                 "lastTimestamp": ts(180),
+                "metadata": {"name": "ev-3", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "old-pod-1234567-abcde"},
             },
-            {"type": "Normal", "reason": "Scheduled", "message": "ok", "lastTimestamp": ts(1)},
+            {
+                "metadata": {"name": "ev-5", "namespace": "shop"},
+                "type": "Normal",
+                "reason": "Scheduled",
+                "message": "ok",
+                "lastTimestamp": ts(1),
+            },
         ],
         "deployments": [],
     }

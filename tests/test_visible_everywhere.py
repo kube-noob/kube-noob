@@ -46,7 +46,7 @@ def test_the_shared_variants_keep_what_each_caller_needs() -> None:
     assert sanitize.visible("a/\x07b", replacement="?") == "a/?b"
     assert sanitize.has_invisible("ls\u202e") and sanitize.has_invisible("ls\t-l")
     assert not sanitize.has_invisible("ls\t-l", keep="\t") and not sanitize.has_invisible("oc get pods -n shop")
-    for text in ("plain text", "naïve café → ✓ 日本語", "  two  spaces  ", ""):
+    for text in ("plain text", "na\u00efve caf\u00e9 \u2192 \u2713 \u65e5\u672c\u8a9e", "  two  spaces  ", ""):
         for fn in (sanitize.visible, sanitize.visible_lines, sanitize.visible_squeezed):
             assert fn(text) == text, (fn.__name__, text)
 
@@ -300,17 +300,6 @@ def test_the_mustgather_report_markdown(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------------------------- the twelfth module
 
-#: Escapes that spell a control, C1, bidi, zero-width, BOM or tag code point, or ESC in octal.
-_CONTROL_ESCAPE = re.compile(
-    r"\\(?:x[01][0-9a-f]|x7f|x[89][0-9a-f]|u00ad|u061c|u180e|u20(?:0[b-f]|2[89a-f]|6[0-9a-f])|ufeff"
-    r"|U000e00[0-7][0-9a-f]|0?33\b)",
-    re.IGNORECASE,
-)
-#: "Anything but printable ASCII", the other way to write the same list.
-_NOT_PRINTABLE_ASCII = re.compile(r"\[\^(?: -~|\\x20-\\x7e)", re.IGNORECASE)
-#: Calls that classify or strip characters one by one.
-_CHARACTER_CALLS = {"category", "isprintable", "translate", "maketrans"}
-
 #: (file, the exact source of the expression) -> why it may stay outside sanitize.py. One entry per pattern, not
 #: per file, so a second list added to an allowed file is still caught.
 ALLOWED_PRIVATE: dict[tuple[str, str], str] = {
@@ -333,65 +322,28 @@ ALLOWED_PRIVATE: dict[tuple[str, str], str] = {
         "src/kube_noob/toolkit.py",
         'r"^/[^\\x00]{0,499}$"',
     ): "a tool argument's path pattern: refuses a NUL, shows nothing",
-    ("src/kube_noob/build/github_history.py", "c.isprintable()"): (
+    ("src/kube_noob/build/github_history.py", "c.isprintable"): (
         "refuses a token from the environment that holds whitespace or control characters; never shown"
     ),
-    ("src/kube_noob/rhacs_central.py", "c.isprintable()"): (
+    ("src/kube_noob/rhacs_central.py", "c.isprintable"): (
         "refuses a token from the environment that holds whitespace or control characters; never shown"
+    ),
+    ("src/kube_noob/build/containerfile.py", 'text.removeprefix("\\ufeff")'): (
+        "drops a byte-order mark at the start of a Containerfile before it is parsed; one character, not a list"
     ),
 }
 
 
 def _private_lists(rel: str, src: str) -> list[tuple[int, str]]:
-    import ast
+    from tests.private_lists import private_lists
 
-    found = []
-    tree = ast.parse(src)
-    docstrings = {
-        id(n.body[0].value)
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-        and n.body
-        and isinstance(n.body[0], ast.Expr)
-        and isinstance(n.body[0].value, ast.Constant)
-    }
-    for node in ast.walk(tree):
-        seg = ""
-        if id(node) in docstrings:
-            continue
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            seg = ast.get_source_segment(src, node) or ""
-            value = node.value
-            controls = {c for c in value if (ord(c) < 32 and c not in "\n\t") or 0x7F <= ord(c) <= 0x9F}
-            spelled = bool(_CONTROL_ESCAPE.search(seg)) and "[" in seg  # a character class naming controls
-            if not (
-                spelled or _NOT_PRINTABLE_ASCII.search(seg) or _NOT_PRINTABLE_ASCII.search(value) or len(controls) > 1
-            ):
-                continue
-        elif isinstance(node, ast.Call):
-            f = node.func
-            if isinstance(f, ast.Attribute) and f.attr in _CHARACTER_CALLS:
-                seg = ast.get_source_segment(src, node) or ""
-            elif isinstance(f, ast.Name) and f.id == "chr" and node.args and isinstance(node.args[0], ast.Constant):
-                c = node.args[0].value
-                if isinstance(c, int) and (c < 0x20 or 0x7F <= c <= 0x9F or 0x200B <= c <= 0x206F or c == 0xFEFF):
-                    seg = ast.get_source_segment(src, node) or ""
-        if seg and (rel, seg) not in ALLOWED_PRIVATE:
-            found.append((getattr(node, "lineno", 0), seg[:120]))
-    return found
+    return [(line, seg) for line, seg in private_lists(src) if (rel, seg) not in ALLOWED_PRIVATE]
 
 
 def test_no_module_outside_sanitize_keeps_its_own_control_character_list() -> None:
     """A private copy of what `sanitize.visible` does is how eleven modules came to miss U+061C, the soft hyphen
-    and the tag block. This reads every module's syntax tree and refuses, outside sanitize.py: a string (a regex
-    literal, or a pattern held in a constant) with a character class naming control, C1, bidi, zero-width, BOM or
-    tag code points in any case of hex or in octal; "anything but printable ASCII" classes (``[^ -~]``,
-    ``[^\\x20-\\x7e]``); a literal holding two or more raw control characters; ``unicodedata.category``,
-    ``str.isprintable``, ``str.translate`` and ``str.maketrans``; and ``chr()`` of a control or format code point.
-
-    What it cannot catch: a pattern assembled at run time from pieces that are each innocent (``"\\\\x" + "1b"``),
-    a list of integers compared with ``ord()``, bytes patterns, a codec's error handler, and a helper that calls
-    one of these through another name. Review still has to look for those.
+    and the tag block. `tests/private_lists.py` reads every module's syntax tree and says what it catches and what
+    it cannot; anything it finds outside sanitize.py must be in ALLOWED_PRIVATE, per (file, expression), with why.
     """
     src = Path(__file__).resolve().parents[1] / "src" / "kube_noob"
     found = {}
@@ -410,23 +362,55 @@ def test_no_module_outside_sanitize_keeps_its_own_control_character_list() -> No
         assert seg in (src.parents[1] / rel).read_text(encoding="utf-8"), (rel, seg)
 
 
-@pytest.mark.parametrize(
-    "evasion",
-    [
-        're.sub(r"[\\x00-\\x1F]", " ", s)',
-        'X = r"[\\x7F-\\x9F]"',
-        'BAD = re.compile("[^\\x20-\\x7e]")',
-        'BAD = re.compile("[^ -~]")',
-        'BAD = "[\\033]"',
-        "s.translate(TABLE)",
-        "unicodedata.category(c)",
-        "c.isprintable()",
-        "chr(0x1b)",
-        'BAD = "[\\u202a-\\u202e]"',
-    ],
-)
-def test_the_structural_check_sees_the_usual_ways_to_write_a_list(evasion: str) -> None:
-    assert _private_lists("src/kube_noob/x.py", f"import re, unicodedata\n{evasion}\n"), evasion
+EVASIONS = {
+    "bytes regex": 'BAD = re.compile(rb"[\\x00-\\x1f\\x7f]")',
+    "range C1 ints": "BAD = {chr(c) for c in range(0x80, 0xa0)}",
+    "getattr isprintable": 'ok = "".join(c for c in s if getattr(c, "isprintable")())',
+    "filter(str.isprintable)": 'ok = "".join(filter(str.isprintable, s))',
+    "aliased category": 'from unicodedata import category as cat\nok = [c for c in s if cat(c)[0] != "C"]',
+    "join-built class": 'BAD = re.compile("[" + "".join(map(chr, range(32))) + "]")',
+    "N{} bidi class": 'BAD = re.compile("[\\N{RIGHT-TO-LEFT OVERRIDE}\\N{LEFT-TO-RIGHT OVERRIDE}]")',
+    "raw N{} class": 'BAD = re.compile(r"[\\N{ESCAPE}\\N{BELL}]")',
+    "raw u0000-u001f": 'BAD = re.compile(r"[\\u0000-\\u001f]")',
+    "raw u0080-u009f": 'BAD = re.compile(r"[\\u0080-\\u009f]")',
+    "raw octal": 'BAD = re.compile(r"[\\0-\\37\\177]")',
+    "f-string class": 'ESC = "\\x1b"\nBAD = re.compile(f"[{ESC}\\x07]")',
+    "f-string raw": 'LO = 0\nBAD = re.compile(rf"[\\x{LO}0-\\x1f]")',
+    "single raw ESC literal": 'BAD = s.replace("\\x1b", "")',
+    "ord compare": 'ok = "".join(c for c in s if 32 <= ord(c) < 127)',
+    "codec errors": 'ok = s.encode("ascii", "ignore").decode()',
+    "isascii and isprintable": 'ok = "".join(c for c in s if c.isascii() and c.isprintable)',
+    "hex escape upper U": 'BAD = re.compile("[\\U0000202E\\U0000202D]")',
+    "regex unicode property": 'BAD = regex.compile(r"\\p{Cc}|\\p{Cf}")',
+    "re.sub C0": 're.sub(r"[\\x00-\\x1F]", " ", s)',
+    "constant pattern": 'X = r"[\\x7F-\\x9F]"',
+    "octal ESC class": 'BAD = "[\\033]"',
+    "category call": 'ok = [c for c in s if unicodedata.category(c) in ("Cc", "Cf")]',
+    "chr ESC": "x = chr(0x1b)",
+    "bidi class": 'BAD = "[\\u202a-\\u202e]"',
+}
+NOT_A_LIST = {
+    "markdown pipe escape via translate": 'T = str.maketrans({"|": "\\\\|"})\nout = s.translate(T)',
+    "path separator translate": 'name = s.translate(str.maketrans("/", "_"))',
+    "accent folding via category": (
+        'folded = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")'
+    ),
+    "non-ASCII detection": 'NON_ASCII = re.compile("[^\\x20-\\x7e]")',
+    "a help text naming an escape": 'HELP = "use \\\\x1b[31m for red"',
+    "a whitespace class": 'WS = re.compile(r"[ \\t\\r\\n]+")',
+    "an ASCII check": "ok = ord(c) < 128",
+    "a loop over a range": "total = sum(i for i in range(32))",
+}
+
+
+@pytest.mark.parametrize("name", sorted(EVASIONS))
+def test_the_structural_check_sees_the_usual_ways_to_write_a_list(name: str) -> None:
+    assert _private_lists("src/kube_noob/x.py", f"import re, regex, unicodedata\n{EVASIONS[name]}\n"), name
+
+
+@pytest.mark.parametrize("name", sorted(NOT_A_LIST))
+def test_the_structural_check_does_not_fail_on_code_that_keeps_no_list(name: str) -> None:
+    assert not _private_lists("src/kube_noob/x.py", f"import re, unicodedata\n{NOT_A_LIST[name]}\n"), name
 
 
 # ------------------------------------------------------------------- the rule `visible` follows (review, G279)
@@ -473,9 +457,9 @@ def test_text_in_scripts_that_need_joiners_survives_unchanged(name: str) -> None
         ("a\U000e0041b", "ab"),
         ("soft\u00adhyphen", "softhyphen"),
         ("a\ufff9b\ufffbc", "abc"),
-        ("a\x1b[31mred\x1b[0m", "a red "),
-        ("a\x1b]8;;http://evil.example\x1b\\link\x1b]8;;\x1b\\b", "a link b"),
-        ("a\x1b]52;c;ZWNobyBwd25k\x07b", "a b"),
+        ("a\x1b[31mred\x1b[0m", "ared"),  # escapes go to nothing: a space would split what they sat inside
+        ("a\x1b]8;;http://evil.example\x1b\\link\x1b]8;;\x1b\\b", "alinkb"),
+        ("a\x1b]52;c;ZWNobyBwd25k\x07b", "ab"),
         ("a\x9bb\x85c\x07d", "a b c d"),
         ("a\u2028b\u2029c", "a b c"),
         ("a\ud800b", "a b"),
@@ -708,7 +692,10 @@ def test_a_command_driven_with_hostile_input_prints_none_of_it(
 def test_every_command_writes_through_the_boundary(
     leaf: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Whatever a command writes, to stdout or stderr, reaches the reader through `sanitize.visible_lines`."""
+    """Whatever a command writes, to stdout or stderr, reaches the reader through `sanitize.visible_lines` --
+    except the four long-running commands in `cli._UNWRAPPED` (serve, mcp, watch, admission serve), which are not
+    wrapped at all (review D6): their stdout is a protocol stream (MCP JSON-RPC) or a log, each message already
+    made safe where it is built, and a line filter in front of a protocol stream could only corrupt it."""
     import argparse
 
     from kube_noob import cli
@@ -718,14 +705,26 @@ def test_every_command_writes_through_the_boundary(
         print(f"{' '.join(leaf)} {HOSTILE}", file=__import__("sys").stderr)
         return 0
 
+    sub = {"admission_cmd": leaf[1]} if leaf[0] == "admission" and len(leaf) > 1 else {}
     monkeypatch.setattr(cli, "_dispatch", dispatch)
     monkeypatch.setattr(cli, "_settings", lambda a: None)
     monkeypatch.setattr(
-        argparse.ArgumentParser, "parse_args", lambda self, argv=None: argparse.Namespace(cmd=leaf[0], format="text")
+        argparse.ArgumentParser,
+        "parse_args",
+        lambda self, argv=None: argparse.Namespace(cmd=leaf[0], format="text", **sub),
     )
     assert cli.main(list(leaf)) == 0
     out = capsys.readouterr()
+    if tuple(leaf) in cli._UNWRAPPED:
+        assert out.out == f"{' '.join(leaf)} {HOSTILE}\n" == out.err  # untouched, byte for byte
+        return
     assert _clean(out.out + out.err) and " ".join(leaf) in out.out
+
+
+def test_only_the_four_long_running_commands_are_left_unwrapped() -> None:
+    from kube_noob import cli
+
+    assert {("serve",), ("mcp",), ("watch",), ("admission", "serve")} == cli._UNWRAPPED
 
 
 def test_the_yaml_view_carries_no_format_characters_and_json_escapes_them(capsys: pytest.CaptureFixture[str]) -> None:

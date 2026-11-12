@@ -116,6 +116,7 @@ def _fake_kubectl(tmp_path: Path) -> Path:
                 "type": "Warning",
                 "reason": "BackOff",
                 "message": "Back-off restarting failed container",
+                "metadata": {"name": "ev-1", "namespace": "orders"},
                 "involvedObject": {"kind": "Pod", "name": "api-1"},
                 "lastTimestamp": "2026-10-27T00:00:00Z",
             }

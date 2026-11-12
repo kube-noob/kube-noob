@@ -8,13 +8,14 @@ Every parsed document keeps a map ``path tuple -> 1-based line`` so findings can
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
 from kube_noob.errors import ManifestError
-from kube_noob.sanitize import replace_surrogates
+from kube_noob.sanitize import has_invisible, replace_surrogates
 
 MAX_INPUT_BYTES = 5_000_000
 MAX_DOCUMENTS = 1000
@@ -168,7 +169,77 @@ def _flatten_lists(docs: list[Document]) -> list[Document]:
     return out
 
 
-class _Dumper(yaml.SafeDumper):
+def _command_like(text: str) -> bool:
+    """Whether a string could put a GitHub workflow command in a log (``##[`` anywhere, or ``::`` that a folded or
+    block line could start with) -- see ``sanitize.CommandGuard``."""
+    return "##[" in text or "::" in text
+
+
+def json_document(obj: Any, **kwargs: Any) -> str:
+    """``json.dumps``, with ``##[`` written ``##\\u005b``: the same JSON, and no line a GitHub runner reads as a
+    legacy workflow command (G279). ``#`` occurs only inside JSON strings, so the replacement never touches the
+    syntax, and a pretty-printed line never starts with ``::``."""
+    return json.dumps(obj, **kwargs).replace("##[", "##\\u005b")
+
+
+class TerminalSafeDumper(yaml.SafeDumper):
+    """``yaml.SafeDumper`` whose output is safe on a terminal AND loses nothing (G279).
+
+    A string holding a character ``sanitize.visible`` would change -- an escape sequence, a control, a bidi
+    override, a format character -- is written double-quoted with every non-ASCII character escaped, so the bytes
+    carry no such character and load back to exactly the same string. A string that could put a GitHub workflow
+    command in a log (``##[``, ``::``) is written double-quoted on one line, ``[`` after ``##`` as ``\\x5B``. Every
+    other string is written as before, Unicode included, so output without those characters is byte-identical."""
+
+    def analyze_scalar(self, scalar: str) -> Any:
+        analysis = super().analyze_scalar(scalar)
+        if has_invisible(scalar, keep="\n\t") or _command_like(scalar):
+            analysis.allow_flow_plain = analysis.allow_block_plain = False
+            analysis.allow_single_quoted = analysis.allow_block = False
+        return analysis
+
+    def write_double_quoted(self, text: str, split: bool = True) -> None:
+        if _command_like(text):
+            self._write_one_line_double_quoted(text)
+            return
+        if not has_invisible(text, keep="\n\t"):
+            super().write_double_quoted(text, split)
+            return
+        saved, self.allow_unicode = self.allow_unicode, False
+        try:
+            super().write_double_quoted(text, split)
+        finally:
+            self.allow_unicode = saved
+
+    def _write_one_line_double_quoted(self, text: str) -> None:
+        """A double-quoted scalar on ONE line (never folded, so no line starts with ``::``), printable ASCII only,
+        ``[`` after ``##`` escaped. Loads back to exactly ``text``."""
+        out = []
+        for ch in text:
+            o = ord(ch)
+            if ch in '"\\':
+                out.append("\\" + ch)
+            elif 0x20 <= o < 0x7F:
+                out.append(ch)
+            elif o <= 0xFF:
+                out.append(f"\\x{o:02X}")
+            elif o <= 0xFFFF:
+                out.append(f"\\u{o:04X}")
+            else:
+                out.append(f"\\U{o:08X}")
+        data = "".join(out).replace("##[", "##\\x5B")
+        self.write_indicator('"', True)
+        self.column += len(data)
+        self.stream.write(data.encode(self.encoding) if self.encoding else data)
+        self.write_indicator('"', False)
+
+
+def dump_yaml(obj: Any, **kwargs: Any) -> str:
+    """``yaml.safe_dump`` through :class:`TerminalSafeDumper`: the YAML kube-noob prints and writes."""
+    return str(yaml.dump(obj, Dumper=TerminalSafeDumper, **kwargs))
+
+
+class _Dumper(TerminalSafeDumper):
     pass
 
 

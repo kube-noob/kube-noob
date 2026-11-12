@@ -612,12 +612,14 @@ def collect_evidence(backend: Backend, namespace: str, kind: str, name: str, log
             )
         sel = (obj.get("spec") or {}).get("selector") or {}
         sel_str = _selector_string(sel) if resource != "jobs" else f"job-name={name}"
-        pods = list_items(backend.get("pods", namespace=namespace, selector=sel_str), "pods") if sel_str else []
+        pods = (
+            list_items(backend.get("pods", namespace=namespace, selector=sel_str), "pods", namespace) if sel_str else []
+        )
     for pod in pods[:10]:
         lines.extend(_pod_summary(pod))
     lines.extend(_service_account_pull_secrets(backend, namespace, pods[:10]))
     # a response without an items list is a failed read, not "no events" (G279)
-    events = list_items(backend.get("events", namespace=namespace), "events")
+    events = list_items(backend.get("events", namespace=namespace), "events", namespace)
     names = {name} | {p.get("metadata", {}).get("name") for p in pods}
     rel = [
         e

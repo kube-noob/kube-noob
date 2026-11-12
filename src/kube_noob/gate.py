@@ -14,7 +14,6 @@ not run until the scanner reader (requirements R5.1) is built.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,7 @@ import yaml
 
 from kube_noob import __version__, sanitize
 from kube_noob.audit.model import Severity
+from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
 MAX_TOTAL = 5_000_000
@@ -782,13 +782,20 @@ def _cell(text: Any, limit: int = 300) -> str:
     return "".join(_MD_ESCAPE.get(c, c) for c in flat)
 
 
+def _annotation_data(text: Any) -> str:
+    """Text for a workflow command, escaped per the toolkit's rules (``%``, CR, LF), with ``##[`` written ``## [``
+    so no legacy command rides inside it (G279)."""
+    out = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return out.replace("##[", "## [")
+
+
 def _annotation(level: str, finding: dict[str, Any]) -> str:
     """One GitHub workflow command. `file`, `line`, `title` and the message are escaped per the toolkit's rules."""
 
     def esc(text: str, *, prop: bool = False) -> str:
         # A raw newline ends the command and an unescaped % corrupts the next escape. In a property, a comma or a
         # colon ends the property list, so those go too.
-        out = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        out = _annotation_data(text)
         # In a property a comma ends the property and a colon ends the property LIST, so both go -- every colon,
         # not just a pair of them: a value ending in ":" produced `title=x:::[KN-X] ...`, and the runner then cut
         # the title and moved the colon into the message.
@@ -861,7 +868,7 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     # SARIF file that could not be read. Those went unannotated, so the step was red and the pull request said
     # nothing. They come first, because they are why the step failed.
     for reason in reasons[:MAX_ANNOTATIONS_PER_TYPE]:
-        out.append(f"::error title=kube-noob gate::{reason}")
+        out.append(f"::error title=kube-noob gate::{_annotation_data(reason)}")
     if len(reasons) > MAX_ANNOTATIONS_PER_TYPE:
         out[-1] = (
             f"::error title=kube-noob gate::{len(reasons) - MAX_ANNOTATIONS_PER_TYPE + 1} more reason(s) this "
@@ -954,8 +961,9 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:
     if sarif_path:
-        Path(sarif_path).write_text(json.dumps(sarif(report), indent=1) + "\n", encoding="utf-8")
+        # json_document: a CI step that prints the file must not run a workflow command from it (G279)
+        Path(sarif_path).write_text(json_document(sarif(report), indent=1) + "\n", encoding="utf-8")
     if summary:
         Path(summary).write_text(markdown(report), encoding="utf-8", errors="replace")
     if quality:
-        Path(quality).write_text(json.dumps(codequality(report), indent=1) + "\n", encoding="utf-8")
+        Path(quality).write_text(json_document(codequality(report), indent=1) + "\n", encoding="utf-8")

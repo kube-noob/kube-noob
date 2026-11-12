@@ -395,21 +395,25 @@ def classify_read_failure(resource: str, failure: str | BaseException, name: str
             return "forbidden"
         if status != 404 or aggregated:
             return "not-read"
-        body = str(getattr(failure, "body", "") or "").strip()
-        try:
-            from kube_noob.sanitize import loads_bounded
+        body = str(getattr(failure, "body", "") or "")
+        # The API server answers a path no installed API serves with exactly Go's http.NotFound body, "404 page not
+        # found". Anything else -- a proxy's HTML page, an ingress "default backend - 404", an empty body, a Status
+        # cut short -- is a read that failed, not an absent API (G279).
+        if body.rstrip("\n") == "404 page not found":
+            return "not-served"
+        if name and body.lstrip().startswith("{"):
+            try:
+                from kube_noob.sanitize import loads_bounded
 
-            parsed = loads_bounded(body) if body.startswith("{") else None
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, dict):
-            details = parsed.get("details")
-            named = details.get("name") if isinstance(details, dict) else None
-            if name and parsed.get("reason") == "NotFound" and named == name:
-                return "not-found"
-            return "not-read"
-        # The API server's own "404 page not found" for a path no installed API serves.
-        return "not-served"
+                parsed = loads_bounded(body)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                details = parsed.get("details")
+                named = details.get("name") if isinstance(details, dict) else None
+                if parsed.get("kind") == "Status" and parsed.get("reason") == "NotFound" and named == name:
+                    return "not-found"
+        return "not-read"
     message = str(failure).strip()
     if getattr(failure, "stderr", None) is None and message.startswith("Not found: GET "):
         # the in-cluster backend's legacy text, matched whole against this resource's own path
@@ -439,16 +443,54 @@ def classify_read_failure(resource: str, failure: str | BaseException, name: str
     return "not-served" if served_absent else "not-read"
 
 
-def list_items(data: Any, resource: str) -> list[dict[str, Any]]:
-    """The ``items`` of a list response, or a failed read. A response without an ``items`` list is not zero
-    objects, and neither is one whose items are not objects: the backend returned something that is not a list of
-    Kubernetes objects, and reading it as empty is how a failed read became "nothing there"."""
+def _names_kind(kind: str, plural: str) -> bool:
+    """Whether ``kind`` (``NetworkPolicy``) is the kind of ``plural`` (``networkpolicies``)."""
+    k = kind.lower()
+    return plural in {k, k + "s", k + "es", (k[:-1] + "ies") if k.endswith("y") else k}
+
+
+def list_items(data: Any, resource: str, namespace: str | None = None) -> list[dict[str, Any]]:
+    """The ``items`` of a COMPLETE list of ``resource``, or a failed read (G279).
+
+    Not a list of that resource: a response without an ``items`` list, items that are not objects, a ``kind``
+    other than ``List`` or ``<Kind>List`` (a ``Status`` with ``items``, a PodList for NetworkPolicies), an item of
+    another kind, an item without ``metadata.name``, a namespaced item without a namespace or in another namespace
+    than the one asked for, or a page with ``metadata.continue`` set (the rest was never read). Each of these was
+    read as "nothing there", or as a list missing exactly the item that decided the answer. A response with no
+    ``kind`` at all is accepted: kubectl and the API server always send one, and test doubles often do not."""
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
         raise ClusterAccessError(f"{resource}: the response held no items list")
     bad = sum(1 for i in items if not isinstance(i, dict))
     if bad:
         raise ClusterAccessError(f"{resource}: the response held {bad} item(s) that are not objects")
+    try:
+        plural, rdef = resolve_resource(resource)
+        namespaced = rdef.namespaced
+    except ClusterAccessError:
+        plural, namespaced = resource, False
+    kind = data.get("kind")
+    if (
+        kind is not None
+        and kind != "List"
+        and not (isinstance(kind, str) and kind.endswith("List") and _names_kind(kind[: -len("List")], plural))
+    ):
+        raise ClusterAccessError(f"{resource}: the response was a {str(kind)[:60]!r}, not a list of {plural}")
+    meta = data.get("metadata")
+    if isinstance(meta, dict) and meta.get("continue"):
+        raise ClusterAccessError(f"{resource}: the response was one page of several (metadata.continue is set)")
+    for item in items:
+        ikind = item.get("kind")
+        if ikind is not None and not (isinstance(ikind, str) and _names_kind(ikind, plural)):
+            raise ClusterAccessError(f"{resource}: the list held a {str(ikind)[:60]!r}")
+        imeta = item.get("metadata")
+        if not isinstance(imeta, dict) or not isinstance(imeta.get("name"), str) or not imeta.get("name"):
+            raise ClusterAccessError(f"{resource}: the list held an item without metadata.name")
+        if namespaced:
+            ins = imeta.get("namespace")
+            if not isinstance(ins, str) or not ins or (namespace is not None and ins != namespace):
+                where = f"namespace {namespace}" if namespace else "the namespaces listed"
+                raise ClusterAccessError(f"{resource}: the list for {where} held an item from {ins!r}")
     return items
 
 

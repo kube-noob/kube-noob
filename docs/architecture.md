@@ -58,11 +58,15 @@ flowchart LR
 - MCP clients and model output are untrusted input: every tool validates with Pydantic, YAML is size/alias bounded.
   Text that came from outside is untrusted on the way out too: `kube_noob.sanitize` cleans every MCP result (invisible
   characters, role and tool-call markers, instruction phrases, exfiltrating Markdown) and flags it `untrusted`.
-  Terminal and file output goes through `sanitize.visible` and its variants: every CLI write to stdout and stderr
-  at one boundary in `cli.main`, the HTML report and the Markdown writers directly. The rule is fixed in
-  `sanitize` (escapes and controls become a space, format characters are removed, ZWJ/ZWNJ stay after
-  non-ASCII text) and does not depend on the interpreter's Unicode table; an AST test refuses a private
-  control-character list anywhere else (G279).
+  Terminal and file output goes through `sanitize.visible` and its variants: every CLI text write to stdout and
+  stderr at one boundary in `cli.main`, the HTML report and the Markdown writers directly. The rule is fixed in
+  `sanitize` (escapes removed, other controls become a space, format characters removed and marked `<U+XXXX>`
+  inside an identifier, ZWJ/ZWNJ stay after non-ASCII text), is shared with the MCP cleaner, and does not depend
+  on the interpreter's Unicode table; an AST test refuses a private control-character list anywhere else. The same
+  boundary breaks GitHub Actions workflow commands (`##[` and a line-leading `::`, `sanitize.CommandGuard`);
+  `gate --github-annotations` is the one deliberate exception. Documents (JSON, YAML, SARIF, the manifests `fix`
+  and `generate` print) bypass the text boundary and are escaped losslessly by their encoder, so stdout equals
+  `-o`; `serve`, `mcp`, `watch` and `admission serve` are not wrapped (G279).
   Pasted payloads are data too: an Alertmanager payload is read as JSON only (2 MB, 500 alerts, 64 labels, 2,000
   characters per value, every non-printing character dropped), and only an OpenShift release label sets the version.
 - The Agent Skill (`skill/kube-noob/scripts/kn.py`) is a fourth surface over the same toolkit: it calls

@@ -77,7 +77,7 @@ class Watcher:
         errors: list[str] = []
         for resource in RESOURCES:
             try:
-                snap[resource] = list(list_items(self.backend.get(resource, namespace=namespace), resource))
+                snap[resource] = list(list_items(self.backend.get(resource, namespace=namespace), resource, namespace))
             except ClusterAccessError as exc:
                 snap[resource] = []
                 errors.append(f"{namespace}/{resource}: {exc}")

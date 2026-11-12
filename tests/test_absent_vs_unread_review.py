@@ -251,6 +251,20 @@ def test_unread_namespace_labels_are_not_needed_for_the_name_label() -> None:
 # --------------------------------------------------------------- 2: the discovery warning that the cut threw away
 
 
+def _list_case(res: str, body: dict[str, Any]) -> str:
+    """A shell case arm answering ``kubectl get RES [--namespace NS] --output json`` with ``body``; a namespaced
+    list answers with only the items in the namespace asked for, as the API server does (review D9)."""
+    items = body["items"]
+    if not any((i.get("metadata") or {}).get("namespace") for i in items):
+        return f"  {res})\n    echo '{json.dumps(body)}'; exit 0;;\n"
+    arms = ""
+    for ns in sorted({i["metadata"]["namespace"] for i in items}):
+        mine = {**body, "items": [i for i in items if i["metadata"]["namespace"] == ns]}
+        arms += f"      {ns}) echo '{json.dumps(mine)}'; exit 0;;\n"
+    empty = json.dumps({**body, "items": []})
+    return f"  {res})\n    case \"$4\" in\n{arms}      *) echo '{empty}'; exit 0;;\n    esac;;\n"
+
+
 def _stub_kubectl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> Any:
     from kube_noob.debug.backends import KubectlBackend
 
@@ -258,11 +272,10 @@ def _stub_kubectl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: di
         "networkpolicies.networking.k8s.io": {"kind": "List", "items": [ALLOW_ALL]},
         "adminnetworkpolicies.policy.networking.k8s.io": {"kind": "List", "items": [ANP_DENY]},
         "baselineadminnetworkpolicies.policy.networking.k8s.io": {"kind": "List", "items": []},
+        "egressfirewalls.k8s.ovn.org": {"kind": "List", "items": []},  # an OVN-Kubernetes cluster (review D3)
     }
     cases = [f"  {res})\n    {body};;\n" for res, body in overrides.items()]
-    cases += [
-        f"  {res})\n    echo '{json.dumps(body)}'; exit 0;;\n" for res, body in lists.items() if res not in overrides
-    ]
+    cases += [_list_case(res, body) for res, body in lists.items() if res not in overrides]
     cases.append('  deployments.apps)\n    case "$3" in\n')
     cases += [f"      {d['metadata']['name']}) echo '{json.dumps(d)}'; exit 0;;\n" for d in WL]
     cases.append("    esac;;\n")

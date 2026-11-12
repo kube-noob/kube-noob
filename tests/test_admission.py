@@ -299,7 +299,10 @@ def test_lookups_fill_cross_object_rules_without_blocking() -> None:
     lookups = adm.Lookups(backend, sleep=pauses.append, rng=random.Random(7))
     cfg = adm.Config.build(platform="openshift", lookups=True)
     first = adm.review(_review(good), cfg, lookups)["response"]
-    assert any(w.startswith("[KN-C008]") for w in first["warnings"]), "no context yet: the PDB is not known"
+    # No context yet: the PDB list was never read, so KN-C008 is not evaluated -- said, not warned (G279). Before,
+    # it warned that a PDB was missing from a list nobody had read.
+    assert not any(w.startswith("[KN-C008]") for w in first["warnings"])
+    assert any("were not evaluated" in w and "poddisruptionbudgets" in w for w in first["warnings"])
     assert backend.calls == [], "a request never waits for the API server"
     lookups.refresh()
     assert ("poddisruptionbudgets", "shop") in backend.calls and ("storageclasses", None) in backend.calls

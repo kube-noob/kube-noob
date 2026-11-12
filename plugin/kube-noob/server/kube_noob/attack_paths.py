@@ -1058,7 +1058,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                items = list_items(backend.get(resource, namespace=ns), resource)
+                items = list_items(backend.get(resource, namespace=ns), resource, ns)
             except KubeNoobError as exc:  # forbidden, not served (no Routes or SCCs on Kubernetes), or no list
                 inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue

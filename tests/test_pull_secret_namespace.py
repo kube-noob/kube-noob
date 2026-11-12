@@ -174,6 +174,7 @@ def _fake_cluster(tmp_path: Path) -> Path:
                 "reason": "FailedToRetrieveImagePullSecret",
                 "message": "Unable to retrieve some image pull secrets (regcred); attempting to pull the image may "
                 "not succeed.",
+                "metadata": {"name": "ev-1", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "web-7d9c6b9f5-x2k8p"},
                 "lastTimestamp": "2026-10-28T10:00:00Z",
             },
@@ -181,6 +182,7 @@ def _fake_cluster(tmp_path: Path) -> Path:
                 "type": "Warning",
                 "reason": "Failed",
                 "message": "Error: ImagePullBackOff",
+                "metadata": {"name": "ev-2", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "web-7d9c6b9f5-x2k8p"},
                 "lastTimestamp": "2026-10-28T10:00:01Z",
             },
