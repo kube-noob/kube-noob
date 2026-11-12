@@ -210,5 +210,6 @@ def test_the_live_diagnostic_bundle_carries_the_statement() -> None:
     from kube_noob.debug.diagnose import bundle_markdown
 
     cov = known_issues.match(ETCD, "openshift", "4.16.20")["versionCoverage"]
-    md = bundle_markdown({"target": "deployment/shop/api", "backend": "t", "knownIssues": [], "knownIssuesCoverage": cov})
+    result = {"target": "deployment/shop/api", "backend": "t", "knownIssues": [], "knownIssuesCoverage": cov}
+    md = bundle_markdown(result)
     assert "NOT DETERMINED for OpenShift 4.16.20" in md
