@@ -508,8 +508,22 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     """Collect from YAML text (the ``yamlio`` caps on size, documents, depth and aliases apply)."""
     from kube_noob.yamlio import load_documents
 
-    # yamlio flattens a plain `List` into its items, so its documents are added one by one
-    return from_sources([(label, [d.data for d in load_documents(text)])])
+    # yamlio opens every list into its items (G272); the items of a typed list are put back under their list
+    # here, so an item that was not a usable object of that kind is still counted against that kind.
+    grouped: list[Any] = []
+    marker = "__from_list__"
+    for d in load_documents(text):
+        if d.from_list and d.from_list != "List":
+            if grouped and isinstance(grouped[-1], dict) and grouped[-1].get(marker) == d.from_list:
+                grouped[-1]["items"].append(d.data)
+            else:
+                grouped.append({"kind": d.from_list, "items": [d.data], marker: d.from_list})
+        else:
+            grouped.append(d.data)
+    for g in grouped:
+        if isinstance(g, dict):
+            g.pop(marker, None)
+    return from_sources([(label, grouped)])
 
 
 def _not_served(resource: str, message: str) -> bool:

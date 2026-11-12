@@ -320,7 +320,8 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
             more = f" and {r['moreNotEvaluated']} more" if r.get("moreNotEvaluated") else ""
             lines.append(f"{'':<19}not evaluated: {', '.join(r['notEvaluatedRules'])}{more}")
         if r.get("partlyEvaluatedRules"):
-            lines.append(f"{'':<19}partly evaluated: {', '.join(r['partlyEvaluatedRules'])}")
+            more = f" and {r['morePartlyEvaluated']} more" if r.get("morePartlyEvaluated") else ""
+            lines.append(f"{'':<19}partly evaluated: {', '.join(r['partlyEvaluatedRules'])}{more}")
         # From the row, not from EVIDENCE: one source, so the text and the JSON cannot drift apart.
         if r.get("warning"):
             lines.append(f"{'':<19}WARNING: {r['warning']}")
@@ -449,8 +450,12 @@ def not_evaluated_line(summary: dict[str, Any]) -> str:
 
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
+    # "not determined", not a number, while a rule declined on an object (`scoreWithheld` says which): a number
+    # printed above "was not evaluated in full" read as a verdict on what was not read (G272).
+    withheld = s.get("scoreWithheld")
+    score = f"not determined ({_one_line(withheld).partition(':')[0]})" if withheld else str(s["score"])
     print(
-        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={s['score']} | "
+        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={score} | "
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
     )
     for a in rep.get("assumptions", []):

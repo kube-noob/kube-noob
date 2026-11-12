@@ -33,6 +33,10 @@ class Document:
     #: Per-list memo for `locator`: the keys a list's items share, computed once per list rather than once
     #: per finding (G252). Out of `repr` and `==` so a Document still prints and compares as its content.
     ambiguous_keys: dict[PathT, frozenset[str]] = field(default_factory=dict, repr=False, compare=False)
+    #: The kind of the list this document was opened out of (`PodList`, `List`), or "" for a document of its own.
+    #: A reader that counts what a typed list held (the operators inventory) needs to know which list an item
+    #: that was not an object came from (G272).
+    from_list: str = field(default="", repr=False, compare=False)
 
     def line_for(self, path: PathT) -> int:
         """Best line for a path: exact match, else nearest existing ancestor, else doc start."""
@@ -152,41 +156,79 @@ def is_list_kind(data: object) -> bool:
     return isinstance(kind, str) and kind.endswith("List") and "items" in data and "spec" not in data
 
 
-def _flatten_lists(docs: list[Document]) -> list[Document]:
-    """Open every list kind whose items are all mappings into one document per item.
+def _open_list(d: Document, first_index: int) -> list[Document]:
+    """One document per item of a list document, each with its own slice of the line map.
 
-    An item of a typed list (`PodList`) that carries no `kind` or `apiVersion` -- the API server's own list
-    responses omit them; kubectl's printer adds them -- is given the list's (`Pod`, `v1`), set in place so the
-    fixer still writes to the same dict. A list with an item that is not a mapping is left whole, so a reader
-    sees it as a list it could not open rather than as the subset of it that parsed (G272).
+    One pass over the line map: the keys are grouped by the item index they start with, so a 9,000-item list is
+    9,000 dictionaries and not 9,000 scans of the whole map (G272's fifth review found the per-item rescan
+    took minutes). An item that is not a mapping -- a trailing null, a string, a number -- is its own document
+    too: `KN-V001` reports it, and dropping it, or leaving the list unopened because of it, hid every other item
+    from every rule. An item of a typed list with no `kind` or `apiVersion` takes the list's, set in place so the
+    fixer still writes to the same dict.
+    """
+    if not isinstance(d.data, dict):
+        return [d]
+    items = d.data["items"]
+    kind = str(d.data.get("kind"))
+    element = kind[: -len("List")] if kind != "List" else ""
+    api_version = d.data.get("apiVersion")
+    by_item: dict[int, dict[PathT, int]] = {}
+    for key, line in d.lines.items():
+        if len(key) >= 2 and key[0] == "items" and isinstance(key[1], int):
+            by_item.setdefault(key[1], {})[key[2:]] = line
+    dups_by_item: dict[int, list[tuple[PathT, int]]] = {}
+    for key, line in d.duplicate_keys:
+        if len(key) >= 2 and key[0] == "items" and isinstance(key[1], int):
+            dups_by_item.setdefault(key[1], []).append((key[2:], line))
+    out: list[Document] = []
+    for i, item in enumerate(items):
+        if element and isinstance(item, dict):
+            item.setdefault("kind", element)
+            if isinstance(api_version, str):
+                item.setdefault("apiVersion", api_version)
+        out.append(
+            Document(
+                index=first_index + len(out),
+                data=item,
+                lines=by_item.get(i, {}),
+                start_line=d.line_for(("items", i)),
+                duplicate_keys=dups_by_item.get(i, []),
+                from_list=kind,
+            )
+        )
+    return out
+
+
+def _flatten_lists(docs: list[Document]) -> list[Document]:
+    """Open every list kind whose `items` is a list, nested lists included, into one document per item.
+
+    A list whose `items` is not a list stays as it is, and the control-plane rules decline it; an EMPTY typed list
+    (`kubectl get pods -o yaml` with no pods) stays too, as the record that the kind was read and held nothing,
+    which an opened-into-nothing list could not say. The document cap
+    is applied to what comes OUT, so a 1,500-item `PodList` is refused exactly as 1,500 documents are, by every
+    command alike (G272): before this the audit opened it, produced 17 MB of JSON, and `fix` refused the same
+    file with exit 4.
     """
     out: list[Document] = []
-    for d in docs:
-        items = d.data.get("items") if isinstance(d.data, dict) else None
+    queue = list(docs)
+    while queue:
+        d = queue.pop(0)
         if (
             is_list_kind(d.data)
             and isinstance(d.data, dict)
-            and isinstance(items, list)
-            and all(isinstance(i, dict) for i in items)
+            and isinstance(d.data.get("items"), list)
+            and (d.data["items"] or d.data.get("kind") == "List")
         ):
-            kind = str(d.data.get("kind"))
-            element = kind[: -len("List")] if kind != "List" else ""
-            for i, item in enumerate(items):
-                if element:
-                    item.setdefault("kind", element)
-                    if isinstance(d.data.get("apiVersion"), str):
-                        item.setdefault("apiVersion", d.data["apiVersion"])
-                prefix: PathT = ("items", i)
-                sub = {k[len(prefix) :]: v for k, v in d.lines.items() if k[: len(prefix)] == prefix}
-                sub_dups = [(k[len(prefix) :], ln) for k, ln in d.duplicate_keys if k[: len(prefix)] == prefix]
-                out.append(
-                    Document(
-                        index=len(out), data=item, lines=sub, start_line=d.line_for(prefix), duplicate_keys=sub_dups
-                    )
-                )
-        else:
-            d.index = len(out)
-            out.append(d)
+            opened = _open_list(d, len(out))
+            if len(out) + len(opened) > MAX_DOCUMENTS:
+                raise ManifestError(f"More than {MAX_DOCUMENTS} YAML documents; split the input.")
+            # Nested lists open in place, ahead of what follows; a list item of a list goes back to the front.
+            queue[0:0] = opened
+            continue
+        d.index = len(out)
+        out.append(d)
+        if len(out) > MAX_DOCUMENTS:
+            raise ManifestError(f"More than {MAX_DOCUMENTS} YAML documents; split the input.")
     return out
 
 

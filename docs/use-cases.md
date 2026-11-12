@@ -1124,7 +1124,9 @@ has it as a dash-separated component (`etcd-amd64`, `kube-apiserver-amd64`, `hyp
 none of its flags, no `ETCD_*` variable, no mention of it (or of k3s, rke2 or k0s) as a command word in argv, args,
 env values or a script -- or when it is positively something else: `etcdctl`, `k3s agent`, or a script on the
 etcd image made only of etcdctl and coreutils. A path is the program only in a `bin` or `sbin` directory, `.` or
-`/`, so `tar czf b /var/lib/etcd` is not etcd. the insecure port on a network address is a CRITICAL finding on a
+`/`, so `tar czf b /var/lib/etcd` is not etcd. Every list kind in the input (`List`, `PodList`, a list inside a list) is opened into
+its items, an item that is not an object is reported by `KN-V001` and declined here, and a list past the 1,000-document
+cap is refused by every command alike. the insecure port on a network address is a CRITICAL finding on a
 stated release up to 1.19;
 kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
 absent flag is the upstream default, named in the finding with the releases it was checked at:
@@ -1162,7 +1164,10 @@ reached no verdict at all, so every rule not evaluated in full is in exactly one
 says how many objects the rule read in full beside the ones it declined. An
 input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
 "not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
-`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale.
+`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While any rule
+declined on an object, the headline score is withheld: `summary.score` is `null`, `summary.scoreWithheld` names the
+rules, and the text view prints `score=not determined (N rules not evaluated in full)` -- a number above "was not
+evaluated in full" would be a verdict on what was not read. The per-control counts stay as they are.
 
 ```bash
 kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33

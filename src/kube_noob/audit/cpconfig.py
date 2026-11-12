@@ -50,9 +50,28 @@ def _get(data: Any, *path: str | int) -> Any:
     return data
 
 
-def _extra_args(value: Any, path: PathT, out: ConfigRead, what: str) -> None:
-    """kubeadm/k0s `extraArgs`: a mapping (v1beta3, k0s) or a list of `{name, value}` (kubeadm v1beta4)."""
+#: kubeadm's API versions that take `extraArgs` as a mapping; v1beta4 takes a list of `{name, value}`. A document
+#: in the other form does not decode, so kubeadm writes no static pod from it (G272).
+_KUBEADM_MAP_VERSIONS = frozenset({"kubeadm.k8s.io/v1beta1", "kubeadm.k8s.io/v1beta2", "kubeadm.k8s.io/v1beta3"})
+_KUBEADM_LIST_VERSIONS = frozenset({"kubeadm.k8s.io/v1beta4"})
+
+
+def _extra_args(value: Any, path: PathT, out: ConfigRead, what: str, api_version: str = "") -> None:
+    """kubeadm/k0s `extraArgs`: a mapping (v1beta3, k0s) or a list of `{name, value}` (kubeadm v1beta4).
+
+    The v1beta4 list keeps every entry, and kubeadm sorts the arguments by (name, value) before it writes them
+    (cmd/kubeadm/app/util/arguments.go v1.31.0, ArgumentsToCommand), so a name given twice reaches pflag in that
+    order and the last VALUE in sort order wins: `anonymous-auth: "true"` then `"false"` is `--anonymous-auth=false
+    --anonymous-auth=true`, which is true. The pairs are sorted here the same way. With ``api_version`` stated,
+    a form that does not match it is declined: kubeadm cannot decode it, so it writes nothing.
+    """
     if value is None:
+        return
+    if api_version in _KUBEADM_MAP_VERSIONS and isinstance(value, list):
+        out.unread.append(f"{what} is a list under {api_version}, which takes a mapping: kubeadm cannot decode it")
+        return
+    if api_version in _KUBEADM_LIST_VERSIONS and isinstance(value, dict):
+        out.unread.append(f"{what} is a mapping under {api_version}, which takes a list: kubeadm cannot decode it")
         return
     if isinstance(value, dict):
         for k, v in value.items():
@@ -62,23 +81,36 @@ def _extra_args(value: Any, path: PathT, out: ConfigRead, what: str) -> None:
                 out.unread.append(f"{what} has an entry {_quoted(k, 60)} that is not a string setting")
         return
     if isinstance(value, list):
+        entries: list[tuple[str, str, PathT]] = []
         for i, item in enumerate(value):
             name, v = (item.get("name"), item.get("value")) if isinstance(item, dict) else (None, None)
             if isinstance(name, str) and isinstance(v, (str, int, float, bool)):
-                out.pairs.append((name.replace("_", "-"), str(v), (*path, i, "value")))
+                entries.append((name.replace("_", "-"), str(v), (*path, i, "value")))
             else:
                 out.unread.append(f"{what}[{i}] is not a {{name, value}} pair")
+        out.pairs.extend(sorted(entries, key=lambda e: (e[0], e[1])))
         return
     out.unread.append(f"{what} is neither a mapping nor a list")
 
 
-def _cluster_configuration(cc: Any, path: PathT, component: str, out: ConfigRead, where: str) -> None:
+def _cluster_configuration(
+    cc: Any, path: PathT, component: str, out: ConfigRead, where: str, api_version: str = ""
+) -> None:
     if not isinstance(cc, dict):
         out.unread.append(f"{where} is not a mapping")
         return
+    section = "apiServer" if component == "kube-apiserver" else "etcd"
+    for skipped in ("extraEnvs", "extraVolumes"):
+        holder = _get(cc, section) if section == "apiServer" else _get(cc, "etcd", "local")
+        if isinstance(holder, dict) and holder.get(skipped) is not None:
+            out.unread.append(f"{where}.{section}{'' if section == 'apiServer' else '.local'}.{skipped} is not read")
     if component == "kube-apiserver":
         _extra_args(
-            _get(cc, "apiServer", "extraArgs"), (*path, "apiServer", "extraArgs"), out, f"{where}.apiServer.extraArgs"
+            _get(cc, "apiServer", "extraArgs"),
+            (*path, "apiServer", "extraArgs"),
+            out,
+            f"{where}.apiServer.extraArgs",
+            api_version,
         )
     else:
         if _get(cc, "etcd", "external") is not None:
@@ -88,6 +120,7 @@ def _cluster_configuration(cc: Any, path: PathT, component: str, out: ConfigRead
             (*path, "etcd", "local", "extraArgs"),
             out,
             f"{where}.etcd.local.extraArgs",
+            api_version,
         )
 
 
@@ -107,7 +140,7 @@ def _embedded(text: Any, path: PathT, component: str, out: ConfigRead, where: st
     for d in docs:
         if isinstance(d.data, dict) and d.data.get("kind") == "ClusterConfiguration":
             before = len(out.pairs)
-            _cluster_configuration(d.data, (), component, out, where)
+            _cluster_configuration(d.data, (), component, out, where, str(d.data.get("apiVersion") or ""))
             out.pairs[before:] = [(k, v, path) for k, v, _ in out.pairs[before:]]  # point at the string itself
         elif isinstance(d.data, dict) and d.data.get("kind") not in {
             "InitConfiguration",
@@ -127,9 +160,15 @@ def _key_values(value: Any, path: PathT, out: ConfigRead, what: str) -> None:
         return
     for i, item in enumerate(items):
         if isinstance(item, str) and "=" in item:
+            # `key+=value` appends to a flag k3s/RKE2 already pass (pkg/util/args.go GetArgs): read as a second
+            # occurrence of the flag, which pflag appends to a slice such as --authorization-mode (G272).
             k, _, v = item.partition("=")
             out.pairs.append(
-                (k.strip().lstrip("-").replace("_", "-"), v, (*path, i) if isinstance(value, list) else path)
+                (
+                    k.strip().lstrip("-").rstrip("+").replace("_", "-"),
+                    v,
+                    (*path, i) if isinstance(value, list) else path,
+                )
             )
         else:
             out.unread.append(f"{what}[{i}] is not a key=value string")
@@ -142,7 +181,7 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
     out = ConfigRead()
     if group == "kubeadm.k8s.io" and kind == "ClusterConfiguration":
         out.tool = "kubeadm"
-        _cluster_configuration(data, (), component, out, "ClusterConfiguration")
+        _cluster_configuration(data, (), component, out, "ClusterConfiguration", doc.api_version)
     elif group == "" and kind == "ConfigMap" and doc.name == "kubeadm-config" and doc.namespace == "kube-system":
         out.tool = "kubeadm"
         _embedded(
@@ -159,6 +198,8 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
             if kind == "KubeadmControlPlane"
             else ("spec", "template", "spec", "kubeadmConfigSpec")
         )
+        if _get(data, *base, "files") is not None:
+            out.unread.append(".".join(str(p) for p in (*base, "files")) + " (files written to the node) is not read")
         _cluster_configuration(
             _get(data, *base, "clusterConfiguration") or {},
             (*base, "clusterConfiguration"),
@@ -215,6 +256,15 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
         )
         selectors = _get(rke, "machineSelectorConfig")
         for i, sel in enumerate(selectors if isinstance(selectors, list) else []):
+            selector = _get(sel, "machineLabelSelector")
+            if selector:
+                # Which machines the selector picks is not in the object: these arguments may never reach a
+                # control-plane node, so they decide nothing (G272).
+                out.unread.append(
+                    f"machineSelectorConfig[{i}] applies only to machines matching machineLabelSelector "
+                    f"{_quoted(selector, 120)}, which may not include the control plane, so its {key} is not read"
+                )
+                continue
             _key_values(
                 _get(sel, "config", key),
                 ("spec", "rkeConfig", "machineSelectorConfig", i, "config", key),

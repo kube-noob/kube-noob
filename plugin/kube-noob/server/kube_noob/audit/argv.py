@@ -525,6 +525,17 @@ def _flag_values(
         else:
             return out, f"has an argument {_quoted(t, 80)} that is not a flag (a subcommand, or a stray value)"
         name, eq, value = body.partition("=")
+        if long and _FLAG_NAME.fullmatch(name) is None:
+            # Every kube-apiserver and etcd flag is lowercase letters, digits and dashes (pflag adds `_`, which
+            # WordSepNormalizeFunc turns into `-`): a name with an uppercase letter, a dot or anything else is
+            # one neither binary defines, and pflag's parseLongArg (v1.0.5 flag.go L962-979) errors on an
+            # unknown flag -- UnknownFlags is not whitelisted -- so the server does not start. Before G272's
+            # fifth review `--Anonymous-Auth=true` was read as a MEDIUM finding.
+            binary = "kube-apiserver" if pflag else "etcd"
+            return out, (
+                f"has {_quoted(t, 80)}: {binary} has no such flag; its flag parser refuses it, so this server does "
+                "not start"
+            )
         if pflag:
             name = name.replace("_", "-")
         elif "_" in name:
@@ -601,6 +612,8 @@ INSECURE_PORT_REMOVED = (1, 24)
 _INSECURE_PORT_FLAGS = ("insecure-port", "port")
 _INSECURE_ADDRESS_FLAGS = ("insecure-bind-address", "address")
 INSECURE_FLAGS = frozenset({*_INSECURE_PORT_FLAGS, *_INSECURE_ADDRESS_FLAGS})
+#: What a flag name both parsers define may contain (G272).
+_FLAG_NAME = re.compile(r"[a-z0-9_-]+")
 _GO_INT = re.compile(
     r"[+-]?(?:0[xX](?:_?[0-9a-fA-F])+|0[bB](?:_?[01])+|0[oO](?:_?[0-7])+|0(?:_?[0-7])*|[1-9](?:_?[0-9])*)"
 )
@@ -619,9 +632,12 @@ def _pflag_int(value: str) -> int | None:
 
 
 def _pflag_ip(value: str) -> bool | None:
-    """pflag IPVar's parse (net.ParseIP): None when refused, else whether the address is loopback."""
+    """pflag IPVar's parse (net.ParseIP): None when refused, else whether the address is loopback. Go's
+    net.ParseIP takes no zone (`fe80::1%eth0` is refused), where Python's ip_address would accept one."""
     import ipaddress
 
+    if "%" in value:
+        return None
     try:
         return ipaddress.ip_address(value).is_loopback
     except ValueError:
@@ -651,10 +667,19 @@ def insecure_serving(
             -1,
         )
     for value, _ in ports:
-        if _pflag_int(value) is None:
+        parsed = _pflag_int(value)
+        if parsed is None:
             return (
                 "decline",
                 f"sets an insecure port of {_quoted(value, 40)}, which pflag refuses, so it does not start",
+                -1,
+            )
+        if not 0 <= parsed <= 65535:
+            # DeprecatedInsecureServingOptions.Validate (v1.19.0 L57): "must be between 0 and 65535, inclusive"
+            return (
+                "decline",
+                f"sets an insecure port of {parsed}, outside 0-65535, which the API server refuses, so it does not "
+                "start",
                 -1,
             )
     for value, _ in addrs:

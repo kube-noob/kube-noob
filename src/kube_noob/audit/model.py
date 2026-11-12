@@ -117,6 +117,10 @@ class RedTeamScenario:
         }
 
 
+#: How many declined rules the withheld-score reason names before it gives a count.
+MAX_WITHHELD_NAMED = 10
+
+
 @dataclass
 class Report:
     platform: str
@@ -151,10 +155,29 @@ class Report:
         return out
 
     def score(self) -> float:
-        """0..100 posture score. Deterministic; used by the learning grader and the training reward."""
+        """0..100 posture score over the findings. Deterministic; used by the learning grader and the training
+        reward, which ask for it by name. The REPORT withholds it while a rule declined on an object: see
+        `score_withheld`."""
         weights = {Severity.CRITICAL: 25.0, Severity.HIGH: 10.0, Severity.MEDIUM: 4.0, Severity.LOW: 1.0}
         penalty = sum(weights.get(f.severity, 0.0) for f in self.findings)
         return max(0.0, 100.0 - penalty)
+
+    def score_withheld(self) -> str | None:
+        """Why the headline score is not a number, or None when it is one.
+
+        A score is computed from findings, and a rule that declined on an object (`declined` names it: an API
+        server started through a script it did not read, a partly evaluated rule) found nothing there BECAUSE it
+        did not look. `score=100.0` printed above "KN-S038 was not evaluated in full" was a number beside an
+        unread rule, the one thing the product rule forbids (G272). The quiet declines of a partial bundle (no
+        NetworkPolicy here to judge) are not a rule declining on an object, and keep the number.
+        """
+        if not self.declined:
+            return None
+        ids = sorted(self.declined)
+        shown = ", ".join(ids[:MAX_WITHHELD_NAMED]) + (
+            f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else ""
+        )
+        return f"{len(ids)} rule{'s' if len(ids) != 1 else ''} not evaluated in full: {shown}"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -165,7 +188,10 @@ class Report:
             "summary": {
                 "counts": self.counts(),
                 "maxSeverity": top.name.lower() if (top := self.max_severity()) is not None else None,
-                "score": round(self.score(), 1),
+                # null, with the reason beside it, while a rule declined on an object; a report where none did
+                # stays byte-identical (G272).
+                "score": None if (withheld := self.score_withheld()) else round(self.score(), 1),
+                **({"scoreWithheld": withheld} if withheld else {}),
             },
             "assumptions": self.assumptions,
             "findings": [f.as_dict() for f in sorted(self.findings, key=_sort_key)],

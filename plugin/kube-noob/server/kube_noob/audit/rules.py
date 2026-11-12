@@ -4410,7 +4410,9 @@ def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, la
         if value is None:
             continue
         name, _, setting = value.partition("=")
-        if name.replace("_", "-") == "authorization-mode":
+        # `key+=value` appends to a flag the distribution already passes (k3s pkg/util/args.go GetArgs): a
+        # second --authorization-mode, which pflag appends to the slice (G272).
+        if name.rstrip("+").replace("_", "-") == "authorization-mode":
             modes.extend(setting.split(","))
             last = at
     if "AlwaysAllow" not in modes:
@@ -4425,20 +4427,24 @@ def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, la
 
 
 def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
-    """A list kind still in the input was not opened (`items` is not a list, or holds something that is not a
-    mapping), so the pods it may hold were not read: declined, never the opened subset read as the whole."""
+    """What the loader could not open, declined: a list kind still in the input (its `items` is not a list), and a
+    document that is not a mapping at all (a list item that was a string or null, or a bare scalar document) --
+    either may hold a pod these rules cannot read. Never the opened part read as the whole (G272)."""
     from kube_noob.yamlio import is_list_kind
 
     seen = False
     for d in ctx.docs:
-        if is_list_kind(d.data):
+        if is_list_kind(d.data) and isinstance(d.data, dict) and not isinstance(d.data.get("items"), list):
             seen = True
             ref = _shown(d.ref(), 160)
             ctx.cannot_decide(
-                r.rule_id,
-                f"{ref} is a list kube-noob could not open (its items are not all mappings), so what it holds was "
-                "not read",
-                ref,
+                r.rule_id, f"{ref} is a list whose items are not a list, so what it holds was not read", ref
+            )
+        elif not isinstance(d.data, dict):
+            seen = True
+            ref = f"document {d.index + 1} (line {d.start_line})"
+            ctx.cannot_decide(
+                r.rule_id, f"{ref} is not a mapping ({_quoted(d.data, 40)}), so what it is was not read", ref
             )
     return seen
 
