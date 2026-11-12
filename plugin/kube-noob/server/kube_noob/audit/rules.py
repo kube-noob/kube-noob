@@ -1101,7 +1101,7 @@ _RETIRED = (
     "ingress-nginx stopped receiving releases and bug fixes when the project was archived on 2026-03-24, so every "
     "later vulnerability stays unfixed; the project itself asks users to identify a Gateway API implementation.",
     ("ingress-nginx-retired",),
-    subjects=("Ingress",),
+    subjects=(("Ingress", WORKLOAD_SUBJECT),),
 )
 def _v019(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("Ingress"):
