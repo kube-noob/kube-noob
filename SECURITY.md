@@ -46,6 +46,7 @@ open no connection (a test runs them with both refused).
 | Public data image | `kube-noob-db` holds one archive that `corpus db-check` gates twice in CI (before the build and on the image's own copy) and again on the pushed digest: redistributable records on allow-listed licenses only, no Jira data, every file listed with its checksum, no links or special files. Published only when the maintainer enables it, attested and keyless-signed; the chart accepts it by digest only, copies it with `cp` in a read-only, capability-free init container, and `corpus import` re-validates the whole archive before copying anything. |
 | Red Hat Jira sync | REST API only (no page scraping, per Atlassian's Acceptable Use Policy); one request per second or slower (robots.txt crawl delay) plus random jitter, a request budget per run, the in-cluster sync's first run after a random 30 s to 10 min and every interval +/- 10%, clones from GitHub spaced by a random pause, the scheduled refresh started at a random offset, backoff on 429 with `Retry-After`; the client can only GET from the Jira host (plus POST to its search endpoint) over HTTPS; project and issue keys are validated before they reach a query; the local ticket index is mode 0600. |
 | Claude plugin | Runs the readable stdio server bundled in the plugin with `uv run --frozen --isolated`; every dependency is pinned by version and sha256 in `uv.lock`; no LLM SDK is installed and no package-manager variable is set; only the modules the stdio server imports ship, so nothing in the plugin reads a credential; web, cluster and model calls are off. |
+| Directory plugin | `kube-noob-skills` ships Markdown and JSON only: no server, script, hook or `bin/`. Its skills run the CLI the user installed through Claude's Bash tool, so every command goes through the user's own permission prompt; the plugin pre-approves no tool (no `allowed-tools`) and runs nothing as a skill loads. No command it runs carries `--cluster-enabled`, `--web-enabled`, `--live` or `--online`, pasted text reaches the CLI as a file written with a quoted heredoc rather than as an argument, and the only fetch it can cause is a pinned `uvx --from kube-noob==<release>` run the user agreed to. Tests parse every command line in the skills against the real argument parser. The CLI's JSON is not cleaned like an MCP result, so text quoted from the input reaches Claude as it was; the skills tell Claude to treat every string as data. |
 | Availability | A burst of idle or slow connections starves the HTTP server's connection pool: uvicorn counts connections towards `limit_concurrency` and nothing reclaims one that never sent a request (`timeout_keep_alive` applies between requests on a keep-alive connection), so every request including the kubelet's probes answers 503 until they close. kube-noob cannot close this in process. Buffered-body memory is bounded -- the limit is 1.5 MiB and the concurrency limit 64, so 96 MiB against a 512Mi container -- and the liveness probe is four times more forgiving than readiness, so sustained overload sheds traffic instead of restarting the pod. **Expose the port through a reverse proxy, ingress or service mesh that enforces a header-read and idle timeout.** The default sidecar deployment binds 127.0.0.1, where only containers in the same pod can reach it. |
 | Sidecar | Binds 127.0.0.1 only, so only containers in the same pod can call it (the pod is the trust boundary); no Service port, no token, no egress needed. CI proves the port is closed on the pod IP. |
 | Egress on OpenShift | Chart NetworkPolicy allows DNS only by default; optional OVN-Kubernetes EgressFirewall allows only the API server and allowlisted HTTPS domains, then denies all. |
@@ -54,6 +55,30 @@ open no connection (a test runs them with both refused).
 Workflows run only reviewed code with write-capable tokens or caches: no checkout takes a ref typed into a workflow
 input, and the videos workflow renders only a release tag and a pipeline commit that are on the default branch.
 CodeQL (`security-extended`, Python and Actions) runs on every pull request and on main.
+
+## The directory plugin and a remote server
+
+The Claude plugin directory accepts a remote MCP server from an organization that is not Verified, so
+`kube-noob-skills` could declare an `http` server whose URL and bearer token come from `userConfig` and point it at
+the user's own `kube-noob serve`. It does not, for now. What the documentation says, read 2026-11-12:
+
+- A `sensitive` value "masks input and stores the value in secure storage instead of `settings.json`", and
+  `${user_config.KEY}` is substituted into an MCP server's `url` and `headers`
+  ([plugins reference](https://code.claude.com/docs/en/plugins-reference#user-configuration)). The
+  token would not be written into the plugin's files.
+- But a server whose URL option is unset is an error, not an absence: Claude Code reports `Invalid MCP server config
+  ... URL is unset or invalid` on the plugin's Errors tab
+  ([troubleshooting](https://code.claude.com/docs/en/plugins/troubleshooting)). Chat ignores such a server and Cowork
+  ignores one whose option has no default ([platform support](https://claude.com/docs/plugins/platform-support)).
+  Most people installing from the directory will never run `kube-noob serve`, so the default state of every install
+  would be an error, and a skill would have to name `kubenoob_*` tools that exist only on some installs.
+- `kube-noob serve` on a laptop is a local process presented as a remote one. That is the thing the directory gates on
+  Verified status, reached by a side door; a reviewer could fairly read it that way.
+
+The CLI path covers the same commands with no credential at all. If it is ever shipped, the server is optional, the
+token is a `sensitive` option and the URL has no default; `tests/test_plugin.py::test_bundle_names_no_credential_variables`
+does not cover it (it scans `plugin/kube-noob/server/`), so a test for the directory plugin has to refuse any literal
+header value. That decision is the maintainer's.
 
 ## Capability tiers
 

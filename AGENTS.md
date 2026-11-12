@@ -168,6 +168,11 @@ rewrite history on a shared branch.
   docs say the label is decided during review and the portal has no step for it. Do not strip the server out of
   `plugin/kube-noob` -- it is what installs from this repository's own marketplace, and its seven skills call 46
   `kubenoob_*` tools, so a server-less copy of them would name tools that do not exist. `plugin/kube-noob-skills` is
-  the directory's plugin: knowledge only, rewritten rather than copied, held by `tests/test_directory_plugin.py`
-  (G267). A remote MCP server pointing at the user's own `kube-noob serve` endpoint through a `userConfig` value
-  would be admissible and has not been decided; it would put a bearer token in the plugin.
+  the directory's plugin, rewritten rather than copied (G267). Since G276 its skills drive the CLI the user installed
+  through Claude's Bash tool (`kube-noob`, then `kubectl noob`, then a pinned `uvx` run), with `--format json`, and
+  say "nothing has been audited" when none is there. `tests/test_directory_plugin.py` maps every `kubenoob_*` tool
+  the full skills call to the CLI command the directory skill runs, or to a stated reason it is dropped, and parses
+  every command line against the real parser: a tool added to a full skill fails there until you decide which. Do
+  not add `allowed-tools`, a `!`-command line, a hook or `bin/` to that plugin. A remote MCP server pointing at the
+  user's own `kube-noob serve` through `userConfig` is admissible and was not shipped: an unset URL is an error on
+  every install that does not run `serve` (SECURITY.md, "The directory plugin and a remote server").

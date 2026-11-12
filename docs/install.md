@@ -12,12 +12,47 @@ pipx installed with Homebrew uses Homebrew's.
 | pip, in a virtual environment | `python3.13 -m venv ~/.venvs/kube-noob`, then `~/.venvs/kube-noob/bin/pip install kube-noob` | `~/.venvs/kube-noob/bin/pip install -U kube-noob` |
 | Container | `podman run --rm ghcr.io/kube-noob/kube-noob:0.9 --version` | pull the new tag |
 | Claude Code plugin | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob@kube-noob` | `/plugin marketplace update kube-noob` |
-| Claude Code plugin, knowledge only | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob-skills@kube-noob` | `/plugin marketplace update kube-noob` |
+| Claude Code plugin, CLI-driven | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob-skills@kube-noob`, plus the CLI by any method above | `/plugin marketplace update kube-noob` |
 
-`kube-noob-skills` is the same seven skills with **no MCP server and no code in the plugin at all**: the knowledge,
-without the audit, validation and diagnosis tools. Install `kube-noob@kube-noob` instead unless you specifically want
-a plugin that runs nothing. It exists because the Claude plugin directory accepts a plugin carrying a local MCP server
-only from a Verified organization, and there is no way to apply to become one.
+`kube-noob-skills` is the same seven skills with **no MCP server and no code in the plugin at all**. Its skills run
+the kube-noob CLI you installed, through Claude's Bash tool, with `--format json`. It exists because the Claude plugin
+directory accepts a plugin carrying a local MCP server only from a Verified organization, and there is no way to
+apply to become one. See [which install, and what can run](#which-install-and-what-can-run).
+
+## Which install, and what can run
+
+kube-noob is one engine. What changes from one place to another is how Claude, or you, reach it.
+
+| Where you are | What you install | What can run |
+|---|---|---|
+| Claude Code, from this repository's marketplace | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob@kube-noob` | The full plugin: its own stdio MCP server, bundled as readable source and started with `uv run --frozen`, and seven skills that call its tools. Needs uv |
+| Claude Code, from the Claude plugin directory (once `kube-noob-skills` is listed) | `kube-noob-skills`, and the CLI: `pipx install kube-noob==0.9.2` | The seven skills look for `kube-noob`, then `kubectl noob`, then (if you agree) a pinned `uvx --from kube-noob==0.9.2` run, and drive it through the Bash tool, offline, each command approved by you. With no CLI they say nothing was audited and give the install command |
+| Claude Desktop | `{"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.9.2", "kube-noob", "mcp"]}}}` in its MCP server configuration | The MCP server over stdio, every tool |
+| claude.ai chat | The [Agent Skill](#agent-skill) zip, uploaded under **Customize > Skills** | The tools in claude.ai's code sandbox, offline. The directory plugin's skills load in chat too, but chat has no shell on your machine: they give you the command and read the output you paste |
+| Any MCP client | The CLI by any method above, then the client pointed at `kube-noob mcp` | The MCP server over stdio, every tool |
+| Plain kubectl | `kubectl-noob` on your `PATH`: [kubectl, without krew](#kubectl-without-krew) today, and through krew once the krew-index pull request ([krew/SUBMIT.md](../krew/SUBMIT.md)) merges | `kubectl noob <args>` runs `kube-noob <args>` unchanged, falling back to a pinned `uvx` run when kube-noob is not on `PATH` |
+
+The directory plugin cannot carry the engine itself: the directory accepts Markdown, JSON and images from an
+organization that is not Verified, and refuses a local MCP server and every other file type. A remote MCP server
+pointed at your own `kube-noob serve` would be admissible, and is not shipped; [SECURITY.md](../SECURITY.md#the-directory-plugin-and-a-remote-server)
+says why.
+
+## kubectl, without krew
+
+`kubectl` runs any executable on your `PATH` named `kubectl-<name>` as `kubectl <name>`, so the krew plugin works
+before it is in krew-index. Download the release asset, check it against the digest in that release's krew manifest,
+and put the script on your `PATH` (`~/.local/bin` here; use any directory on yours):
+
+```bash
+curl -fsSLO https://github.com/kube-noob/kube-noob/releases/download/v0.9.2/kubectl-noob-v0.9.2.tar.gz
+echo "$(curl -fsSL https://raw.githubusercontent.com/kube-noob/kube-noob/v0.9.2/krew/noob.yaml | sed -n 's/^ *sha256: //p')  kubectl-noob-v0.9.2.tar.gz" | shasum -a 256 -c -
+mkdir -p ~/.local/bin && tar -xzf kubectl-noob-v0.9.2.tar.gz -C ~/.local/bin kubectl-noob
+kubectl noob --version
+```
+
+`shasum -c` prints `OK` or refuses; do not extract an archive it refused. The digest comes from the manifest at the
+release's own tag, because the manifest on `main` describes the archive the next release will build. The script needs
+kube-noob on `PATH` or uv installed, and says so when it has neither.
 
 The tap is needed because kube-noob is not in Homebrew's main catalogue; after `brew tap`, `brew install kube-noob`
 finds it. Homebrew 6 and later also refuse formulae from third-party taps until you trust them; `brew trust

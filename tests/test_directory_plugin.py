@@ -10,6 +10,12 @@ seven skills in plugin/kube-noob were written to call `kubenoob_*` MCP tools, an
 server would ship seven skills telling Claude to call tools that are not there -- an absence reading as a pass,
 aimed at this project's own listing. These tests refuse that, and they refuse a `kube-noob` command line that the
 CLI would not accept, because a skill whose remedy does not run is the same failure one step later.
+
+Since G276 the skills also DO something: each looks for the kube-noob CLI the user installed (`kube-noob`, then
+`kubectl noob`, then a pinned `uvx` run), runs it through Claude's Bash tool with `--format json`, and reads the
+verdict and the not-evaluated lists from the output. When no engine is there, the skill says so and gives one
+install command; it never answers from its own knowledge as if a check had run. The plugin still ships Markdown and
+JSON only, with no server, no script and no hook.
 """
 
 from __future__ import annotations
@@ -18,6 +24,8 @@ import argparse
 import json
 import re
 import shlex
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -220,36 +228,52 @@ def _options(parser: argparse.ArgumentParser) -> set[str]:
     return {opt for action in parser._actions for opt in action.option_strings}
 
 
-def _kube_noob_lines() -> list[tuple[str, int, str]]:
-    out: list[tuple[str, int, str]] = []
+# A skill names the engine one of three ways, in the order it looks for it. Each is normalised to `kube-noob ...`
+# before it is parsed, so a flag that is wrong after `kubectl noob` or after the uvx pin fails exactly like one after
+# `kube-noob`.
+_UVX = re.compile(r"^uvx --from kube-noob==(?P<v>\d+\.\d+\.\d+) kube-noob (?P<rest>.+)\Z")
+_KUBECTL = "kubectl noob "
+
+
+@dataclass(frozen=True)
+class _Cmd:
+    where: str  # file:line, for the failure message
+    skill: str  # the skill folder the line is in, "" outside skills/
+    line: str  # normalised to begin with `kube-noob `
+    runs: bool  # in a ```bash block Claude runs it; in a bare ``` block it is a line for the user to run
+
+
+def _commands() -> list[_Cmd]:
+    out: list[_Cmd] = []
     for p in sorted(LITE.rglob("*.md")):
-        inside = False
+        rel = p.relative_to(LITE)
+        skill = rel.parts[1] if rel.parts[0] == "skills" and len(rel.parts) > 2 else ""
+        fence: str | None = None
         for n, line in enumerate(p.read_text().splitlines(), 1):
             if line.startswith("```"):
-                inside = not inside
+                fence = line[3:].strip() if fence is None else None
                 continue
-            if not inside:
+            if fence is None:
                 continue
             for raw in line.split("|"):
                 segment = raw.strip()
+                m = _UVX.match(segment)
+                if m:
+                    segment = "kube-noob " + m["rest"]
+                elif segment.startswith(_KUBECTL):
+                    segment = "kube-noob " + segment[len(_KUBECTL) :]
                 if segment.startswith("kube-noob "):
-                    out.append((p.relative_to(LITE).as_posix(), n, segment))
+                    out.append(_Cmd(f"{rel.as_posix()}:{n}", skill, segment, fence == "bash"))
     return out
 
 
-def test_the_skills_name_at_least_one_command_each() -> None:
-    """If this finds nothing, the check below is measuring nothing."""
-    assert len(_kube_noob_lines()) >= 7, "expected a kube-noob command in every skill"
-
-
-@pytest.mark.parametrize("where,line", [(f"{f}:{n}", c) for f, n, c in _kube_noob_lines()])
-def test_every_command_a_skill_hands_the_user_is_one_the_cli_accepts(where: str, line: str) -> None:
-    """A wrong flag in a skill is a wrong command in a terminal. Five of these were wrong when first written."""
+def _parse(line: str) -> tuple[list[str], set[str], argparse.ArgumentParser, list[str]]:
+    """The subcommand chain, the flags, the parser the flags belong to and the tokens after the chain."""
     from kube_noob.cli import build_parser
 
     tokens = shlex.split(line)[1:]
     parser = build_parser()
-    chain = ["kube-noob"]
+    chain: list[str] = []
     while tokens and not tokens[0].startswith("-"):
         children = _subparsers(parser)
         if tokens[0] not in children:
@@ -257,11 +281,225 @@ def test_every_command_a_skill_hands_the_user_is_one_the_cli_accepts(where: str,
         chain.append(tokens[0])
         parser = children[tokens.pop(0)]
     flags = {t for t in tokens if t.startswith("-") and t != "-" and not t[1:].isdigit()}
-    known = _options(parser)
-    unknown = sorted(f for f in flags if f not in known)
-    assert not unknown, f"{where}: `{' '.join(chain)}` has no {', '.join(unknown)}"
-    if _subparsers(parser) and len(chain) == 2:
+    return chain, flags, parser, tokens
+
+
+def test_every_skill_runs_at_least_one_command() -> None:
+    """If this finds nothing, the checks below are measuring nothing."""
+    skills = {p.parent.name for p in LITE.glob("skills/*/SKILL.md")}
+    with_runs = {c.skill for c in _commands() if c.runs}
+    assert skills and with_runs >= skills, f"skills that run no kube-noob command: {sorted(skills - with_runs)}"
+
+
+@pytest.mark.parametrize("cmd", _commands(), ids=lambda c: c.where)
+def test_every_command_a_skill_hands_the_user_is_one_the_cli_accepts(cmd: _Cmd) -> None:
+    """A wrong flag in a skill is a wrong command in a terminal. Five of these were wrong when first written."""
+    chain, flags, parser, tokens = _parse(cmd.line)
+    unknown = sorted(f for f in flags if f not in _options(parser))
+    assert not unknown, f"{cmd.where}: `kube-noob {' '.join(chain)}` has no {', '.join(unknown)}"
+    if _subparsers(parser) and len(chain) == 1:
         rest = [t for t in tokens if not t.startswith("-")]
         assert any(t in _subparsers(parser) for t in rest) or "--help" in flags, (
-            f"{where}: `{' '.join(chain)}` needs a subcommand: {sorted(_subparsers(parser))}"
+            f"{cmd.where}: `kube-noob {' '.join(chain)}` needs a subcommand: {sorted(_subparsers(parser))}"
         )
+
+
+# --- the directory plugin drives the CLI the user installed (G276) ------------------------------------------------
+#
+# Every MCP tool the seven full skills call, and the CLI command a directory skill runs in its place. A tool with no
+# CLI command, or one this plugin deliberately does not run, is in _DROPPED with the reason, so a tool added to a full
+# skill fails here until someone decides which it is.
+_TOOL_COMMANDS: dict[str, str] = {
+    "audit_manifests": "audit",
+    "validate_manifests": "validate",
+    "red_team": "redteam",
+    "fix_manifests": "fix",
+    "run_protocol": "protocol",
+    "clarify_requirements": "protocol",  # `protocol --blueprint` returns status needs-clarification and the questions
+    "generate_manifests": "generate",
+    "generate_helm_chart": "helm-chart",
+    "search_knowledge": "search",
+    "learning_summary": "learning show",
+    "learning_profile_set": "learning profile",
+    "insight": "insight",
+    "diagnose": "diagnose",
+    "extract_signals": "signals",
+    "known_issues": "known-issues",
+    "ticket": "ticket",
+    "ticket_changes": "corpus jira-changes",
+    "explain_denial": "policy explain",
+    "check_network_policy": "policy reach",
+    "incidents": "incidents list",
+    "incident_confirm": "incidents confirm",
+    "config_status": "config",
+    "learn_tracks": "learn tracks",
+    "learn_lesson": "learn lesson",
+    "learn_exercise": "learn exercise",
+    "learn_submit": "learn submit",
+    "learn_quiz": "learn quiz",
+    "policy_generate": "policy generate",
+    "posture_scan": "posture scan",
+    "rhacs_compare": "rhacs compare",
+    "build_diagnose": "build diagnose",
+    "vuln_report": "vuln report",
+    "threat_model": "vuln threat",
+}
+_DROPPED: dict[str, str] = {
+    "api_history": "no CLI command returns the removed-API table on its own; the version map stays in the skill as "
+    "knowledge, and `validate --version` reports a removed API for a manifest",
+    "cluster_check_traffic": "reads the live cluster; this plugin never turns cluster access on",
+    "cluster_debug_workload": "reads the live cluster; this plugin never turns cluster access on",
+    "memory_propose": "writes an entry into the team's memory repository; the full plugin writes only from its stdio "
+    "server after the user confirms, and the directory skills do not write into a repository",
+}
+
+# Flags and subcommands that would reach a network, a cluster or a model, or start a server. A command Claude runs
+# carries none of them; the user may still be handed one in a bare block, as their own decision.
+_NOT_OFFLINE_FLAGS = {"--web-enabled", "--cluster-enabled", "--live", "--online", "--allow-unauthenticated"}
+_NOT_OFFLINE_COMMANDS = {"serve", "mcp", "watch", "ask", "debug", "bundle", "admission", "train"}
+
+
+def _full_tools() -> dict[str, set[str]]:
+    return {
+        p.parent.name: set(re.findall(r"kubenoob_([a-z][a-z_]*[a-z])", p.read_text()))
+        for p in sorted(FULL.glob("skills/*/SKILL.md"))
+    }
+
+
+def test_every_tool_the_full_skills_call_is_run_here_or_dropped_with_a_reason() -> None:
+    called = set().union(*_full_tools().values())
+    assert called, "found no kubenoob_ tool in plugin/kube-noob/skills; this test is measuring nothing"
+    assert not set(_TOOL_COMMANDS) & set(_DROPPED), "a tool cannot be both run and dropped"
+    unaccounted = called - set(_TOOL_COMMANDS) - set(_DROPPED)
+    assert not unaccounted, f"decide a CLI command or a stated reason for: {sorted(unaccounted)}"
+    stale = (set(_TOOL_COMMANDS) | set(_DROPPED)) - called
+    assert not stale, f"no full skill calls these any more: {sorted(stale)}"
+    assert all(reason.strip() for reason in _DROPPED.values())
+
+
+@pytest.mark.parametrize("tool,command", sorted(_TOOL_COMMANDS.items()))
+def test_every_mapped_command_is_a_real_cli_command(tool: str, command: str) -> None:
+    chain, _, _, _ = _parse(f"kube-noob {command}")
+    assert chain == command.split(), f"{tool}: `kube-noob {command}` is not a command the CLI has"
+
+
+@pytest.mark.parametrize("skill", sorted(_full_tools()))
+def test_each_directory_skill_runs_what_its_full_counterpart_called_a_tool_for(skill: str) -> None:
+    """The point of the item: a directory install can run what the full plugin's skill would have run."""
+    want = {_TOOL_COMMANDS[t] for t in _full_tools()[skill] if t in _TOOL_COMMANDS}
+    runs = {" ".join(_parse(c.line)[0]) for c in _commands() if c.skill == skill and c.runs}
+    missing = sorted(want - runs)
+    assert not missing, f"skills/{skill} does not run: {', '.join('kube-noob ' + m for m in missing)}"
+
+
+def test_no_command_a_skill_runs_reaches_a_network_a_cluster_or_a_model() -> None:
+    bad: list[str] = []
+    for c in _commands():
+        if not c.runs:
+            continue
+        chain, flags, _, _ = _parse(c.line)
+        if flags & _NOT_OFFLINE_FLAGS or (chain and chain[0] in _NOT_OFFLINE_COMMANDS):
+            bad.append(f"{c.where}: {c.line}")
+    assert not bad, "a command Claude runs from this plugin has to stay offline and off the cluster:\n" + "\n".join(bad)
+
+
+def test_every_command_a_skill_runs_asks_for_json() -> None:
+    """The verdict and the not-evaluated lists are read from the JSON, so every run has to ask for it."""
+    bad: list[str] = []
+    for c in _commands():
+        if not c.runs:
+            continue
+        _, flags, _, tokens = _parse(c.line)
+        if flags & {"--version", "--help"}:
+            continue
+        i = tokens.index("--format") if "--format" in tokens else -1
+        if i < 0 or tokens[i + 1 : i + 2] != ["json"]:
+            bad.append(f"{c.where}: {c.line}")
+    assert not bad, "run these with --format json:\n" + "\n".join(bad)
+
+
+def _section(text: str, heading: str) -> str:
+    start = text.find(f"\n{heading}\n")
+    assert start >= 0, f"no `{heading}` section"
+    end = text.find("\n## ", start + len(heading) + 2)
+    return text[start : end if end >= 0 else len(text)]
+
+
+def test_every_skill_looks_for_the_engine_the_same_way_before_it_answers() -> None:
+    """The presence check is the guard against an absence read as a pass, so it is the same text in every skill."""
+    from kube_noob import __version__
+
+    blocks = {
+        p.parent.name: _section(p.read_text(), "## Run kube-noob first") for p in sorted(LITE.glob("skills/*/SKILL.md"))
+    }
+    assert len(set(blocks.values())) == 1, f"the engine check differs between skills: {sorted(blocks)}"
+    block = next(iter(blocks.values()))
+    order = [
+        "```bash\nkube-noob --version\n```",
+        "```bash\nkubectl noob --version\n```",
+        f"```bash\nuvx --from kube-noob=={__version__} kube-noob --version\n```",
+    ]
+    at = [block.find(step) for step in order]
+    assert all(i >= 0 for i in at) and at == sorted(at), "look for kube-noob, then kubectl noob, then the uvx pin"
+    assert "kube-noob is not installed, so nothing has been audited" in block, "an absence must be said as one"
+    assert f"```\npipx install kube-noob=={__version__}\n```" in block, "one install command when nothing is there"
+    assert "not checked by kube-noob" in block, "knowledge without a run has to be labelled as such"
+
+
+def test_every_skill_says_how_to_read_what_kube_noob_returns() -> None:
+    blocks = {p: _section(p.read_text(), "## Reading what kube-noob returns") for p in LITE.glob("skills/*/SKILL.md")}
+    assert len(set(blocks.values())) == 1, "the reading guide differs between skills"
+    for p, block in sorted(blocks.items()):
+        for word in ("undetermined", "notEvaluated", "assumptions", "unreadable", "skipped", "untrusted"):
+            assert word in block, f"{p.relative_to(LITE)}: the reading guide never mentions `{word}`"
+
+
+def test_the_pinned_release_is_this_release_and_the_bump_script_moves_it() -> None:
+    """The uvx fallback and the install command pin a version, and bump_version.py has to move every one of them."""
+    from kube_noob import __version__
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import bump_version
+
+    pinned: dict[str, set[str]] = {}
+    for p in sorted(LITE.rglob("*.md")):
+        found = set(re.findall(r"kube-noob==(\d+\.\d+\.\d+)", p.read_text()))
+        if found:
+            pinned[p.relative_to(ROOT).as_posix()] = found
+    assert len(pinned) >= 7, "every skill pins the uvx fallback"
+    assert all(v == {__version__} for v in pinned.values()), f"stale pins: {pinned}"
+    untracked = sorted(set(pinned) - set(bump_version.TARGETS))
+    assert not untracked, f"bump_version.py would leave these behind: {untracked}"
+
+
+def test_no_skill_runs_a_command_as_it_loads() -> None:
+    """A `!`cmd`` line runs before Claude reads the skill, needs a permission grant and aborts the skill when it fails,
+    and the directory's validator follows it as code. The presence check is an instruction instead."""
+    bad = [
+        f"{p.relative_to(LITE).as_posix()}:{n}"
+        for p in sorted(LITE.rglob("*.md"))
+        for n, line in enumerate(p.read_text().splitlines(), 1)
+        if re.search(r"(^|\s)!`", line) or line.startswith("```!")
+    ]
+    assert not bad, "\n".join(bad)
+
+
+def test_no_file_names_an_mcp_tool_the_plugin_cannot_reach() -> None:
+    """The plugin declares no server, so a `kubenoob_` name in any file it ships is a tool that is not there."""
+    assert "mcpServers" not in json.loads((LITE / ".claude-plugin" / "plugin.json").read_text())
+    assert not (LITE / ".mcp.json").exists()
+    bad = [
+        f"{p.relative_to(LITE).as_posix()}:{n}"
+        for p in _files()
+        if p.suffix.lower() in {".md", ".json", ".txt", ".yaml", ".yml"}
+        for n, line in enumerate(p.read_text().splitlines(), 1)
+        if "kubenoob_" in line
+    ]
+    assert not bad, "\n".join(bad)
+
+
+def test_the_readme_says_what_the_skills_run_and_fetch() -> None:
+    """The directory's security scan looks for behaviour the README does not disclose."""
+    text = (LITE / "README.md").read_text()
+    for needle in ("kube-noob --version", "kubectl noob", "uvx", "PyPI", "no MCP server", "permission"):
+        assert needle in text, f"the README does not disclose `{needle}`"

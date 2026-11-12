@@ -66,13 +66,42 @@ def test_the_manifest_digest_is_the_archive_digest(doc: dict) -> None:
     assert len(platform["sha256"]) == 64
 
 
-def test_the_archive_holds_one_executable_named_as_krew_expects(doc: dict) -> None:
+def test_the_archive_holds_the_executable_named_as_krew_expects_and_the_licence(doc: dict) -> None:
+    """krew's pre-submit checklist: "Adopt an open source license, and add it to your plugin archive file" and
+    "Make sure to extract the LICENSE file during the plugin installation"
+    (https://krew.sigs.k8s.io/docs/developer-guide/release/new-plugin/, read 2026-11-12). With no `files` in the
+    manifest krew extracts everything, so the licence is installed beside the script (G276)."""
     with tarfile.open(fileobj=io.BytesIO(km.archive()), mode="r:gz") as tar:
         members = tar.getmembers()
-    assert [m.name for m in members] == [km.BIN]
+        licence = tar.extractfile("LICENSE")
+        assert licence is not None
+        shipped = licence.read().decode("utf-8")
+    assert [m.name for m in members] == [km.BIN, "LICENSE"]
+    assert shipped == (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert doc["spec"]["platforms"][0]["bin"] == km.BIN
-    assert members[0].mode == 0o755 and members[0].mtime == 0
-    assert members[0].uid == 0 and members[0].gid == 0 and members[0].uname == ""
+    assert "files" not in doc["spec"]["platforms"][0], "with no `files`, krew extracts the licence too"
+    assert members[0].mode == 0o755 and members[1].mode == 0o644
+    for m in members:
+        assert m.mtime == 0 and m.uid == 0 and m.gid == 0 and m.uname == ""
+
+
+def test_the_description_lists_no_commands(doc: dict) -> None:
+    """The manifest guide: "Avoid including a list of commands or options for your plugin" in `description`
+    (https://krew.sigs.k8s.io/docs/developer-guide/plugin-manifest/, read 2026-11-12)."""
+    lines = [ln.strip() for ln in doc["spec"]["description"].splitlines()]
+    assert not [ln for ln in lines if ln.startswith("kubectl ")], "a command line in the description"
+    assert "--help" in doc["spec"]["description"], "point at the help instead of listing commands"
+
+
+def test_the_install_hints_name_only_documented_install_routes() -> None:
+    """The script once told a user to `brew install kube-noob/tap/kube-noob`, a tap the install guide never names.
+    The Homebrew route is the guide's three commands (tests/test_distribution.py holds them there)."""
+    out = subprocess.run(
+        [SH, str(km.SCRIPT), "audit"], capture_output=True, text=True, check=False, env={"PATH": "/nonexistent"}
+    )
+    assert "kube-noob/tap" not in out.stderr and "kube-noob/tap" not in km.MANIFEST.read_text(encoding="utf-8")
+    assert "brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob" in out.stderr
+    assert "brew trust --formula kube-noob/kube-noob/kube-noob" in out.stderr
 
 
 def test_the_plugin_name_and_bin_follow_krew_naming(doc: dict) -> None:

@@ -21,6 +21,14 @@ FILES = [
     ".claude-plugin/marketplace.json",
     "plugin/kube-noob/.claude-plugin/plugin.json",
     "plugin/kube-noob-skills/.claude-plugin/plugin.json",
+    "plugin/kube-noob-skills/README.md",
+    "plugin/kube-noob-skills/skills/helm-charts/SKILL.md",
+    "plugin/kube-noob-skills/skills/kube-debugging/SKILL.md",
+    "plugin/kube-noob-skills/skills/kube-master-controller/SKILL.md",
+    "plugin/kube-noob-skills/skills/kubernetes-core/SKILL.md",
+    "plugin/kube-noob-skills/skills/openshift-platform/SKILL.md",
+    "plugin/kube-noob-skills/skills/rhacs-stackrox/SKILL.md",
+    "plugin/kube-noob-skills/skills/rosa-hcp/SKILL.md",
     "plugin/kube-noob/pyproject.toml",
     "plugin/kube-noob/uv.lock",
     "plugin/kube-noob/server/kube_noob/__init__.py",
@@ -34,7 +42,9 @@ FILES = [
     "docs/openshift-catalog.md",
     "CHANGELOG.md",
 ]
-MINOR_ONLY = {"docs/install.md"}  # names the image's MAJOR.MINOR tag, which a patch release does not change
+# Files a patch release leaves alone. docs/install.md used to be one (it names the image's MAJOR.MINOR tag), until it
+# also named the pinned release for the directory plugin and the no-krew kubectl path (G276).
+MINOR_ONLY: set[str] = set()
 
 
 def _load():  # type: ignore[no-untyped-def]

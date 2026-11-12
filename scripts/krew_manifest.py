@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the krew plugin: the entry-point script and the krew-index manifest for it.
+"""Build the krew plugin: the entry-point script, its archive (with the licence) and the krew-index manifest.
 
 `krew/kubectl-noob.in` is the source; the version is substituted into it here so the committed
 `krew/kubectl-noob` is the file that actually ships, and `krew/noob.yaml` carries the SHA-256 of the archive
@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "krew" / "kubectl-noob.in"
 SCRIPT = ROOT / "krew" / "kubectl-noob"
 MANIFEST = ROOT / "krew" / "noob.yaml"
+LICENSE = ROOT / "LICENSE"
 PLUGIN_NAME = "noob"
 BIN = "kubectl-noob"
 REPO = "https://github.com/kube-noob/kube-noob"
@@ -51,19 +52,29 @@ def script(ver: str | None = None) -> str:
     return text.replace("__VERSION__", ver or version())
 
 
-def archive(ver: str | None = None) -> bytes:
-    """A reproducible .tar.gz holding just the executable script, named as krew expects to find it."""
-    payload = script(ver).encode("utf-8")
-    info = tarfile.TarInfo(BIN)
+def _member(name: str, payload: bytes, mode: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
     info.size = len(payload)
-    info.mode = 0o755
+    info.mode = mode
     info.mtime = 0
     info.uid = info.gid = 0
     info.uname = info.gname = ""
     info.type = tarfile.REGTYPE
+    return info
+
+
+def archive(ver: str | None = None) -> bytes:
+    """A reproducible .tar.gz holding the executable script, named as krew expects to find it, and the licence.
+
+    krew's pre-submit checklist asks for the licence inside the archive and extracted at install
+    (https://krew.sigs.k8s.io/docs/developer-guide/release/new-plugin/, read 2026-11-12). The manifest names no
+    `files`, so krew extracts both. Archives up to v0.9.2 held the script alone.
+    """
+    members = ((BIN, script(ver).encode("utf-8"), 0o755), ("LICENSE", LICENSE.read_bytes(), 0o644))
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-        tar.addfile(info, io.BytesIO(payload))
+        for name, payload, mode in members:
+            tar.addfile(_member(name, payload, mode), io.BytesIO(payload))
     # mtime=0 in the gzip header too, or the digest changes every second.
     out = io.BytesIO()
     with gzip.GzipFile(fileobj=out, mode="wb", mtime=0, compresslevel=9) as gz:
@@ -89,18 +100,13 @@ spec:
     model and no network. Findings name the NIST SP 800-53 Rev. 5 controls they are evidence for, and a verdict
     it cannot reach is reported as undetermined rather than as a pass.
 
-    This plugin forwards every argument to the kube-noob CLI unchanged:
-
-      kubectl noob audit -f k8s/ --platform openshift --version 4.22
-      kubectl get deploy api -o yaml | kubectl noob audit -f -
-      kubectl noob policy explain --from web/frontend --to shop/orders-api --port 8080
-
-    It uses kube-noob from your PATH when it is there, and otherwise runs this pinned release through uvx, so
-    the plugin is usable on a machine with no Python environment set up.
+    The plugin forwards every argument to the kube-noob CLI unchanged, so `kubectl noob --help` lists what it
+    can do. It uses kube-noob from your PATH when it is there, and otherwise runs this pinned release through
+    uvx, so the plugin is usable on a machine with no Python environment set up.
   caveats: |
-    Needs either kube-noob on PATH (pipx install kube-noob, or brew install kube-noob/tap/kube-noob) or uv
-    installed, in which case the pinned release is fetched on first use. Nothing in kube-noob reaches the
-    network or your cluster unless you enable it explicitly.
+    Needs either kube-noob on PATH (pipx install kube-noob=={ver}) or uv installed, in which case the pinned
+    release is fetched from PyPI on first use. Nothing in kube-noob reaches the network or your cluster unless
+    you enable it explicitly.
   platforms:
     - bin: {BIN}
       uri: {uri}

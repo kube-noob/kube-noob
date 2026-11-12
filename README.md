@@ -66,7 +66,7 @@ Claude plugin, in Claude Code (needs [uv](https://docs.astral.sh/uv/)):
 /plugin install kube-noob@kube-noob
 ```
 
-Desktop app, claude.ai chat and the Agent Skill: [install.md](https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md). Any MCP client:
+Desktop, claude.ai, the plugin directory, Agent Skill: [install.md](https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md). Any MCP client:
 
 ```json
 {"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.9.2", "kube-noob", "mcp"]}}}

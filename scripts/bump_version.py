@@ -24,6 +24,21 @@ TARGETS: dict[str, tuple[str, ...]] = {
     ".claude-plugin/marketplace.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
     "plugin/kube-noob-skills/.claude-plugin/plugin.json": (r'"version": "(?P<v>[^"]+)"',),
+    # The directory plugin's skills pin the release they fall back to (`uvx --from kube-noob==<v>`) and the one they
+    # tell the user to install; a stale pin would run, and install, the previous release (G276).
+    "plugin/kube-noob-skills/README.md": (r"kube-noob==(?P<v>\d+\.\d+\.\d+)",),
+    **{
+        f"plugin/kube-noob-skills/skills/{skill}/SKILL.md": (r"kube-noob==(?P<v>\d+\.\d+\.\d+)",)
+        for skill in (
+            "helm-charts",
+            "kube-debugging",
+            "kube-master-controller",
+            "kubernetes-core",
+            "openshift-platform",
+            "rhacs-stackrox",
+            "rosa-hcp",
+        )
+    },
     "plugin/kube-noob/pyproject.toml": (r'^version = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/uv.lock": (r'^name = "kube-noob-plugin"\nversion = "(?P<v>[^"]+)"$',),
     "plugin/kube-noob/server/kube_noob/__init__.py": (r'__version__ = "(?P<v>[^"]+)"',),
@@ -39,7 +54,13 @@ TARGETS: dict[str, tuple[str, ...]] = {
         r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",
     ),
     "deploy/gitlab/kube-noob-gate.gitlab-ci.yml": (r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
-    "docs/install.md": (r"ghcr\.io/kube-noob/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",),
+    "docs/install.md": (
+        r"ghcr\.io/kube-noob/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",
+        # the directory plugin's install line and the Claude Desktop config, and the no-krew kubectl path (G276)
+        r"kube-noob==(?P<v>\d+\.\d+\.\d+)",
+        r"/v(?P<v>\d+\.\d+\.\d+)/",
+        r"kubectl-noob-v(?P<v>\d+\.\d+\.\d+)\.tar\.gz",
+    ),
     # the owner's commands for the OpenShift Helm catalog pull request: every version in it is the release's
     "docs/openshift-catalog.md": (r"(?<![\d.])(?P<v>\d+\.\d+\.\d+)(?!\.?\d)",),
 }

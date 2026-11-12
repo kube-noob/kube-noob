@@ -76,11 +76,27 @@ plugin ships only the modules of the stdio server: no CLI, model agent, HTTP ser
 so it reads no credentials and makes no network calls of its own. Personal data is never requested. If text you paste contains some, it is processed in memory
 and not stored, except words you choose to put in a confirmed note or a learner id.
 
-## The knowledge-only plugin
+## The directory plugin (`kube-noob-skills`)
 
-`kube-noob-skills` contains Markdown and one image. There is no server in it, no Python and nothing to run, so it
-starts no process, installs no dependency, reads no file of yours and makes no network connection. What you type
-goes to Claude as it always does; this plugin adds nothing to that and receives nothing from it.
+`kube-noob-skills` contains Markdown and one image. There is no server in it, no Python and nothing of its own to run.
+Its skills ask Claude to run the kube-noob CLI you installed, through Claude Code's Bash tool, and you approve each
+command as you approve any other. So what happens is what the CLI does, with the skills holding it to this:
+
+- The commands read the files Claude writes under `/tmp` from what you pasted (`/tmp/kn-input.txt` and the like), or
+  files you point at. They never pass `--cluster-enabled`, `--web-enabled`, `--live` or `--online`, so kube-noob
+  reads no cluster and makes no network connection.
+- The one download the skills can cause is the fallback when kube-noob is not installed and uv is:
+  `uvx --from kube-noob==<the pinned release> kube-noob`, which fetches that release and its dependencies from PyPI
+  into uv's cache. The skill asks you first.
+- kube-noob writes only where you asked: the `-o` path of `fix`, `generate` and `helm-chart`, and its local data
+  folder for learning progress, a saved profile and an incident fix you confirmed.
+
+What you type goes to Claude as it always does. The output Claude reads is kube-noob's JSON for the files above.
+Without the CLI the skills run nothing and say so. In chat on claude.ai they run nothing either: they give you the
+command, and you choose what output to paste.
+
+A remote MCP server pointing at your own `kube-noob serve` was considered for this plugin and is not shipped; see
+[SECURITY.md](SECURITY.md#the-directory-plugin-and-a-remote-server).
 
 ## The Agent Skill
 
