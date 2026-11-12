@@ -10,7 +10,7 @@ license: Apache-2.0
 requires:
   - [learn, learning, course, courses, tutorial, tutorials, beginner, beginners, certification, cka, ckad, cks, practice, study, roadmap, lab, labs]
 sources:
-  - {title: "kube-noob link verification (2026-10-27)", url: "https://github.com/aashishmahajan/kube-noob", license: Apache-2.0}
+  - {title: "kube-noob link verification (2026-10-27)", url: "https://github.com/kube-noob/kube-noob", license: Apache-2.0}
 ---
 # Learning paths
 

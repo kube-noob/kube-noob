@@ -659,7 +659,7 @@ kube-noob gate --chart deploy/helm/shop --values deploy/helm/shop/values-prod.ya
 GitHub Actions (add `github/codeql-action/upload-sarif` after it to see findings in code scanning):
 
 ```yaml
-- uses: aashishmahajan/kube-noob@<tag>
+- uses: kube-noob/kube-noob@<tag>
   with:
     chart: deploy/helm/shop
     values: deploy/helm/shop/values-prod.yaml

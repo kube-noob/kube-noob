@@ -253,7 +253,7 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) 
         title="kube-noob",
         version=__version__,
         instructions=_instructions(settings),
-        website_url="https://github.com/aashishmahajan/kube-noob",
+        website_url="https://github.com/kube-noob/kube-noob",
         icons=_icons(),
     )
     # The SDK logs each failed call's message at INFO, and messages can quote the caller's input (a YAML error shows
