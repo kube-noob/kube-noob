@@ -2612,6 +2612,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
                 text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+            if rep["knownIssuesVerdict"] == "not-determined":
+                text += f"\nknown issues: not determined: {rep['knownIssuesNote']}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:

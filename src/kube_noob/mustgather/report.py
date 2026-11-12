@@ -36,6 +36,20 @@ def _known(text: str, platform: str, version: str | None, data_dir: Path | None 
     return known_issues.match(text, platform, version, 3, data_dir)
 
 
+def okd_of(cluster: dict[str, Any]) -> str | None:
+    """The OKD version the analysers' ClusterVersion holds, through the same reading ``operators issues
+    --must-gather`` uses (``operator_issues.must_gather_release``), else None."""
+    from kube_noob import operator_issues
+
+    return operator_issues.okd_version(operator_issues.must_gather_release(cluster))
+
+
+def okd_note(version: str) -> str:
+    from kube_noob import operator_issues
+
+    return operator_issues.okd_note(version)
+
+
 def _query(f: dict[str, Any]) -> str:
     """The text a finding is matched by: its words and the names of its signals (alert names are words the
     catalogue and the release notes share)."""
@@ -58,13 +72,26 @@ def build(
     a = analysis.as_dict()
     cluster = a["cluster"]
     version = cluster.get("version") or None
-    # a ClusterVersion makes it OpenShift even when none is named version or none holds a readable version
-    platform = "openshift" if cluster.get("version") or has_clusterversion(cluster) else "kubernetes"
+    okd = okd_of(cluster)
+    # a ClusterVersion makes it OpenShift even when none is named version or none holds a readable version; an OKD
+    # one makes it OKD, decided as `operators issues --must-gather` decides it
+    platform = "okd" if okd else "openshift" if cluster.get("version") or has_clusterversion(cluster) else "kubernetes"
+    if okd:
+        verdict, note = "not-determined", f"{okd_note(okd)}, so no finding was matched against them"
+    elif platform == "kubernetes":
+        verdict, note = (
+            "not-applicable",
+            "the index holds OpenShift release-note issues; they do not apply to plain Kubernetes",
+        )
+    else:
+        verdict, note = "looked-up", None
     operators = [o["name"] for o in cluster.get("operators", [])]
     roots = bundle.as_dict()["gatherRoots"]
     findings = [{"rank": n, **f} for n, f in enumerate(a["findings"], start=1)]
 
     def known(text: str) -> dict[str, Any]:
+        if okd:  # the notes do not describe OKD's builds: what the index is, but nothing matched against it
+            return {"knowledge": _known("", "openshift", None, data_dir)["knowledge"] if match_known is None else {}}
         if match_known is not None:
             return match_known(text, platform, version)
         return _known(text, platform, version, data_dir)
@@ -111,6 +138,8 @@ def build(
         "counts": a["counts"],
         "findings": findings,
         "knownIssues": sorted(issues.values(), key=lambda m: (min(m["findings"]), m["id"])),
+        "knownIssuesVerdict": verdict,
+        "knownIssuesNote": note,
         "memory": sorted(memory.values(), key=lambda m: (min(m["findings"]), m["id"])),
         "memoryNotes": list(dict.fromkeys(memory_notes)),
         "nextSteps": steps,
@@ -159,7 +188,8 @@ def _environment(r: dict[str, Any]) -> list[str]:
             state = next((h["state"] for h in c.get("history", []) if h["version"] == c["desiredVersion"]), "")
             update = f"; update to {_md(c['desiredVersion'])}" + (f" ({_md(state)})" if state else "")
         channel = f" (channel {_md(c['channel'])})" if c.get("channel") else ""
-        out.append(f"- OpenShift Container Platform {_md(c['version'])}{channel}{update}")
+        product = "OKD" if r.get("platform") == "okd" else "OpenShift Container Platform"
+        out.append(f"- {product} {_md(c['version'])}{channel}{update}")
     elif c.get("clusterVersionNote"):
         out.append(f"- Version: not determined: {_md(c['clusterVersionNote'])}")
     elif r.get("platform") == "openshift":
@@ -205,7 +235,7 @@ def _knowledge_line(r: dict[str, Any]) -> str:
 def markdown(r: dict[str, Any]) -> str:
     c, counts = r["cluster"], r["counts"]
     if c.get("version"):
-        title = f"OpenShift {c['version']}"
+        title = f"{'OKD' if r.get('platform') == 'okd' else 'OpenShift'} {c['version']}"
     elif r.get("platform") == "openshift":
         title = "an OpenShift cluster (version not determined)"
     else:
@@ -258,6 +288,8 @@ def markdown(r: dict[str, Any]) -> str:
                 f"| {ref} | {_md(m.get('status') or '')} | {_md(m.get('fixedIn') or 'not yet')} | {found} | "
                 f"{_md(m.get('summary') or '')} |"
             )
+    elif r.get("knownIssuesVerdict") == "not-determined":
+        lines.append(f"Not determined: {_md(r['knownIssuesNote'])}. {_knowledge_line(r)}")
     else:
         lines.append(f"None of the findings matches a known issue. {_knowledge_line(r)}")
     if r["memory"] or r["memoryNotes"]:
@@ -327,6 +359,8 @@ def case_draft(r: dict[str, Any]) -> str:
                 f"- {_md(m['id'])}: {_md(m.get('summary') or '')} ({_md(m.get('status') or '')}{fixed}; matches "
                 f"finding {', '.join(str(n) for n in m['findings'])})"
             )
+    elif r.get("knownIssuesVerdict") == "not-determined":
+        lines.append(f"- Not determined: {_md(r['knownIssuesNote'])}. {_knowledge_line(r)}")
     else:
         lines.append(f"- None matched. {_knowledge_line(r)}")
     lines += ["", "## Steps already taken", "", FILL.format("what you tried and what happened"), ""]

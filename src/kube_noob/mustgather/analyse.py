@@ -1211,7 +1211,9 @@ def render_text(analysis: Analysis) -> str:
     c = analysis.cluster
     head = []
     if c.get("version"):
-        head.append(f"OpenShift {c['version']}")
+        from kube_noob.mustgather.report import okd_of
+
+        head.append(f"OKD {c['version']}" if okd_of(c) else f"OpenShift {c['version']}")
         if c.get("desiredVersion") and c["desiredVersion"] != c["version"]:
             head.append(f"updating to {c['desiredVersion']}")
     if c.get("platform"):

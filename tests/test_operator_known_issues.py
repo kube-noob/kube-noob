@@ -1255,3 +1255,75 @@ def test_an_operator_whose_install_was_not_read_is_never_named(state: str) -> No
     op = one(out, "vertical-pod-autoscaler")
     assert op["inventoryState"] == state and op["verdict"] == "not-determined", op
     assert out["issues"] == {} and out["allMatched"] is False
+
+
+def _okd_must_gather(tmp_path: Path, version: str) -> Path:
+    vpa = pair("vertical-pod-autoscaler", "vpa", "vpa.v1")
+    return mgdir(
+        tmp_path,
+        {
+            G % ("vpa", "clusterserviceversions.yaml"): y({"kind": "List", "items": [vpa[0]]}),
+            G % ("vpa", "subscriptions.yaml"): y({"kind": "List", "items": [vpa[1]]}),
+            CV_PATH % "version": _cv_with_condition("version", version),
+        },
+    )
+
+
+@pytest.mark.parametrize("version", OKD_VERSIONS[:2])
+def test_the_must_gather_report_reads_okd_as_operators_issues_does(
+    version: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kube_noob.mustgather import report as mg_report
+
+    root = _okd_must_gather(tmp_path, version)
+    note = oi.okd_note(version)
+    assert main(["operators", "issues", "--must-gather", str(root), "--format", "json"]) == 0
+    issues = json.loads(capsys.readouterr().out)
+    assert issues["verdict"] == "not-determined" and any(r.startswith(note) for r in issues["incompleteBecause"])
+
+    out_dir = tmp_path / "report"
+    assert main(["must-gather", "analyze", str(root), "--report", str(out_dir), "--case-draft"]) == 0
+    text = capsys.readouterr().out
+    assert f"OKD {version}" in text and f"OpenShift {version}" not in text and note in text
+    rep = json.loads((out_dir / "report.json").read_text())
+    assert rep["platform"] == "okd" and rep["knownIssues"] == []
+    assert rep["knownIssuesVerdict"] == "not-determined" and rep["knownIssuesNote"].startswith(note)
+    md = (out_dir / "report.md").read_text()
+    draft = (out_dir / "case-draft.md").read_text()
+    for doc in (md, draft):
+        assert f"OKD {version}" in doc and f"OpenShift Container Platform {version}" not in doc
+        assert note in doc and "None of the findings matches" not in doc and "None matched" not in doc
+    assert md.startswith(f"# Must-gather report: OKD {version}")
+    assert main(["must-gather", "analyze", str(root), "--format", "json"]) == 0
+    both = json.loads(capsys.readouterr().out)
+    assert (
+        both["knownIssuesNote"] == rep["knownIssuesNote"] and both["operatorKnownIssues"]["verdict"] == "not-determined"
+    )
+
+    def refuse(*a: Any) -> dict[str, Any]:
+        raise AssertionError("an OKD must-gather was matched against the OpenShift release notes")
+
+    bundle = ingest.open_bundle(root)
+    built = mg_report.build(bundle, analyse.analyse(bundle), match_known=refuse, match_memory=lambda *a: {})
+    assert built["knownIssuesVerdict"] == "not-determined"
+
+
+def test_an_openshift_must_gather_report_still_looks_known_issues_up(tmp_path: Path) -> None:
+    from kube_noob.mustgather import report as mg_report
+
+    for version, platform, verdict in (("4.22.1", "openshift", "looked-up"), ("4.21.0-rc.1", "openshift", "looked-up")):
+        bundle = ingest.open_bundle(_okd_must_gather(tmp_path / version, version))
+        rep = mg_report.build(bundle, analyse.analyse(bundle), data_dir=tmp_path / "data")
+        assert rep["platform"] == platform and rep["knownIssuesVerdict"] == verdict, version
+        assert rep["knownIssuesNote"] is None and f"OpenShift Container Platform {version}" in mg_report.markdown(rep)
+    bare = mgdir(tmp_path / "k", {G % ("p", "clusterserviceversions.yaml"): y(csv("x.v1", "p"))})
+    b = ingest.open_bundle(bare)
+    k8s = mg_report.build(b, analyse.analyse(b), data_dir=tmp_path / "data")
+    assert k8s["platform"] == "kubernetes" and k8s["knownIssuesVerdict"] == "not-applicable"
+
+
+def test_the_text_view_says_installed_has_fix_when_no_fix_is_listed() -> None:
+    out = assess(*pair("ptp-operator", "p", "p.v1"))
+    open_rows = [r for r in rows(out, "ptp-operator") if not r["fixedInOpenShift"]]
+    assert open_rows and open_rows[0]["installedHasFix"] == "no-fix-listed"
+    assert "no fix listed (installedHasFix: no-fix-listed)" in oi.render_text(out)

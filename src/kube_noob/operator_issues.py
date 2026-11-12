@@ -356,6 +356,18 @@ def is_okd(version: str | None) -> bool:
     return bool(m and m.group(4) and "okd" in m.group(4).lower())
 
 
+def okd_note(version: str) -> str:
+    """Why an OKD version is not answered from the bundled index: one sentence every surface shares (``operators
+    issues``, the tools and the must-gather report), so they cannot disagree about it."""
+    return f"{version} is an OKD version, not OpenShift Container Platform: the indexed release notes are OpenShift's"
+
+
+def okd_version(release: Release) -> str | None:
+    """The OKD version the release says the cluster runs (the given one, then the detected one), else None. The one
+    decision ``assess`` and the must-gather report both use."""
+    return next((v for v in (parse_version(release.given), release.detected) if is_okd(v)), None)
+
+
 def _release(version: str) -> str:
     m = _OCP.match(version)
     if m is None:  # callers pass parse_version output only
@@ -614,7 +626,7 @@ def assess(
             f"the given version {given} disagrees with the ClusterVersion's {detected} ({rel.detected_from}); the "
             "given one is used"
         )
-    okd = next((v for v in (version, detected) if is_okd(v)), None)
+    okd = okd_version(rel)
     versions = [version] if version else []
     if rel.updating_to and _release(rel.updating_to) != _release(version or rel.updating_to):
         versions.append(rel.updating_to)  # an update in progress is a fact about the cluster, given a version or not
@@ -633,10 +645,7 @@ def assess(
             "apply, so no operator was looked up"
         )
     if okd:
-        release_gaps.append(
-            f"{okd} is an OKD version, not OpenShift Container Platform: the indexed release notes are OpenShift's, so "
-            "no operator was looked up"
-        )
+        release_gaps.append(f"{okd_note(okd)}, so no operator was looked up")
         caveats.append(
             f"the cluster runs OKD ({okd}), the community distribution: the indexed release notes are OpenShift "
             "Container Platform's and do not describe OKD's builds, so every operator is not determined"
@@ -1114,7 +1123,7 @@ def render_text(out: dict[str, Any]) -> str:
                     f"operator: {row['installedHasFix']}"
                 )
             else:
-                lines.append("        no fix listed")
+                lines.append(f"        no fix listed (installedHasFix: {row['installedHasFix']})")
             lines.append(f"        {row['url']}  source {row['source']}  (as of {row['knownIssuesAsOf']})")
         if block.get("withheld"):
             w = block["withheld"]

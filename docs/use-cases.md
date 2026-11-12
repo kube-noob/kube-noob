@@ -392,7 +392,11 @@ kube-noob --format json must-gather analyze must-gather.local.542134234462771228
 Before you open a case, `--report` writes `report.md` and `report.json` with every finding matched to the known
 OpenShift bugs for the version the cluster runs (and to your team's approved memory entries), and `--case-draft`
 adds `case-draft.md`: environment, update history, evidence files, matched bugs and the read-only checks to paste,
-with a `[FILL IN: ...]` for everything only you know. `kube-noob demo must-gather` shows the whole flow offline.
+with a `[FILL IN: ...]` for everything only you know. `knownIssuesVerdict` says whether the findings were looked up
+at all: an OKD must-gather (a version such as `4.20.0-okd-scos.6`) is `not-determined`, titled OKD, and every file says
+why, in the same words `operators issues --must-gather` uses -- the bundled release notes are OpenShift Container
+Platform's; a cluster with no ClusterVersion is `not-applicable`. `kube-noob demo must-gather` shows the whole flow
+offline.
 
 ```bash
 kube-noob must-gather analyze must-gather.tar.gz --report case-01 --case-draft
