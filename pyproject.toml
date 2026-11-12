@@ -65,12 +65,12 @@ noob = "kube_noob.cli:main"
 
 [project.urls]
 Homepage = "https://kube-noob.com"
-Source = "https://github.com/aashishmahajan/kube-noob"
-Issues = "https://github.com/aashishmahajan/kube-noob/issues"
-Security = "https://github.com/aashishmahajan/kube-noob/security/policy"
-Documentation = "https://github.com/aashishmahajan/kube-noob/tree/main/docs"
-Changelog = "https://github.com/aashishmahajan/kube-noob/blob/main/CHANGELOG.md"
-Install = "https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md"
+Source = "https://github.com/kube-noob/kube-noob"
+Issues = "https://github.com/kube-noob/kube-noob/issues"
+Security = "https://github.com/kube-noob/kube-noob/security/policy"
+Documentation = "https://github.com/kube-noob/kube-noob/tree/main/docs"
+Changelog = "https://github.com/kube-noob/kube-noob/blob/main/CHANGELOG.md"
+Install = "https://github.com/kube-noob/kube-noob/blob/main/docs/install.md"
 
 [tool.hatch.version]
 path = "src/kube_noob/__init__.py"
