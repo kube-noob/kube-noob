@@ -1107,7 +1107,8 @@ def test_okd_is_not_read_as_openshift_on_any_surface(version: str, tmp_path: Pat
         assert {o["verdict"] for o in out["operators"]} == {"not-determined"}, label
         assert any("OKD" in r for r in out["incompleteBecause"]), label
         assert any("OKD" in c and "OpenShift" in c for c in out["caveats"]), label
-        assert "OKD" in out["summary"] and "OKD" in oi.render_text(out), label
+        assert "OKD" in out["summary"] and out["cluster"]["okd"] is True, label
+        assert "cluster: OKD, not OpenShift Container Platform:" in oi.render_text(out), label
     # the neighbour: an OpenShift pre-release is still OpenShift
     assert assess(*vpa, version="4.21.0-rc.1")["cluster"]["indexed"] is True
 

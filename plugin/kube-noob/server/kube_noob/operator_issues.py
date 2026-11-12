@@ -1054,7 +1054,8 @@ def render_text(out: dict[str, Any]) -> str:
     corpus date, and every caveat and hint the JSON carries (G221)."""
     c, cl, k = out["counts"], out["cluster"], out["knowledge"]
     if cl["openshiftVersion"]:
-        version = f"OpenShift {cl['openshiftVersion']} ({cl['versionFrom']})"
+        product = "OKD, not OpenShift Container Platform:" if cl.get("okd") else "OpenShift"
+        version = f"{product} {cl['openshiftVersion']} ({cl['versionFrom']})"
     else:
         version = "OpenShift version not known"
     if cl["detectedVersion"] and cl["detectedVersion"] != cl["openshiftVersion"]:
