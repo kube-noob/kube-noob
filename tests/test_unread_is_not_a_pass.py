@@ -395,3 +395,53 @@ def test_a_non_string_api_version_is_said_separately_and_the_object_is_still_aud
 def test_a_document_no_rule_can_read_is_named_as_not_audited(doc: str) -> None:
     r = analyze("apiVersion: v1\n" + doc if doc[0].isalpha() else doc, platform="kubernetes", version="1.33")
     assert any("NOT audited" in a and "document 1" in a for a in r.assumptions), r.assumptions
+
+
+_SVC = """
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: shop}
+spec: {selector: {app: web}, ports: [{port: 80}]}
+"""
+
+
+@pytest.mark.parametrize(
+    "rule,text",
+    [
+        (
+            "KN-C014",
+            _HPA.replace("scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}", "scaleTargetRef: x"),
+        ),
+        ("KN-C014", _HPA.replace("kind: Deployment, name: web}", "kind: Deployment, name: .inf}")),
+        (
+            "KN-C014",
+            _HPA.replace(
+                "scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}", "scaleTargetRef: [null]"
+            ),
+        ),
+        ("KN-C009", _PDB_BUNDLE.replace("metadata: {labels: {app: web}}", "metadata: {labels: {app: .inf}}")),
+        ("KN-C009", _PDB_BUNDLE.replace("spec: {containers: [{name: web, image: nginx}]}", "spec: [[1]]")),
+        ("KN-V012", _PDB_BUNDLE.replace("spec: {containers: [{name: web, image: nginx}]}", "spec: .nan") + _SVC),
+        ("KN-V023", _PDB_BUNDLE.replace("containers: [{name: web, image: nginx}]", "containers: x") + _SVC),
+    ],
+    ids=[
+        "hpa-target-string",
+        "hpa-target-name-inf",
+        "hpa-target-list",
+        "template-label-inf",
+        "pod-spec-list",
+        "pod-spec-nan",
+        "containers-string",
+    ],
+)
+def test_a_partner_whose_pod_template_or_target_cannot_be_read_leaves_the_rule_undecided(rule: str, text: str) -> None:
+    """The third-review rerun of the fuzz: findings that vanished from a sibling when the HPA's target or the
+    workload's pod template had the wrong type, with no word that anything was not read."""
+    r = analyze(text, platform="kubernetes", version="1.33")
+    assert any(rule in a and "could not be read" in a for a in r.assumptions), (rule, r.assumptions)
+
+
+def test_a_name_that_is_not_a_string_is_a_missing_name() -> None:
+    r = analyze("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: 7}\n", platform="kubernetes", version="1.33")
+    assert any(f.rule_id == "KN-V001" and "string" in f.message for f in r.findings)

@@ -458,6 +458,8 @@ def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         meta = d.data.get("metadata")
         if not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
+        elif not isinstance(meta.get("name") or meta.get("generateName"), str):
+            missing.append("metadata.name as a string")
         if missing:
             yield r.finding(d, (), f"Missing required field(s): {', '.join(missing)}.", resource=f"doc[{d.index}]")
 
@@ -4180,6 +4182,7 @@ _PARTNER_KINDS: dict[str, frozenset[str]] = {
     "KN-V012": frozenset({"Service"}) | _WORKLOAD_KINDS,
     "KN-V023": frozenset({"Service"}) | _WORKLOAD_KINDS,
     "KN-N012": frozenset({"NetworkPolicy"}) | _WORKLOAD_KINDS,
+    "KN-ST002": frozenset({"PersistentVolumeClaim"}) | _WORKLOAD_KINDS,
 }
 
 
@@ -4200,7 +4203,43 @@ def object_unreadable(data: object) -> str | None:
         return "its metadata.labels is not a mapping"
     if data.get("spec") is not None and not isinstance(data.get("spec"), dict):
         return "its spec is not a mapping"
+    kind = data["kind"]
+    if kind in POD_SPEC_PATHS:
+        # The pod template is what a Service, PDB or NetworkPolicy selects and what an HPA's target is judged by.
+        path = POD_SPEC_PATHS[kind]
+        node: Any = data
+        for i, step in enumerate(path):
+            node = node.get(step) if isinstance(node, dict) else None
+            if node is not None and not isinstance(node, dict):
+                return f"its {'.'.join(map(str, path[: i + 1]))} is not a mapping"
+        holder: Any = data if kind == "Pod" else _get_mapping(data, path[:-1])
+        tmeta = holder.get("metadata") if isinstance(holder, dict) else None
+        if tmeta is not None and not isinstance(tmeta, dict):
+            return "its pod template's metadata is not a mapping"
+        labels = (tmeta or {}).get("labels")
+        if labels is not None and (
+            not isinstance(labels, dict) or not all(isinstance(v, str) for v in labels.values())
+        ):
+            return "its pod template's labels are not a mapping of strings"
+        pod = node if isinstance(node, dict) else {}
+        for key in ("containers", "initContainers"):
+            v = pod.get(key)
+            if v is not None and (not isinstance(v, list) or not all(isinstance(c, dict) for c in v)):
+                return f"its pod spec's {key} is not a list of mappings"
+    if kind == "HorizontalPodAutoscaler":
+        ref = (data.get("spec") or {}).get("scaleTargetRef")
+        if ref is not None and (
+            not isinstance(ref, dict) or not all(isinstance(ref.get(k), str | None) for k in ("kind", "name"))
+        ):
+            return "its spec.scaleTargetRef is not a kind and a name"
     return None
+
+
+def _get_mapping(data: dict[str, Any], path: tuple[Any, ...]) -> dict[str, Any] | None:
+    node: Any = data
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else None
 
 
 def _check_partners(ctx: AuditContext, rule_id: str) -> None:
