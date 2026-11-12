@@ -281,12 +281,14 @@ def test_install_prints_the_snippet_and_writes_only_with_write(
     from kube_noob.cli import main
 
     monkeypatch.chdir(tmp_path)
+    # The entry names the kube-noob that ran the install (an absolute path where one is found on PATH).
+    expected = hook.settings_snippet(hook.Options(executable=hook.current_executable()))
     assert main(["hook", "install", "--claude-code", "--format", "json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["merge"] == hook.settings_snippet() and not (tmp_path / ".claude").exists()
+    assert out["merge"] == expected and not (tmp_path / ".claude").exists()
     assert main(["hook", "install", "--claude-code", "--project", "--write"]) == 0
     written = json.loads((tmp_path / ".claude" / "settings.json").read_text())
-    assert written == hook.settings_snippet()
+    assert written == expected
 
 
 def test_install_merges_without_clobbering_and_is_idempotent(tmp_path: Path) -> None:
