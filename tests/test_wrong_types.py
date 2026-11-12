@@ -201,3 +201,44 @@ def test_the_attack_path_scan_reports_a_service_it_could_not_read(tmp_path: Path
     rc, out, _ = _run(["posture", "scan", "-f", str(f), "--format", "json"])
     doc = json.loads(out)
     assert rc == 0 and any("Service/shop/web" in n and "not a mapping" in n for n in doc["notRead"]), doc["notRead"]
+
+
+def test_an_object_whose_metadata_is_not_a_mapping_is_not_read_by_the_attack_path_readers(tmp_path: Path) -> None:
+    """`metadata: 7` crashed `posture scan` and `vuln threat` in three places; it is now refused once, where objects
+    enter the inventory, and named under `notRead`."""
+    f = tmp_path / "m.yaml"
+    f.write_text(_DEPLOY.replace("metadata: {name: web, namespace: shop}", "metadata: 7").replace("volumes: 7", ""))
+    for argv in (["posture", "scan"], ["vuln", "threat"]):
+        rc, out, err = _run([*argv, "-f", str(f), "--format", "json"])
+        doc = json.loads(out)
+        assert rc == 0 and "internal error" not in err
+        assert any("metadata or spec is not a mapping" in n for n in doc.get("notRead", [])), (argv, doc.get("notRead"))
+
+
+@pytest.mark.parametrize(
+    "mutation,why",
+    [
+        (("metadata: {name: web, namespace: shop}", "metadata: 7"), "metadata or spec is not a mapping"),
+        (("selector: {matchLabels: {app: web}}", "selector: 7"), "spec.selector is int"),
+        (
+            (
+                "containers: [{name: web, image: nginx}]",
+                "containers: [{name: web, image: nginx, securityContext: {capabilities: {add: 7}}}]",
+            ),
+            "capabilities.add is int",
+        ),
+    ],
+    ids=["metadata", "pdb-selector", "capabilities-add"],
+)
+def test_fix_leaves_a_document_it_cannot_read_as_it_was(mutation: tuple[str, str], why: str, tmp_path: Path) -> None:
+    pdb = "---\napiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata: {name: web, namespace: shop}\n"
+    pdb += "spec: {minAvailable: 3, selector: {matchLabels: {app: web}}}\n"
+    text = (_DEPLOY.replace("      volumes: 7\n", "") + pdb).replace(*mutation, 1)
+    if mutation[0].startswith("selector"):
+        text = _DEPLOY.replace("      volumes: 7\n", "") + pdb.replace(*mutation)
+    f = tmp_path / "in.yaml"
+    f.write_text(text)
+    rc, out, err = _run(["fix", "-f", str(f), "-o", str(tmp_path / "out.yaml"), "--format", "json"])
+    report = json.loads(out)
+    assert rc == 0 and "internal error" not in err
+    assert any(why in m for m in report["manualFollowUps"]), report["manualFollowUps"]

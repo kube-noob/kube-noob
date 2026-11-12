@@ -238,6 +238,12 @@ class Inventory:
         if not isinstance(obj, dict):
             return
         k = kind or str(obj.get("kind") or "")
+        if not isinstance(obj.get("metadata") or {}, dict) or not isinstance(obj.get("spec") or {}, dict):
+            # Every reader here takes metadata and spec as mappings; an object where either is not one is reported
+            # as not read and never enters the inventory, rather than crashing it or counting as absent (G276).
+            who = _ref(obj) if isinstance(obj.get("metadata") or {}, dict) else (k or "an object")
+            self.not_read.append(f"{who}: metadata or spec is not a mapping, so it was not read")
+            return
         if k == "Secret":
             self.dropped_secrets += 1  # never analysed, never echoed
             return
@@ -484,10 +490,6 @@ def _entries(inv: Inventory) -> list[Entry]:
                     )
                 )
     for s in inv.of("Service"):
-        if not isinstance(s.get("spec") or {}, dict):
-            # A spec that is not a mapping is not "not exposed": it was not read (G276).
-            inv.not_read.append(f"{_ref(s)}: spec is not a mapping, so whether it is exposed was not read")
-            continue
         exp = _service_exposure(s)
         if exp:
             label, weight, evidence, fix = exp

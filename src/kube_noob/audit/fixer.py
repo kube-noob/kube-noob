@@ -288,7 +288,8 @@ class _Fixer:
                     "with a non-root USER and remove runAsUser: 0."
                 )
             caps = _ensure_dict(sc, "capabilities")
-            added = {str(x).upper().removeprefix("CAP_") for x in (caps.get("add") or []) if isinstance(x, str)}
+            adds = shape.sequence(caps.get("add"), f"{doc.ref()} container '{c.name}' capabilities.add")
+            added = {str(x).upper().removeprefix("CAP_") for x in adds if isinstance(x, str)}
             # The API server rejects allowPrivilegeEscalation: false together with privileged: true or an added
             # CAP_SYS_ADMIN, and a privileged container ignores capability drops: leave those to a manual fix.
             privileged = sc.get("privileged") is True or "SYS_ADMIN" in added
@@ -378,6 +379,8 @@ class _Fixer:
     def fix_pdb(self, doc: Document, obj: dict[str, Any], all_objs: list[dict[str, Any]]) -> None:
         spec = shape.mapping(obj.get("spec"), f"{doc.ref()} spec")
         sel = spec.get("selector")
+        if sel is not None:  # None selects nothing; a selector that is not a mapping cannot be read
+            shape.mapping(sel, f"{doc.ref()} spec.selector")
         for w in all_objs:
             wdoc = Document(index=0, data=w)
             pt = pod_template(wdoc)
@@ -518,13 +521,22 @@ def fix_manifests(
     docs = load_documents(text)
     fx = _Fixer(platform, k8s_version, harden, openshift_ids)
     objs = [copy.deepcopy(d.data) for d in docs]
+    # A document whose metadata or spec is not a mapping takes no part in any fix, its own or another's (a PDB
+    # looks at every workload, the storage fix at every class): it is left as it is and named (G276).
+    unreadable = {
+        i
+        for i, o in enumerate(objs)
+        if isinstance(o, dict)
+        and (not isinstance(o.get("metadata") or {}, dict) or not isinstance(o.get("spec") or {}, dict))
+    }
+    readable = [o for i, o in enumerate(objs) if i not in unreadable]
     classes = dict(KNOWN_STORAGE_CLASSES)
-    for o in objs:
+    for o in readable:
         if isinstance(o, dict) and o.get("kind") == "StorageClass" and o.get("provisioner"):
             classes[str((o.get("metadata") or {}).get("name"))] = str(o["provisioner"])
     firewall_namespaces = {
         str((o.get("metadata") or {}).get("namespace") or "")
-        for o in objs
+        for o in readable
         if isinstance(o, dict)
         and o.get("kind") == "EgressFirewall"
         and isinstance(o.get("metadata"), dict)
@@ -533,11 +545,16 @@ def fix_manifests(
     for i, (d, o) in enumerate(zip(docs, objs, strict=True)):
         if not isinstance(o, dict):
             continue
+        if i in unreadable:
+            fx.result.manual.append(
+                f"document {i + 1} ({o.get('kind')}): not fixed, because its metadata or spec is not a mapping."
+            )
+            continue
         # A fix that meets a field of a type it cannot use leaves the WHOLE document as it was and says so: half a
         # fix on a document kube-noob could not read is worse than none, and a crash exited 1 (G276).
         before, changes_before = copy.deepcopy(o), len(fx.result.changes)
         try:
-            _fix_document(fx, d, o, objs, classes, firewall_namespaces, harden)
+            _fix_document(fx, d, o, readable, classes, firewall_namespaces, harden)
         except shape.WrongShape as exc:
             objs[i] = before
             del fx.result.changes[changes_before:]

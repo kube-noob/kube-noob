@@ -502,7 +502,7 @@ def model(
         "attribution": attack.ATTRIBUTION,
         "secretsIgnored": inv.dropped_secrets,
         # Only when something could not be read, so a model with nothing to say keeps its shape (G276).
-        **({"notRead": sorted(set(not_read))} if not_read else {}),
+        **({"notRead": sorted(set(not_read + inv.not_read))} if not_read or inv.not_read else {}),
         "statuses": {
             "open": "a mitigating rule fails on the element, or the right exists",
             "mitigated": "every mitigating rule passes on the element",
