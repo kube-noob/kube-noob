@@ -94,7 +94,10 @@ cosign verify ghcr.io/kube-noob/kube-noob:<version> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Those commands verify 0.9.0 and later, which were built after the project moved into the `kube-noob` organisation.
+Those commands verify what was built after the project moved into the `kube-noob` organisation: the image for
+0.9.0 and later, and the wheel for 0.9.1 and later. There is no 0.8.0 or 0.9.0 wheel: neither release reached
+PyPI (the 0.8.0 run failed before publishing and the 0.9.0 run failed at the PyPI step), so PyPI goes from 0.7.1
+to 0.9.1.
 0.7.1 and earlier were published from the previous account, and a signature cannot be moved: their images are at `ghcr.io/aashishmahajan/kube-noob`, their certificates name that repository, and
 `gh attestation verify --repo kube-noob/kube-noob` finds no attestation for their wheels. For one of those images:
 

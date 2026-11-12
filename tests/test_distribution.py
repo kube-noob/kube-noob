@@ -524,32 +524,36 @@ def test_the_release_installs_dependencies_before_importing_the_package() -> Non
 # this holds the rest. The old owner is written once, here, and every occurrence that stays names its reason.
 OLD_OWNER = "aashishmahajan"
 
-# (path, fragment, reason). A fragment is matched with `{old}` replaced by OLD_OWNER and is removed from the line
-# before the line is checked, so a line may keep one occurrence and still be refused for another.
-_KEPT_OLD_OWNER: tuple[tuple[str, str, str], ...] = (
+# (path, fragment, lines, reason). A fragment is matched with `{old}` replaced by OLD_OWNER and is removed from the
+# line before the line is checked, so a line may keep one occurrence and still be refused for another. `lines` is
+# how many lines of that file carry the fragment today, and the test requires exactly that many: an entry excuses
+# the occurrences it was written for, not the next one of the same shape. Without the count, reverting the
+# current-release `cosign verify` line in SECURITY.md to the old owner passed, because the pre-move line beside it
+# has the same fragment (found by an audit of this change).
+_KEPT_OLD_OWNER: tuple[tuple[str, str, int, str], ...] = (
     # A person, not a location.
-    (".github/CODEOWNERS", "* @{old}", "the maintainer's GitHub account; code review is a person"),
-    ("deploy/openshift-catalog/OWNERS", "githubUsername: {old}", "the catalog requires the submitter's username"),
-    ("docs/openshift-release.md", "lists `githubUsername: {old}`", "describes the OWNERS file above"),
-    ("docs/openshift-catalog.md", "gh repo clone {old}/charts", "the submitter's own fork of openshift-helm-charts"),
-    ("docs/openshift-catalog.md", "--head {old}:kube-noob-", "a pull request from that fork's branch"),
+    (".github/CODEOWNERS", "* @{old}", 1, "the maintainer's GitHub account; code review is a person"),
+    ("deploy/openshift-catalog/OWNERS", "githubUsername: {old}", 1, "the catalog requires the submitter's username"),
+    ("docs/openshift-release.md", "lists `githubUsername: {old}`", 1, "describes the OWNERS file above"),
+    ("docs/openshift-catalog.md", "gh repo clone {old}/charts", 1, "the submitter's own fork of openshift-helm-charts"),
+    ("docs/openshift-catalog.md", "--head {old}:kube-noob-", 2, "a pull request from that fork's branch"),
     # An artifact that really lives under the old owner: published before the move, and a signature cannot move.
-    ("SECURITY.md", "ghcr.io/{old}/kube-noob", "images 0.7.1 and earlier were pushed there (release run logs)"),
-    ("SECURITY.md", "https://github.com/{old}/kube-noob/.github/workflows/release.yml@", "their Fulcio identity"),
-    ("SECURITY.md", '"{old}/kube-noob"', "the publisher PyPI's provenance names for 0.7.1 and earlier"),
-    ("docs/openshift-release.md", "oci://ghcr.io/{old}/charts/kube-noob", "chart 0.7.0 and 0.7.1 were pushed there"),
+    ("SECURITY.md", "ghcr.io/{old}/kube-noob", 2, "images 0.7.1 and earlier were pushed there (release run logs)"),
+    ("SECURITY.md", "https://github.com/{old}/kube-noob/.github/workflows/release.yml@", 1, "their Fulcio identity"),
+    ("SECURITY.md", '"{old}/kube-noob"', 1, "the publisher PyPI's provenance names for 0.7.1 and earlier"),
+    ("docs/openshift-release.md", "oci://ghcr.io/{old}/charts/kube-noob", 2, "chart 0.7.0 and 0.7.1 were pushed there"),
     # A migration step for someone who followed the instructions before the move.
-    ("docs/install.md", "`{old}/kube-noob`", "the tap name used before the move, which a user may still have"),
-    ("docs/install.md", "brew untap {old}/kube-noob", "removing that tap"),
-    ("docs/website-updates.md", "grep -rn {old} .", "the command that finds what the site still has"),
+    ("docs/install.md", "`{old}/kube-noob`", 1, "the tap name used before the move, which a user may still have"),
+    ("docs/install.md", "brew untap {old}/kube-noob", 1, "removing that tap"),
+    ("docs/website-updates.md", "grep -rn {old} .", 1, "the command that finds what the site still has"),
     # A record of what was true when written.
-    ("AGENTS.md", "`{old}/kube-noob-www` is the wrong target", "records which site target was wrong"),
-    ("AGENTS.md", "CNAMEs to `{old}.github.io`", "the DNS record as it stands; an owner action"),
+    ("AGENTS.md", "`{old}/kube-noob-www` is the wrong target", 1, "records which site target was wrong"),
+    ("AGENTS.md", "CNAMEs to `{old}.github.io`", 1, "the DNS record as it stands; an owner action"),
     # Guards that name the old owner in order to refuse it.
-    ("tests/test_distribution.py", 'OLD_OWNER = "{old}"', "this guard"),
-    ("tests/test_brand.py", '"github.com/{old}/kube-noob" not in text', "refuses a hard-coded walkthrough URL"),
-    ("tests/test_plugin.py", '"/{old}/" not in url', "refuses it in the plugin manifest"),
-    ("tests/test_directory_plugin.py", 'if "{old}" in line', "refuses it in what the plugin directory shows"),
+    ("tests/test_distribution.py", 'OLD_OWNER = "{old}"', 1, "this guard"),
+    ("tests/test_brand.py", '"github.com/{old}/kube-noob" not in text', 1, "refuses a hard-coded walkthrough URL"),
+    ("tests/test_plugin.py", '"/{old}/" not in url', 1, "refuses it in the plugin manifest"),
+    ("tests/test_directory_plugin.py", 'if "{old}" in line', 1, "refuses it in what the plugin directory shows"),
 )
 
 
@@ -575,9 +579,11 @@ def test_no_tracked_file_names_the_owner_the_project_moved_out_of() -> None:
     they were written, and history is added to, not rewritten.
     """
     kept: dict[str, list[str]] = {}
-    for path, fragment, _reason in _KEPT_OLD_OWNER:
+    expected: dict[tuple[str, str], int] = {}
+    for path, fragment, count, _reason in _KEPT_OLD_OWNER:
         kept.setdefault(path, []).append(fragment.format(old=OLD_OWNER))
-    used: set[tuple[str, str]] = set()
+        expected[(path, fragment.format(old=OLD_OWNER))] = count
+    used: dict[tuple[str, str], int] = {}
     bad: list[str] = []
     for rel in _tracked_text_files():
         path = ROOT / rel
@@ -597,7 +603,7 @@ def test_no_tracked_file_names_the_owner_the_project_moved_out_of() -> None:
             rest = line
             for fragment in kept.get(rel, []):
                 if fragment in rest:
-                    used.add((rel, fragment))
+                    used[(rel, fragment)] = used.get((rel, fragment), 0) + 1
                     rest = rest.replace(fragment, "")
             if OLD_OWNER in rest:
                 bad.append(f"{rel}:{n}: {line.strip()[:110]}")
@@ -606,6 +612,28 @@ def test_no_tracked_file_names_the_owner_the_project_moved_out_of() -> None:
     )
     stale = [f"{p}: {f}" for p, frags in kept.items() for f in frags if (p, f) not in used]
     assert not stale, "allowlist entries that no longer match anything; remove them:\n" + "\n".join(stale)
+    widened = [
+        f"{p}: {f!r} is on {used[(p, f)]} line(s), the allowlist says {n}"
+        for (p, f), n in expected.items()
+        if used.get((p, f), 0) != n
+    ]
+    assert not widened, (
+        "an allowlisted fragment now appears on a different number of lines; a new occurrence needs its own entry "
+        "and reason, and a removed one needs the count lowered:\n" + "\n".join(widened)
+    )
+
+
+def test_the_old_owner_allowlist_does_not_excuse_a_new_line_of_the_same_shape() -> None:
+    """The count is what stops an entry written for the pre-move command from excusing the current one."""
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    current = [line for line in security.splitlines() if "cosign verify ghcr.io/kube-noob/kube-noob" in line]
+    assert current, "the current-release cosign command names the organisation's image"
+    fragment = f"ghcr.io/{OLD_OWNER}/kube-noob"
+    on_lines = sum(1 for line in security.splitlines() if fragment in line)
+    allowed = next(n for p, f, n, _ in _KEPT_OLD_OWNER if p == "SECURITY.md" and f.format(old=OLD_OWNER) == fragment)
+    assert on_lines == allowed
+    reverted = security.replace("ghcr.io/kube-noob/kube-noob", fragment)
+    assert sum(1 for line in reverted.splitlines() if fragment in line) > allowed
 
 
 def test_the_commands_a_user_copies_name_the_organisation() -> None:
