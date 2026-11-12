@@ -1034,7 +1034,8 @@ def test_exposure_is_a_leg_and_a_refused_exposure_read_is_not_determined() -> No
     assert _leg(refused, "exposure")["status"] == "not determined" and refused["complete"] is False
     assert any(r.startswith("services: services is forbidden") for r in _undetermined(refused))
     clean = br.reach(ap.collect_live(FakeBackend(docs), []), "deployment/web", "shop", live=True)
-    assert _leg(clean, "exposure")["status"] == "none" and clean["complete"] is True
+    # Fourth review: live, routers kube-noob does not list (TLSRoute, Contour, ...) can still route to it.
+    assert _leg(clean, "exposure")["status"] == "not determined" and "TLSRoute" in _leg(clean, "exposure")["detail"]
     with pytest.raises(br.ReachError, match=re.escape("that list was not read (deployments: deployments is forbidden")):
         br.reach(ap.collect_live(FakeBackend(docs, forbidden={"deployments"}), []), "deployment/web", "shop", live=True)
     with pytest.raises(br.ReachError, match=re.escape("namespace shop was not read (read: zzz)")):
@@ -1967,7 +1968,7 @@ def test_routes_from_namespaces_not_read_leave_exposure_open() -> None:
     assert "namespaces not read" in _leg(live, "exposure")["detail"]
     grpc = {
         "apiVersion": "gateway.networking.k8s.io/v1",
-        "kind": "GRPCRoute",
+        "kind": "TLSRoute",
         "metadata": {"name": "g", "namespace": "gw"},
         "spec": {
             "parentRefs": [{"name": "public"}],
@@ -1976,13 +1977,14 @@ def test_routes_from_namespaces_not_read_leave_exposure_open() -> None:
     }
     files = _reach([*_web(), _svc(), grpc], "deployment/web", "shop", whole_bundle=True)
     assert (
-        _leg(files, "exposure")["status"] == "not determined" and "GRPCRoute/gw/g" in _leg(files, "exposure")["detail"]
+        _leg(files, "exposure")["status"] == "not determined" and "TLSRoute/gw/g" in _leg(files, "exposure")["detail"]
     )
 
 
 def test_two_workloads_of_one_name_are_both_kept_never_one_dropped() -> None:
     """Item 4: "keep the worse" compared node weight before API rights, so a hostPID copy displaced a copy holding
-    cluster-admin's token, and `vuln threat` lost the identity. Both are kept, and the ambiguity is named."""
+    cluster-admin's token, and `vuln threat` lost the identity. Both are kept -- each placed on its own (fourth review:
+    not a union) -- and the ambiguity is named."""
     from kube_noob.vuln.threat import model
 
     benign = _web()[0]
@@ -1998,9 +2000,14 @@ def test_two_workloads_of_one_name_are_both_kept_never_one_dropped() -> None:
         [{"kind": "ServiceAccount", "name": "adm", "namespace": "shop"}],
     )
     for docs in ([a, c, crb], [c, a, crb]):
-        r = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))["Deployment/shop/web"]
-        assert {x.name for x in r.node} == {"host namespace hostPID"}
-        assert "full control" in {cap.name for cap, _ in r.api} and r.copies == 2
+        reach = ap.workload_reach(ap.Inventory.from_documents(copy.deepcopy(docs)))
+        copies = [r for r in reach.values() if r.ref == "Deployment/shop/web"]
+        assert len(copies) == 2 and all(r.copies == 2 for r in copies)
+        assert {frozenset(x.name for x in r.node) for r in copies} == {
+            frozenset({"host namespace hostPID"}),
+            frozenset(),
+        }
+        assert sorted("full control" in {cap.name for cap, _ in r.api} for r in copies) == [False, True]
         text = "---\n".join(yaml.safe_dump(d) for d in docs)
         out = model(text, platform="kubernetes")
         ids = {i for app in out["applications"] for i in app["identities"]}
@@ -2188,3 +2195,300 @@ def test_server_set_fields_do_not_make_two_objects() -> None:
     none = _reach([*_web(), _svc()], "deployment/web", "shop", whole_bundle=True)
     detail = _leg(none, "exposure")["detail"]
     assert all(k in detail for k in ("Service", "Route", "Ingress", "HTTPRoute", "VirtualService")), detail
+
+
+# --- fourth review (ce5c700) ---------------------------------------------------------------------------------------
+
+
+def _unplaced(name: str = "ctl") -> list[dict[str, Any]]:
+    """The `kubectl apply -n ops -f` shape: the workload and its account carry no namespace; the binding names
+    the account in `ops`."""
+    return [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": name},
+            "spec": {
+                "template": {
+                    "metadata": {"labels": {"app": name}},
+                    "spec": {"serviceAccountName": name, "containers": [{"name": "c", "image": "i"}]},
+                }
+            },
+        },
+        {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": name}},
+        _binding(
+            "ClusterRoleBinding",
+            name,
+            "ClusterRole",
+            "cluster-admin",
+            [{"kind": "ServiceAccount", "name": name, "namespace": "ops"}],
+        ),
+    ]
+
+
+def test_an_object_without_a_namespace_is_placed_where_kubectl_would_or_left_open() -> None:
+    """D1: un-namespaced objects were put in `default`, so a Deployment applied with `kubectl apply -n ops` and
+    bound to cluster-admin in `ops` read "no capability", complete, exit 0. With the namespace given they are placed
+    in it, as `kubectl apply -n` does; without it their namespace is unknown and the account legs stay open."""
+    docs = _unplaced()
+    placed = br.reach(
+        ap.Inventory.from_documents(copy.deepcopy(docs), default_namespace="ops"),
+        "deployment/ctl",
+        "ops",
+        whole_bundle=True,
+    )
+    assert "full control" in _caps(placed) and placed["anchor"]["resolved"] == ["Deployment/ops/ctl"]
+    blind = _reach(docs, "deployment/ctl", None, whole_bundle=True)
+    assert _leg(blind, "rbac")["status"] == "not determined" and blind["complete"] is False
+    assert any("no namespace" in r for r in _undetermined(blind))
+    scan = ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs)))
+    assert any("no namespace" in n for n in scan["notRead"])
+    assert ap.scan(ap.Inventory.from_documents(copy.deepcopy(docs), default_namespace="ops"))["notRead"] == []
+    # The Argo CD install.yaml shape: the controller's ClusterRole grants every verb on everything.
+    argo = _unplaced("argocd-application-controller")
+    argo[2] = _role(
+        "ClusterRole", "argocd-application-controller", [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["*"]}]
+    )
+    argo.append(
+        _binding(
+            "ClusterRoleBinding",
+            "argocd-application-controller",
+            "ClusterRole",
+            "argocd-application-controller",
+            [{"kind": "ServiceAccount", "name": "argocd-application-controller", "namespace": "argocd"}],
+        )
+    )
+    g = br.reach(
+        ap.Inventory.from_documents(copy.deepcopy(argo), default_namespace="argocd"),
+        "deployment/argocd-application-controller",
+        "argocd",
+    )
+    assert any(n["label"] == "full control (cluster)" for n in g["nodes"])
+
+
+def test_two_copies_of_a_name_are_placed_apart_in_every_score(tmp_path: Path) -> None:
+    """D2: the round-three union joined copy B's vulnerable image to copy A's cluster-admin token -- a path neither
+    object has -- in `vuln report -m`, `gate --scanner-report` and `code assess`. Each copy is placed on its own,
+    and the ambiguity is carried into the output."""
+    a = copy.deepcopy(_web()[0])
+    a["spec"]["template"]["spec"]["serviceAccountName"] = "adm"
+    a["spec"]["template"]["spec"]["containers"] = [{"name": "c", "image": "quay.io/acme/safe:1.0"}]
+    b = copy.deepcopy(_web()[0])
+    b["spec"]["template"]["metadata"]["labels"] = {"app": "other"}
+    b["spec"]["template"]["spec"]["serviceAccountName"] = "plain"
+    b["spec"]["template"]["spec"]["automountServiceAccountToken"] = False
+    b["spec"]["template"]["spec"]["containers"] = [{"name": "c", "image": "quay.io/acme/vuln:2.0"}]
+    lb = _svc("other", "LoadBalancer", {"app": "other"})
+    crb = _binding(
+        "ClusterRoleBinding",
+        "adm",
+        "ClusterRole",
+        "cluster-admin",
+        [{"kind": "ServiceAccount", "name": "adm", "namespace": "shop"}],
+    )
+    manifests = tmp_path / "m.yaml"
+    manifests.write_text(yaml.safe_dump_all([a, b, lb, crb, _sa("adm"), _sa("plain")]))
+    report = tmp_path / "trivy.json"
+    report.write_text(
+        json.dumps(
+            {
+                "SchemaVersion": 2,
+                "ArtifactName": "quay.io/acme/vuln:2.0",
+                "ArtifactType": "container_image",
+                "Metadata": {"OS": {"Family": "debian", "Name": "12"}, "RepoTags": ["quay.io/acme/vuln:2.0"]},
+                "Results": [
+                    {
+                        "Target": "quay.io/acme/vuln:2.0 (debian 12)",
+                        "Class": "os-pkgs",
+                        "Type": "debian",
+                        "Vulnerabilities": [
+                            {
+                                "VulnerabilityID": "CVE-2024-0001",
+                                "PkgName": "openssl",
+                                "InstalledVersion": "3.0.1",
+                                "FixedVersion": "3.0.2",
+                                "Severity": "CRITICAL",
+                                "CVSS": {"nvd": {"V3Score": 9.8}},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main(["--format", "json", "vuln", "report", "-r", str(report), "-m", str(manifests), "--no-corpus-vex"])
+    out = json.loads(buf.getvalue())
+    top = out["ranking"]["ranked"][0]
+    assert top["score"] == 29.4 and "full control" not in top["attackPath"]["summary"], top
+    assert any("ServiceAccount/shop/adm" in n for n in out["ranking"]["ambiguous"])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main(["vuln", "report", "-r", str(report), "-m", str(manifests), "--no-corpus-vex"])
+    assert "different objects named Deployment/shop/web" in buf.getvalue()
+    from kube_noob.gate import _vulnerabilities
+
+    g = _vulnerabilities([(str(report), report.read_text())], manifests.read_text(), [], None, None, "high")
+    assert g["summary"]["ambiguous"] and "58.8" not in json.dumps(g["findings"])
+
+
+def _hr(name: str, rules: list[dict[str, Any]], kind: str = "HTTPRoute") -> dict[str, Any]:
+    return {
+        "apiVersion": "gateway.networking.k8s.io/v1",
+        "kind": kind,
+        "metadata": {"name": name, "namespace": "shop"},
+        "spec": {"parentRefs": [{"name": "public", "namespace": "gw"}], "rules": rules},
+    }
+
+
+def test_gateway_api_mirrors_grpc_routes_and_other_backends() -> None:
+    """D3, D4: a `requestMirror` filter sends traffic to its backendRef; a backendRef of another kind
+    (an InferencePool) is not determined; a GRPCRoute is read like an HTTPRoute, in files and live."""
+    other = _svc("other", "ClusterIP", {"app": "other"})
+    mirror = _hr(
+        "m",
+        [
+            {
+                "backendRefs": [{"name": "other"}],
+                "filters": [{"type": "RequestMirror", "requestMirror": {"backendRef": {"name": "web"}}}],
+            }
+        ],
+    )
+    assert (
+        _leg(_reach([*_web(), _svc(), other, mirror], "deployment/web", "shop", whole_bundle=True), "exposure")[
+            "status"
+        ]
+        == "reached"
+    )
+    pool = _hr(
+        "p", [{"backendRefs": [{"group": "inference.networking.k8s.io", "kind": "InferencePool", "name": "pool"}]}]
+    )
+    g = _reach([*_web(), _svc(), pool], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "not determined" and "InferencePool" in _leg(g, "exposure")["detail"]
+    grpc = _hr("g", [{"backendRefs": [{"name": "web"}]}], kind="GRPCRoute")
+    files = _reach([*_web(), _svc(), grpc], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(files, "exposure")["status"] == "reached" and "GRPCRoute" in files["exposure"][0]["kind"]
+    assert "grpcroutes" in ap.LIVE_RESOURCES
+    live = br.reach(
+        ap.collect_live(FakeBackend([*_web(), _svc(), grpc], forbidden=set()), []), "deployment/web", "shop", live=True
+    )
+    assert _leg(live, "exposure")["status"] == "reached"
+    # Live, a pod nothing read reaches is not `none`: TLSRoutes, TCPRoutes and other routers are not listed.
+    unreached = br.reach(
+        ap.collect_live(FakeBackend([*_web(), _svc()], forbidden=set()), []), "deployment/web", "shop", live=True
+    )
+    assert (
+        _leg(unreached, "exposure")["status"] == "not determined"
+        and "TLSRoute" in _leg(unreached, "exposure")["detail"]
+    )
+
+
+def test_a_live_scan_of_some_namespaces_says_routes_elsewhere_can_route_in() -> None:
+    """D5: reach said it; the scan did not."""
+    s = ap.scan(ap.collect_live(FakeBackend([*_web(), _svc()], forbidden=set()), ["shop"]))
+    assert any("namespaces not read" in x for x in s["limitations"]) and any(
+        "namespaces not read" in x for x in s["notRead"]
+    )
+
+
+def test_query_params_route_header_actions_and_ingress_snippets_are_masked() -> None:
+    """D6: query parameter values, OpenShift Route header actions and nginx snippets that set Authorization were
+    returned in clear (the Route and Ingress ones on main too)."""
+    from kube_noob.debug.cluster import _redact_obj
+
+    key = "q7Zr9xLm2Pw4Kd8sVb1N"
+    hr = {
+        "kind": "HTTPRoute",
+        "spec": {
+            "rules": [
+                {
+                    "matches": [{"queryParams": [{"name": "api_key", "value": key}]}],
+                    "filters": [{"requestRedirect": {"hostname": f"u:{key}@h.example"}}],
+                }
+            ]
+        },
+    }
+    gr = {
+        "kind": "GRPCRoute",
+        "spec": {"rules": [{"matches": [{"headers": [{"name": "authorization", "value": key}]}]}]},
+    }
+    vs = {"kind": "VirtualService", "spec": {"http": [{"match": [{"queryParams": {"api_key": {"exact": key}}}]}]}}
+    route = {
+        "kind": "Route",
+        "spec": {
+            "httpHeaders": {
+                "actions": {
+                    "request": [{"name": "Authorization", "action": {"type": "Set", "set": {"value": f"Bearer {key}"}}}]
+                }
+            }
+        },
+    }
+    ing = {
+        "kind": "Ingress",
+        "metadata": {
+            "annotations": {
+                "nginx.ingress.kubernetes.io/configuration-snippet": f'proxy_set_header Authorization "Bearer {key}";'
+            }
+        },
+    }
+    for obj in (hr, gr, vs, route, ing):
+        assert key not in json.dumps(_redact_obj(obj)), obj["kind"]
+
+
+def test_kn_s010_ancestors_of_critical_paths_and_proc_root() -> None:
+    """D7: `/run/containerd`, `/var/run`, `/run`, `/var/lib`, `/var` hold a runtime socket or a critical path, and
+    `/proc/1/root` is `/`; each was high."""
+    from kube_noob.audit.rules import takes_over_node
+
+    for path in ("/run/containerd", "/var/run", "/run", "/var/lib", "/var", "/proc/1/root", "/proc/self/root/etc"):
+        assert takes_over_node(path), path
+    for path in ("/var/run/calico", "/run/flannel", "/var/lib/containerd", "/var/log", "/proc/sys/net", "/proc/1/cwd"):
+        assert not takes_over_node(path), path
+
+
+def test_selectorless_and_aliased_services_behind_a_front_are_not_none() -> None:
+    """D8, D9: a Route to a Service without a selector (manual EndpointSlices), an ExternalName aliasing an
+    in-cluster Service, and a Service `type` that is a list or unknown read as `none`."""
+    route = {
+        "apiVersion": "route.openshift.io/v1",
+        "kind": "Route",
+        "metadata": {"name": "r", "namespace": "shop"},
+        "spec": {"to": {"kind": "Service", "name": "manual"}},
+    }
+    manual = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "manual", "namespace": "shop"},
+        "spec": {"ports": [{"port": 80}]},
+    }
+    g = _reach([*_web(), _svc(), route, manual], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "not determined" and "selector" in _leg(g, "exposure")["detail"]
+    alias = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "manual", "namespace": "shop"},
+        "spec": {"type": "ExternalName", "externalName": "web.shop.svc.cluster.local"},
+    }
+    g = _reach([*_web(), _svc(), route, alias], "deployment/web", "shop", whole_bundle=True)
+    assert _leg(g, "exposure")["status"] == "not determined"
+    for typ in (["LoadBalancer"], "LoadBalancr"):
+        bad = _svc(kind="ClusterIP")
+        bad["spec"]["type"] = typ
+        g = _reach([*_web(), bad], "deployment/web", "shop", whole_bundle=True)
+        assert _leg(g, "exposure")["status"] == "not determined", typ
+        assert any("type" in n for n in g["notRead"]), typ
+
+
+def test_controller_set_annotations_do_not_make_two_objects() -> None:
+    """D10: a copy carrying `deployment.kubernetes.io/revision` and last-applied was "two different objects"."""
+    a = _web()[0]
+    b = copy.deepcopy(a)
+    b["metadata"]["annotations"] = {
+        "deployment.kubernetes.io/revision": "4",
+        "kubectl.kubernetes.io/last-applied-configuration": "{}",
+    }
+    assert _reach([*_web(), b], "deployment/web", "shop")["anchor"]["resolved"] == ["Deployment/shop/web"]

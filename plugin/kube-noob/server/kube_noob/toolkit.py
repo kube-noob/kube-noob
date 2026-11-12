@@ -1549,7 +1549,10 @@ class Toolkit:
         from kube_noob import attack_paths, blast_radius
         from kube_noob.yamlio import load_documents
 
-        inv = attack_paths.Inventory.from_documents(d.data for d in load_documents(p.manifests))
+        # `namespace` places objects without one there, as `kubectl apply -n` does (G273, fourth review D1).
+        inv = attack_paths.Inventory.from_documents(
+            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+        )
         out = blast_radius.reach_result(inv, p.workload, p.namespace, mermaid=p.mermaid, whole_bundle=p.whole_bundle)
         self._observe([f"posture-reach:{len(out['notDetermined'])}"])
         return out

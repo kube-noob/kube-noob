@@ -689,7 +689,7 @@ schema in this project's own CI.
 
 With the images' scanner output (`--scanner-report`, plus `--vex` and `--kev`), the gate also lists their
 vulnerabilities after Red Hat VEX, ranked against the manifests; a fixable or known-exploited one at `--fail-on`
-fails it, an unfixable one is reported without blocking.
+fails it, an unfixable one is reported without blocking. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own, with its own images, rights and token, and the output's `ambiguous` list names the name and each copy's ServiceAccount.
 
 ```bash
 trivy image -f json --list-all-pkgs -o trivy.json quay.io/acme/shop:1.4
@@ -929,7 +929,13 @@ VirtualService in a namespace not read can route in, so exposure is not determin
 reaches the pod. With automount off, a Secret the pod reads by volume, projection or environment that may be
 a token (a token Secret, one the files do not carry, or any Secret read live) leaves the token leg not
 determined. hostPort and hostNetwork put the pod on the node's network, and the exposure leg and the summary say
-so. Two different workloads of one name are both kept (their union). Measured on an app
+so. Two different workloads of one name are both kept, each placed on its own. An object without a namespace is
+placed where `-n` says, as `kubectl apply -n` does; without `-n` its namespace is not known, so its token and
+RBAC legs are not determined (a ServiceAccount subject in any namespace may be its account) and the scan names
+it in `notRead`. GRPCRoutes are read like HTTPRoutes, and an HTTPRoute's `requestMirror` backend is a route; a
+backend that is not a Service (an InferencePool), a Service without a selector and an ExternalName aliasing an
+in-cluster Service are not determined. Read live, exposure is never `none`: TLSRoutes, TCPRoutes, UDPRoutes and
+other routers are not listed. Measured on an app
 with a leader-election Role, an operator with a typical ClusterRole and `system:auth-delegator`, and the bootstrap
 bindings every cluster carries (`--whole-bundle`): 8 of 10 legs are determined, against 6 of 10 before the named
 list; the two still open are the operator's writes to its own custom resource, which kube-noob cannot rank. A set of files cannot show the bindings, Services, Routes or
@@ -1004,7 +1010,7 @@ then removes what Red Hat says does not affect the image's product (or is alread
 and each removed finding cites the statement, its justification and the VEX document. SBOMs carry packages, not
 findings: their RPMs are matched against the same VEX statements. With the CISA KEV catalog (CC0) and the manifests
 that run the images, findings are ranked by base score x exposure (internet 3, node network 2, internal 1) x
-privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path.
+privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own, with its own images, rights and token, and the output's `ambiguous` list names the name and each copy's ServiceAccount. `code assess` places its findings the same way.
 
 ```bash
 kube-noob corpus advisories --online --since 2026-10-01
@@ -1074,7 +1080,9 @@ pod to the API through its token, the namespace network), data stores (StatefulS
 images) and identities (the mounted ServiceAccounts and their RBAC). Each threat has a status (open with the failing
 rules as evidence, mitigated, or not assessed), the kube-noob rules, generated admission policies and RHACS policies
 that mitigate it, and MITRE ATT&CK for Containers technique ids. With `-r`, public-facing exploits are assessed from
-the images' scanner reports.
+the images' scanner reports. `ambiguous` lists every name two different objects carry (each copy is modelled,
+and the application's identities are every copy's) and every object without a namespace; `-n` places those in
+a namespace as `kubectl apply -n` does.
 
 ```bash
 kube-noob vuln threat -f k8s/ --platform openshift --version 4.20

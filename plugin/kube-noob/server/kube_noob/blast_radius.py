@@ -93,9 +93,14 @@ _ALIASES = {
     "isvc": "InferenceService",
 }
 _PLURAL = {kind: plural for plural, kind in ap.LIVE_RESOURCES.items()}
-_EXPOSURE_READS = ("services", "routes", "ingresses", "httproutes", "virtualservices")
-_EXPOSURE_KINDS = ("Service", "Route", "Ingress", "HTTPRoute", "VirtualService")
-_EXPOSURE_NAMES = "Service, Route, Ingress, HTTPRoute or VirtualService"
+_EXPOSURE_READS = ("services", "routes", "ingresses", "httproutes", "grpcroutes", "virtualservices")
+_EXPOSURE_KINDS = ("Service", "Route", "Ingress", "HTTPRoute", "GRPCRoute", "VirtualService")
+_EXPOSURE_NAMES = "Service, Route, Ingress, HTTPRoute, GRPCRoute or VirtualService"
+#: Routing objects a live read does not list: anything they route to has exposure not determined, never none.
+UNLISTED_LIVE = (
+    "routing objects kube-noob does not list live (Gateway API TLSRoutes, TCPRoutes and UDPRoutes; Contour, "
+    "Traefik and Ambassador routes; Knative) can route to it"
+)
 
 _EVIDENCE = {
     "type": "object",
@@ -570,7 +575,7 @@ def _site_graph(
         ]
         if mode == "live" and namespaces_read
         else []
-    )
+    ) + ([UNLISTED_LIVE] if mode == "live" else [])
     on_host = _host_network(site.spec)
     # The same name carried by two different fronts or Services: which one the cluster holds is not known.
     dup_refs = {ap.object_ref(objs[0]) for k in _EXPOSURE_KINDS for objs in inv.duplicates(k).values()}
@@ -605,8 +610,9 @@ def _site_graph(
                 f"{ref} is a routing object kube-noob does not read: exposure through it is not known",
                 ref,
             )
-        for line in unread_ns:
-            g.undetermined(w, "exposure", "namespaces-not-read", line, r.object)
+        for i, line in enumerate(unread_ns):
+            g.undetermined(w, "exposure", f"not-listed-{i}", line, r.object)
+
         reasons = [
             *refused,
             *dangling,
@@ -702,6 +708,22 @@ def _site_graph(
     sa = g.node(f"sa:{r.namespace}/{sa_name}", "serviceaccount", sa_ref)
     g.edge(w, "uses token of", sa, r.object, mount.at, mount.evidence)
     mount_open = False
+    # An object with no namespace, given none (`-n`): where kubectl apply puts it, and so whose subject its
+    # account is, depends on the command line. A namespaced subject anywhere may be it (fourth review, D1).
+    floating = sorted(
+        ref
+        for ref in (f"{site.obj.get('kind')}/{ap.object_name(site.obj)}", f"ServiceAccount/{sa_name}")
+        if ref in inv.unplaced
+    )
+    if floating:
+        why = (
+            f"{' and '.join(floating)} {'has' if len(floating) == 1 else 'have'} no namespace: kubectl apply puts "
+            "them in the namespace given with -n, or the context's, so a ServiceAccount subject in any namespace "
+            "may be this account; pass -n as you would to kubectl apply"
+        )
+        g.undetermined(w, "token", "no-namespace", why, r.object)
+        g.undetermined(sa, "rbac", "no-namespace", why, sa_ref)
+        mount_open = True
     if mount.unknown:
         g.undetermined(w, "token", f"{sa_ref}#secret-volume", mount.unknown, r.object)
         mount_open = True
@@ -1263,7 +1285,13 @@ def reach_result(
 def reach_manifests(text: str, workload: str, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
     from kube_noob.yamlio import load_documents
 
-    return reach(ap.Inventory.from_documents(d.data for d in load_documents(text)), workload, namespace, **kw)
+    # `-n` places objects without a namespace there, as `kubectl apply -n` does (fourth review, D1).
+    return reach(
+        ap.Inventory.from_documents((d.data for d in load_documents(text)), default_namespace=namespace),
+        workload,
+        namespace,
+        **kw,
+    )
 
 
 # --- renderings ----------------------------------------------------------------------------------------------------

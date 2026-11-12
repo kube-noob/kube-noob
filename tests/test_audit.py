@@ -191,6 +191,13 @@ _S010_CRITICAL = [
     "/root/.ssh",
     "/var/lib/etcd",
     "/var/lib/etcd/member",
+    # Fourth review: a directory holding a critical path or a runtime socket is critical too, and /proc/1/root is /.
+    "/var/run",
+    "/run",
+    "/run/containerd",
+    "/var/lib",
+    "/var",
+    "/proc/1/root",
 ]
 #: What every cluster mounts and what gives no node: kube-proxy, CNI plugins, CA bundles, the time zone, the
 #: machine id, kubelet plugin registration (the third review: a subtree rule made `gate --fail-on critical` fail on
@@ -209,8 +216,6 @@ _S010_HIGH = [
     "/var/lib/kubelet/device-plugins",
     "/var/lib/kubelet/plugins_registry",
     "/var/run/secrets",
-    "/var/run",
-    "/run",
     "/lib/modules",
     "/var/log",
     "/ETC",

@@ -1525,9 +1525,35 @@ def takes_over_node(path: str) -> bool:
     if not text.startswith("/"):
         return False
     norm = "/" + posixpath.normpath(text).lstrip("/")
-    if norm in NODE_TAKEOVER_EXACT or norm.rsplit("/", 1)[-1] in RUNTIME_SOCKETS:
+    # /proc/<pid>/root is that process's root directory: /proc/1/root is the host's `/` (proc(5)).
+    proc_root = _PROC_ROOT.match(norm)
+    if proc_root:
+        norm = "/" + (proc_root.group(1) or "").lstrip("/")
+    if norm in (*NODE_TAKEOVER_EXACT, *RUNTIME_SOCKET_DIRS) or norm.rsplit("/", 1)[-1] in RUNTIME_SOCKETS:
         return True
-    return any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_TREES)
+    if any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_TREES):
+        return True
+    # A directory that holds a critical path holds it too: `/var` holds /var/lib/kubelet and /var/run, `/run`
+    # every runtime socket (fourth review of G273).
+    return any(p.startswith(norm + "/") for p in (*NODE_TAKEOVER_EXACT, *NODE_TAKEOVER_TREES, *RUNTIME_SOCKET_DIRS))
+
+
+#: The directories container runtimes put their sockets in.
+RUNTIME_SOCKET_DIRS = (
+    "/run",
+    "/var/run",
+    "/run/containerd",
+    "/var/run/containerd",
+    "/run/crio",
+    "/var/run/crio",
+    "/run/podman",
+    "/var/run/podman",
+    "/run/docker",
+    "/var/run/docker",
+    "/run/cri-dockerd",
+    "/var/run/cri-dockerd",
+)
+_PROC_ROOT = re.compile(r"^/proc/(?:\d+|self|thread-self)/root(/.*)?\Z")
 
 
 # --password=x / --token x / password=x style arguments (group 1: dashes, group 3: inline value). CREDENTIAL_FLAG_NAME
@@ -1847,7 +1873,9 @@ def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "node's credentials or API: `/`, `/etc`, `/proc` or `/var/lib/kubelet` themselves; `/etc/kubernetes`, "
     "`/var/lib/kubelet/pki`, `/var/lib/kubelet/pods`, `/root` or `/var/lib/etcd` and anything under them; or a "
     "container runtime socket (docker, containerd, cri-o, cri-dockerd, podman, dockershim) wherever it is mounted "
-    "from. Other host paths, such as CNI state, CA bundles or kube-proxy's xtables lock, are high.",
+    "from, or a runtime's socket directory (`/run`, `/var/run`, `/run/containerd`, ...); or a directory holding any "
+    "of those (`/var`, `/var/lib`); `/proc/<pid>/root` is read as the path under it. Other host paths, such as CNI "
+    "state, CA bundles or kube-proxy's xtables lock, are high.",
     ("k8s-pss",),
     ("Mounting Sensitive Host Directories", "Mount Container Runtime Socket"),
 )

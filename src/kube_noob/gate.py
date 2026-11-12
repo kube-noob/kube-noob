@@ -633,6 +633,8 @@ def _vulnerabilities(
         "images": [i["image"]["name"] for i in out["images"]],
         "vex": out["vex"]["sources"],
         "kev": out["kev"]["catalog"],
+        # A name two different objects carry: each copy placed with its own images and rights (G273).
+        "ambiguous": list(out["ranking"].get("ambiguous") or []),
     }
     return {"findings": findings, "failing": failing, "summary": summary}
 
@@ -942,6 +944,9 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
             f"{v['knownExploited']} known exploited.",
             "",
         ]
+        lines += [f"Note: {_cell(n, 400)}" for n in v.get("ambiguous") or []]
+        if v.get("ambiguous"):
+            lines.append("")
     if report["knownIssues"]:
         lines += ["### Reported issues in this release (informational)", ""]
         for k in report["knownIssues"]:

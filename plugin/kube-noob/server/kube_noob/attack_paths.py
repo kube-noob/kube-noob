@@ -59,6 +59,10 @@ from kube_noob.yamlio import PathT
 
 #: True of every scan, whatever the input. Named so a renderer can tell them from the per-scan ones that follow
 #: and print those, which is the half a text reader needs and was not getting (G231, after G221).
+UNREAD_NAMESPACES_NOTE = (
+    "Read from some namespaces only: HTTPRoutes, GRPCRoutes and VirtualServices in namespaces not read can route "
+    "into the ones read, so a workload with no path may still be exposed"
+)
 STANDING_LIMITATIONS: tuple[str, ...] = (
     "NetworkPolicies on the entry edge are not applied: check a path with `kube-noob policy reach`.",
     "Cloud IAM and admission-time mutation are not modelled.",
@@ -79,6 +83,7 @@ LIVE_RESOURCES: dict[str, str] = {
     "routes": "Route",
     "ingresses": "Ingress",
     "httproutes": "HTTPRoute",
+    "grpcroutes": "GRPCRoute",
     "virtualservices": "VirtualService",
     "services": "Service",
     "pods": "Pod",
@@ -312,8 +317,8 @@ def _canonical_form(obj: Any) -> str:
         if isinstance(meta, dict):
             meta = {k: v for k, v in meta.items() if k not in _SERVER_SET}
             notes = meta.get("annotations")
-            if isinstance(notes, dict) and _LAST_APPLIED in notes:
-                meta["annotations"] = {k: v for k, v in notes.items() if k != _LAST_APPLIED} or None
+            if isinstance(notes, dict) and _CONTROLLER_ANNOTATIONS & set(notes):
+                meta["annotations"] = {k: v for k, v in notes.items() if k not in _CONTROLLER_ANNOTATIONS} or None
                 if meta["annotations"] is None:
                     del meta["annotations"]
             obj = {**obj, "metadata": meta}
@@ -324,7 +329,16 @@ def _canonical_form(obj: Any) -> str:
 _SERVER_SET = frozenset(
     {"resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "selfLink", "deletionTimestamp"}
 )
-_LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration"
+#: Annotations the API server, a controller or kubectl writes, not the author: last-applied (kubectl apply),
+#: the Deployment controller's revision (pkg/controller/deployment/util RevisionAnnotation) and the DaemonSet
+#: controller's template generation (pkg/controller/daemon, deprecated.daemonset.template.generation).
+_CONTROLLER_ANNOTATIONS = frozenset(
+    {
+        "kubectl.kubernetes.io/last-applied-configuration",
+        "deployment.kubernetes.io/revision",
+        "deprecated.daemonset.template.generation",
+    }
+)
 
 
 _CLUSTER_SCOPED_KINDS = frozenset(
@@ -348,7 +362,7 @@ _LEGACY_SUBJECT_KINDS["SystemGroup"] = "Group"
 #: Routing objects that can put a workload on a network and that this scan does not read: present in the input,
 #: they make the exposure of the workloads in their namespace not determined rather than "none" (G273).
 UNMODELLED_EXPOSURE: dict[str, frozenset[str]] = {
-    "gateway.networking.k8s.io": frozenset({"GRPCRoute", "TLSRoute", "TCPRoute", "UDPRoute"}),
+    "gateway.networking.k8s.io": frozenset({"TLSRoute", "TCPRoute", "UDPRoute"}),
     "projectcontour.io": frozenset({"HTTPProxy"}),
     "traefik.io": frozenset({"IngressRoute", "IngressRouteTCP", "IngressRouteUDP"}),
     "traefik.containo.us": frozenset({"IngressRoute", "IngressRouteTCP", "IngressRouteUDP"}),
@@ -357,6 +371,7 @@ UNMODELLED_EXPOSURE: dict[str, frozenset[str]] = {
 #: The groups the routing kinds this scan does read belong to: a kind of the same name in another group is not one.
 _KIND_GROUPS: dict[str, str] = {
     "HTTPRoute": "gateway.networking.k8s.io",
+    "GRPCRoute": "gateway.networking.k8s.io",
     "VirtualService": "networking.istio.io",
     "Route": "route.openshift.io",
 }
@@ -448,6 +463,13 @@ class Inventory:
     other_secrets: set[tuple[str, str]] = field(default_factory=set)
     #: Read from the cluster: an absence in a list that WAS read is the cluster's answer, not a gap in a file set.
     live: bool = False
+    #: The namespaces a live read was limited to; empty when it read every namespace (or from files).
+    namespaces_read: list[str] = field(default_factory=list)
+    #: Objects of a namespaced kind that carry no namespace and were given none (`-n`): Kind/name. Where kubectl
+    #: apply puts them depends on the command line, so their namespace is not known (fourth review, D1).
+    unplaced: set[str] = field(default_factory=set)
+    #: The namespace `-n` gave, where objects without one are placed, as `kubectl apply -n` does.
+    default_namespace: str | None = None
 
     def add(self, obj: Any, kind: str | None = None) -> None:
         if not isinstance(obj, dict):
@@ -455,6 +477,21 @@ class Inventory:
         k = kind or str(obj.get("kind") or "")
         api = obj.get("apiVersion")
         group = api.split("/")[0] if isinstance(api, str) and "/" in api else ""
+        meta = obj.get("metadata")
+        if (
+            not self.live
+            and isinstance(meta, dict)
+            and not meta.get("namespace")
+            and k not in _CLUSTER_SCOPED_KINDS
+            and (k in KINDS or k == "Secret")
+        ):
+            # Where `kubectl apply` puts an object with no namespace depends on the command line: `-n`, or the
+            # context's namespace. Placed in `default`, a Deployment applied with `-n ops` and bound in `ops` read
+            # "no capability" (fourth review, D1).
+            if self.default_namespace:
+                obj = {**obj, "metadata": {**meta, "namespace": self.default_namespace}}
+            else:
+                self.unplaced.add(f"{k}/{meta.get('name')}")
         if k == "Secret":
             self.dropped_unread += 1  # never analysed, never echoed
             if obj.get("type") == LEGACY_SA_TYPE:
@@ -537,6 +574,7 @@ class Inventory:
             "Ingress": "both are read, so an exposure may be listed that the cluster does not have",
             "Route": "both are read, so an exposure may be listed that the cluster does not have",
             "HTTPRoute": "both are read, so an exposure may be listed that the cluster does not have",
+            "GRPCRoute": "both are read, so an exposure may be listed that the cluster does not have",
             "VirtualService": "both are read, so an exposure may be listed that the cluster does not have",
             "RoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
             "ClusterRoleBinding": "both are read, so a grant may be listed that the cluster does not hold",
@@ -554,8 +592,11 @@ class Inventory:
         return out
 
     @classmethod
-    def from_documents(cls, docs: Iterable[Any]) -> Inventory:
-        inv = cls()
+    def from_documents(cls, docs: Iterable[Any], default_namespace: str | None = None) -> Inventory:
+        """``default_namespace``: where objects of a namespaced kind with no namespace go, as `kubectl apply -n`
+        puts them. Without it they are placed in `default` and recorded in `unplaced`."""
+        inv = cls(default_namespace=default_namespace or None)
+
         for d in docs:
             kind = str(d.get("kind") or "") if isinstance(d, dict) else ""
             if kind.endswith("List") and isinstance(d, dict) and "items" in d:
@@ -800,6 +841,26 @@ def _vs_service(host: str, vs_ns: str) -> tuple[str, str] | None:
     return None
 
 
+def _gateway_backends(route: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """(field, backendRef) for every backend a Gateway API route sends traffic to: `rules[].backendRefs[]`, and
+    the `requestMirror.backendRef` of a filter on the rule or on a backendRef. Refs without a name are skipped."""
+    out: list[tuple[str, dict[str, Any]]] = []
+
+    def mirrors(filters: Any, at: str) -> None:
+        for k, f in enumerate(_list(filters)):
+            ref = _get(f, "requestMirror", "backendRef")
+            if isinstance(ref, dict) and ref.get("name"):
+                out.append((f"{at}.filters[{k}].requestMirror.backendRef", ref))
+
+    for i, rule in enumerate(_list(_get(route, "spec", "rules"))):
+        for j, ref in enumerate(_list(_get(rule, "backendRefs"))):
+            if isinstance(ref, dict) and ref.get("name"):
+                out.append((f"spec.rules[{i}].backendRefs[{j}]", ref))
+                mirrors(ref.get("filters"), f"spec.rules[{i}].backendRefs[{j}]")
+        mirrors(_get(rule, "filters"), f"spec.rules[{i}]")
+    return out
+
+
 def _fronts(inv: Inventory) -> list[_Front]:
     out: list[_Front] = []
     for r in inv.of("Route"):
@@ -849,30 +910,32 @@ def _fronts(inv: Inventory) -> list[_Front]:
             )
     # Gateway API: a backendRef defaults to kind Service in the core group and to the route's own namespace
     # (https://gateway-api.sigs.k8s.io/reference/spec/, BackendObjectReference). A route attached to no Gateway
-    # (no parentRefs) carries no traffic.
-    for hr in inv.of("HTTPRoute"):
+    # (no parentRefs) carries no traffic. GRPCRoute is GA (Standard channel) with the same rules and backendRefs.
+    # A RequestMirror filter -- on the rule or on a backendRef -- sends a copy of every request to its backendRef,
+    # so traffic reaches that Service too (fourth review). A backendRef of another kind (an InferencePool) is a
+    # target kube-noob does not model: `_gateway_other_backends` names it.
+    for hr in [*inv.of("HTTPRoute"), *inv.of("GRPCRoute")]:
         parents = [str(_get(p, "name")) for p in _list(_get(hr, "spec", "parentRefs")) if isinstance(p, dict)]
         if not parents:
             continue
-        for i, rule in enumerate(_list(_get(hr, "spec", "rules"))):
-            for j, ref in enumerate(_list(_get(rule, "backendRefs"))):
-                if not isinstance(ref, dict) or not ref.get("name"):
-                    continue
-                if (ref.get("kind") or "Service") != "Service" or (ref.get("group") or "") != "":
-                    continue
-                svc = str(ref["name"])
-                out.append(
-                    _Front(
-                        hr,
-                        str(ref.get("namespace") or _ns(hr)),
-                        svc,
-                        "internet (Gateway API HTTPRoute)",
-                        3,
-                        f"HTTPRoute parentRefs {parents[:3]}",
-                        f"spec.rules[{i}].backendRefs[{j}].name={svc}",
-                        "detach the HTTPRoute from the Gateway or put authentication in front of it",
-                    )
+        kind = str(hr.get("kind") or "HTTPRoute")
+        for at, ref in _gateway_backends(hr):
+            if (ref.get("kind") or "Service") != "Service" or (ref.get("group") or "") != "":
+                continue
+            svc = str(ref["name"])
+            out.append(
+                _Front(
+                    hr,
+                    str(ref.get("namespace") or _ns(hr)),
+                    svc,
+                    f"internet (Gateway API {kind})",
+                    3,
+                    f"{kind} parentRefs {parents[:3]}",
+                    f"{at}.name={svc}",
+                    f"detach the {kind} from the Gateway or put authentication in front of it",
                 )
+            )
+
     # Istio: a VirtualService bound to a gateway other than `mesh` takes traffic from outside the mesh; one bound
     # only to `mesh` (the default when `gateways` is omitted) routes sidecar traffic and exposes nothing.
     by_name = {(_ns(v), _name(v)): v for v in inv.of("VirtualService")}
@@ -925,6 +988,9 @@ def _fronts(inv: Inventory) -> list[_Front]:
     return out
 
 
+_SERVICE_TYPES = frozenset({"ClusterIP", "NodePort", "LoadBalancer", "ExternalName"})
+
+
 def _malformed_fronts(inv: Inventory) -> list[tuple[str, str]]:
     """(namespace it may route into, sentence) for every exposure field that is not the shape the API requires: a
     VirtualService `gateways` string, an HTTPRoute `parentRefs` string or `backendRefs` map, a Service `selector`
@@ -940,6 +1006,14 @@ def _malformed_fronts(inv: Inventory) -> list[tuple[str, str]]:
 
     for s in inv.of("Service"):
         bad(s, "spec.selector", dict, _ns(s))
+        typ = _get(s, "spec", "type")
+        if typ is not None and not (isinstance(typ, str) and typ in _SERVICE_TYPES):
+            out.append(
+                (
+                    _ns(s),
+                    f"{_ref(s)}: spec.type {str(typ)[:40]!r} is not a Service type, so how it is exposed is not known",
+                )
+            )
     for r in inv.of("Route"):
         bad(r, "spec.to", dict, _ns(r))
         bad(r, "spec.alternateBackends", list, _ns(r))
@@ -954,7 +1028,7 @@ def _malformed_fronts(inv: Inventory) -> list[tuple[str, str]]:
                         f"{_ref(ing)}: spec.rules[{i}].http.paths is not a list, so where it routes is not known",
                     )
                 )
-    for hr in inv.of("HTTPRoute"):
+    for hr in [*inv.of("HTTPRoute"), *inv.of("GRPCRoute")]:
         bad(hr, "spec.parentRefs", list, "*")
         bad(hr, "spec.rules", list, "*")
         for i, rule in enumerate(_list(_get(hr, "spec", "rules"))):
@@ -1007,6 +1081,36 @@ def dangling(inv: Inventory) -> list[tuple[str, str]]:
     seen: dict[str, tuple[str, str]] = {}
     for ns, line in _malformed_fronts(inv):
         seen.setdefault(line, (ns, line))
+    # A Gateway API backendRef of another kind than Service (an InferencePool selects pods by label; any other kind
+    # is a backend kube-noob does not model): its pods are not known (fourth review, D3).
+    for hr in [*inv.of("HTTPRoute"), *inv.of("GRPCRoute")]:
+        for at, ref in _gateway_backends(hr):
+            kind = str(ref.get("kind") or "Service")
+            if kind != "Service" or (ref.get("group") or "") != "":
+                ns = str(ref.get("namespace") or _ns(hr))
+                line = f"{_ref(hr)} {at} routes to {kind} {ns}/{ref['name']}, a backend kube-noob does not model"
+                seen.setdefault(line, (ns, line))
+    # A front or an exposed type to a Service without a selector reaches whatever EndpointSlices someone wrote --
+    # any pod IP, in any namespace -- and an ExternalName aliasing `<svc>.<ns>.svc...` reaches that Service's pods
+    # (https://kubernetes.io/docs/concepts/services-networking/service/#services-without-selectors). Fourth review, D8.
+    exposed = {(f.namespace, f.service) for f in _fronts(inv)} | {
+        (_ns(s), _name(s)) for s in inv.of("Service") if _service_exposure(s)
+    }
+    for s in inv.of("Service"):
+        if (_ns(s), _name(s)) not in exposed:
+            continue
+        typ = _get(s, "spec", "type")
+        if typ == "ExternalName":
+            alias = str(_get(s, "spec", "externalName") or "")
+            parts = alias.split(".")
+            if len(parts) >= 3 and parts[2] == "svc":
+                line = f"{_ref(s)} is an ExternalName for {alias}: the Service it aliases is reached through it"
+                seen.setdefault(line, (parts[1], line))
+            continue
+        sel = _get(s, "spec", "selector")
+        if sel is None or sel == {}:
+            line = f"{_ref(s)} has no selector: the endpoints written for it may be any pod"
+            seen.setdefault(line, ("*", line))
     if inv.live:
         return sorted(seen.values())
     services = {(_ns(s), _name(s)) for s in inv.of("Service")}
@@ -2176,9 +2280,7 @@ class Reach:
     object: str = ""
     #: True when an operator merges in this pod's labels, so a non-match proves nothing about its exposure.
     embedded: bool = False
-    #: Tokens of the other different objects of the same name this reach stands for (see `workload_reach`).
-    other_tokens: tuple[tuple[str, str], ...] = ()
-    #: How many different objects of this name the reach is the union of; 1 for an unambiguous name.
+    #: How many different objects carry this reference; 1 for an unambiguous name (see `workload_reach`).
     copies: int = 1
 
     def paths_from(self, index: int) -> list[AttackPath]:
@@ -2346,43 +2448,45 @@ def _reach(
 
 
 def workload_reach(inv: Inventory) -> dict[str, Reach]:
-    """Every workload (not owned by another) with its exposures, node and API capabilities, keyed by Kind/ns/name."""
+    """Every workload (not owned by another) with its exposures, node and API capabilities, keyed by Kind/ns/name.
+
+    Two different objects of one name: which one the cluster runs is not known, so each is placed on its own -- the
+    first under the reference, the next under `reference#2` and so on, each with `copies` set and its own images,
+    rights and token. Keeping one dropped the other (rounds two and three); merging them (round three) joined one
+    copy's vulnerable image to the other copy's cluster-admin token in `vuln report` and `gate --scanner-report`,
+    a path neither object has (fourth review). `ambiguous_notes` says which names are ambiguous."""
     sites = _sites(inv, owned=False)
     index = _Index.build(inv, _entries(inv), sites)
     sa_caps: dict[tuple[str, str], list[Capability]] = {}
     out: dict[str, Reach] = {}
+    seen: dict[str, int] = {}
+    objects_of: dict[str, set[int]] = {}
+    for site in sites:
+        objects_of.setdefault(site.ref, set()).add(id(site.obj))
     for site in sites:
         r = _reach(inv, site, index, sa_caps)
-        # Two different objects of one name: which one the cluster runs is not known, so neither is discarded. The
-        # last in canonical order dropped a privileged Deployment; "the worse" by node weight then dropped a
-        # cluster-admin token (third review). The union keeps every exposure, escape, right and token, and the
-        # reach says how many objects it stands for.
-        out[site.ref] = _union(out[site.ref], r) if site.ref in out else r
+        n = len(objects_of[site.ref])
+        seen[site.ref] = seen.get(site.ref, 0) + 1
+        r.copies = n
+        key = site.ref if seen[site.ref] == 1 else f"{site.ref}#{seen[site.ref]}"
+        out[key] = r
     return out
 
 
-def _union(a: Reach, b: Reach) -> Reach:
-    def distinct(items: list[Any], key: Any) -> list[Any]:
-        seen: dict[Any, Any] = {}
-        for x in items:
-            seen.setdefault(key(x), x)
-        return list(seen.values())
-
-    tokens = distinct([t for t in (a.token, *a.other_tokens, b.token, *b.other_tokens) if t], lambda t: t)
-    return Reach(
-        a.ref,
-        a.namespace,
-        sorted({*a.images, *b.images}),
-        distinct([*a.entries, *b.entries], lambda e: (e[0], [s.as_dict() for s in e[2]].__repr__())),
-        distinct([*a.node, *b.node], lambda c: (c.name, c.evidence)),
-        distinct([*a.api, *b.api], lambda x: (x[0].name, x[0].scope, x[1][0].target if x[1] else "")),
-        tokens[0] if tokens else None,
-        a.mount or b.mount,
-        a.object,
-        a.embedded or b.embedded,
-        other_tokens=tuple(tokens[1:]),
-        copies=a.copies + b.copies,
-    )
+def ambiguous_notes(reach: dict[str, Reach]) -> list[str]:
+    """One line per reference that stands for several different objects, naming each copy's identity."""
+    by_ref: dict[str, list[Reach]] = {}
+    for r in reach.values():
+        if r.copies > 1:
+            by_ref.setdefault(r.ref, []).append(r)
+    out = []
+    for ref, copies in sorted(by_ref.items()):
+        who = "; ".join(f"copy {i}: {r.token[0] if r.token else 'no token'}" for i, r in enumerate(copies, 1))
+        out.append(
+            f"{len(copies)} different objects named {ref} are in the input; which one runs is not known, so each "
+            f"is placed separately ({who})"
+        )
+    return out
 
 
 def reach_of(inv: Inventory, obj: dict[str, Any]) -> list[tuple[_Site, Reach]]:
@@ -2427,6 +2531,18 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
     out_paths = [p.as_dict(i + 1) for i, p in enumerate(paths[:top])]
     head = out_paths[0]["summary"] if out_paths else "no path from an exposure to a node or to API rights"
     limitations = list(STANDING_LIMITATIONS)
+    # Read live from some namespaces only: a route in a namespace not read can send traffic into one that was
+    # (cross-namespace backendRefs, VirtualService hosts), so its absence is not an answer (fourth review, D5).
+    scope_notes = (
+        [f"{UNREAD_NAMESPACES_NOTE} (read: {', '.join(sorted(inv.namespaces_read))})"]
+        if inv.live and inv.namespaces_read
+        else []
+    )
+    limitations += scope_notes
+    scope_notes += [
+        f"{n} has no namespace: it is placed in default; pass -n as kubectl apply -n would"
+        for n in sorted(inv.unplaced)
+    ]
     # A component of an operator CRD has its pod labels merged by that operator from objects outside this input,
     # and the Services it is reached through are created by the operator too. Where no edge was PROVEN, the entry
     # is UNDETERMINED, not absent -- saying nothing would read as "not exposed", the same failure one level up
@@ -2468,17 +2584,19 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
         # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
         # Service is not in the input: each is something the paths above could not account for (G273).
-        "notRead": sorted(set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)})[:50],
+        "notRead": sorted(
+            set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
+        )[:50],
         "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
 
 
-def scan_manifests(text: str, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
+def scan_manifests(text: str, *, top: int = DEFAULT_TOP, default_namespace: str | None = None) -> dict[str, Any]:
     from kube_noob.yamlio import load_documents
 
     docs = load_documents(text)
-    return scan(Inventory.from_documents(d.data for d in docs), top=top)
+    return scan(Inventory.from_documents((d.data for d in docs), default_namespace=default_namespace), top=top)
 
 
 def _clip_words(text: str, limit: int = 200) -> str:
@@ -2501,7 +2619,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     served" said `exposure none, complete` for a pod behind a VirtualService (third review of G273)."""
     from kube_noob.errors import KubeNoobError
 
-    inv = Inventory(live=True)
+    inv = Inventory(live=True, namespaces_read=list(namespaces))
     for resource, kind in LIVE_RESOURCES.items():
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:

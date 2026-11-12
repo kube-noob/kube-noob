@@ -385,7 +385,8 @@ def test_cli_text_json_and_the_ci_gate(capsys: pytest.CaptureFixture[str]) -> No
     for argv in (
         ["posture", "scan"],
         ["posture", "scan", "--live"],
-        ["posture", "scan", "-f", str(SEEDED), "-n", "x"],
+        # D1 (fourth review): one -n with -f places objects without a namespace there; two are refused.
+        ["posture", "scan", "-f", str(SEEDED), "-n", "x", "-n", "y"],
         ["posture", "scan", "-f", str(SEEDED), "--top", "0"],
     ):
         assert main(argv) != 0

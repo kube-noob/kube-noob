@@ -120,6 +120,8 @@ ALLOWED_RESOURCES: dict[str, ResourceDef] = {
     # under a header block. Any failed list -- a 404 included, since an older install serving another version
     # answers it too -- leaves the exposure not determined; kube-noob does not read API discovery.
     "httproutes": ResourceDef("gateway.networking.k8s.io/v1", "httproutes", True),
+    # GRPCRoute: GA in the Standard channel at v1 since Gateway API v1.1.0 (https://gateway-api.sigs.k8s.io/api-types/grpcroute/).
+    "grpcroutes": ResourceDef("gateway.networking.k8s.io/v1", "grpcroutes", True),
     "virtualservices": ResourceDef("networking.istio.io/v1", "virtualservices", True),
 }
 
@@ -233,11 +235,26 @@ def _element_kind(kind: Any) -> str | None:
 
 
 def _kind_for(plural: str) -> str | None:
-    return {"configmaps": "ConfigMap", "httproutes": "HTTPRoute", "virtualservices": "VirtualService"}.get(plural)
+    return {
+        "configmaps": "ConfigMap",
+        "httproutes": "HTTPRoute",
+        "grpcroutes": "GRPCRoute",
+        "virtualservices": "VirtualService",
+        "routes": "Route",
+        "ingresses": "Ingress",
+    }.get(plural)
 
 
-_ROUTING_KINDS = frozenset({"HTTPRoute", "VirtualService"})
-_HEADER_KEYS = frozenset({"requestHeaderModifier", "responseHeaderModifier", "headers"})
+_ROUTING_KINDS = frozenset({"HTTPRoute", "GRPCRoute", "VirtualService"})
+_HEADER_KEYS = frozenset({"requestHeaderModifier", "responseHeaderModifier", "headers", "queryParams"})
+#: An nginx snippet that sets a credential header carries the credential itself (the fourth review; on main too).
+_SNIPPET_CREDENTIAL = re.compile(
+    r"(?:proxy_set_header|more_set_input_headers|more_set_headers|add_header|grpc_set_header)[^;]*"
+    r"(?:authorization|cookie|x-api-key|api-key|token)",
+    re.IGNORECASE,
+)
+#: `user:password@` in a hostname or a URL a route rewrites to.
+_USERINFO = re.compile(r"[^/@\s:]+:[^/@\s]+@")
 
 
 def _mask_header_values(v: Any) -> Any:
@@ -273,7 +290,9 @@ def _redact_obj(obj: Any, kind_hint: str | None = None) -> Any:
                 out[k] = {
                     ak: (
                         "<redacted>"
-                        if "last-applied-configuration" in ak or SENSITIVE_ENV.search(str(ak))
+                        if "last-applied-configuration" in ak
+                        or SENSITIVE_ENV.search(str(ak))
+                        or (isinstance(av, str) and _SNIPPET_CREDENTIAL.search(av))
                         else redact_text(av)
                         if isinstance(av, str)
                         else av
@@ -287,6 +306,14 @@ def _redact_obj(obj: Any, kind_hint: str | None = None) -> Any:
                 # (headers.request/response set/add, match headers). Every value under them is masked; header names
                 # stay (third review of G273: cluster_get returned them in clear).
                 out[k] = _mask_header_values(v)
+                continue
+            if kind == "Route" and k == "httpHeaders":
+                # OpenShift Route header actions set a header's value (`Authorization: Bearer ...`) at the router
+                # (spec.httpHeaders.actions.request|response[].action.set.value); masked the same way (on main too).
+                out[k] = _mask_header_values(v)
+                continue
+            if kind in _ROUTING_KINDS and isinstance(v, str) and _USERINFO.search(v):
+                out[k] = _USERINFO.sub("<redacted>@", v)  # a redirect hostname or rewrite URL with user:password@
                 continue
             if k == "env" and isinstance(v, list):
                 out[k] = [

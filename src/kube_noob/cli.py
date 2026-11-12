@@ -735,12 +735,20 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             vulnerable = None
             if a.report:
                 index = vexmod.load(s.data_dir)
-                reach = workload_reach(PathInventory.from_documents(d.data for d in load_documents(text)))
+                reach = workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=a.threat_namespace
+                    )
+                )
                 vulnerable = assess.summary_for_workloads(
                     assess.assess(parse_reports(a.report), vex=index, reach=reach)
                 )
             out = threat.model(
-                text, platform=a.platform or s.default_platform, version=a.pversion, vulnerable_images=vulnerable
+                text,
+                platform=a.platform or s.default_platform,
+                version=a.pversion,
+                vulnerable_images=vulnerable,
+                default_namespace=a.threat_namespace,
             )
             if a.format == "text":
                 _tprint(threat.render_markdown(out))
@@ -1355,6 +1363,12 @@ def build_parser() -> argparse.ArgumentParser:
     vt.add_argument("--platform", choices=PLATFORMS)
     vt.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
     vt.add_argument("-r", "--report", action="append", default=[], help="a scanner report of an image; repeat")
+    vt.add_argument(
+        "-n",
+        "--namespace",
+        dest="threat_namespace",
+        help="the namespace objects without one are placed in, as kubectl apply -n does",
+    )
     cd = sub.add_parser(
         "code",
         help="Code findings from SAST tools (SARIF), the images that ship them, the pods that run them",
@@ -3357,10 +3371,17 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         if not a.file:
             raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
-        if a.namespaces:
-            raise ConfigError("-n works with --live; with -f every namespace in the files is scanned")
+        if len(a.namespaces or []) > 1:
+            raise ConfigError(
+                "with -f, -n is the one namespace objects without a namespace are placed in (as kubectl apply -n); "
+                "every namespace in the files is scanned"
+            )
         try:
-            out = ap.scan_manifests("\n---\n".join(_read(f) for f in a.file), top=a.top)
+            out = ap.scan_manifests(
+                "\n---\n".join(_read(f) for f in a.file),
+                top=a.top,
+                default_namespace=(a.namespaces or [None])[0],
+            )
         except ap.ScanError as exc:
             raise ConfigError(str(exc)) from exc
     if a.format == "text":
