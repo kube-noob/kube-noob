@@ -14,11 +14,12 @@
 **No AI inside. Works with yours.** kube-noob is a Kubernetes, OpenShift, ROSA HCP, Helm and RHACS/StackRox expert
 in a box: audit rules, read-only-first playbooks, cited docs and graded exercises. Claude, OpenShift Lightspeed or any
 MCP client calls it as tools; the CLI runs it with no AI at all. No network calls unless enabled.
-Browse the rules, the demos and the recordings at **[kube-noob.com](https://kube-noob.com)**.
+Browse rules, demos and recordings at **[kube-noob.com](https://kube-noob.com)**.
 
-Two questions it answers that other tools do not, offline, from files you already have:
+Two questions other tools leave unanswered, offline, from files you already have:
 
 ```bash
+kube-noob examples copy examples
 kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f examples/netpol-admin-tiers.yaml
 kube-noob policy explain -f examples/denial-multi.txt
 ```

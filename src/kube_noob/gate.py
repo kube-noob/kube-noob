@@ -237,6 +237,16 @@ def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path |
     return out[:20]
 
 
+def _known_coverage(platform: str, version: str | None, data_dir: Path | None) -> dict[str, Any] | None:
+    """Whether ``_known`` could answer for ``version``; ``None`` when it was not consulted with one."""
+    from kube_noob.catalog import OPENSHIFT_FAMILY
+    from kube_noob.known_issues import coverage
+
+    if platform not in OPENSHIFT_FAMILY or not version:
+        return None
+    return coverage(version, data_dir)
+
+
 def run(
     sources: list[Source],
     *,
@@ -398,6 +408,7 @@ def run(
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
     known = _known(kinds, platform, version, data_dir)
+    ki_coverage = _known_coverage(platform, version, data_dir)
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
@@ -422,6 +433,7 @@ def run(
             + " --mode enforce",
         },
         "knownIssues": known,
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
         "notRun": [
@@ -455,6 +467,12 @@ def run(
                     "code checks: pass your SAST tools' SARIF with --sarif-report (Semgrep, Bandit, SpotBugs, ESLint, "
                     "CodeQL)"
                 ]
+            ),
+            # An empty knownIssues for a release the index does not hold is a lookup not made, not "none" (G277).
+            *(
+                [f"reported issues: {ki_coverage['why']}"]
+                if ki_coverage and ki_coverage["status"] == "not-determined"
+                else []
             ),
         ],
     }

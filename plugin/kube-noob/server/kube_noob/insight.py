@@ -42,6 +42,27 @@ KINDS = (
     "must-gather",
     "question",
 )
+# What a person can paste for each kind, said when nothing was recognised (one line each, in KINDS order). A test
+# holds the keys equal to KINDS, so a kind added to the router cannot go missing from the hint.
+KIND_DESCRIPTIONS = {
+    "alert-payload": "an Alertmanager webhook or alerts JSON, or a firing alert's text",
+    "ceph-health": "ceph health detail or ceph status output, or a CephCluster status",
+    "events": "kubectl/oc get events or the Events section of describe",
+    "pod-status": "kubectl/oc get pods, or describe pod output",
+    "logs": "timestamped log lines or a stack trace",
+    "ticket": "a Jira or ServiceNow ticket, or an OCPBUGS-style key",
+    "manifests": "Kubernetes or OpenShift YAML (apiVersion and kind)",
+    "helm-chart": "a Helm template or Chart.yaml",
+    "policy-denial": "an admission or authorization denial (forbidden, webhook denied, PodSecurity, SCC)",
+    "build-log": "a CI or OpenShift build log",
+    "containerfile": "a Containerfile or Dockerfile",
+    "sbom": "an SPDX or CycloneDX SBOM",
+    "scanner-report": "a Trivy, Grype, SARIF or RHACS scan",
+    "packet-capture": "a .pcap file or tcpdump text",
+    "must-gather": "a list of must-gather paths",
+    "question": "a question, or a one-line symptom that names a Kubernetes thing (a pod, a route, etcd)",
+}
+UNRECOGNISED_EXAMPLE = "events-scc.txt"  # a bundled example the hint shows working (kube-noob examples copy)
 PENDING = {
     "packet-capture": "packet capture analysis (queue N2) is not built yet; tcpdump text is read as logs",
     "must-gather": "a list of must-gather paths is not the must-gather itself: kube-noob must-gather analyze <dir or "
@@ -1394,6 +1415,9 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
     }
     context: dict[str, Any] = {}
     signals: list[Any] = []
+    # Whether "no reported issue" is an answer for the version asked (G277): the first analyser that consulted the
+    # known-issue index says so, and the merged answer keeps it rather than dropping it with the analyser's output.
+    ki_coverage: dict[str, Any] | None = None
 
     doc = _json(text)
     if isinstance(doc, dict) and doc.get("kind") == "Status" and isinstance(doc.get("message"), str):
@@ -1403,6 +1427,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
             "diagnose", lambda: kit.diagnose(tk.DiagnoseIn(text=tail, platform=platform, version=version, limit=5))
         )
         d = d or {}
+        ki_coverage = d.get("knownIssuesCoverage")
         signals = list(d.get("signals") or [])
         for i, x in enumerate(d.get("diagnoses", [])[:3]):
             if "likelyCause" in x:  # cause-linked triage: the cause the input points at and its own fix
@@ -1475,6 +1500,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
             ),
         )
         if b:
+            ki_coverage = ki_coverage or b.get("knownIssuesCoverage")
             cause = b.get("cause") or {}
             step = b.get("failingStep") or {}
             findings.append(
@@ -1792,6 +1818,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
         "answeredBy": answered_by,
         "context": context,
         "skipped": skipped,
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "approach": "Read-only first: every step listed here only reads; changes come from the playbook or rule "
         "with a person's approval."
         + (GATHER_NOTE if "gather" in ran else "")

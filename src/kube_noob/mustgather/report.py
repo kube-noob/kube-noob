@@ -70,12 +70,14 @@ def build(
 
     issues: dict[str, dict[str, Any]] = {}
     knowledge: dict[str, Any] = {}
+    ki_coverage: dict[str, Any] | None = None
     memory: dict[str, dict[str, Any]] = {}
     memory_notes: list[str] = []
     for f in [x for x in findings if x["severity"] in {"critical", "high", "medium"}][:MAX_MATCHED_FINDINGS]:
         q = _query(f)
         found = known(q)
         knowledge = knowledge or found.get("knowledge", {})
+        ki_coverage = ki_coverage or found.get("versionCoverage")
         for m in found.get("matches", []):
             entry = issues.setdefault(m["id"], {**{k: m[k] for k in _ISSUE_KEYS if k in m}, "findings": []})
             entry["findings"].append(f["rank"])
@@ -91,8 +93,9 @@ def build(
                 entry = memory.setdefault(m["id"], {**m, "findings": []})
                 entry["findings"].append(f["rank"])
                 f.setdefault("memory", []).append(m["id"])
-    if not knowledge:
-        knowledge = known("")["knowledge"] if match_known is None else {}
+    if not knowledge and match_known is None:
+        empty = known("")
+        knowledge, ki_coverage = empty["knowledge"], ki_coverage or empty.get("versionCoverage")
     steps: list[dict[str, Any]] = []
     seen: set[str] = set()
     for f in findings:
@@ -110,6 +113,8 @@ def build(
         "counts": a["counts"],
         "findings": findings,
         "knownIssues": sorted(issues.values(), key=lambda m: (min(m["findings"]), m["id"])),
+        # For the detected version: a release the index does not hold makes an empty list "not determined" (G277).
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "memory": sorted(memory.values(), key=lambda m: (min(m["findings"]), m["id"])),
         "memoryNotes": list(dict.fromkeys(memory_notes)),
         "nextSteps": steps,
@@ -192,6 +197,13 @@ def _knowledge_line(r: dict[str, Any]) -> str:
     return f"Known issues from the OpenShift {releases} release notes{jira}, as of {_md(k['knownIssuesAsOf'])}."
 
 
+def _coverage_line(r: dict[str, Any]) -> str | None:
+    from kube_noob.known_issues import coverage_line
+
+    line = coverage_line(r.get("knownIssuesCoverage"), listed=bool(r["knownIssues"]))
+    return _md(line) if line else None
+
+
 def markdown(r: dict[str, Any]) -> str:
     c, counts = r["cluster"], r["counts"]
     title = f"OpenShift {c['version']}" if c.get("version") else "a Kubernetes cluster"
@@ -243,8 +255,10 @@ def markdown(r: dict[str, Any]) -> str:
                 f"| {ref} | {_md(m.get('status') or '')} | {_md(m.get('fixedIn') or 'not yet')} | {found} | "
                 f"{_md(m.get('summary') or '')} |"
             )
+        if limit := _coverage_line(r):
+            lines += ["", limit]
     else:
-        lines.append(f"None of the findings matches a known issue. {_knowledge_line(r)}")
+        lines.append(_coverage_line(r) or f"None of the findings matches a known issue. {_knowledge_line(r)}")
     if r["memory"] or r["memoryNotes"]:
         lines += ["", "## From your team's memory", ""]
         for m in r["memory"]:
@@ -312,8 +326,10 @@ def case_draft(r: dict[str, Any]) -> str:
                 f"- {_md(m['id'])}: {_md(m.get('summary') or '')} ({_md(m.get('status') or '')}{fixed}; matches "
                 f"finding {', '.join(str(n) for n in m['findings'])})"
             )
+        if limit := _coverage_line(r):
+            lines.append(f"- {limit}")
     else:
-        lines.append(f"- None matched. {_knowledge_line(r)}")
+        lines.append(f"- {_coverage_line(r) or f'None matched. {_knowledge_line(r)}'}")
     lines += ["", "## Steps already taken", "", FILL.format("what you tried and what happened"), ""]
     if r["nextSteps"]:
         lines += ["Read-only checks kube-noob suggests running first (paste their output into the case):", ""]

@@ -181,6 +181,11 @@ def _print_insight(res: dict[str, Any]) -> None:
     _tprint("input: " + "; ".join(f"{k['kind']} ({k['evidence']})" for k in res["kinds"]))
     if res.get("ran"):
         _tprint("ran: " + ", ".join(res["ran"]))
+    from kube_noob.known_issues import coverage_line
+
+    listed = any(f.get("source") == "reported-issue" for f in res["findings"])
+    if line := coverage_line(res.get("knownIssuesCoverage"), listed):
+        _tprint(line)
     for f in res["findings"]:
         extra = f.get("verdict") or f.get("severity") or f.get("confidence") or f.get("cite") or ""
         source = "related doc" if f.get("related") else f["source"]
@@ -204,6 +209,22 @@ def _print_insight(res: dict[str, Any]) -> None:
             _tprint(f"  {st.get('command') or st.get('step') or st}")
     for sk in res.get("skipped", []):
         _tprint(f"not analysed ({sk['kind']}): {sk['why']}")
+    if [k["kind"] for k in res["kinds"]] == ["unknown"]:
+        _print_insight_hint()
+
+
+def _print_insight_hint() -> None:
+    """What insight reads, from the router's own table, and one bundled input that works: guessing at text that
+    matched nothing would be a made-up answer, so this says what to paste instead (G277)."""
+    from kube_noob.insight import KIND_DESCRIPTIONS, KINDS, UNRECOGNISED_EXAMPLE
+
+    _tprint()
+    _tprint("kube-noob recognises:")
+    for kind in KINDS:
+        _tprint(f"  {kind:15} {KIND_DESCRIPTIONS[kind]}")
+    _tprint("Try it on a bundled sample:")
+    _tprint("  kube-noob examples copy examples")
+    _tprint(f"  kube-noob insight -f examples/{UNRECOGNISED_EXAMPLE}")
 
 
 def _print_ticket_changes(res: dict[str, Any], opened: dict[str, Any]) -> None:
@@ -330,6 +351,10 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
 
 
 def _print_known_issues(out: dict[str, Any]) -> None:
+    from kube_noob.known_issues import coverage_line
+
+    if line := coverage_line(out.get("versionCoverage")):
+        _tprint(line)
     for m in out["matches"]:
         _tprint(f"{m['id']}  {m['status']}")
         _tprint(f"  {m['summary']}")
@@ -2102,6 +2127,25 @@ def build_parser() -> argparse.ArgumentParser:
     dm = sub.add_parser("demo", help="Offline walkthroughs of common use cases (no network, no cluster)")
     dm.add_argument("scenario", nargs="?", help="scenario name or 'all' (see --list)")
     dm.add_argument("--list", action="store_true", dest="list_demos")
+    dm.add_argument(
+        "--keep",
+        metavar="DIR",
+        help="keep what the scenario writes (its sample input, the bundled examples and any report) in DIR, so the "
+        "commands it prints can be rerun there; refuses to overwrite",
+    )
+    exs = sub.add_parser(
+        "examples",
+        help="List the bundled example files, or copy them to a directory so the commands in the README run",
+        description="The README and the docs name files under examples/. They ship inside kube-noob; this writes them "
+        "where a command line can name them. Example: kube-noob examples copy examples",
+    )
+    exs_sub = exs.add_subparsers(dest="examples_cmd", required=True)
+    exs_sub.add_parser("list", help="Name each bundled example and what it is for")
+    exs_copy = exs_sub.add_parser("copy", help="Write the bundled examples into DIR (created if missing)")
+    exs_copy.add_argument("dir", metavar="DIR", help="where to write them, e.g. examples")
+    exs_copy.add_argument(
+        "--force", action="store_true", help="replace files that already exist (never symbolic links)"
+    )
     return p
 
 
@@ -2365,12 +2409,15 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             raise ConfigError("nothing to diagnose: pass the error text in quotes, a file with -f, or pipe it in")
         if len(text) > tk.MAX_DIAGNOSE_TEXT:  # a long Alertmanager payload keeps every alert's labels and summary
             text = alertmanager.compact(text) or text[-tk.MAX_DIAGNOSE_TEXT :]
-        _emit(
-            kit.diagnose(
-                tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
-            ),
-            fmt,
+        result = kit.diagnose(
+            tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
         )
+        if a.format == "text":  # the family's default, as for policy explain, known-issues and insight (G277)
+            from kube_noob.debug.diagnose import render_text as diagnose_text
+
+            _tprint(diagnose_text(result))
+        else:
+            _emit(result, fmt)
         return 0
 
     if a.cmd == "known-issues":
@@ -2534,6 +2581,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
                 text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(rep.get("knownIssuesCoverage"), listed=bool(rep["knownIssues"])):
+                text += f"\n{ki_line}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
@@ -2781,19 +2832,25 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
         if a.list_demos or not a.scenario:
             if a.format == "text":
-                for d in demo.listing():
-                    print(f"{d['name']:10} {d['title']}  [{d['for']}]")
+                rows = demo.listing()
+                width = max(len(d["name"]) for d in rows)  # `must-gather` is longer than the old fixed 10
+                for d in rows:
+                    print(f"{d['name']:{width}}  {d['title']}" + (f"  [{d['for']}]" if d["for"] else ""))
                 print("\nRun: kube-noob demo <name>   or   kube-noob demo all")
             else:
                 _emit(demo.listing(), fmt)
             return 0
+        if a.keep and a.scenario == "all":
+            raise ConfigError("--keep keeps one scenario's files: name one scenario, not 'all'")
         names = list(demo.SCENARIOS) if a.scenario == "all" else [a.scenario]
         for n in names:
-            if n not in demo.SCENARIOS:
+            if demo.resolve(n) not in demo.SCENARIOS:
                 raise KeyError(f"unknown demo {n!r}; choose from {', '.join(demo.SCENARIOS)} or 'all'")
-            demo.run(n, s)
+            demo.run(n, s, keep=Path(a.keep) if a.keep else None)
             print()
         return 0
+    if a.cmd == "examples":
+        return _examples_cmd(a, fmt)
     if a.cmd == "doctor":
         from kube_noob.knowledge_status import line, status
         from kube_noob.posture import posture, render_text
@@ -3082,6 +3139,34 @@ def _print_migrate(report: dict[str, Any], show_files: bool) -> None:
     summary = report["summary"]
     counts = ", ".join(f"{n} {v}" for v, n in summary["verdicts"].items())
     _tprint(f"{summary['policies']} policies, {summary['rules']} rules: {counts}. {report['note']}")
+
+
+def _examples_cmd(a: argparse.Namespace, fmt: str) -> int:
+    from kube_noob import examples
+
+    if a.examples_cmd == "list":
+        rows = examples.listing()
+        if a.format != "text":
+            _emit(rows, fmt)
+            return 0
+        width = max(len(r["name"]) for r in rows)
+        for r in rows:
+            print(f"{r['name']:{width}}  {r['what']}")
+        print("\nWrite them where a command can name them: kube-noob examples copy examples")
+        return 0
+    written = examples.copy(Path(a.dir), overwrite=a.force)
+    if a.format != "text":
+        _emit({"directory": a.dir, "written": [p.name for p in written]}, fmt)
+        return 0
+    _tprint(f"wrote {len(written)} files to {a.dir}: {', '.join(p.name for p in written)}")
+    d = a.dir.rstrip("/") or "/"
+    _tprint("Try:")
+    _tprint(
+        f"  kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f {d}/netpol-admin-tiers.yaml"
+    )
+    _tprint(f"  kube-noob policy explain -f {d}/denial-multi.txt")
+    _tprint(f"  kube-noob diagnose -f {d}/events-scc.txt")
+    return 0
 
 
 def _write_migration(report: dict[str, Any], out_dir: str) -> int:

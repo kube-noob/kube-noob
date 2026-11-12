@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **The first five minutes: four things a new user hit before any feature mattered (G277).** A version outside the
+  known-issue index read as "no known issue": `known-issues 'etcd leader changed' --version 4.16.20` exited 0 with
+  `"matches": []` and a note naming the releases the index holds, and nothing a program reads said 4.16 was not one of
+  them. Results now carry `versionCoverage` with three values -- `determined` (the release is indexed, so an empty list
+  is an answer), `not-determined` (it is not, with the reason) and `not-narrowed` (no usable version) -- in the text
+  view, JSON, YAML and the MCP result. `diagnose`, `build diagnose`, `insight`, the incident watch, the live
+  diagnostic bundle, the must-gather report and case draft, and the gate carry the same statement as
+  `knownIssuesCoverage`, and the gate lists the lookup under "Not run". No exit code changed: `known-issues` has no
+  `--require-complete`, and exit 5 means unreadable evidence, not a dated index, as for `notCheckedBeyond`.
+
+  The README's headline commands named `examples/...` files that exist only in a checkout, so after `brew install`
+  the first command a stranger copied answered `No such file or directory`. `kube-noob examples copy DIR` writes the
+  examples the package already ships (never replacing a file without `--force`, never writing through a symbolic
+  link, checking every target before writing any), `examples list` says what each one is for, and the README now
+  starts with that step; a test runs every README command that names `examples/` from a directory that is not the
+  checkout. `demo <name> --keep DIR` keeps what a demo writes (`demo must-gather` printed "wrote report.md" into a
+  directory it then deleted), so its printed commands rerun there.
+
+  `diagnose` had no text view: it printed about 216 lines of YAML whatever `--format` said, while `demo diagnose`
+  showed the ten lines a person acts on. It now defaults to text like `policy explain`, `known-issues` and `insight`:
+  the likely playbook, read-only steps first, then what needs approval labelled as such, denials, reported issues and
+  every caveat the structured result carries. **If a script reads `kube-noob diagnose` output as YAML without
+  `--format`, add `--format yaml`**; JSON and YAML under their flag are byte-for-byte what they were (every consumer
+  in this repository already passes `--format json`). `insight` given text it does not recognise now lists what it
+  recognises, from the router's own table, and a bundled sample that works, instead of only "nothing recognised".
+  `demo --list` keeps its columns aligned past `must-gather`, and `demo doctor` is the new name of the demo that runs
+  `doctor` (`kube-noob posture` is the attack-path scan); `demo posture` still runs it and says so.
+
 - **`audit --format sarif`, with the controls on the rules and the run's blind spots in the file (G269).** SARIF is a list of results, so a partial audit and a clean one differ only in length. The audit's `assumptions` (what it did not evaluate, for example because it was given part of a namespace) and its unreadable files now travel in the document as `toolExecutionNotifications`, where the JSON report already carried them and a format that replaces the report would have dropped them.
 
   Every rule in the audit's SARIF and the gate's carries its NIST SP 800-53 controls, as `NIST-800-53/<id>` tags and as a `nist-800-53` list; a rule mapped to none has no such property. `--format sarif` on any command but `audit` exits 2 rather than printing YAML under the name, and `--oscal` with `--format sarif` exits 2 rather than choosing for you. The audit's exit code is unchanged by the flag. The SARIF `informationUri` names the project's current home. This completes I2.

@@ -1,7 +1,16 @@
 # Use cases
 
 Pick your role, run the demo, then try it on your own files. Every demo runs offline in under a second and never
-touches your cluster or your saved progress: `kube-noob demo --list`.
+touches your cluster or your saved progress: `kube-noob demo --list`. `kube-noob demo <name> --keep DIR` leaves what
+the demo wrote (its sample input, the bundled examples, any report) in DIR, so the commands it prints run again there.
+
+The commands on this page that name `examples/...` use files that ship inside kube-noob. After a brew, uv or pip
+install, write them where a command line can name them first:
+
+```bash
+kube-noob examples copy examples
+kube-noob examples list
+```
 
 ## No AI inside: three ways to use it
 
@@ -152,6 +161,9 @@ a command in a block of working commands reads as a capability.
    the signals it found (alert names, event and container reasons), the likely cause, then read-only steps (get,
    describe, logs, events).
 2. Commands that run inside a container are listed next, and changes come last. Both are marked as needing approval.
+3. The default is a text view; `--format json` or `--format yaml` gives every field (the rest of the proposed changes,
+   the other playbooks' steps), unchanged from earlier releases. The text view still carries every caveat: what was
+   not determined, notes, memory that could not be read, and which steps need approval.
 
 ```bash
 kube-noob demo diagnose
@@ -240,7 +252,10 @@ kube-noob search 'CVE-2023-44487 openshift haproxy router'
 `known-issues` matches an error or symptom against the issues Red Hat lists in the OpenShift 4.20, 4.21 and 4.22 release
 notes: known issues, and the issues each update fixed. You get the issue link, whether a fix exists and in which
 version, the workaround, and the release-notes file it came from. Pass your version and issues already fixed there are
-left out. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
+left out. A version outside the index (4.16, or a release newer than the snapshot) is answered `versionCoverage:
+not-determined` with the reason, in the text view too: no match there is not "no known issue". `diagnose`,
+`insight`, `build diagnose`, the incident watch, the must-gather report and the gate carry the same statement as
+`knownIssuesCoverage`. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
 A match needs several rare words in common, so everyday errors such as OOMKilled never pull in an unrelated bug;
 an error copied word for word from an issue (seven words in a row, one of them rare) is a match on its own.
 
@@ -545,6 +560,9 @@ kube-noob insight -f ceph-health-detail.txt --platform openshift
 ```
 
 ## Platform admin: run it inside the cluster, locked down
+
+`kube-noob demo doctor` shows what kube-noob itself can reach and how the lock narrows it (`demo posture` is its old
+name and still works; `kube-noob posture` is the attack-path scan).
 
 ```bash
 kube-noob demo posture

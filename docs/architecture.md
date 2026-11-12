@@ -138,6 +138,12 @@ flowchart LR
   cluster and fetches nothing. What the policies do is decided by the person who applies them; enforce mode refuses
   requests, so the default is audit. The CEL reads only the admitted object and the requester's name, never other
   objects, and exempts platform namespaces and operators so a cluster upgrade is never blocked by a generated policy.
+- `examples copy` (CLI only; `kube_noob.examples`) writes the example files bundled in the package, and nothing
+  else, into the directory the user names. Every target is checked before any is written: an existing file is
+  refused unless `--force`, a symbolic link or anything that is not a regular file is refused even then, and files
+  are opened with `O_NOFOLLOW` (and `O_EXCL` without `--force`), so a link that appears after the check is not
+  followed either. `demo <name> --keep DIR` writes through the same code. Trust boundary: the user's own
+  directory; the content is the package's.
 - `policy migrate-check` (CLI and the read-only `policy_migrate_check` tool; `kube_noob.kyverno_migrate`) reads legacy
   Kyverno policies as bounded YAML (the `yamlio` caps, Secret documents skipped unread) and rewrites, applies and
   fetches nothing. Its verdicts come from mapping tables pinned to kyverno/website and kyverno/kyverno commits; a draft

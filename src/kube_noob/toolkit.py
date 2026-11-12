@@ -1255,6 +1255,8 @@ class Toolkit:
             payload.symptoms if payload else text, p.platform, version, 3, self.settings.data_dir, require_context=True
         )
         out["knownIssues"] = reported["matches"]
+        if "versionCoverage" in reported:  # an empty list for a release the index does not hold is not "none" (G277)
+            out["knownIssuesCoverage"] = reported["versionCoverage"]
         if reported["matches"]:
             self._observe([f"known-issue:{m['id']}" for m in reported["matches"]])
         self._attach_memory(out, p.text, version, p.platform)
@@ -1490,6 +1492,8 @@ class Toolkit:
             evidence[:100_000], platform, p.version, 3, self.settings.data_dir, require_context=True
         )
         out["knownIssues"] = reported["matches"]
+        if "versionCoverage" in reported:
+            out["knownIssuesCoverage"] = reported["versionCoverage"]
         self._attach_memory(out, evidence[:MAX_SIGNAL_TEXT], p.version, platform)
         self._observe([f"build:{d.system}:{d.cause or 'unknown'}"])
         return out

@@ -272,6 +272,11 @@ class Index:
             "issues": len(self.issues),
         }
 
+    def coverage(self, version: str | None) -> dict[str, Any]:
+        """Whether the index can answer for ``version`` (see ``version_coverage``)."""
+        k = self.knowledge()
+        return version_coverage(version, k["openshiftReleases"], k["knownIssuesAsOf"])
+
     def _tokens(self, issue: Issue) -> set[str]:
         key = f"{issue.id}@{issue.version}"
         if key not in self._token_cache:
@@ -350,8 +355,9 @@ class Index:
         from kube_noob.signals import extract
         from kube_noob.signals.catalogue import infer, terms_for
 
+        out["versionCoverage"] = self.coverage(version)
         text = text[:100_000]
-        running = version if version and re.fullmatch(r"\d+\.\d+(\.\d+)?", version) else None
+        running = version if version and _VERSION.fullmatch(version) else None
         signals = [x for x in extract(text) if x.kind in {"alert", "event_reason", "pod_reason"}] + infer(text)
         sig_terms = terms_for(signals)
         text = strip_templates(text)  # the fixed words of component messages are not evidence for any one issue
@@ -402,7 +408,12 @@ class Index:
             out["matches"].append(match)
             if len(out["matches"]) >= limit:
                 break
-        if not out["matches"]:
+        if not out["matches"] and out["versionCoverage"]["status"] == "not-determined":
+            out["note"] = (
+                f"Nothing in the indexed release notes ({', '.join(out['knowledge']['openshiftReleases'])}) matches "
+                f"this text, and that is not an answer for {version}: see versionCoverage."
+            )
+        elif not out["matches"]:
             out["note"] = (
                 "No reported issue in the OpenShift release notes matches this text closely. "
                 f"The index covers OpenShift {', '.join(out['knowledge']['openshiftReleases'])} "
@@ -421,6 +432,71 @@ class Index:
         if _minor(issue.version) != _minor(running):
             return False
         return vkey(running) < vkey(issue.version)
+
+
+_VERSION = re.compile(r"\d+\.\d+(\.\d+)?")
+COVERAGE = ("determined", "not-determined", "not-narrowed")
+
+
+def version_coverage(version: str | None, releases: list[str], as_of: str | None) -> dict[str, Any]:
+    """Whether "no match" can mean "no reported issue" for ``version``: three-valued, never left to a note.
+
+    ``determined``: the version's minor release is in the index, so issues that cannot affect it were left out and an
+    empty list is an answer for it. ``not-determined``: the minor is outside the index; an empty list (or a short one,
+    for a newer release that still carries an older one's open issues) says nothing about that release's own notes.
+    ``not-narrowed``: no usable version, so the answer lists issues from every indexed release, including ones a
+    cluster may already have the fix for.
+    """
+    held = ", ".join(releases) or "no release"
+    dated = f" as of {as_of}" if as_of else ""
+    if not version:
+        return {
+            "status": "not-narrowed",
+            "why": f"No version was given, so the answer is not narrowed by version: it covers every indexed release "
+            f"({held}{dated}), including issues already fixed in yours. Give the version to leave those out.",
+        }
+    if not _VERSION.fullmatch(version):
+        return {
+            "status": "not-narrowed",
+            "version": version,
+            "why": f"{version} is not an x.y or x.y.z OpenShift version, so the answer is not narrowed by version: "
+            f"it covers every indexed release ({held}{dated}).",
+        }
+    minor = _minor(version)
+    if minor in releases:
+        return {
+            "status": "determined",
+            "version": version,
+            "why": f"OpenShift {minor} is in the index ({held}{dated}): issues that cannot affect {version} are left "
+            "out, so no match means none of its reported issues matches.",
+        }
+    newer = bool(releases) and vkey(minor) > vkey(releases[-1])
+    return {
+        "status": "not-determined",
+        "version": version,
+        "why": f"Known issues NOT DETERMINED for OpenShift {version}: the index holds the release notes of {held}"
+        f"{dated}, and {minor} is not one of them. "
+        + (
+            f"Issues still open in an older release are listed, but {minor}'s own release notes were not read. "
+            if newer
+            else "No match here does not mean no reported issue. "
+        )
+        + f"Read the OpenShift {minor} release notes, or refresh the index (kube-noob corpus known-issues --online).",
+    }
+
+
+def coverage(version: str | None, data_dir: Path | None = None) -> dict[str, Any]:
+    """``version_coverage`` against the index ``data_dir`` selects."""
+    return get_index(data_dir).coverage(version)
+
+
+def coverage_line(cov: dict[str, Any] | None, listed: bool = True) -> str | None:
+    """The sentence a text view prints, or ``None`` when there is nothing to warn about: the version was covered, or
+    (``listed`` false: a view that shows reported issues only as part of a wider answer, and showed none) the answer
+    was not narrowed by version but listed nothing that a version would have left out."""
+    if not cov or cov.get("status") == "determined" or (cov.get("status") == "not-narrowed" and not listed):
+        return None
+    return str(cov["why"])
 
 
 def _distinct(words: list[str]) -> list[str]:

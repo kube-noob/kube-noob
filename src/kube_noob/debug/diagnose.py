@@ -676,6 +676,7 @@ def debug_workload(
         "logs": {k: v[-6000:] for k, v in ev["logs"].items()},
         **result.as_dict(),
         "knownIssues": reported["matches"],
+        **({"knownIssuesCoverage": reported["versionCoverage"]} if "versionCoverage" in reported else {}),
         **({"policyDenials": denials} if denials else {}),
     }
 
@@ -719,6 +720,10 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         lines += ["", f"## Reported issue {m['id']}", "", m["status"], "", m["summary"], "", f"- Issue: {m['url']}"]
         lines += [f"- Workaround: {m['workaround']}"] if m.get("workaround") else []
         lines += [f"- Release notes: {m['source']}"]
+    from kube_noob.known_issues import coverage_line
+
+    if limit := coverage_line(result.get("knownIssuesCoverage"), listed=bool(result.get("knownIssues"))):
+        lines += ["", f"Reported issues: {limit}"]
     for p in result.get("policyDenials", []):
         title = f"{p['engineName']} {p.get('policy') or ''}".strip() + (f" / {p['rule']}" if p.get("rule") else "")
         lines += ["", f"## Denied by {title}", "", p["meaning"], "", "Read-only next steps:"]
@@ -741,3 +746,180 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         for name, text in result["logs"].items():
             lines += ["", f"### {name}", "```", text[-3000:], "```"]
     return "\n".join(lines) + "\n"
+
+
+# --- text view (`kube-noob diagnose`, the default --format) -------------------------------------------------
+
+# Every top-level field of the diagnose result is either rendered by ``render_text`` or left out for a stated
+# reason; tests/test_diagnose_text.py fails on a field that is in neither, so a new caveat cannot be dropped from
+# the text view by default (G221, G277).
+TEXT_RENDERED = frozenset(
+    {
+        "input",
+        "context",
+        "signals",
+        "exitCodes",
+        "cephHealth",
+        "diagnoses",
+        "notes",
+        "knownIssues",
+        "knownIssuesCoverage",
+        "memory",
+        "memoryNotes",
+        "policyDenials",
+        "approach",
+    }
+)
+TEXT_OMITTED = {
+    "knowledgeAsOf": "added by the MCP and REST surfaces, not by the CLI",
+}
+MAX_TEXT_CHANGES = 3  # proposed changes shown for the top diagnosis; --format yaml has every one
+
+
+def _text_step(s: dict[str, Any], indent: str) -> list[str]:
+    out = [f"{indent}{s.get('command') or s.get('instruction', '')}"]
+    return out + ([f"{indent}  why: {s['why']}"] if s.get("why") else [])
+
+
+def _text_diagnosis(d: dict[str, Any], others: list[dict[str, Any]]) -> list[str]:
+    lines = [f"{d['id']}  {d['title']}  (confidence {d['confidence']})"]
+    if d.get("likelyCause"):
+        lines.append(f"  likely cause: {d['likelyCause']}")
+    elif d.get("rootCauses"):
+        more = len(d["rootCauses"]) - 1
+        lines.append(f"  likely cause: {d['rootCauses'][0]}" + (f" ({more} other causes)" if more else ""))
+    n = 0
+    if d.get("readOnlyNextSteps"):
+        n += 1
+        lines.append(f"  {n}. read-only first:")
+        for s in d["readOnlyNextSteps"]:
+            lines += _text_step(s, "     ")
+    if d.get("diagnosticCommands"):
+        n += 1
+        lines.append(f"  {n}. runs in a container (needs approval):")
+        for s in d["diagnosticCommands"]:
+            lines += _text_step(s, "     ")
+    changes = list(d.get("likelyFixes") or []) or [c["change"] for c in d.get("proposedChanges") or []]
+    if changes:
+        n += 1
+        lines.append(f"  {n}. change, only after the evidence (needs approval):")
+        lines += [f"     - {c}" for c in changes[:MAX_TEXT_CHANGES]]
+        total = len(d.get("proposedChanges") or [])
+        if total > min(len(changes), MAX_TEXT_CHANGES):
+            lines.append(f"     ({total} proposed changes in all: --format yaml lists every one)")
+    if d.get("relatedRules"):
+        lines.append(f"  caught before deploy by: {', '.join(d['relatedRules'])} (kube-noob audit)")
+    if others:
+        also = "; ".join(f"{x['id']} {x['title']} ({x['confidence']})" for x in others)
+        lines.append(f"also possible: {also}. Their steps: --format yaml")
+    return lines
+
+
+def _text_ceph(ceph: dict[str, Any]) -> list[str]:
+    lines = [""] + ([f"STOP: {ceph['stop']}"] if ceph.get("stop") else [])
+    for e in ceph.get("entries", []):
+        sev = f" ({e['severity']})" if e.get("severity") else ""
+        lines.append(f"Ceph {e['code']}{sev}: {e['meaning']}")
+        lines += [f"  cause: {c}" for c in e.get("likelyCauses", [])]
+        lines.append(f"  fix (needs approval): {e['fix']}")
+        if e.get("escalate"):
+            lines.append(f"  escalate: {e['escalate']}")
+        if e.get("readOnlyNextSteps"):
+            lines.append("  read-only first:")
+            for s in e["readOnlyNextSteps"]:
+                lines += _text_step(s, "    ")
+        if e.get("diagnosticCommands"):
+            lines.append("  in the toolbox (needs approval):")
+            for s in e["diagnosticCommands"]:
+                lines += _text_step(s, "    ")
+    for a in ceph.get("alerts", []):
+        lines.append(f"alert {a['alert']}: {a.get('meaning') or 'no explanation catalogued'}")
+    if ceph.get("readOnlyNextSteps"):
+        lines.append("Ceph, read-only first:")
+        for s in ceph["readOnlyNextSteps"]:
+            lines += _text_step(s, "  ")
+    if ceph.get("diagnosticCommands"):
+        lines.append("Ceph, in the toolbox (needs approval):")
+        for s in ceph["diagnosticCommands"]:
+            lines += _text_step(s, "  ")
+    if ceph.get("notCatalogued"):
+        lines.append(f"not catalogued, so not explained: {', '.join(ceph['notCatalogued'])}")
+    return [*lines, ceph["note"]]
+
+
+def _text_denial(p: dict[str, Any]) -> list[str]:
+    name = " / ".join(x for x in (p.get("policy"), p.get("rule")) if x)
+    head = ("WARN " if p.get("mode") == "warn" else "DENY ") + p["engineName"] + (f"  {name}" if name else "")
+    lines = ["", head + (f"  ({p['resource']})" if p.get("resource") else ""), f"  {p['meaning']}"]
+    if p.get("readOnlyNextSteps"):
+        lines.append("  check (read-only):")
+        for s in p["readOnlyNextSteps"]:
+            lines += _text_step(s, "    ")
+    if p.get("proposedChanges"):
+        lines.append("  fix (needs approval):")
+        for c in p["proposedChanges"]:
+            owner = " (the policy owner decides)" if c.get("needsPolicyOwner") else ""
+            lines.append(f"    - {c['change']}{owner}")
+    return lines
+
+
+def _text_reported(result: dict[str, Any]) -> list[str]:
+    from kube_noob.known_issues import coverage_line
+
+    known = result.get("knownIssues") or []
+    limit = coverage_line(result.get("knownIssuesCoverage"), listed=bool(known))
+    lines = [""] if known or limit else []
+    for m in known:
+        lines += [f"reported issue {m['id']}: {m.get('status') or ''}", f"  {m.get('summary') or m.get('title') or ''}"]
+        lines += [f"  workaround: {m['workaround']}"] if m.get("workaround") else []
+        lines.append(f"  {m['url']}")
+    lines += [limit] if limit else []
+    memory = result.get("memory") or []
+    if memory or result.get("memoryNotes"):
+        lines.append("")
+    for m in memory:
+        lines.append(f"team memory {m['citation']} ({m['state']}): {m['symptom']}")
+        lines += [f"  fix: {m['fix']['text']}"] if (m.get("fix") or {}).get("text") else []
+        lines += [f"  {m['outcomes']['summary']}"] if (m.get("outcomes") or {}).get("summary") else []
+        lines += [f"  note: {m['note']}"] if m.get("note") else []
+    return lines + [f"team memory not read: {n}" for n in result.get("memoryNotes") or []]
+
+
+def _text_caveats(result: dict[str, Any]) -> list[str]:
+    tail = [f"note: {n}" for n in result.get("notes") or []]
+    tail += [f"exit code {code}: {meaning}" for code, meaning in (result.get("exitCodes") or {}).items()]
+    payload = result.get("input") or {}
+    if payload:
+        names = ", ".join(payload.get("alertnames") or [])
+        source = f" (from the {payload['versionFrom']})" if payload.get("versionFrom") else ""
+        version = f"; version {payload['version']}{source}" if payload.get("version") else "; no version in it"
+        tail.append(f"input: {payload.get('kind')}, {payload.get('alerts')} alerts, {payload.get('firing')} firing")
+        tail[-1] += f" ({names}){version}"
+    # An error template's name is a hash that means nothing to a reader; its kind and the line it came from do.
+    shown = [f"{x['kind']} {x['name']}" for x in result.get("signals") or [] if x["kind"] != "error_template"]
+    tail += ["signals: " + ", ".join(shown)] if shown else []
+    ctx = result.get("context") or {}
+    tail += ["context: " + ", ".join(f"{k}={v}" for k, v in ctx.items())] if ctx else []
+    return ["", *tail] if tail else []
+
+
+def render_text(result: dict[str, Any]) -> str:
+    """The diagnosis as a person reads it: the most likely playbook with its read-only steps first and what needs
+    approval labelled as such, then Ceph health, denials, reported issues and team memory, then every caveat the
+    structured result carries (notes, a version not covered, memory that could not be read). Same input, same text.
+    """
+    diagnoses = result.get("diagnoses") or []
+    lines = _text_diagnosis(diagnoses[0], diagnoses[1:]) if diagnoses else []
+    if result.get("cephHealth"):
+        lines += _text_ceph(result["cephHealth"])
+    for p in result.get("policyDenials") or []:
+        lines += _text_denial(p)
+    lines += _text_reported(result) + _text_caveats(result)
+    if diagnoses or result.get("cephHealth") or result.get("policyDenials"):
+        lines += [
+            "",
+            "Read-only steps first; (needs approval) marks what executes in a container or changes the cluster.",
+        ]
+    while lines and not lines[0]:
+        lines.pop(0)
+    return "\n".join(lines)
