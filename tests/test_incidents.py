@@ -161,7 +161,7 @@ class FakeCluster:
         self.resources.append(resource)
         if resource == "clusterversions" or self.fail:
             raise ClusterAccessError(f"{resource} not readable")
-        return {"items": copy.deepcopy(self.snap.get(resource, []))}
+        return {"kind": "List", "items": copy.deepcopy(self.snap.get(resource, []))}
 
     def logs(self, namespace: str, pod: str, container: str | None, tail: int, previous: bool) -> str:
         self.log_calls += 1

@@ -111,7 +111,7 @@ class Cluster:
             if not hits:
                 raise ClusterAccessError(f"{resource} {name} not found")
             return hits[0]
-        return {"items": hits}
+        return {"kind": "List", "items": hits}
 
 
 def _info(version: str | None, variant: str | None = "Calico") -> dict[str, Any]:

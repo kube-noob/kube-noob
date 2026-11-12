@@ -406,13 +406,13 @@ def test_the_live_check_reads_the_admin_tiers_too() -> None:
             if plural == "adminnetworkpolicies":
                 import yaml
 
-                return {"items": [yaml.safe_load(_anp(10, "Deny"))]}
+                return {"kind": "List", "items": [yaml.safe_load(_anp(10, "Deny"))]}
             if plural == "baselineadminnetworkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"tier": "app"}}}
             if plural == "networkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural in (
                 "clusternetworkpolicies",
                 "ciliumclusterwidenetworkpolicies",
@@ -455,7 +455,7 @@ def test_a_cluster_that_has_no_admin_tier_api_is_not_an_error() -> None:
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {}}}
             if plural == "networkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             raise ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders")
@@ -705,7 +705,7 @@ def test_a_forbidden_read_of_the_admin_tier_is_not_a_networkpolicy_answer() -> N
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"tier": "app"}}}
             if plural == "networkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if name == "orders":
                 import yaml
 
@@ -1013,7 +1013,7 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
                     raise ClusterAccessError(_not_found(plural, namespace, name))
                 if spec == "forbidden":
                     raise ClusterAccessError("Forbidden (403)")
-                return {"items": spec}
+                return {"kind": "List", "items": spec}
             if plural in {
                 "adminnetworkpolicies",
                 "baselineadminnetworkpolicies",
@@ -1028,11 +1028,12 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
                         return doc
             if plural == "networkpolicies":
                 return {
+                    "kind": "NetworkPolicyList",
                     "items": [
                         doc
                         for doc in docs
                         if doc.get("kind") == "NetworkPolicy" and doc["metadata"].get("namespace") == namespace
-                    ]
+                    ],
                 }
             if name:
                 wanted = {

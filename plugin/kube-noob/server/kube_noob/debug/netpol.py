@@ -50,6 +50,11 @@ WORKLOAD_KINDS = (
 _KIND_RANK = {k.lower(): i for i, k in enumerate(WORKLOAD_KINDS)}
 ANP_KIND = "AdminNetworkPolicy"
 BANP_KIND = "BaselineAdminNetworkPolicy"
+#: Said in every offline answer whose input holds an admin-tier policy and no --cni (G279, third review).
+ADMIN_TIER_DEFAULT_NOTE = (
+    "admin-tier policies evaluated with OVN-Kubernetes semantics; pass --cni <name> for your CNI "
+    "(Calico 3.32 and later ignore AdminNetworkPolicy; Cilium states no support for it)"
+)
 # Cluster-scoped kinds that sit ABOVE NetworkPolicy and that this evaluator does not read yet. A NetworkPolicy
 # cannot override one, so when any of these is in the input, a namespace-scoped fix may be applied and change
 # nothing -- the caveat below says so. `ClusterNetworkPolicy` (policy.networking.k8s.io/v1alpha2) is the API under
@@ -397,6 +402,10 @@ class Inventory:
         if not cni:
             if self.cni_unread:
                 self._cni_not_read()
+            elif self.admin or self.baseline:
+                # Offline, with no --cni, the admin tier is evaluated as OVN-Kubernetes enforces it (the owner's
+                # default, G207). That stays; what changes is that the answer says so (G279, third review).
+                self.notes.append(ADMIN_TIER_DEFAULT_NOTE)
             return
         from kube_noob.debug.cni import REPLACEMENT, admin_tier_reason, admin_tier_support, parse_cni
 

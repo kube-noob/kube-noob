@@ -119,7 +119,7 @@ def test_payload_reader_reads_webhook_and_api_shapes() -> None:
     [
         "etcd leader changed frequently",
         '{"alerts": "nope"}',
-        '{"items": []}',
+        '{"kind": "List", "items": []}',
         "[1, 2, 3]",
         PAYLOAD[: len(PAYLOAD) // 2],
         "[" * 100_000 + "]" * 100_000,
@@ -264,9 +264,9 @@ class _Cluster:
                     ],
                 },
             }
-            return {"items": [pod]}
+            return {"kind": "List", "items": [pod]}
         if resource == "events":
-            return {"items": []}
+            return {"kind": "List", "items": []}
         from kube_noob.errors import ClusterAccessError
 
         raise ClusterAccessError(f"no {resource}")

@@ -170,6 +170,10 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
 # starts none of these is a control character like any other.
 _TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]{0,512}(?:\x07|\x1b\\)?|[ -/]*[0-~])")
 
+#: The characters of a word an escape sequence can sit inside (`web<ESC>x`); not punctuation, so prose is clean.
+_WORD = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+_ESCAPE_RUN = re.compile("(?:" + _TERMINAL_ESCAPE.pattern + ")+")
+
 
 def _ranges(*spans: tuple[int, int]) -> str:
     return "".join(re.escape(chr(lo)) + ("-" + re.escape(chr(hi)) if hi != lo else "") for lo, hi in spans)
@@ -298,7 +302,17 @@ def _keep_in_context(text: str, i: int, o: int) -> bool:
 def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, int] | None = None) -> str:
     """The one rule every output and every MCP result follows (``visible`` and ``clean`` both call it)."""
     if "\x1b" in text:
-        text = _TERMINAL_ESCAPE.sub("", text)
+        if mark:
+            # Inside a name, removing the sequence would join two halves into another name (`web<ESC>x` is not
+            # `webx`); in prose it is removed (G279, third review).
+            def esc(m: re.Match[str]) -> str:
+                a, b = m.start(), m.end()
+                inside = a > 0 and b < len(text) and text[a - 1] in _WORD and text[b] in _WORD
+                return "<ESC>" if inside else ""
+
+            text = _ESCAPE_RUN.sub(esc, text)
+        else:
+            text = _TERMINAL_ESCAPE.sub("", text)
         if stats is not None:
             stats["escape"] = stats.get("escape", 0) + 1
     if "\r\n" in text:
@@ -412,69 +426,115 @@ def one_line(text: str) -> str:
     return " ".join(_core(text, " ", "", True).split())
 
 
-#: The legacy workflow-command prefix: actions/runner (v2.321.0, src/Runner.Common/ActionCommand.cs, TryParse)
-#: takes ``##[`` ANYWHERE in a line, up to the next ``]``, as a command.
-_LEGACY_COMMAND = re.compile(r"(?<=##)\[")
+#: The service-message prefixes CI systems read ANYWHERE in a line: GitHub's legacy ``##[`` (actions/runner
+#: v2.321.0, src/Runner.Common/ActionCommand.cs, TryParse), Azure Pipelines' ``##vso[`` and TeamCity's
+#: ``##teamcity[``. One rule covers all three: ``##``, letters, ``[``.
+_SERVICE_MESSAGE = re.compile(r"(##[A-Za-z]*)\[")
+#: The end of the text already written that a following ``[`` could complete into a service message.
+_SERVICE_TAIL = re.compile(r"(?:##[A-Za-z]*|#)\Z")
+#: How the broken characters are shown: the marker style ``visible`` uses, so nobody reads them as text.
+BRACKET_MARK = "<U+005B>"
+COLON_MARK = "<U+003A>"
+
+
+def defuse_service_messages(text: str) -> str:
+    """``text`` with every ``##[``, ``##vso[`` and ``##teamcity[`` broken by marking its bracket."""
+    return _SERVICE_MESSAGE.sub(r"\1" + BRACKET_MARK, text) if "##" in text else text
 
 
 class CommandGuard:
-    """Keeps text from being read as a GitHub Actions workflow command (G279, review CP3-Q3).
+    """Keeps text from being read as a CI workflow command (G279, reviews CP3-Q3 and 3).
 
-    The runner reads a command from every line a step writes: ``TryParseV2`` takes a line that, after leading
-    white space, starts with ``::``; the legacy ``TryParse`` takes ``##[`` anywhere in a line. A ConfigMap key in an
-    audit line (``p##[stop-commands]token``) could stop command processing, forge an annotation, set a step output
-    or mask text. This makes both visible and inert, in plain ASCII: ``##[`` becomes ``## [`` and a line-leading
-    ``::`` becomes ``: :``. Nothing else changes. Applied always, not only under GITHUB_ACTIONS: a log is replayed.
+    A GitHub runner reads a command from every line a step writes: ``TryParseV2`` takes a line that, after leading
+    white space, starts with ``::``; the legacy ``TryParse`` takes ``##[`` anywhere in a line. Azure Pipelines
+    (``##vso[``) and TeamCity (``##teamcity[``) read theirs anywhere too. A ConfigMap key in an audit line
+    (``p##[stop-commands]token``) could stop command processing, forge an annotation, set a step output or a
+    variable, or mask text. This breaks each with a visible marker, in plain ASCII and unambiguously: the bracket
+    of ``##...[`` becomes ``<U+005B>`` and the first colon of a line-leading ``::`` becomes ``<U+003A>``. Nothing
+    else changes. Always on -- not only under GITHUB_ACTIONS, not only off a terminal: a log is replayed, and the
+    same input gives the same bytes.
 
-    Stateful, because a stream is written in pieces (``print`` writes the newline separately): it remembers the
-    last two characters and whether the current line so far is white space and at most one ``:``."""
+    Stateful, because a stream is written in pieces (``print`` writes the newline separately): it keeps the end
+    of what was written that a ``[`` could complete, and holds back a colon that starts a line until the next
+    character says whether it begins ``::``. :meth:`flush` writes a held colon."""
 
     def __init__(self) -> None:
         self._tail = ""
-        self._lead: str | None = ""
+        self._lead: str | None = ""  # the current line so far, while it is only white space (or ends ":" written)
+        self._held = False  # a line-leading ":" not yet written
 
     @property
     def at_line_start(self) -> bool:
-        return self._lead == ""
+        return self._lead == "" and not self._held
 
     def reset(self) -> None:
         """The next character starts a line (a command written on purpose has just ended one)."""
-        self._tail, self._lead = "", ""
+        self._tail, self._lead, self._held = "", "", False
+
+    def flush(self) -> str:
+        """What is held back, to be written now: a line-leading colon the next write may still mark."""
+        if not self._held:
+            return ""
+        self._held = False
+        self._lead = (self._lead or "") + ":"
+        self._tail = ":"
+        return ":"
 
     def feed(self, text: str) -> str:
-        prev = self._tail
         if "[" in text:
-            # An insertion can only land at or after len(prev): the look-behind needs two characters before "[".
-            text = _LEGACY_COMMAND.sub(" [", prev + text)[len(prev) :]
-        lead = self._lead
+            prev = self._tail
+            # The group re-emits what it matched, so the part that came from `prev` is unchanged and can be cut.
+            text = _SERVICE_MESSAGE.sub(r"\1" + BRACKET_MARK, prev + text)[len(prev) :]
+        lead, held = self._lead, self._held
         if lead is None and "\n" not in text:  # the common case: the middle of a line
-            self._tail = (prev + text)[-2:]
-            return text
-        parts = text.split("\n")
-        for i, part in enumerate(parts):
-            if i:
-                lead = ""
-            if lead is None:
-                continue
-            head = lead + part
-            body = head.lstrip()  # Python's white space is a superset of what .NET's TrimStart() removes
-            if body.startswith("::"):
-                cut = len(head) - len(body) + 1 - len(lead)
-                parts[i] = part[:cut] + " " + part[cut:]
-                lead = None
-            elif body in ("", ":"):
-                lead = head
-            else:
-                lead = None
-        self._lead = lead
-        out = "\n".join(parts)
-        self._tail = (prev + out)[-2:]
+            out = text
+        else:
+            parts: list[str] = []
+            for i, seg in enumerate(text.split("\n")):
+                if i:
+                    if held:
+                        parts.append(":")
+                        held = False
+                    parts.append("\n")
+                    lead = ""
+                j = 0
+                while lead is not None and j < len(seg):
+                    ch = seg[j]
+                    if held:  # ws ":" so far, the colon not written
+                        held = False
+                        if ch == ":":
+                            parts.append(COLON_MARK + ":")
+                            j += 1
+                        else:
+                            parts.append(":")
+                        lead = None
+                    elif lead.endswith(":"):  # ws ":" so far, the colon written (a flush came between)
+                        if ch == ":":
+                            parts.append(COLON_MARK)
+                            j += 1
+                        lead = None
+                    elif ch.isspace():  # Python's white space is a superset of what .NET's TrimStart() removes
+                        parts.append(ch)
+                        lead += ch
+                        j += 1
+                    elif ch == ":":
+                        held = True
+                        j += 1
+                    else:
+                        lead = None
+                parts.append(seg[j:])
+            out = "".join(parts)
+        self._lead, self._held = lead, held
+        if out:
+            m = _SERVICE_TAIL.search((self._tail + out)[-64:])
+            self._tail = m.group(0) if m else ""
         return out
 
 
 def defuse_workflow_commands(text: str) -> str:
     """``text`` (whole lines) with no workflow command in it: see :class:`CommandGuard`."""
-    return CommandGuard().feed(text)
+    g = CommandGuard()
+    return g.feed(text) + g.flush()
 
 
 def has_invisible(text: str, *, keep: str = "") -> bool:

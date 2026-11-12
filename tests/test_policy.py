@@ -594,7 +594,7 @@ class FakeCluster:
             and (kind == "Namespace" or namespace is None or o["metadata"].get("namespace") == namespace)
         ]
         if name is None:
-            return {"items": [{k: v for k, v in o.items() if k != "kind"} for o in hits]}
+            return {"kind": "List", "items": [{k: v for k, v in o.items() if k != "kind"} for o in hits]}
         if not hits:
             raise ClusterAccessError(f"{resource} {name} not found")
         return hits[0]

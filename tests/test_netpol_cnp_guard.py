@@ -175,13 +175,13 @@ def test_the_live_cluster_check_reads_clusternetworkpolicies_too() -> None:
             if plural == "clusternetworkpolicies":
                 import yaml
 
-                return {"items": [yaml.safe_load(_CNP)]}
+                return {"kind": "List", "items": [yaml.safe_load(_CNP)]}
             if plural in {"ciliumclusterwidenetworkpolicies", "globalnetworkpolicies"}:
                 raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(
                     _not_found(plural, namespace, name)
                 )
             if plural in {"adminnetworkpolicies", "baselineadminnetworkpolicies", "networkpolicies"}:
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"team": name}}}
             raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(_not_found(plural, namespace, name))
@@ -210,7 +210,7 @@ def test_a_cluster_without_the_current_api_is_not_an_error() -> None:
             }:
                 raise ClusterAccessError(_not_found(plural, namespace, name))
             if plural in {"adminnetworkpolicies", "baselineadminnetworkpolicies", "networkpolicies"}:
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {}}}
             raise ClusterAccessError(_not_found(plural, namespace, name))

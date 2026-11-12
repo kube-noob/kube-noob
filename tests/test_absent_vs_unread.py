@@ -116,7 +116,7 @@ def test_a_resource_off_the_allowlist_is_never_classified_as_absent() -> None:
 def test_a_response_without_an_items_list_is_a_failed_read_not_zero_objects(data: Any) -> None:
     with pytest.raises(ClusterAccessError, match="no items list"):
         list_items(data, "networkpolicies")
-    assert list_items({"items": []}, "networkpolicies") == []
+    assert list_items({"kind": "NetworkPolicyList", "items": []}, "networkpolicies") == []
 
 
 # --------------------------------------------------------------------------------------- policy reach --live
@@ -196,7 +196,7 @@ class Cluster:
                 qualified = "deployments.apps" if resource == "deployments" else resource
                 raise ClusterAccessError(f'Error from server (NotFound): {qualified} "{name}" not found')
             return hits[0]
-        return {"items": hits}
+        return {"kind": "List", "items": hits}
 
 
 def _reach(cluster: Cluster) -> dict[str, Any]:
@@ -208,7 +208,7 @@ def test_a_cluster_whose_api_says_calico_is_not_served_answers_as_before() -> No
     """The genuine 404 stays what it was -- no Calico, not a failed read -- and on a cluster that serves
     OVN-Kubernetes' EgressFirewall the AdminNetworkPolicy denies, as before. Without that, "no Calico" no longer
     means "so OVN-Kubernetes" (review D3): the CNI was not identified, which is not the same as not read."""
-    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP], egressfirewalls={"items": []}))
+    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP], egressfirewalls={"kind": "List", "items": []}))
     assert out["verdict"] == "denied" and out["ingress"]["tier"] == "AdminNetworkPolicy"
     assert not any("could not be read" in n for n in out.get("notes", []))
     assert any("OVN-Kubernetes" in n for n in out["notes"])

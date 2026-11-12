@@ -14,7 +14,10 @@ an f-string's literal parts are joined. It flags:
 * ``unicodedata.category`` -- under any alias -- compared with a ``C*`` or ``Z*`` category;
 * ``ord(c)`` compared with the bounds of printable ASCII (31, 32, 126, 127, 159, 160);
 * ``chr(...)`` of such a code point, or ``chr`` over a ``range`` that covers them (``map(chr, range(32))``);
-* ``.encode("ascii", "ignore" | "replace")``, which drops everything that is not ASCII.
+* ``.encode("ascii", "ignore" | "replace")``, which drops everything that is not ASCII;
+* ``string.printable`` (under any alias of the module), ``ord(c) in range(...)`` over such code points, a dict
+  comprehension over such a range (a translate table), ``bytes([27]).decode()``, ``chr(int("1b", 16))`` and
+  ``codecs.decode("\\x1b", "unicode_escape")`` (third review).
 
 What it still cannot see: a pattern assembled at run time from innocent pieces (``"\\\\x" + "1b"``), a class
 computed by a function, a table built in a loop, a codec's error handler registered by name, and a list of code
@@ -127,6 +130,23 @@ def _range_covers_bad(node: ast.AST) -> bool:
     return any(bad(o) for o in range(max(lo, 0), min(hi, 0x110000)))
 
 
+def _int_call_value(node: ast.AST) -> int | None:
+    """The value of ``int("1b", 16)`` (literal arguments only), or None."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "int" and node.args):
+        return None
+    vals = [a.value for a in node.args if isinstance(a, ast.Constant)]
+    if len(vals) != len(node.args) or not isinstance(vals[0], str):
+        return None
+    try:
+        return int(vals[0], *(int(v) for v in vals[1:2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _calls(node: ast.AST, name: str) -> bool:
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name for n in ast.walk(node))
+
+
 _STRIPS = {"replace", "strip", "lstrip", "rstrip", "removeprefix", "removesuffix", "translate", "maketrans"}
 
 
@@ -143,11 +163,13 @@ def private_lists(src: str) -> list[tuple[int, str]]:
     }
     category_names: set[str] = set()
     modules = {"unicodedata"}
+    string_names = {"string"}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "unicodedata":
             category_names |= {a.asname or a.name for a in node.names if a.name == "category"}
         if isinstance(node, ast.Import):
             modules |= {a.asname or a.name for a in node.names if a.name == "unicodedata"}
+            string_names |= {a.asname or a.name for a in node.names if a.name == "string"}
 
     def is_category(call: ast.AST) -> bool:
         if not isinstance(call, ast.Call):
@@ -173,6 +195,13 @@ def private_lists(src: str) -> list[tuple[int, str]]:
             isinstance(node, ast.Constant) and node.value == "isprintable"
         ):
             hit(node)
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr == "printable"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in string_names
+        ):
+            hit(node)  # `c in string.printable`: the printable-ASCII list under another name
         elif isinstance(node, ast.Call):
             f = node.func
             if isinstance(f, ast.Attribute) and f.attr in _STRIPS and any(_has_bad_char(a) for a in node.args):
@@ -192,6 +221,29 @@ def private_lists(src: str) -> list[tuple[int, str]]:
                     hit(node)
             elif isinstance(f, ast.Name) and f.id == "chr" and node.args and _has_bad_char(node.args[0]):
                 hit(node)
+            elif isinstance(f, ast.Name) and f.id == "chr" and node.args and bad(_int_call_value(node.args[0]) or 0x41):
+                hit(node)  # chr(int("1b", 16))
+            elif (
+                isinstance(f, ast.Attribute)
+                and f.attr == "decode"
+                and isinstance(f.value, ast.Call)
+                and isinstance(f.value.func, ast.Name)
+                and f.value.func.id in {"bytes", "bytearray"}
+                and f.value.args
+                and isinstance(f.value.args[0], ast.List | ast.Tuple)
+                and any(_has_bad_char(e) for e in f.value.args[0].elts)
+            ):
+                hit(node)  # bytes([27]).decode(): data bytes are fine, decoding them into text is a character
+            elif (
+                isinstance(f, ast.Attribute)
+                and f.attr == "decode"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and str(node.args[1].value).lower() in {"unicode_escape", "unicode-escape", "raw_unicode_escape"}
+                and (_literal_text(node.args[0]) is not None)
+                and any(bad(ord(c)) for c in decode(_literal_text(node.args[0]) or ""))
+            ):
+                hit(node)  # codecs.decode("\\x1b", "unicode_escape")
             elif isinstance(f, ast.Name) and f.id == "map" and len(node.args) == 2:
                 fn, it = node.args
                 if isinstance(fn, ast.Name) and fn.id == "chr" and _range_covers_bad(it):
@@ -214,8 +266,8 @@ def private_lists(src: str) -> list[tuple[int, str]]:
             uses_chr = any(
                 isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "chr" for n in ast.walk(node)
             )
-            if uses_chr and any(_range_covers_bad(g.iter) for g in node.generators):
-                hit(node)
+            if (uses_chr or isinstance(node, ast.DictComp)) and any(_range_covers_bad(g.iter) for g in node.generators):
+                hit(node)  # a table over range(32), with or without chr
         elif isinstance(node, ast.Compare):
             sides = [node.left, *node.comparators]
             if any(is_category(s) or (isinstance(s, ast.Subscript) and is_category(s.value)) for s in sides):
@@ -228,4 +280,10 @@ def private_lists(src: str) -> list[tuple[int, str]]:
                 isinstance(s, ast.Call) and isinstance(s.func, ast.Name) and s.func.id == "ord" for s in sides
             ) and any(isinstance(s, ast.Constant) and s.value in {31, 32, 126, 127, 159, 160} for s in sides):
                 hit(node)
+            elif (
+                any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
+                and _calls(node.left, "ord")
+                and any(_range_covers_bad(c) for c in node.comparators)
+            ):
+                hit(node)  # ord(c) not in range(0x7f, 0xa0)
     return found

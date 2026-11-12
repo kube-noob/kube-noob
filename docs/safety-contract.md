@@ -274,7 +274,11 @@ Where it is applied (found in the code):
 - `kube_noob/cli.py` `_VisibleStream.__init__` calls `sanitize.CommandGuard`
 - `kube_noob/cli.py` `_VisibleStream.workflow_command` calls `sanitize.visible_lines`
 - `kube_noob/cli.py` `_VisibleStream.write` calls `sanitize.visible_lines`
+- `kube_noob/cli.py` `_dispatch` calls `sanitize.defuse_workflow_commands`
+- `kube_noob/cli.py` `_memory` calls `sanitize.defuse_workflow_commands`
+- `kube_noob/cli.py` `_posture_drift` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/cli.py` `_tprint` calls `sanitize.visible_lines`
+- `kube_noob/cli.py` `_unexpected` calls `sanitize.one_line`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.visible`
 - `kube_noob/code/sarif.py` `_s` calls `sanitize.visible_squeezed`
@@ -285,10 +289,14 @@ Where it is applied (found in the code):
 - `kube_noob/debug/policy.py` `explain` calls `sanitize.visible`
 - `kube_noob/drift.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/evals/problems.py` `parse` calls `sanitize.json_nesting_ok`
+- `kube_noob/gate.py` `_annotation_data` calls `sanitize.defuse_service_messages`
+- `kube_noob/gate.py` `_annotation_data` calls `sanitize.visible_lines`
 - `kube_noob/gate.py` `_cell` calls `sanitize.visible_squeezed`
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/gate.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
+- `kube_noob/generate/policies.py` `Generated.yaml` calls `sanitize.defuse_workflow_commands`
+- `kube_noob/generate/policies.py` `Generated.yaml` calls `sanitize.visible`
 - `kube_noob/insight.py` `_json` calls `sanitize.json_nesting_ok`
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`

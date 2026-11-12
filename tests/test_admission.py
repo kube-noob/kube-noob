@@ -290,7 +290,7 @@ class _Backend:
             }
         if resource == "networkpolicies":
             raise PermissionError("forbidden")
-        return {"items": []}
+        return {"kind": "List", "items": []}
 
 
 def test_lookups_fill_cross_object_rules_without_blocking() -> None:

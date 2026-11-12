@@ -498,11 +498,16 @@ reverse, but an answer that holds under both still holds. A Calico version too c
 which does not say whether the cluster is on 3.31 or 3.32) is treated the same way. With `--live` the flag is
 usually unnecessary: Calico publishes its version in `clusterinformations.crd.projectcalico.org` and kube-noob
 reads it, so the answer uses the cluster's real CNI rather than an assumption. A cluster without that CRD is not
-running Calico and behaves as before -- recognised only when the API says it does not serve the resource, not
-from any error that happens to say "not found". A read that failed (forbidden, an expired login, an auth plugin
+running Calico -- recognised only when the API says it does not serve the resource, not from any error that happens
+to say "not found" -- and kube-noob then reads it as Cilium when `ciliumclusterwidenetworkpolicies.cilium.io` is
+served and as OVN-Kubernetes when `egressfirewalls.k8s.ovn.org` is; otherwise the CNI was not identified and an
+answer the admin tier decides is `undetermined`, saying so. A read that failed (forbidden, an expired login, an auth plugin
 missing from PATH) says so and is treated like a CNI nobody documents: the admin tiers are evaluated both ways and
 the verdict is `undetermined` only where the two readings disagree (G279). An explicit `--cni` always wins, because
-a caller who passes it knows something a forbidden read cannot see.
+a caller who passes it knows something a forbidden read cannot see. Offline (`-f`) without `--cni`, the admin
+tiers are evaluated with OVN-Kubernetes semantics, as they always were, and every such answer now says so in the
+text and in the JSON `notes`: "admin-tier policies evaluated with OVN-Kubernetes semantics; pass --cni <name> for
+your CNI".
 
 `kube-noob audit --cni calico:3.32` turns the same fact into a finding a CI gate fails on: **KN-N014** reports an
 `AdminNetworkPolicy` or `BaselineAdminNetworkPolicy` that this CNI no longer enforces, at HIGH, because a policy

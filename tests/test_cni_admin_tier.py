@@ -288,7 +288,7 @@ def test_a_failed_read_of_a_tier_the_cni_ignores_does_not_withhold_the_verdict()
                 from kube_noob.debug.cluster import ALLOWED_RESOURCES
 
                 raise ClusterAccessError(f"Not found: GET {ALLOWED_RESOURCES[plural].path(namespace, name)}")
-            return {"items": []}
+            return {"kind": "List", "items": []}
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders", "calico:3.32")
     assert "adminnetworkpolicies" in reads, "the tier is read, so an inert policy can be reported as inert"

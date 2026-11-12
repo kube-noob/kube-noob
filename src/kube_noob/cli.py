@@ -6,6 +6,7 @@ Exit codes: 0 ok | 1 findings at/above --fail-on | 2 usage/config error | 3 clar
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -272,11 +273,12 @@ def _write_html(path: str | None, report: dict[str, Any]) -> None:
 
 #: In HTML, "##[" as "##&#91;" and a line-leading "::" as "&#58;:" render the same and are no workflow command
 #: in a log that prints the file (G279). Entities do not decode inside <style>, which holds only kube-noob's CSS.
-_HTML_COMMAND = re.compile(r"##\[|^([^\S\n]*):(?=:)", re.MULTILINE)
+_HTML_COMMAND = re.compile(r"(##[A-Za-z]*)\[|^([^\S\n]*):(?=:)", re.MULTILINE)
 
 
 def _html_without_commands(text: str) -> str:
-    return _HTML_COMMAND.sub(lambda m: "##&#91;" if m.group(0) == "##[" else f"{m.group(1)}&#58;", text)
+    """``##[``, ``##vso[``, ``##teamcity[`` as ``...&#91;`` and a line-leading ``::`` as ``&#58;:``."""
+    return _HTML_COMMAND.sub(lambda m: f"{m.group(1)}&#91;" if m.group(1) else f"{m.group(2)}&#58;", text)
 
 
 def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
@@ -942,8 +944,8 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out = admission.review_bytes(_read(a.file).encode("utf-8"), cfg)
         if a.format == "yaml":
             _emit(out, fmt)
-        else:  # the AdmissionReview the API server would receive
-            print(json.dumps(out, indent=1))
+        else:  # the AdmissionReview the API server would receive: a document, so past the text boundary (G279)
+            _raw_stdout().write(json_document(out, indent=1) + "\n")
         return 0 if out["response"]["allowed"] else 1
     context = None
     if ad.lookups:
@@ -2206,6 +2208,9 @@ class _VisibleStream:
     def workflow_command(self, line: str) -> None:
         """One workflow command kube-noob wrote on purpose, on a line of its own, past the guard (not past
         ``visible_lines``)."""
+        held = self._guard.flush()
+        if held:
+            self._inner.write(held)
         if not self._guard.at_line_start:
             self._inner.write("\n")
         self._inner.write(sanitize.visible_lines(line, mark=True) + "\n")
@@ -2216,26 +2221,60 @@ class _VisibleStream:
             self.write(line)
 
     def flush(self) -> None:
+        held = self._guard.flush()  # a line-leading colon held back until the next character was known
+        if held:
+            self._inner.write(held)
         self._inner.flush()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
 
-#: Commands that run until stopped and write logs, not answers: their streams are left alone.
-_UNWRAPPED = {("serve",), ("mcp",), ("watch",), ("admission", "serve")}
+#: Servers whose stdout is a protocol stream or a server log, not an answer: their streams are left alone, and
+#: each message is made safe where it is built. `watch` prints text views, so it is wrapped (G279, third review).
+_UNWRAPPED = {("serve",), ("mcp",), ("admission", "serve")}
+
+
+def _unexpected(exc: BaseException) -> int:
+    """An error kube-noob did not anticipate: one cleaned line on stderr and exit 4 (a kube-noob error, AGENTS.md),
+    never a raw traceback a pipeline reads as exit 1 (G279, third review). The traceback is printed only with
+    KUBE_NOOB_DEBUG set, and through the same boundary."""
+    import traceback
+
+    if os.environ.get("KUBE_NOOB_DEBUG"):
+        print("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+    msg = sanitize.one_line(str(exc))[:500]
+    print(
+        f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)",
+        file=sys.stderr,
+    )
+    return 4
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
     if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
-        return _main(a)
+        try:
+            return _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            out, err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+            try:
+                return _unexpected(exc)
+            finally:
+                sys.stderr.flush()
+                sys.stdout, sys.stderr = out, err
     out, err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
     try:
         return _main(a)
+    except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+        return _unexpected(exc)
     finally:
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()  # writes a colon held back at the start of a line
         sys.stdout, sys.stderr = out, err
 
 
@@ -2711,8 +2750,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         )
         bundle_dir = Path(a.out)
         bundle_dir.mkdir(parents=True, exist_ok=True)
-        (bundle_dir / "bundle.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-        (bundle_dir / "bundle.md").write_text(bundle_markdown(result), encoding="utf-8")
+        (bundle_dir / "bundle.json").write_text(json_document(result, indent=2, default=str), encoding="utf-8")
+        (bundle_dir / "bundle.md").write_text(
+            sanitize.defuse_workflow_commands(bundle_markdown(result)), encoding="utf-8"
+        )
         _emit(
             {"bundle": str(bundle_dir), "files": ["bundle.md", "bundle.json"], "diagnoses": len(result["diagnoses"])},
             fmt,
@@ -2882,8 +2923,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.out:
             out_dir = Path(a.out)
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "report.md").write_text(md, encoding="utf-8")
-            (out_dir / "report.json").write_text(json.dumps(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
+            (out_dir / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (out_dir / "report.json").write_text(json_document(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
         if a.format == "text":
             _tprint(md.rstrip())
         else:
@@ -3317,14 +3358,14 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.posture_cmd == "diff":
             rep = drift.diff(drift.load(Path(a.old)), drift.load(Path(a.new)))
             if a.markdown:
-                Path(a.markdown).write_text(drift.markdown(rep), encoding="utf-8")
+                Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
             return 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
-            out.write_text(json.dumps(snap, sort_keys=True), encoding="utf-8")
+            out.write_text(json_document(snap, sort_keys=True), encoding="utf-8")
             out.chmod(0o600)
             summary = {"output": str(out), "objects": len(snap["objects"]), "findings": len(snap["findings"])}
             if a.format == "text":
@@ -3697,8 +3738,8 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
         if a.out:
             target = Path(a.out)
             target.mkdir(parents=True, exist_ok=True)
-            (target / "report.md").write_text(md, encoding="utf-8")
-            (target / "report.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+            (target / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (target / "report.json").write_text(json_document(out, indent=2) + "\n", encoding="utf-8")
         if a.format == "text":
             print(md, end="")
         else:
@@ -3879,7 +3920,7 @@ def _corpus(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out_dir = s.data_dir / "known_issues"
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "openshift-release-notes.json"
-        target.write_text(json.dumps(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
+        target.write_text(json_document(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
         _emit({"file": str(target), "issues": len(records), "commits": commits}, fmt)
         return 0
     if cc == "build":
@@ -4109,7 +4150,7 @@ def _train(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
     rep = run_benchmark(s, a.tasks.split(",") if a.tasks else None, use_tools=not a.no_tools)
     if a.out:
-        Path(a.out).write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
+        Path(a.out).write_text(json_document(rep, indent=2, default=str), encoding="utf-8")
     _emit({k: v for k, v in rep.items() if k != "results"} if a.out else rep, fmt)
     return 0
 

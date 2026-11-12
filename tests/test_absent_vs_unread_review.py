@@ -142,7 +142,7 @@ class Cluster:
         if b is not None:
             return copy.deepcopy(b)  # type: ignore[no-any-return]
         if resource in self.lists and name is None:
-            return {"items": copy.deepcopy(self.lists[resource])}
+            return {"kind": "List", "items": copy.deepcopy(self.lists[resource])}
         kind = KINDS.get(resource)
         if kind is None:
             raise ClusterAccessError(_not_served(resource))
@@ -158,7 +158,7 @@ class Cluster:
                 q = QUALIFIED.get(resource, resource)
                 raise ClusterAccessError(f'Error from server (NotFound): {q} "{name}" not found')
             return copy.deepcopy(hits[0])
-        return {"items": copy.deepcopy(hits)}
+        return {"kind": "List", "items": copy.deepcopy(hits)}
 
 
 def _reach(cluster: Any, src: str = "monitoring/prometheus", dst: str = "shop/orders") -> dict[str, Any]:
@@ -707,7 +707,7 @@ def test_a_failed_admission_refresh_keeps_the_last_good_objects_and_marks_them_s
         def get(self, resource: str, namespace: str | None = None, **_: Any) -> dict[str, Any]:
             if self.bad and resource != "storageclasses":
                 return {"kind": "List"}
-            return {"items": [{"metadata": {"name": f"{resource}-1", "namespace": namespace}}]}
+            return {"kind": "List", "items": [{"metadata": {"name": f"{resource}-1", "namespace": namespace}}]}
 
     b = Backend()
     lookups = Lookups(b, sleep=lambda _s: None)

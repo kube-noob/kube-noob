@@ -693,9 +693,10 @@ def test_every_command_writes_through_the_boundary(
     leaf: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Whatever a command writes, to stdout or stderr, reaches the reader through `sanitize.visible_lines` --
-    except the four long-running commands in `cli._UNWRAPPED` (serve, mcp, watch, admission serve), which are not
-    wrapped at all (review D6): their stdout is a protocol stream (MCP JSON-RPC) or a log, each message already
-    made safe where it is built, and a line filter in front of a protocol stream could only corrupt it."""
+    except the three servers in `cli._UNWRAPPED` (serve, mcp, admission serve), which are not wrapped at all
+    (review D6): their stdout is a protocol stream (MCP JSON-RPC) or a server log, each message already made safe
+    where it is built, and a line filter in front of a protocol stream could only corrupt it. `watch` prints text
+    views and is wrapped (third review)."""
     import argparse
 
     from kube_noob import cli
@@ -721,10 +722,10 @@ def test_every_command_writes_through_the_boundary(
     assert _clean(out.out + out.err) and " ".join(leaf) in out.out
 
 
-def test_only_the_four_long_running_commands_are_left_unwrapped() -> None:
+def test_only_the_three_servers_are_left_unwrapped() -> None:
     from kube_noob import cli
 
-    assert {("serve",), ("mcp",), ("watch",), ("admission", "serve")} == cli._UNWRAPPED
+    assert {("serve",), ("mcp",), ("admission", "serve")} == cli._UNWRAPPED
 
 
 def test_the_yaml_view_carries_no_format_characters_and_json_escapes_them(capsys: pytest.CaptureFixture[str]) -> None:

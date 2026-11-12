@@ -9,6 +9,7 @@ Every parsed document keeps a map ``path tuple -> 1-based line`` so findings can
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -169,17 +170,30 @@ def _flatten_lists(docs: list[Document]) -> list[Document]:
     return out
 
 
+#: A ``::`` that a line of the dumped string could start with: at its start; after white space (a block
+#: scalar's line, or where the emitter folds a plain or single-quoted scalar); or after any character the
+#: emitter may ESCAPE in a double-quoted scalar (``"``, ``\``, a control, anything outside printable ASCII),
+#: because PyYAML also folds right after an escape -- the end-to-end fuzz found ``::set-output`` starting a
+#: continuation line that way. ``[::]:80``, ``fe80::1`` and ``std::io`` cannot start a line and keep their
+#: style (G279, third review).
+_LINE_COLONS = re.compile(r'(?:^|[^\x21-\x7e]|["\\])::')
+_SERVICE = re.compile(r"(##[A-Za-z]*)\[")
+
+
 def _command_like(text: str) -> bool:
-    """Whether a string could put a GitHub workflow command in a log (``##[`` anywhere, or ``::`` that a folded or
-    block line could start with) -- see ``sanitize.CommandGuard``."""
-    return "##[" in text or "::" in text
+    """Whether a string could put a CI workflow command in a log: a ``##[``, ``##vso[`` or ``##teamcity[``
+    anywhere, or a ``::`` a line could start with -- see ``sanitize.CommandGuard``."""
+    if "::" in text and _LINE_COLONS.search(text):
+        return True
+    return "##" in text and _SERVICE.search(text) is not None
 
 
 def json_document(obj: Any, **kwargs: Any) -> str:
-    """``json.dumps``, with ``##[`` written ``##\\u005b``: the same JSON, and no line a GitHub runner reads as a
-    legacy workflow command (G279). ``#`` occurs only inside JSON strings, so the replacement never touches the
-    syntax, and a pretty-printed line never starts with ``::``."""
-    return json.dumps(obj, **kwargs).replace("##[", "##\\u005b")
+    """``json.dumps``, with the bracket of ``##[``, ``##vso[`` and ``##teamcity[`` written ``\\u005b``: the same
+    JSON, and no line a CI runner reads as a service message (G279). ``#`` occurs only inside JSON strings, so the
+    replacement never touches the syntax, and a pretty-printed line never starts with ``::``."""
+    text = json.dumps(obj, **kwargs)
+    return _SERVICE.sub(r"\1\\u005b", text) if "##" in text else text
 
 
 class TerminalSafeDumper(yaml.SafeDumper):
@@ -227,7 +241,7 @@ class TerminalSafeDumper(yaml.SafeDumper):
                 out.append(f"\\u{o:04X}")
             else:
                 out.append(f"\\U{o:08X}")
-        data = "".join(out).replace("##[", "##\\x5B")
+        data = _SERVICE.sub(r"\1\\x5B", "".join(out))
         self.write_indicator('"', True)
         self.column += len(data)
         self.stream.write(data.encode(self.encoding) if self.encoding else data)

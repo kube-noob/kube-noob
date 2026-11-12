@@ -168,6 +168,7 @@ def _fake_cluster(tmp_path: Path) -> Path:
     }
     deploy = {"metadata": {"name": "web"}, "spec": {"selector": {"matchLabels": {"app": "web"}}}, "status": {}}
     events = {
+        "kind": "List",
         "items": [
             {
                 "type": "Warning",
@@ -186,7 +187,7 @@ def _fake_cluster(tmp_path: Path) -> Path:
                 "involvedObject": {"kind": "Pod", "name": "web-7d9c6b9f5-x2k8p"},
                 "lastTimestamp": "2026-10-28T10:00:01Z",
             },
-        ]
+        ],
     }
     sa = {"metadata": {"name": "web"}, "imagePullSecrets": [{"name": "regcred"}]}
     script.write_text(f"""#!/usr/bin/env python3
@@ -206,7 +207,7 @@ elif args[1] == "serviceaccounts":
 elif args[1] == "secrets":
     raise SystemExit("secrets must never be read")
 else:
-    print({json.dumps({"items": [pod]})!r})
+    print({json.dumps({"kind": "List", "items": [pod]})!r})
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return log

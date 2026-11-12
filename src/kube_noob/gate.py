@@ -783,10 +783,13 @@ def _cell(text: Any, limit: int = 300) -> str:
 
 
 def _annotation_data(text: Any) -> str:
-    """Text for a workflow command, escaped per the toolkit's rules (``%``, CR, LF), with ``##[`` written ``## [``
-    so no legacy command rides inside it (G279)."""
-    out = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    return out.replace("##[", "## [")
+    """Text for a workflow command: cleaned first (``sanitize.visible_lines``, so what the runner shows is what
+    the escaping meant -- escaping first made ``%`` into ``%25`` and the cleaner then took ``ESC %2`` for an escape
+    sequence), then escaped per the toolkit's rules (``%``, CR, LF), with every ``##...[`` service message broken by
+    the same marker the output boundary uses (G279)."""
+    out = sanitize.visible_lines(str(text), mark=True)
+    out = out.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return sanitize.defuse_service_messages(out)
 
 
 def _annotation(level: str, finding: dict[str, Any]) -> str:

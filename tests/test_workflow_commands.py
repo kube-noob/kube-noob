@@ -121,8 +121,9 @@ def test_the_guard_works_across_writes() -> None:
 def test_the_guard_changes_nothing_else() -> None:
     text = "[HIGH] KN-S026 a: b :: c ## [x] #[y] url http://a::b/ fe80::1\n  - item: ok\n"
     assert sanitize.CommandGuard().feed(text) == text
-    assert sanitize.CommandGuard().feed("::error::x") == ": :error::x"
-    assert sanitize.CommandGuard().feed("a##[b]") == "a## [b]"
+    # the marker names the character broken (third review: `: :` and `## [` read as text with a space in it)
+    assert sanitize.CommandGuard().feed("::error::x") == "<U+003A>:error::x"
+    assert sanitize.CommandGuard().feed("a##[b]") == "a##<U+005B>b]"
 
 
 def _legacy_cm(tmp_path: Path) -> Path:

@@ -457,7 +457,7 @@ def list_items(data: Any, resource: str, namespace: str | None = None) -> list[d
     another kind, an item without ``metadata.name``, a namespaced item without a namespace or in another namespace
     than the one asked for, or a page with ``metadata.continue`` set (the rest was never read). Each of these was
     read as "nothing there", or as a list missing exactly the item that decided the answer. A response with no
-    ``kind`` at all is accepted: kubectl and the API server always send one, and test doubles often do not."""
+    ``kind`` at all is refused too: kubectl, oc and the API server always send one."""
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
         raise ClusterAccessError(f"{resource}: the response held no items list")
@@ -470,10 +470,12 @@ def list_items(data: Any, resource: str, namespace: str | None = None) -> list[d
     except ClusterAccessError:
         plural, namespaced = resource, False
     kind = data.get("kind")
-    if (
-        kind is not None
-        and kind != "List"
-        and not (isinstance(kind, str) and kind.endswith("List") and _names_kind(kind[: -len("List")], plural))
+    if kind is None:
+        # kubectl, oc and the API server always name a list's kind; an answer without one came from somewhere else
+        # (a misrouted endpoint, a proxy's own JSON), and `{"items": []}` from it is not "none exist" (third review).
+        raise ClusterAccessError(f"{resource}: the response has no kind, so it is not a list of {plural}")
+    if kind != "List" and not (
+        isinstance(kind, str) and kind.endswith("List") and _names_kind(kind[: -len("List")], plural)
     ):
         raise ClusterAccessError(f"{resource}: the response was a {str(kind)[:60]!r}, not a list of {plural}")
     meta = data.get("metadata")
