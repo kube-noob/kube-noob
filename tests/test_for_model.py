@@ -39,10 +39,10 @@ def _run(argv: list[str]) -> tuple[int, str]:
 
 
 CASES = [
-    ["audit", "-f", str(FX / "hostile-pod.yaml"), "--format", "json"],
-    ["insight", "-f", str(FX / "hostile-events.txt"), "--format", "json"],
-    ["diagnose", "-f", str(FX / "hostile-events.txt"), "--format", "json"],
-    ["policy", "explain", "-f", str(FX / "hostile-events.txt"), "--format", "json"],
+    ["audit", "-f", str(FX / "injection-pod.yaml"), "--format", "json"],
+    ["insight", "-f", str(FX / "injection-events.txt"), "--format", "json"],
+    ["diagnose", "-f", str(FX / "injection-events.txt"), "--format", "json"],
+    ["policy", "explain", "-f", str(FX / "injection-events.txt"), "--format", "json"],
 ]
 
 
