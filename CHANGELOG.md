@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **A rule about a kind that was not in the input counted as evaluated and clean (G281).** The coverage record
+  -- `controlSummary` in `audit`, `audit_manifests` and the gate, `coverage` in a posture snapshot, the KSI
+  crosswalk's columns -- recorded a rule as evaluated when its check ran, whatever it ran over. `kube-noob audit
+  -f examples/kube-noob-exceptions.yaml` therefore recorded 92 of 93 rules as evaluated and 91 as checked-and-clean
+  on a file holding one ExceptionList: no Pod was "no privileged container", no Role was "no wildcard grant", no
+  Service was "no NodePort", and the OSCAL document built from it reported those controls `satisfied`. Five rules
+  gated on the platform did the same: an OpenShift-only rule read as checked-and-clean on every Kubernetes bundle.
+  This is the absence-read-as-pass the project exists to refuse, in the record that is supposed to be the
+  refusal.
+
+  The engine now records what each rule asked for (`by_kind`, `workloads`) and whether any of it was there. A rule
+  none of whose subjects were in the input is `notEvaluated` with the reason `no Service in the input` (`no pod
+  spec in the input (no Pod, Deployment, ...)` for the workload rules; `does not apply on kubernetes: ...` for a
+  platform gate), and every rule that declined now carries its own reason (`part of a namespace was passed, so
+  the namespace's NetworkPolicies were not passed`; `no registry allowlist is configured`). The kinds of one
+  `by_kind` call are one subject, so a rule that takes any replicated workload kind is evaluated when one is
+  there; a rule that reads several subjects runs on the ones present and names the rest under
+  `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The record carries the reasons in every embedding:
+  `controlSummary.rulesNotEvaluated` and per-control `notEvaluatedRules` in the audit (JSON, YAML, and grouped by
+  reason in the text view, with the count the JSON has), the MCP `audit_manifests` and `fedramp_ksi` results, the
+  gate's JSON, the OSCAL selection remarks, a posture snapshot's `coverage.notEvaluated` (with "could not be read
+  from the cluster" added when the kind is in `notRead`), and the posture report's `controlStanding` in JSON,
+  Markdown and HTML. A snapshot from 0.9.2 carries no reasons and keeps its older shape; a diff between one and a
+  new snapshot reports nothing new, fixed or regressed, because findings did not move. The exit code is unchanged:
+  an absent kind is not a finding and not unreadable evidence.
+
+  Measured on `examples/`, rules evaluated before and after: `insecure-deployment.yaml` and `exercise-answer.yaml`
+  92 to 57 (78 to 43 clean; 31 rules now name the kind they waited for, 10 ran without one of theirs);
+  `netpol-shop.yaml` 92 to 57 (76 to 41 clean); `netpol-admin-tiers.yaml` 91 to 57 (75 to 41 clean);
+  `kube-noob-exceptions.yaml`, `blueprint.yaml` and `problems.yaml` 92 to 9 (91 to 8 clean: the per-document
+  validations are the only rules with a subject there). G210's boundary "a bundle with no admin policy is
+  evaluated and clean" is reversed: nothing to decide is not a failure to decide, and it is not a pass either.
+
 - **Which operators are installed was a question kube-noob could only half answer, and an input it had not fully read would have answered it anyway (E2, G270).** The must-gather analyser kept a name, a namespace and a phase per ClusterServiceVersion and folded every CSV of the same name into one (that summary, `cluster.operators` in `must-gather analyze`, is unchanged), and there was no way to ask a cluster or a set of manifests at all. `kube-noob operators inventory` (`-f`, `--must-gather`, `--live`), the `operator_inventory` and `cluster_operator_inventory` tools, and `operatorInventory` in `must-gather analyze` (text and JSON) and in `analyze_must_gather` now say, per operator: package, version and where the version came from (`spec.version`, the CSV's `olm.package` property, or `derived-from-name`, labelled), catalog, channel, approval mode, namespace, the namespaces it serves, phase (unknown when absent or not one OLM defines, and counted as not Succeeded), a pending upgrade and a Manual approval waiting.
 
   An adversarial review of the first version found 21 ways it answered `listed`, complete or installed for an input it had not fully read, and all are fixed. A Subscription is joined on `status.installedCSV` alone, to a CSV that is an original in its own namespace, so a copy never stands in for a missing install, an incoming `currentCSV` is never reported as the installed version, and two Subscriptions naming one CSV give one operator; a Subscription with no status is `status-not-read`, not "not installed". Copies (`olm.copiedFrom`, reason `Copied`) fold into their original only when their version and phase match it. The verdict is `listed` only when nothing was skipped: a file in a directory that could not be parsed, a must-gather file the reader skipped (a link, a file over its size cap), an OLM file outside the layout `oc adm inspect` writes, an empty file, a file holding an error or a `Status`, a list item that is not an object of its kind, objects past the read cap, an object of another API group (an ACM or Knative `Subscription`, now ignored), duplicates that disagree, and a namespace with no Subscription in a file set each make it `partial` and are named. `no-olm` needs a 404 in the exact words the backends write for a missing resource type on both reads -- an auth plugin "not found" used to read as "not an OLM cluster" -- and a live response with no `items` list is a failed read. Operator CSVs named like `secrets-store-*` were dropped by the must-gather reader as Secret data; files in the OLM layout are no longer subject to that name rule. `--require-complete` exits 5 on anything but `listed` or `no-olm`. The output is the same bytes for the same objects in any order. Shown strings lose every non-printing character by Unicode category through `sanitize.visible`, which the must-gather analysers now use too. The count of dropped Secret objects is `droppedUnread`.

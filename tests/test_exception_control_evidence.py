@@ -80,7 +80,16 @@ def test_a_run_with_no_exceptions_is_unchanged() -> None:
     before = _audit()
     assert not any("excepted" in c for c in before["controlSummary"]["controls"])
     assert "excepted" not in before["controlSummary"]["note"]
-    assert set(before["controlSummary"]) == {"catalog", "controls", "note"}
+    # `rulesNotEvaluated` and `rulesEvaluatedWithout` are the coverage record's own (G281), present with or
+    # without an exceptions file; what this guards is that the exceptions path adds nothing of its own.
+    assert set(before["controlSummary"]) == {
+        "catalog",
+        "controls",
+        "note",
+        "rulesNotEvaluated",
+        "rulesEvaluatedWithout",
+    }
+    assert set(_audit(EXCEPTION)["controlSummary"]) == set(before["controlSummary"])
 
 
 def test_open_findings_still_outrank_excepted_ones_in_the_order() -> None:

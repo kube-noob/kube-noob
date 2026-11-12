@@ -16,8 +16,10 @@ from typing import Any
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
 from kube_noob.audit.podspec import (
+    EMBEDDED_POD_SPEC_PATHS,
     LONG_RUNNING_EMBEDDED_KINDS,
     LONG_RUNNING_KINDS,
+    POD_SPEC_PATHS,
     REPLICATED_KINDS,
     ContainerRef,
     PodTemplate,
@@ -52,6 +54,29 @@ from kube_noob.yamlio import Document, PathT, fmt_path, get_path, locator
 #: named on the command line does not enforce them.
 ADMIN_TIER_KINDS = (ANP_KIND, BANP_KIND)
 
+#: The subject `AuditContext.workloads` stands for in the coverage record: not one kind but every kind that
+#: carries a pod spec. Not a Kubernetes kind name, so it can never collide with one a rule asks `by_kind` for.
+WORKLOAD_SUBJECT = "pod spec"
+WORKLOAD_KINDS: tuple[str, ...] = (*POD_SPEC_PATHS, *EMBEDDED_POD_SPEC_PATHS)
+
+
+def _join_or(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
+
+def subject_reason(absent: list[str]) -> str:
+    """The record's reason for a rule none of whose subjects were in the input: "no Service in the input".
+
+    ``absent`` is one label per subject the rule asked for, as `by_kind` wrote it: "Role or ClusterRole" for
+    one call that takes either. Built from the kinds the RULE asked for, never from what the input called
+    itself, so an input-derived string cannot forge a reason (class 7). The pod-spec subject spells out the
+    kinds it stands for, because "no pod spec" alone would send a reader looking for a kind of that name.
+    """
+    why = "no " + " and no ".join(absent) + " in the input"
+    if WORKLOAD_SUBJECT in absent:
+        why += f" (no {_join_or(list(WORKLOAD_KINDS))})"
+    return why
+
 
 @dataclass
 class AuditContext:
@@ -77,9 +102,31 @@ class AuditContext:
     # registries an organisation approved, so KN-S036 declines without it rather than passing every image.
     allowed_registries: tuple[str, ...] = ()
     undecided: set[str] = field(default_factory=set)
+    #: Why each rule in `undecided` declined, in the rule's own words, for the coverage record (G281).
+    declined: dict[str, str] = field(default_factory=dict)
+    #: Rules that asked for kinds and found none of them: nothing to evaluate, so not evaluated, and not clean.
+    #: The value is the reason the record shows: "no Service in the input". Filled by `run_rules` from what the
+    #: rule asked `by_kind` and `workloads` for, so no rule has to declare its subjects twice (G281).
+    no_subject: dict[str, str] = field(default_factory=dict)
+    #: Rules that ran, with the subject kinds they asked for and did not get: "KN-S014 without ServiceAccount".
+    absent_subjects: dict[str, list[str]] = field(default_factory=dict)
+    # The rule whose check is running, and what it has asked for so far. `run_rules` owns both.
+    _current: str | None = field(default=None, repr=False)
+    _asked: dict[str, bool] = field(default_factory=dict, repr=False)
+    _has_workloads: bool | None = field(default=None, repr=False)
 
-    def cannot_decide(self, rule_id: str) -> None:
+    def cannot_decide(self, rule_id: str, why: str = "") -> None:
         self.undecided.add(rule_id)
+        self.declined[rule_id] = why or "the rule declined to decide on this input (see the assumptions)"
+
+    def not_applicable(self, rule_id: str, why: str) -> None:
+        """The rule does not apply to this platform or version, so it is not evaluated here: not clean (G281).
+
+        A rule that returned on its platform guard was recorded as evaluated, and an OpenShift-only rule then
+        read as checked-and-clean on every Kubernetes bundle.
+        """
+        self.undecided.add(rule_id)
+        self.declined[rule_id] = f"does not apply on {self.platform}: {why}"
 
     @property
     def is_openshift(self) -> bool:
@@ -90,7 +137,15 @@ class AuditContext:
         return self.platform in ROSA_FAMILY
 
     def by_kind(self, *kinds: str) -> list[Document]:
-        return [d for d in self.docs if d.kind in kinds]
+        found = [d for d in self.docs if d.kind in kinds]
+        if self._current is not None:
+            # The kinds of ONE call are one subject: a rule that asks for every replicated workload kind at
+            # once is evaluated when any of them is there, and "without StatefulSet" would be noise. Kinds
+            # asked for in separate calls are separate subjects, and a missing one is named.
+            label = _join_or(list(kinds))
+            # True once any call found the subject; a second call for a kind that is there does not unfind it.
+            self._asked[label] = self._asked.get(label, False) or bool(found)
+        return found
 
     def workloads(self) -> Iterator[tuple[Document, PodTemplate]]:
         """Every pod spec in the bundle, including the ones embedded in an operator's own kind.
@@ -99,8 +154,41 @@ class AuditContext:
         InferenceService up to three components. Before this read them, every pod-level rule returned nothing
         for those kinds and the bundle came back clean (G229).
         """
+        if self._current is not None:
+            if self._has_workloads is None:
+                self._has_workloads = any(pod_templates(d) for d in self.docs)
+            self._asked[WORKLOAD_SUBJECT] = self._asked.get(WORKLOAD_SUBJECT, False) or self._has_workloads
+        return self._workloads()
+
+    def _workloads(self) -> Iterator[tuple[Document, PodTemplate]]:
         for d in self.docs:
             yield from ((d, pt) for pt in pod_templates(d))
+
+    def begin_rule(self, rule_id: str) -> None:
+        self._current, self._asked = rule_id, {}
+
+    def end_rule(self, rule_id: str, *, fired: bool = False) -> str | None:
+        """Record what the rule asked for; the reason it had no subject at all, or None when it had one.
+
+        A rule that asked for nothing (the per-document validations read every object) evaluated every
+        document there is. A rule that asked and found none of it did not evaluate anything: no Pod in the
+        input is not "pod security clean" (G281). A rule that found some of what it asked for ran on those,
+        and the kinds it did not get are recorded beside it rather than silently folded into "evaluated".
+        A rule that reported a finding looked at something, whatever it asked for, and is evaluated.
+        """
+        asked, self._current, self._asked = self._asked, None, {}
+        absent = [k for k in asked if not asked[k]]
+        if not asked or not absent:
+            return None
+        if len(absent) == len(asked) and not fired:
+            why = subject_reason(absent)
+            self.no_subject[rule_id] = why
+            # The guard that declined and the subject that is missing are one fact: there was nothing to decide.
+            self.undecided.discard(rule_id)
+            self.declined.pop(rule_id, None)
+            return why
+        self.absent_subjects[rule_id] = sorted(absent)
+        return None
 
     def ns(self, doc: Document) -> str:
         return doc.namespace or "<default>"
@@ -490,6 +578,7 @@ def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _v003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.is_openshift:
+        ctx.not_applicable(r.rule_id, "every OpenShift-only kind is served on this platform")
         return
     for d in ctx.docs:
         g = api_group(d.api_version)
@@ -584,8 +673,12 @@ def _v006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _v008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_openshift:
+        ctx.not_applicable(r.rule_id, "DeploymentConfig is an OpenShift kind")
         return
     if ctx.platform_version and parse_minor(ctx.platform_version) < (4, 14):
+        ctx.not_applicable(
+            r.rule_id, f"DeploymentConfig is deprecated from OpenShift 4.14; target is {ctx.platform_version}"
+        )
         return
     for d in ctx.by_kind("DeploymentConfig"):
         yield r.finding(
@@ -673,7 +766,11 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             # A component whose pod labels an operator merges in from outside this input might well be selected
             # by this Service. Reporting "no endpoints" there told the reader their working Service was broken
             # (G231), so the rule declines instead.
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id,
+                "a pod's labels are merged in by an operator outside this input, so whether this Service selects it "
+                "cannot be decided",
+            )
             continue
         yield r.finding(
             svc,
@@ -889,6 +986,7 @@ def _v016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _v017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_rosa:
+        ctx.not_applicable(r.rule_id, "the rule is about ROSA HCP, where machine configuration is not a customer lever")
         return
     for d in ctx.by_kind("MachineConfig", "MachineConfigPool"):
         yield r.finding(d, ("kind",), f"{d.kind} is not a supported customer lever on {ctx.platform}.")
@@ -1119,7 +1217,10 @@ _FLATTENED_GROUP_VERSION = "resource.k8s.io/v1beta1"
 def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # a claim that lives in a file you did not pass is not a missing claim (G186)
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id,
+            "part of a namespace was passed, so a claim that lives in a file you did not pass is not a missing claim",
+        )
         return
     present: dict[tuple[str, str], set[str]] = {}
     for kind in _CLAIM_SOURCE_KINDS.values():
@@ -1271,7 +1372,9 @@ def _v022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # The namespace's ResourceQuota and LimitRange were not passed, so their absence here means nothing.
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id, "part of a namespace was passed, so the namespace's ResourceQuota and LimitRange were not passed"
+        )
         return
     quota_ns = {ctx.ns(d) for d in ctx.by_kind("ResourceQuota")}
     limit_ns = {ctx.ns(d) for d in ctx.by_kind("LimitRange")}
@@ -1633,6 +1736,7 @@ def _s003(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _s004(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if not ctx.is_openshift:
+        ctx.not_applicable(r.rule_id, "the restricted-v2 SCC that this rule reads against is OpenShift's")
         return
     for d, pt in ctx.workloads():
         psc = pt.spec.get("securityContext")
@@ -1938,7 +2042,11 @@ def _s036(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         # No manifest states which registries an organisation has approved. Reporting every image as fine
         # because no policy was configured is the absence-read-as-pass failure this catalogue is built against,
         # so the rule declines and `run_rules` keeps it out of the evaluated list (G241).
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id,
+            "no registry allowlist is configured (audit.allowedRegistries), and without the policy no image can be "
+            "judged",
+        )
         return
     for d, pt in ctx.workloads():
         for c in containers(pt):
@@ -2722,7 +2830,9 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's NetworkPolicies were not passed, so their absence here means nothing
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id, "part of a namespace was passed, so the namespace's NetworkPolicies were not passed"
+        )
         return
     netpol_ns = {ctx.ns(d) for d in ctx.by_kind("NetworkPolicy")}
     flagged: set[str] = set()
@@ -3162,7 +3272,11 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if any(v is None for v in verdicts):
             # Same reason as KN-V011: an operator-merged label could be exactly the one this selector asks for,
             # and "this policy protects nothing" is the most alarming thing this rule can say (G231).
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id,
+                "a pod's labels are merged in by an operator outside this input, so whether this policy selects it "
+                "cannot be decided",
+            )
             continue
         yield r.finding(
             d,
@@ -3239,7 +3353,10 @@ def _egress_allows_dns(spec: dict[str, Any]) -> bool:
 def _n013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # another policy in the namespace may allow 53, and it was not passed
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id,
+            "part of a namespace was passed, so another policy in the namespace that allows port 53 was not passed",
+        )
         return
     by_ns: dict[str, list[dict[str, str]]] = {}
     for d, pt in ctx.workloads():
@@ -3305,19 +3422,21 @@ def _n014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     docs = ctx.by_kind(ADMIN_TIER_KINDS[0], ADMIN_TIER_KINDS[1])
     if not ctx.cni:
         if docs:
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id, "no CNI was given (--cni), and no manifest states whether it enforces the admin tiers"
+            )
         return  # nothing of this kind is nothing to decide, whatever the CNI
     try:
         name, version = parse_cni(ctx.cni)
     except ValueError:
         if docs:
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(r.rule_id, "the CNI given could not be parsed as NAME or NAME:VERSION")
         return
     support = admin_tier_support(name, version)
     if support == "enforced" or not docs:
         return
     if support == "unknown":
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "whether this CNI version enforces the admin tiers is not known")
         return
     reason = admin_tier_reason(name, version, support)
     for d in docs:
@@ -3445,7 +3564,9 @@ def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     # evaluated_rules, so a per-control summary counted it `clean` while the report's own
                     # assumptions said an undeclared StorageClass was not evaluated -- the two halves of one
                     # report disagreeing, with the reassuring half the one a reader sees first.
-                    ctx.cannot_decide(r.rule_id)
+                    ctx.cannot_decide(
+                        r.rule_id, "part of a namespace was passed, so the StorageClass the claim names was not passed"
+                    )
                     continue
                 yield r.finding(
                     d,
@@ -3816,7 +3937,9 @@ def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str]) -> list[Do
 def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's PodDisruptionBudgets were not passed, so no match here means nothing
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id, "part of a namespace was passed, so the namespace's PodDisruptionBudgets were not passed"
+        )
         return
     for d, pt in ctx.workloads():
         if d.kind in REPLICATED_KINDS and (replicas(d) or 1) >= 2 and not _pdbs_for(ctx, d, pt.labels()):
@@ -4039,7 +4162,9 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     always exists, so its absence means it was not collected, not that auditing is on.
     """
     if not ctx.is_openshift:
-        return  # the resource does not exist off OpenShift; see N15 on telling that apart from a pass
+        # the resource does not exist off OpenShift; see N15 on telling that apart from a pass
+        ctx.not_applicable(r.rule_id, "config.openshift.io APIServer is an OpenShift object")
+        return
     # Exact group, not a prefix. `apiVersion` is a Kubernetes group/version, and comparing the group
     # itself says what is meant -- any served version of config.openshift.io, and nothing whose group
     # merely begins with those characters. CodeQL reads a dotted literal in `startswith` as URL
@@ -4047,7 +4172,7 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     # but a split on the separator is what the data model actually is.
     docs = [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
     if not docs:
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "no config.openshift.io APIServer in the input")
         return
     for d in docs:
         spec = d.data.get("spec") if isinstance(d.data, dict) else None
@@ -4094,7 +4219,12 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
         if stages is not None and r.stage not in stages:
             continue
         if r.check is not None:
+            ctx.begin_rule(r.rule_id)
+            before = len(findings)
             findings.extend(r.check(ctx, r))
-            if evaluated is not None and r.rule_id not in ctx.undecided:
+            # A rule that asked for kinds and got none of them has nothing to be clean about: it goes to
+            # `ctx.no_subject` with the kinds named, whatever its guard did (G281).
+            no_subject = ctx.end_rule(r.rule_id, fired=len(findings) > before)
+            if evaluated is not None and no_subject is None and r.rule_id not in ctx.undecided:
                 evaluated.append(r.rule_id)
     return findings

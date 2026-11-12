@@ -332,6 +332,18 @@ def assessment_results(
             else "This report carried no coverage record, so these controls cannot be distinguished between "
             "checked and clean, and not checked at all. They are excluded rather than reported satisfied."
         )
+        # The record's own reasons, grouped: an assessor reading "excluded" needs "no Service in the input",
+        # not a list of possibilities (G281). Grouped by reason so a Deployment-only input is one line per
+        # absent kind rather than seventy repeats.
+        by_reason: dict[str, list[str]] = {}
+        for row in summary.get("rulesNotEvaluated") or []:
+            if isinstance(row, dict) and row.get("ruleId"):
+                by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
+        if by_reason:
+            selection["remarks"] += " Rules not evaluated: " + "; ".join(
+                f"{why}: {', '.join(sorted(ids))}"
+                for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+            )
 
     result: dict[str, Any] = {
         "uuid": _uuid("result", scope),

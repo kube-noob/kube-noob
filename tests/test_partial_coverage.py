@@ -41,7 +41,12 @@ def test_the_skipped_rule_moves_to_not_evaluated_rather_than_clean() -> None:
     from kube_noob.audit.controls import RULE_CONTROLS
 
     guarded_here = [r for r in GUARDED if "SC-7" in RULE_CONTROLS[r]]
-    assert part["SC-7"]["notEvaluated"] == len(guarded_here) == 2, part["SC-7"]
+    # Since G281 the bucket also holds the SC-7 rules whose kind this bundle lacks (no Ingress, no Route, no
+    # EgressFirewall), on the whole bundle and the partial one alike; the guard moves exactly the two guarded
+    # rules on top of those, and each is named with the guard's own reason.
+    assert part["SC-7"]["notEvaluated"] - whole["SC-7"]["notEvaluated"] == len(guarded_here) == 2, part["SC-7"]
+    assert set(guarded_here) <= set(part["SC-7"]["notEvaluatedRules"])
+    assert not set(guarded_here) & set(whole["SC-7"].get("notEvaluatedRules", []))
     # Nothing was invented: the rules that did run are the same ones, and the total is conserved.
     assert sum(part["SC-7"][k] for k in ("findings", "clean", "notEvaluated")) == sum(
         whole["SC-7"][k] for k in ("findings", "clean", "notEvaluated")
@@ -63,6 +68,17 @@ def test_the_buckets_still_account_for_every_rule_on_a_partial_bundle() -> None:
 
 
 def test_a_complete_bundle_records_them_as_evaluated() -> None:
-    """The guard is the only reason to withhold the claim; a directory audit still earns it."""
+    """The guard is the only reason to withhold the claim; a directory audit still earns it.
+
+    `notEvaluated` is no longer zero on the whole bundle: the rules about kinds the bundle does not carry sit
+    there since G281. What a directory audit earns is that no rule is withheld by the guard, so every reason on
+    these controls names an absent kind and none says a namespace was passed in part.
+    """
+    rep = analyze(BUNDLE, "openshift", "4.22").as_dict()["controlSummary"]
+    reasons = {r["ruleId"]: r["why"] for r in rep["rulesNotEvaluated"]}
+    for rule_id in GUARDED:
+        assert rule_id not in reasons, (rule_id, reasons.get(rule_id))
     whole = _controls(False)
-    assert whole["SC-7"]["notEvaluated"] == 0 and whole["AC-4"]["notEvaluated"] == 0
+    for cid in ("SC-7", "AC-4"):
+        for rule_id in whole[cid].get("notEvaluatedRules", []):
+            assert reasons[rule_id].startswith("no ") and " in the input" in reasons[rule_id], (cid, rule_id)

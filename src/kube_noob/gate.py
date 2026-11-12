@@ -335,6 +335,8 @@ def run(
                 excepted_rules or None,
                 report.evaluated_rules or None,
                 report.fired_rules or None,
+                not_evaluated=report.not_evaluated or None,
+                absent_subjects=report.absent_subjects or None,
             ),
         }
         if review is not None and not review.summary()["gate"]:

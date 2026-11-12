@@ -455,7 +455,10 @@ def test_controls_with_nothing_to_report_fold_away_and_open_again_in_print(tmp_p
     assert "with nothing to report" in page
     assert "details.quiet > div { display: block !important; }" in page
     folded = page[page.index('<details class="quiet">') :]
-    assert "AC-4" in folded or "AU-12" in folded, "the folded rows are present in the document, not dropped"
+    standing = _series(tmp_path / "ok2", days=2)["controlStanding"]["controls"]
+    quiet = [c["id"] for c in standing if c["clean"] and not (c["findings"] or c["notEvaluated"] or c.get("withheld"))]
+    assert quiet, "the fixture has a control with every rule evaluated and clean"
+    assert all(cid in folded for cid in quiet), "the folded rows are present in the document, not dropped"
 
 
 def test_the_page_states_the_scope_its_numbers_are_true_of(tmp_path: Path) -> None:

@@ -78,10 +78,12 @@ def test_an_audit_records_every_rule_it_ran_and_accounts_for_the_rest() -> None:
     ctx = build_context(docs, "kubernetes", None)
     evaluated: list[str] = []
     run_rules(ctx, None, evaluated)
-    assert set(evaluated) | ctx.undecided == set(RULE_CONTROLS), (
-        f"unaccounted: {sorted(set(RULE_CONTROLS) - set(evaluated) - ctx.undecided)}"
+    # Three buckets since G281: evaluated, declined, and nothing of its kind in the input.
+    assert set(evaluated) | ctx.undecided | set(ctx.no_subject) == set(RULE_CONTROLS), (
+        f"unaccounted: {sorted(set(RULE_CONTROLS) - set(evaluated) - ctx.undecided - set(ctx.no_subject))}"
     )
     assert not set(evaluated) & ctx.undecided, "a rule was recorded as both evaluated and undecided"
+    assert not set(evaluated) & set(ctx.no_subject) and not ctx.undecided & set(ctx.no_subject)
     assert len(set(evaluated)) == len(evaluated), "a rule was recorded twice"
 
     rep = analyze(_CLEAN, "kubernetes", None)

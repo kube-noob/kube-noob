@@ -973,6 +973,8 @@ class Toolkit:
         rule_ids: list[str] = []
         evaluated: list[str] | None = None
         fired: list[str] | None = None
+        reasons: dict[str, str] | None = None
+        absent: dict[str, list[str]] | None = None
         assumptions: list[str] = []
         ceiling: dict[str, str] | None = None
         excepted: list[dict[str, Any]] = []
@@ -1010,6 +1012,7 @@ class Toolkit:
                 }
             rule_ids = [f.rule_id for f in r.findings]
             evaluated, fired = sorted(r.evaluated_rules), sorted(r.fired_rules)
+            reasons, absent = dict(r.not_evaluated), dict(r.absent_subjects)
             assumptions = list(r.assumptions)
             ceiling = not_checked_beyond(r.kubernetes_version)
         out = fedramp.summary(
@@ -1022,6 +1025,8 @@ class Toolkit:
             evaluated_rule_ids=evaluated,
             fired_rule_ids=fired,
             not_checked_beyond=ceiling,
+            not_evaluated=reasons,
+            absent_subjects=absent,
         )
         if exceptions_block is not None:
             out["exceptions"] = exceptions_block
@@ -1130,6 +1135,9 @@ class Toolkit:
                 # And the fired set, or a withheld finding would become clean again on any report that
                 # applies an exception list (G199).
                 r.fired_rules or None,
+                # And the reasons, or the rebuild would lose why a rule was not evaluated (G281).
+                not_evaluated=r.not_evaluated or None,
+                absent_subjects=r.absent_subjects or None,
             )
         self._observe(
             [f"platform:{out.get('platform')}"]

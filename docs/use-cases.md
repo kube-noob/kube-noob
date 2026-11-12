@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 145 957 to
-74 544 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 153 312 to
+81 899 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -729,6 +729,29 @@ kube-noob redteam -f k8s/ --platform openshift
 kube-noob explain KN-S004
 ```
 
+### What was checked, and what only looked checked: the coverage record
+
+Every audit carries a coverage record beside its findings: `controlSummary` in `audit`, `audit_manifests` and
+the gate, `coverage` in a posture snapshot, the columns of `ksi`. Per NIST control it separates `findings`,
+`excepted`, `withheld`, `clean` and `notEvaluated`, because a control with no finding is either one every rule
+checked or one nothing looked at, and an assessor cannot tell which from a zero.
+
+`clean` means a rule had something of its kind to look at and found nothing. A rule whose subject kinds are not
+in the input is `notEvaluated`, with the reason `no Service in the input` -- a file with one ConfigMap is not
+"no privileged container, no wildcard RBAC, no NodePort", it is nine per-document validations evaluated and
+84 rules waiting for their kind. The record names them: `rulesNotEvaluated` lists every unevaluated rule with
+its reason (an absent kind; a stage you left out; `does not apply on kubernetes` for an OpenShift rule; a guard's
+own words, such as `part of a namespace was passed, so the namespace's NetworkPolicies were not passed`), each
+control row lists its own under `notEvaluatedRules`, and a rule that reads several kinds and got only some of
+them is evaluated on those and listed under `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The text
+view groups the same list by reason and prints the same count, so the two cannot disagree. The exit code does
+not change: an absent kind is not a finding and not an unreadable file.
+
+```bash
+kube-noob audit -f k8s/ --format json | jq '.controlSummary.rulesNotEvaluated'
+kube-noob audit -f k8s/ | grep -A20 '^rules:'
+```
+
 ### Something a reviewer will actually open
 
 `--html` writes one self-contained page: `gate --html report.html`, `posture report --html`, `posture diff --html`,
@@ -820,7 +843,8 @@ whole of what an assistant reads and a count without that second sentence is the
 A row whose rules reach it only through a shared control carries a `warning` as well. Without an audit there are no
 counts at all and `audited` is `false`: zeroes on 28 rows would read as 28 clean results. When a rule declines, the
 row names it -- `notEvaluatedRules: ["KN-N014"]` on an AdminNetworkPolicy bundle is the rule asking for the
-cluster's CNI, which `--cni` and the tool's `cni` supply. And when the target version is past the removal table's
+cluster's CNI, which `--cni` and the tool's `cni` supply -- and `rulesNotEvaluated` carries each rule's reason,
+the audit's own, so a rule whose kind was not in the input is not counted clean on any indicator. And when the target version is past the removal table's
 ceiling the reply carries `notCheckedBeyond`, because SA-22's evidence is exactly those removed-API rules.
 
 The dataset is vendored with its version and sha256 and the crosswalk is generated from it, because the hand-written
@@ -1045,7 +1069,10 @@ open, and in which namespaces. A finding counts once for every control its rule 
 to the finding total. Beside it, `controlStanding` separates the two things a count cannot: a control whose rules
 ran and found nothing (`clean`) from one nothing evaluated (`notEvaluated`). That needs the snapshot to record
 which rules ran, so a snapshot taken before that record existed gets the counts and no standing at all, and the
-report says why -- a control with no open finding is not a control that passed.
+report says why -- a control with no open finding is not a control that passed. The snapshot also records why
+each rule did not run (`coverage.notEvaluated`: the kind that was not there, with the resource named when the
+cluster refused to show it), and the standing names them per control in JSON, Markdown and HTML, so a `Not
+evaluated` column is never a bare number.
 
 A live snapshot records what it could not read, and the diff uses it. An object that was in yesterday's snapshot
 and is missing from today's is only `removed` if today's run could read its kind; if the backend refused that
@@ -1208,7 +1235,9 @@ kube-noob gate  -f k8s/ --platform openshift --version 4.22 --oscal > assessment
 An OSCAL 1.2.3 assessment-results document, from either command: each finding becomes an observation with
 method `EXAMINE`, and each control becomes an OSCAL finding targeting that control's objective id
 (`ac-6.10_obj`). What it will not say is the point. A control is `satisfied` only where its rules actually ran
-and produced nothing. A control no rule evaluated is named under `exclude-controls` and gets no finding at all.
+over an object of their kind and produced nothing. A control no rule evaluated is named under `exclude-controls`
+and gets no finding at all, and the selection's remarks say why each rule was not evaluated, grouped: `no Service
+in the input: KN-N004, KN-N005, KN-N008`.
 A control whose rules ran and reported findings that a `--min-severity` filter removed is `not-satisfied` with
 reason `other`, never a pass -- so the verdict per control is the same at every filter level, and no flag turns
 a failing audit into a clean record. An accepted exception is `not-satisfied` too, with the same reason: a

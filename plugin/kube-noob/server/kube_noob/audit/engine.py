@@ -123,6 +123,16 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    # Every rule that is not in `evaluated` is here with its reason, so the record never has a rule that is
+    # neither checked nor accounted for: the stage the caller left out, the guard that declined, or the kind
+    # that was not in the input (G281). Sorted by id: the same input gives the same bytes.
+    not_evaluated = {
+        **{r.rule_id: f"stage {r.stage.value} was not requested" for r in RULES.values() if r.stage not in rule_stages},
+        **ctx.declined,
+        **ctx.no_subject,
+    }
+    report.not_evaluated = dict(sorted(not_evaluated.items()))
+    report.absent_subjects = dict(sorted(ctx.absent_subjects.items()))
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that

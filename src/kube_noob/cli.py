@@ -281,6 +281,9 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         lines += [f"{miss['findings']} finding(s) from {miss['ruleId']} reach no indicator: {miss['why']}"]
     if out.get("findingsNotMapped"):
         lines.append("")
+    # The reasons behind every `not evaluated` column below, once, before the rows that count them (G281).
+    if coverage := _coverage_lines(out):
+        lines += [*coverage, ""]
     f = out.get("filtered")
     if f:
         lines += [
@@ -399,6 +402,35 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+def _coverage_lines(summary: dict[str, Any]) -> list[str]:
+    """The text view of the coverage record: what ran, what did not and why, grouped by reason (G281).
+
+    The JSON carries `rulesNotEvaluated` with one reason per rule; printed one per line, a Deployment-only
+    file would show seventy lines of "no Service in the input". Grouped, the reader sees the kinds that were
+    not there and the rules that waited for them. The count on the first line is the JSON's count, so the two
+    views cannot say different numbers.
+    """
+    skipped = summary.get("rulesNotEvaluated")
+    if not isinstance(skipped, list):
+        return []
+    from kube_noob.audit.controls import RULE_CONTROLS
+
+    by_reason: dict[str, list[str]] = {}
+    for row in skipped:
+        if isinstance(row, dict) and row.get("ruleId"):
+            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
+    total = sum(len(v) for v in by_reason.values())
+    # Rules that ran, whether clean, withheld or fired: every rule the record does not list as not evaluated.
+    lines = [f"rules: {len(RULE_CONTROLS) - total} evaluated, {total} not evaluated"]
+    for why in sorted(by_reason, key=lambda w: (-len(by_reason[w]), w)):
+        ids = sorted(by_reason[why])
+        lines.append(f"  not evaluated, {why}: {', '.join(ids)}")
+    for row in summary.get("rulesEvaluatedWithout") or []:
+        if isinstance(row, dict) and row.get("ruleId"):
+            lines.append(f"  evaluated without {', '.join(str(k) for k in row.get('absent') or [])}: {row['ruleId']}")
+    return lines
+
+
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
     print(
@@ -425,6 +457,8 @@ def _print_report(rep: dict[str, Any]) -> None:
     touched = (rep.get("controlSummary") or {}).get("controls") or []
     if touched:
         print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
+    for line in _coverage_lines(rep.get("controlSummary") or {}):
+        print(line)
     if cov := rep.get("detectionCoverage"):
         from kube_noob.audit.detection import render_text
 

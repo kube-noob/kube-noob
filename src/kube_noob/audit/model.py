@@ -133,6 +133,12 @@ class Report:
     # finding this view withheld was counted clean, so `--min-severity high` could turn a bundle with a
     # privileged container into a clean compliance record (G199).
     fired_rules: list[str] = field(default_factory=list)
+    # Every rule NOT in `evaluated_rules`, with why: the stage was not requested, the rule declined, or none of
+    # the kinds it reads were in the input ("no Service in the input"). A rule about a kind that is absent used
+    # to count as evaluated and clean (G281).
+    not_evaluated: dict[str, str] = field(default_factory=dict)
+    # Rules that ran on part of what they read: the kinds they asked for and did not get, per rule.
+    absent_subjects: dict[str, list[str]] = field(default_factory=dict)
     # What the cluster's audit configuration can and cannot record, when the bundle carries the object that
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
@@ -171,6 +177,8 @@ class Report:
                 None,
                 self.evaluated_rules or None,
                 self.fired_rules or None,
+                not_evaluated=self.not_evaluated or None,
+                absent_subjects=self.absent_subjects or None,
             ),
             "redTeam": [s.as_dict() for s in self.scenarios],
             # Only when the target is past the minor the removal table was read at, so every result that was

@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any
 import yaml
 
 from kube_noob.attack_paths import LIVE_RESOURCES
+from kube_noob.audit.controls import rules_evaluated_without, rules_not_evaluated
 from kube_noob.audit.podspec import LONG_RUNNING_EMBEDDED_KINDS
 from kube_noob.sanitize import MAX_JSON_DEPTH_FILE, loads_bounded
 
@@ -321,6 +323,11 @@ def snapshot(
         "coverage": {
             "evaluatedRules": sorted(report.evaluated_rules),
             "firedRules": sorted(report.fired_rules),
+            # Why each rule that did not run did not: the kind it reads was not in the input, the guard
+            # declined, the platform is not its own. A rule about a kind that was absent used to be in
+            # `evaluatedRules` and so in `clean` (G281). When the cluster refused the kind, the reason says so.
+            "notEvaluated": _not_evaluated_rows(report.not_evaluated, _kinds_not_read(unread)),
+            "evaluatedWithout": rules_evaluated_without(report.absent_subjects),
         },
         "notRead": unread[:MAX_NOT_READ],
         "notReadKinds": sorted(_kinds_not_read(unread)),
@@ -331,6 +338,31 @@ def snapshot(
         # whole class of workload was never looked at, which is this project's own defect in a fifth place.
         "assumptions": list(report.assumptions[:MAX_ASSUMPTIONS]),
     }
+
+
+def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str]) -> list[dict[str, str]]:
+    """``rulesNotEvaluated`` for the snapshot, with "could not be read" added where the cluster refused the kind.
+
+    "no Role in the input" is true of a live snapshot whose `roles` read was forbidden, and it is not the whole
+    truth: the kind may well exist. The resource name the backend uses is what `notRead` carries, so a reader
+    can match the two lines.
+    """
+    rows = rules_not_evaluated(reasons, list(reasons))
+    if not blind_kinds:
+        return rows
+    resources = {**LIVE_RESOURCES, **EXTRA_LIVE}
+    refused = {kind: res for res, kind in resources.items() if kind in blind_kinds}
+    for row in rows:
+        named = [k for k in refused if _names_kind(row["why"], k)]
+        if named:
+            row["why"] += f" ({', '.join(refused[k] for k in sorted(named))} could not be read from the cluster)"
+    return rows
+
+
+def _names_kind(why: str, kind: str) -> bool:
+    """Whether a reason built by `subject_reason` names this kind as absent (whole token, not a substring)."""
+    body = why.split(" in the input", 1)[0].removeprefix("no ")
+    return kind in {t.strip() for t in re.split(r",\s*| or | and no ", body)}
 
 
 def _kinds_not_read(not_read: Iterable[str]) -> set[str]:
@@ -405,14 +437,16 @@ def _standing(new: dict[str, Any], open_rows: list[dict[str, Any]]) -> tuple[dic
 
     unread = [str(x) for x in new.get("notRead") or ()]
     if unread:
-        # A rule whose SUBJECT kind was refused runs against nothing, finds nothing, and would be reported
-        # `clean`. The engine knows which rules fire on another object's absence (they decline to decide on a
-        # partial bundle) but not which kind each rule reads, so no `clean` on this snapshot can be trusted and
+        # A rule whose SUBJECT kind was refused everywhere now lands in `coverage.notEvaluated` with the
+        # resource named (G281). A kind refused in ONE namespace of several does not: the rule still has objects
+        # from the others, is evaluated on those, and would count `clean` over a namespace it could not see.
+        # The record cannot tell the two apart per rule, so no `clean` on this snapshot can be trusted and
         # none is offered. Counts still stand: a finding that was reported was reported.
         return None, (
             f"{len(unread)} resource(s) could not be read in this snapshot, so no per-control standing is "
-            "reported: a rule whose subject kind was refused finds nothing and would look clean. The open "
-            "findings per control below are still what was found. First: " + "; ".join(unread[:3])
+            "reported: a rule whose subject kind was refused in one namespace still ran over the others and "
+            "would look clean there. The open findings per control below are still what was found, and "
+            "coverage.notEvaluated names the rules that had nothing to read at all. First: " + "; ".join(unread[:3])
         )
     coverage = new.get("coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("evaluatedRules"), list):
@@ -422,12 +456,28 @@ def _standing(new: dict[str, Any], open_rows: list[dict[str, Any]]) -> tuple[dic
             "have been evaluated. Take a new snapshot to get per-control standing."
         )
     excepted = [str(f["ruleId"]) for f in new["findings"] if f.get("excepted") and f.get("ruleId")]
+    # A snapshot from before the reasons were recorded has no `notEvaluated` list; its standing then keeps the
+    # older shape rather than listing every unevaluated rule with a reason it never recorded (G281).
+    rows = coverage.get("notEvaluated")
+    reasons = (
+        {str(r["ruleId"]): str(r.get("why") or "") for r in rows if isinstance(r, dict) and r.get("ruleId")}
+        if isinstance(rows, list)
+        else None
+    )
+    without = coverage.get("evaluatedWithout")
+    absent = (
+        {str(r["ruleId"]): [str(k) for k in r.get("absent") or ()] for r in without if isinstance(r, dict)}
+        if isinstance(without, list)
+        else None
+    )
     return (
         control_summary(
             [str(r["ruleId"]) for r in open_rows],
             excepted,
             [str(x) for x in coverage.get("evaluatedRules") or ()],
             [str(x) for x in coverage.get("firedRules") or ()],
+            not_evaluated=reasons,
+            absent_subjects=absent,
         ),
         "",
     )
@@ -624,6 +674,26 @@ def markdown(report: dict[str, Any]) -> str:
             for c in standing["controls"]
         ]
         lines += ["", standing["note"], ""]
+        skipped = standing.get("rulesNotEvaluated") or []
+        if skipped:
+            # The `Not evaluated` column, explained: the same grouping the CLI prints, so a reader of the
+            # Markdown is not sent to the JSON to learn that no Service was in the input (G281).
+            by_reason: dict[str, list[str]] = {}
+            for row in skipped:
+                by_reason.setdefault(str(row.get("why") or ""), []).append(str(row.get("ruleId")))
+            lines += [
+                f"**{len(skipped)} rule(s) were not evaluated**, counted under `Not evaluated` above:",
+                "",
+                *[
+                    f"- {why}: {', '.join(sorted(ids))}"
+                    for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+                ],
+                "",
+            ]
+        for row in standing.get("rulesEvaluatedWithout") or []:
+            lines.append(f"- {row.get('ruleId')} was evaluated without {', '.join(row.get('absent') or [])}")
+        if standing.get("rulesEvaluatedWithout"):
+            lines.append("")
     for note in report.get("notes") or []:
         lines += [f"> {note}", ""]
     return "\n".join(lines)

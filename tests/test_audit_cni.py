@@ -102,11 +102,17 @@ def test_an_undocumented_cni_also_declines_to_decide() -> None:
     assert RULE not in report.evaluated_rules
 
 
-def test_a_bundle_with_no_admin_policy_is_evaluated_and_clean() -> None:
-    """Nothing to decide is not a failure to decide: the rule ran, found no such policy, and that is a pass."""
+def test_a_bundle_with_no_admin_policy_is_not_evaluated_and_says_why() -> None:
+    """Nothing to decide is not a failure to decide, and it is not a pass either (G281 reversed G210 here).
+
+    This asserted that the rule was evaluated and clean on a bundle with no admin policy. A rule whose subject
+    kind is absent has looked at nothing, and the coverage record now says so with the kinds named, instead of
+    counting the rule among the clean ones.
+    """
     report = analyze(NETPOL, platform="kubernetes", cni="calico:3.32")
     assert [f for f in report.findings if f.rule_id == RULE] == []
-    assert RULE in report.evaluated_rules
+    assert RULE not in report.evaluated_rules
+    assert report.not_evaluated[RULE] == "no AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
 
 
 def test_a_coarse_version_declines_to_decide() -> None:

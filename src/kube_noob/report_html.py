@@ -842,6 +842,36 @@ def _standing_sections(report: dict[str, Any], sec: Sections) -> list[str]:
             "result or a rule that was not evaluated. The folded list is not hidden evidence: it opens itself "
             "when this page is printed, so the PDF carries every control.</p>"
         )
+    out += _not_evaluated_reasons(standing)
+    return out
+
+
+def _not_evaluated_reasons(standing: dict[str, Any]) -> list[str]:
+    """The `Not evaluated` column explained: every rule it counts, grouped by the record's reason (G281).
+
+    Without this the page said how many rules reached no verdict and the reader had to open the JSON to learn
+    that no Service was in the input. Reasons are the engine's own words (a kind name a rule asked for, a
+    guard's sentence), never text from the input; they are escaped like everything else on the page.
+    """
+    skipped = [r for r in (standing.get("rulesNotEvaluated") or []) if isinstance(r, dict) and r.get("ruleId")]
+    without = [r for r in (standing.get("rulesEvaluatedWithout") or []) if isinstance(r, dict) and r.get("ruleId")]
+    if not skipped and not without:
+        return []
+    out: list[str] = []
+    if skipped:
+        by_reason: dict[str, list[str]] = {}
+        for row in skipped:
+            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
+        out.append(f"<h3>Why {len(skipped)} {_plural(len(skipped), 'rule')} reached no verdict</h3><ul>")
+        for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            out.append(f'<li>{_esc(why)}: <span class="mono">{_esc(", ".join(sorted(ids)))}</span></li>')
+        out.append("</ul>")
+    if without:
+        out.append("<ul>")
+        for row in without:
+            kinds = ", ".join(str(k) for k in row.get("absent") or [])
+            out.append(f'<li><span class="mono">{_esc(row["ruleId"])}</span> was evaluated without {_esc(kinds)}</li>')
+        out.append("</ul>")
     return out
 
 
