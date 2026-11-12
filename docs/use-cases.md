@@ -1274,8 +1274,9 @@ atomic, never through a link). Both set `"onFailure": "block"`, so a hook that c
 rather than passes; that needs Claude Code v2.1.295 or later, and an older version lets the command through. The
 plugin (`kube-noob@kube-noob`) carries the same hook, off until you turn on its `verify_cluster_commands` option in
 `/config`. While it is off the hook is a `sh` guard that starts nothing (about 2 ms); turned on, it runs the bundled
-check with `uv`, which costs about 1 s per Bash command with a warm cache. On Windows the guard needs Git Bash (see
-[SECURITY.md](../SECURITY.md)); without it, use `hook install`. For a harness without hooks, run
+check with `uv`, which costs about 1 s per Bash command with a warm cache, and blocks the command itself if uv is
+missing or fails. On Windows the guard needs Git Bash; without it the check does not run (see
+[SECURITY.md](../SECURITY.md)), so use `hook install` there. For a harness without hooks, run
 `kube-noob verify --command "$CMD"` before executing `$CMD` and refuse on a non-zero exit; for a repository, the
 `kube-noob-verify` pre-commit hook runs `kube-noob verify -f .`. A human who needs to run something the check refuses
 starts Claude Code with `KUBE_NOOB_HOOK=off` in its environment; a command the agent writes cannot set it. A hook on

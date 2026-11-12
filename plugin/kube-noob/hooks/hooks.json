@@ -1,5 +1,5 @@
 {
-  "description": "kube-noob verify before a kubectl, oc or helm command changes a cluster. Off until you turn on verify_cluster_commands in /config; while off, the hook is a POSIX sh guard that starts no program.",
+  "description": "kube-noob verify before a kubectl, oc or helm command changes a cluster. Off until you turn on verify_cluster_commands in /config; while off, the hook is a POSIX sh guard that starts no program. While on, it blocks the command itself (exit 2) when uv is missing or its run fails.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,9 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS\" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exec uv run --frozen --exact --isolated --quiet --project \"$CLAUDE_PLUGIN_ROOT\" python -I -B \"$CLAUDE_PLUGIN_ROOT/hooks/kube_noob_hook.py\";; esac",
-            "timeout": 60,
-            "onFailure": "block"
+            "command": "case \"$CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS\" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) command -v uv >/dev/null 2>&1 || { echo 'kube-noob: the pre-action check is on but uv cannot be found, so this command is blocked' >&2; exit 2; }; uv run --frozen --exact --isolated --quiet --project \"$CLAUDE_PLUGIN_ROOT\" python -I -B \"$CLAUDE_PLUGIN_ROOT/hooks/kube_noob_hook.py\"; s=$?; case $s in 0|2) exit $s;; esac; echo \"kube-noob: the pre-action check is on but its run failed (uv exited $s), so this command is blocked\" >&2; exit 2;; esac",
+            "timeout": 60
           }
         ]
       }

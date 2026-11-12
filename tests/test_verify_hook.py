@@ -410,6 +410,9 @@ def test_install_carries_the_target_and_refuses_a_version_that_is_not_one(tmp_pa
 
 
 PLUGIN = ROOT / "plugin" / "kube-noob"
+LAUNCH_ARGS = (
+    f"run --frozen --exact --isolated --quiet --project {PLUGIN} python -I -B {PLUGIN}/hooks/kube_noob_hook.py"
+)
 
 
 def _plugin_hook() -> dict[str, object]:
@@ -418,56 +421,95 @@ def _plugin_hook() -> dict[str, object]:
     return dict(h)
 
 
-def _run_plugin_hook(tmp_path: Path, option: str | None, uv_exit: int | None) -> tuple[int, str, list[str]]:
+def _run_plugin_hook(
+    tmp_path: Path, option: str | None, uv_exit: int | None, uv_stdout: bytes = b"", uv_stderr: str = ""
+) -> tuple[int, bytes, str, list[str]]:
     """Run the plugin's hook command the way Claude Code runs a shell-form hook: `sh -c COMMAND`, with the plugin
     variables in the environment (plugins reference, "Where each variable resolves": hook commands get
     CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_OPTION_<KEY>). PATH holds only a stub directory, so any program the guard
-    started other than the stub `uv` would fail with 127; the stub records each start. `uv_exit=None`: no `uv`."""
+    started other than the stub `uv` would fail; the stub records each start, prints `uv_stdout` byte for byte and
+    exits `uv_exit`. `uv_exit=None`: there is no `uv`. Returns exit code, stdout bytes, stderr, recorded starts."""
     stub = tmp_path / "stub"
     stub.mkdir(parents=True, exist_ok=True)
     calls = tmp_path / "uv-calls"
     if uv_exit is not None:
-        (stub / "uv").write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\nexit {uv_exit}\n')
+        (tmp_path / "uv-out").write_bytes(uv_stdout)
+        (stub / "uv").write_text(
+            f'#!/bin/sh\necho "$*" >> "{calls}"\n/bin/cat "{tmp_path / "uv-out"}"\n'
+            + (f"echo '{uv_stderr}' >&2\n" if uv_stderr else "")
+            + f"exit {uv_exit}\n"
+        )
         (stub / "uv").chmod(0o755)
     env = {"PATH": str(stub), "CLAUDE_PLUGIN_ROOT": str(PLUGIN)}
     if option is not None:
         env[hook.PLUGIN_OPTION_ENV] = option
-    r = subprocess.run(
-        ["/bin/sh", "-c", str(_plugin_hook()["command"])],
-        input='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}',
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-        check=False,
-    )
-    started = calls.read_text().splitlines() if calls.exists() else []
-    return r.returncode, r.stdout + r.stderr, started
+    # Every POSIX shell here (dash as /bin/sh on Linux, bash as macOS's sh and Git Bash) must give the same answer.
+    results = []
+    for shell in [s for s in ("/bin/sh", "/bin/bash") if Path(s).exists()]:
+        calls.unlink(missing_ok=True)
+        r = subprocess.run(
+            [shell, "-c", str(_plugin_hook()["command"])],
+            input=b'{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}',
+            capture_output=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        started = calls.read_text().splitlines() if calls.exists() else []
+        results.append((r.returncode, r.stdout, r.stderr.decode(), started))
+    assert all(x == results[0] for x in results), results
+    return results[0]
 
 
-@pytest.mark.parametrize("option", [None, "", "false", "False", "0", "no", "off", "untrue"])
+OFF_VALUES = [None, "", "false", "False", "0", "no", "off", "untrue", " true", "true ", "true\n", "tru e", "ｔｒｕｅ"]
+ON_VALUES = ["true", "True", "TRUE", "1", "yes", "YES", "on", "On"]
+
+
+@pytest.mark.parametrize("option", OFF_VALUES)
 def test_the_plugin_hook_starts_nothing_when_the_option_is_off(tmp_path: Path, option: str | None) -> None:
     """Off, the hook costs one `sh` and nothing else: `uv` is never started. Started on every Bash call, `uv run`
-    took about 1.0 s warm and 5.9 s with an empty cache, and failed outright offline with an empty cache -- which
-    `onFailure: block` turned into every Bash command blocked for a user who never turned the check on."""
-    assert _run_plugin_hook(tmp_path / "with-uv", option, uv_exit=0) == (0, "", [])
+    took about 1.0 s warm and 5.9 s with an empty cache, and failed outright offline with an empty cache."""
+    assert _run_plugin_hook(tmp_path / "with-uv", option, uv_exit=0) == (0, b"", "", [])
     # No `uv` and nothing else on PATH: still a silent pass, so the guard started no program at all.
-    assert _run_plugin_hook(tmp_path / "no-uv", option, uv_exit=None) == (0, "", [])
+    assert _run_plugin_hook(tmp_path / "no-uv", option, uv_exit=None) == (0, b"", "", [])
 
 
-@pytest.mark.parametrize("option", ["true", "True", "1", "yes", "on"])
-def test_the_plugin_hook_fails_closed_when_on_and_uv_cannot_start(tmp_path: Path, option: str) -> None:
-    """On, the guard hands over to `uv` with exec, so its exit is the hook's: a `uv` that cannot be found exits
-    127 -- an exit other than 0 or 2, which `onFailure: "block"` turns into a block (hooks reference, "Block the
-    action when a hook fails": "Exit code other than 0 or 2" and "Can't start" each count as a failure)."""
-    code, _, started = _run_plugin_hook(tmp_path / "no-uv", option, uv_exit=None)
-    assert code not in (0, 2) and started == []
-    assert _plugin_hook()["onFailure"] == "block"
-    code, _, started = _run_plugin_hook(tmp_path / "with-uv", option, uv_exit=2)
-    assert code == 2, "the verdict of the bundled hook is the hook's exit"
-    assert started == [
-        f"run --frozen --exact --isolated --quiet --project {PLUGIN} python -I -B {PLUGIN}/hooks/kube_noob_hook.py"
-    ]
+@pytest.mark.parametrize("option", OFF_VALUES + ON_VALUES)
+def test_the_guard_the_launcher_and_the_hook_read_the_option_by_one_rule(tmp_path: Path, option: str | None) -> None:
+    """Exact match, ASCII case ignored, nothing stripped -- in the sh guard, the launcher and plugin_main alike."""
+    _, _, _, started = _run_plugin_hook(tmp_path, option, uv_exit=0)
+    assert bool(started) is hook.plugin_opted_in(option) is (option in ON_VALUES)
+    launcher = (PLUGIN / "hooks" / "kube_noob_hook.py").read_text()
+    assert ".strip()" not in launcher and '{"true", "1", "yes", "on"}' in launcher
+    assert {"true", "1", "yes", "on"} == hook.PLUGIN_ON_VALUES
+
+
+@pytest.mark.parametrize("option", ON_VALUES[:3])
+def test_the_plugin_hook_fails_closed_when_on_and_uv_cannot_run(tmp_path: Path, option: str) -> None:
+    """On, the guard blocks by itself, with exit 2 and one stderr line, whenever uv is missing or its run fails --
+    on any Claude Code version, because exit 2 from a PreToolUse hook "blocks the tool call" and its stderr is the
+    reason (hooks reference, "Exit code 2", https://code.claude.com/docs/en/hooks, read 2026-11-12). It does not
+    depend on `onFailure`, which the plugin no longer sets."""
+    code, out, err, started = _run_plugin_hook(tmp_path / "no-uv", option, uv_exit=None)
+    assert (code, out, started) == (2, b"", []) and "uv cannot be found" in err and err.count("\n") == 1
+    for failed in (1, 3, 101, 127):
+        code, out, err, started = _run_plugin_hook(tmp_path / f"uv-{failed}", option, uv_exit=failed)
+        assert code == 2 and f"exited {failed}" in err and "blocked" in err, (failed, err)
+        assert started == [LAUNCH_ARGS]
+
+
+@pytest.mark.parametrize("option", ON_VALUES[:3])
+def test_the_plugin_hook_passes_the_bundled_hooks_answer_through(tmp_path: Path, option: str) -> None:
+    """On, a successful run's stdout (the `ask` JSON, or nothing for a pass) reaches Claude Code byte for byte, and
+    the bundled hook's own exit 2 (a deny) stays 2 with its stderr."""
+    ask = (
+        b'{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", '
+        b'"permissionDecisionReason": "not determined: \\u00e9 \\" $x `y`"}}\n'
+    )
+    assert _run_plugin_hook(tmp_path / "ask", option, uv_exit=0, uv_stdout=ask) == (0, ask, "", [LAUNCH_ARGS])
+    assert _run_plugin_hook(tmp_path / "pass", option, uv_exit=0) == (0, b"", "", [LAUNCH_ARGS])
+    code, out, err, _ = _run_plugin_hook(tmp_path / "deny", option, uv_exit=2, uv_stderr="denied: KN-S013")
+    assert (code, out) == (2, b"") and err == "denied: KN-S013\n"
 
 
 def test_the_plugin_wires_the_hook_with_documented_fields_only() -> None:
@@ -480,17 +522,23 @@ def test_the_plugin_wires_the_hook_with_documented_fields_only() -> None:
     # Shell form (no `args`), so a POSIX guard reads the opt-in before anything is started. The option reaches it
     # as CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS, the documented way for a shell-form hook, which may not
     # reference ${user_config.*}. The paths come from the exported CLAUDE_PLUGIN_ROOT, quoted.
-    assert set(h) <= {"type", "command", "timeout", "onFailure"}
+    assert set(h) <= {"type", "command", "timeout"}
     command = str(h["command"])
     assert "${user_config" not in command and "$" + hook.PLUGIN_OPTION_ENV in command
-    # The same launcher as .mcp.json: the locked environment, nothing written into the plugin root.
+    # The same launcher as .mcp.json: the locked environment, nothing written into the plugin root -- and not
+    # exec'd, so the guard sees uv's exit and turns a failed run into a block itself.
     mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["kube-noob"]
     launch = " ".join(a.replace("${CLAUDE_PLUGIN_ROOT}", '"$CLAUDE_PLUGIN_ROOT"') for a in mcp["args"][:-1])
-    assert f'exec {mcp["command"]} {launch} "$CLAUDE_PLUGIN_ROOT/hooks/kube_noob_hook.py"' in command
-    # onFailure: block. Without it a `uv` that cannot start, a crash (exit 1) or a run past the timeout removed the
-    # gate silently for a user who had turned it on. Off, the guard starts nothing, so this blocks only the people
-    # who chose the gate -- for them, blocking is right (Claude Code v2.1.295 or later).
-    assert h["onFailure"] == "block" and int(str(h["timeout"])) > hook.BUDGET_SECONDS * 2
+    assert f'{mcp["command"]} {launch} "$CLAUDE_PLUGIN_ROOT/hooks/kube_noob_hook.py"' in command
+    assert "exec " not in command
+    # No onFailure in the plugin: every plugin user gets this entry, and with `block` a hook that cannot even
+    # parse (Windows without Git Bash runs it in PowerShell) blocked every Bash and PowerShell call of people who
+    # never turned the check on. The guard fails closed itself for those who did. `hook install` writes the entry
+    # only for a user who asked for it, so that one keeps `onFailure: block`.
+    assert "onFailure" not in h
+    assert int(str(h["timeout"])) > hook.BUDGET_SECONDS * 2
+    (installed,) = hook.settings_snippet()["hooks"]["PreToolUse"]
+    assert installed["hooks"][0]["onFailure"] == "block"
     assert group["matcher"] == hook.MATCHER
     assert (plugin / "hooks" / "kube_noob_hook.py").is_file()
     manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())

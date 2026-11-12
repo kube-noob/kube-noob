@@ -267,10 +267,21 @@ def _write(stream: Any, text: str) -> None:
         pass  # a closed stream: the exit code still answers
 
 
+#: The values that turn the plugin's check on, matched exactly and ignoring ASCII case -- the rule the shell guard in
+#: the plugin's hooks.json applies (`[Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]`) and the launcher repeats. No
+#: whitespace is stripped anywhere, so the three cannot disagree about " true".
+PLUGIN_ON_VALUES = frozenset({"true", "1", "yes", "on"})
+
+
+def plugin_opted_in(value: str | None) -> bool:
+    """Whether the plugin option's value turns the check on (see PLUGIN_ON_VALUES)."""
+    return value is not None and value.isascii() and value.lower() in PLUGIN_ON_VALUES
+
+
 def plugin_main() -> int:
     """The Claude plugin's hook: inert until the user turns on the plugin's ``verify_cluster_commands`` option, so
     installing or updating the plugin never starts blocking anybody's commands on its own."""
-    if os.environ.get(PLUGIN_OPTION_ENV, "").strip().lower() not in {"true", "1", "yes", "on"}:
+    if not plugin_opted_in(os.environ.get(PLUGIN_OPTION_ENV)):
         return 0
     from kube_noob.catalog import PLATFORMS
 

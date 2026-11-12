@@ -30,7 +30,7 @@
     "verify_cluster_commands": {
       "type": "boolean",
       "title": "Verify cluster changes before they run",
-      "description": "When on, a kubectl, oc or helm command that changes a cluster is checked by kube-noob verify first: a deny is blocked and a change verify cannot decide asks you. Read-only and other commands pass. Needs uv and Claude Code v2.1.295 or later; on Windows, Git Bash. Off by default, and while off the hook starts no program.",
+      "description": "When on, a kubectl, oc or helm command that changes a cluster is checked by kube-noob verify first: a deny is blocked and a change verify cannot decide asks you. Read-only and other commands pass. Needs uv (a missing or failing uv blocks the command); on Windows, Git Bash, without which the check does not run. Off by default, and while off the hook starts no program.",
       "default": false
     },
     "verify_platform": {

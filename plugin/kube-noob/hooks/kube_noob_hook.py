@@ -19,14 +19,10 @@ SERVER = Path(__file__).resolve().parent.parent / "server"
 
 def main() -> int:
     # Off unless the user opted in; checked before anything is imported, so a plugin that is installed and not
-    # opted in never blocks a command, whatever state its bundled code is in. kube_noob.hook.plugin_main checks it
-    # again with the same rule.
-    if os.environ.get("CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS", "").strip().lower() not in {
-        "true",
-        "1",
-        "yes",
-        "on",
-    }:
+    # opted in never blocks a command, whatever state its bundled code is in. The rule is the one the shell guard
+    # in hooks.json and kube_noob.hook.plugin_opted_in apply: exact, ASCII case ignored, nothing stripped.
+    value = os.environ.get("CLAUDE_PLUGIN_OPTION_VERIFY_CLUSTER_COMMANDS")
+    if value is None or not value.isascii() or value.lower() not in {"true", "1", "yes", "on"}:
         return 0
     if str(SERVER) not in sys.path[:1]:
         sys.path.insert(0, str(SERVER))
