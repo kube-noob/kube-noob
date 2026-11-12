@@ -271,6 +271,7 @@ Where it is applied (found in the code):
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
 - `kube_noob/build/oci.py` `_json` calls `sanitize.loads_bounded`
+- `kube_noob/cli.py` `_VisibleStream.write` calls `sanitize.visible_lines`
 - `kube_noob/cli.py` `_tprint` calls `sanitize.visible_lines`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.visible`

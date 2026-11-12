@@ -547,7 +547,7 @@ def test_calico_with_a_version_still_decides() -> None:
         (
             "adminnetworkpolicies",
             (
-                "kubectl get adminnetworkpolicies.policy.networking.k8s.io failed: warning: the server doesn\\'t have "
+                "kubectl get adminnetworkpolicies.policy.networking.k8s.io failed: warning: the server doesn't have "
                 'a resource type "adminnetworkpolicies" was printed by a plugin'
             ),
             None,

@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from kube_noob.errors import ManifestError
+from kube_noob.sanitize import replace_surrogates
 
 MAX_INPUT_BYTES = 5_000_000
 MAX_DOCUMENTS = 1000
@@ -83,9 +84,15 @@ def _walk(
     if len(path) > MAX_DEPTH:
         raise ManifestError(f"YAML nesting is too deep: more than {MAX_DEPTH} levels; refusing to process.")
     out.setdefault(path, line if line is not None else node.start_mark.line + 1)
+    if isinstance(node, yaml.ScalarNode) and isinstance(node.value, str):
+        # A YAML escape like "\ud800" decodes to a lone surrogate, which is not text: every encode to UTF-8
+        # (a fingerprint, a SARIF file, the terminal) raised, and one such name failed the whole audit (G279).
+        node.value = replace_surrogates(node.value)
     if isinstance(node, yaml.MappingNode):
         seen: set[str] = set()
         for key_node, value_node in node.value:
+            if isinstance(key_node, yaml.ScalarNode) and isinstance(key_node.value, str):
+                key_node.value = replace_surrogates(key_node.value)
             key = key_node.value if isinstance(key_node, yaml.ScalarNode) else str(key_node.start_mark.line)
             if dups is not None and key != "<<":
                 if key in seen:

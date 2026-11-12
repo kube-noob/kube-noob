@@ -505,7 +505,7 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     return from_sources([(label, [d.data for d in load_documents(text)])])
 
 
-def _not_served(resource: str, message: str) -> bool:
+def _not_served(resource: str, message: str | BaseException) -> bool:
     """A 404 because the API group is not served, recognised only in the exact words the two backends write for
     it: kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's "Not
     found" for this group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does
@@ -534,7 +534,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Collected:
             try:
                 data = backend.get(resource, namespace=ns, selector=selector)
             except KubeNoobError as exc:
-                if _not_served(resource, str(exc)):
+                if _not_served(resource, exc):  # the exception: its full stderr, not the cut message
                     not_served += 1
                 failures.append(f"{ns + ': ' if ns else ''}{_text(str(exc), 240)}")
                 continue

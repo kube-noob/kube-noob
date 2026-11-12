@@ -2145,7 +2145,44 @@ def _settings(a: argparse.Namespace) -> Settings:
     return load_settings(a.config, overrides)
 
 
+class _VisibleStream:
+    """stdout or stderr, with every write passed through ``sanitize.visible_lines`` (G279).
+
+    The boundary every text writer shares: the text view, ``--compact``, the YAML view (`yaml.safe_dump` with
+    ``allow_unicode`` passes format characters through), GitHub workflow commands and every error message. A
+    name from a manifest or a cluster can no longer move the cursor, write the clipboard (OSC 52), hide a link
+    (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate. Output with none of
+    these characters is unchanged. Binary writers use ``.buffer``, which passes through untouched -- the MCP stdio
+    transport among them, whose results ``sanitize.clean`` has already cleaned."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def write(self, text: str) -> int:
+        self._inner.write(sanitize.visible_lines(text))
+        return len(text)
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def main(argv: list[str] | None = None) -> int:
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+    try:
+        return _main(argv)
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)
     for key, value in GLOBAL_DEFAULTS.items():

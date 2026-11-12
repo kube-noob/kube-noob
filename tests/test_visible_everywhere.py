@@ -40,10 +40,10 @@ def _clean(text: str) -> bool:
 
 
 def test_the_shared_variants_keep_what_each_caller_needs() -> None:
-    assert sanitize.visible("a\u202eb") == "a b"
-    assert sanitize.visible_lines("a\u202eb\nc\td\re") == "a b\nc\td e"
+    assert sanitize.visible("a\u202eb") == "ab"  # format characters go without a space
+    assert sanitize.visible_lines("a\u202eb\nc\td\re") == "ab\nc\td e"
     assert sanitize.visible_squeezed("a\r\n\u202e\u061cb  c") == "a b  c"
-    assert sanitize.visible("a/\u202eb", replacement="?") == "a/?b"
+    assert sanitize.visible("a/\x07b", replacement="?") == "a/?b"
     assert sanitize.has_invisible("ls\u202e") and sanitize.has_invisible("ls\t-l")
     assert not sanitize.has_invisible("ls\t-l", keep="\t") and not sanitize.has_invisible("oc get pods -n shop")
     for text in ("plain text", "naïve café → ✓ 日本語", "  two  spaces  ", ""):
@@ -300,34 +300,456 @@ def test_the_mustgather_report_markdown(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------------------------- the twelfth module
 
-#: Character classes that are allowed to stay outside sanitize.py, and why. Anything else that spells out C0
-#: controls or bidi code points in a regex is a private copy of what sanitize.visible already does.
-ALLOWED_PRIVATE = {
-    # validation, not output: a tier name is refused unless every character prints (and the shared helper is a
-    # superset; this only rejects)
-    "src/kube_noob/tiers.py": "validates a configured name; refuses rather than cleans",
-    # colour codes stripped from build logs and pasted text BEFORE pattern matching: an input normaliser, not an
-    # output sanitiser, and it must keep every other character so the patterns still match
-    "src/kube_noob/build/logs.py": "strips ANSI colour from a build log before its patterns run",
-    "src/kube_noob/insight.py": "strips ANSI colour from pasted text before its patterns run",
-}
-_PRIVATE_LIST = re.compile(
-    r"re\.compile\(\s*r?[\"'][^\"']*(?:\\x0|\\x1[0-9a-f]|\\x7f|\\x9f|\\x85|\\u20(?:0[b-f]|2[89a-f]|6[0-9a-f]))"
+#: Escapes that spell a control, C1, bidi, zero-width, BOM or tag code point, or ESC in octal.
+_CONTROL_ESCAPE = re.compile(
+    r"\\(?:x[01][0-9a-f]|x7f|x[89][0-9a-f]|u00ad|u061c|u180e|u20(?:0[b-f]|2[89a-f]|6[0-9a-f])|ufeff"
+    r"|U000e00[0-7][0-9a-f]|0?33\b)",
+    re.IGNORECASE,
 )
+#: "Anything but printable ASCII", the other way to write the same list.
+_NOT_PRINTABLE_ASCII = re.compile(r"\[\^(?: -~|\\x20-\\x7e)", re.IGNORECASE)
+#: Calls that classify or strip characters one by one.
+_CHARACTER_CALLS = {"category", "isprintable", "translate", "maketrans"}
+
+#: (file, the exact source of the expression) -> why it may stay outside sanitize.py. One entry per pattern, not
+#: per file, so a second list added to an allowed file is still caught.
+ALLOWED_PRIVATE: dict[tuple[str, str], str] = {
+    ("src/kube_noob/tiers.py", 'r"^[^\\x00-\\x1f\\x7f]+\\Z"'): (
+        "validates a configured tier name and refuses it; it cleans nothing and shows nothing"
+    ),
+    ("src/kube_noob/build/logs.py", 'r"\\x1b\\[[0-9;?]{0,20}[A-Za-z]|\\x1b\\][^\\x07]{0,200}\\x07"'): (
+        "strips colour codes from a build log BEFORE its patterns run; an input normaliser that must keep every "
+        "other character so the patterns still match"
+    ),
+    ("src/kube_noob/insight.py", 'r"\\x1b\\[[0-9;?]*[A-Za-z]"'): (
+        "strips colour codes from pasted text before its patterns run, as above"
+    ),
+    ("src/kube_noob/audit/rules.py", '" \\t\\n\\r\\f\\v"'): (
+        "the characters str.strip() and the generated admission policy's RE2 class treat as blank (G245); a "
+        "definition of blank, not an output filter"
+    ),
+    ("src/kube_noob/toolkit.py", 'r"^[^\\x00]+$"'): "a tool argument's path pattern: refuses a NUL, shows nothing",
+    (
+        "src/kube_noob/toolkit.py",
+        'r"^/[^\\x00]{0,499}$"',
+    ): "a tool argument's path pattern: refuses a NUL, shows nothing",
+    ("src/kube_noob/build/github_history.py", "c.isprintable()"): (
+        "refuses a token from the environment that holds whitespace or control characters; never shown"
+    ),
+    ("src/kube_noob/rhacs_central.py", "c.isprintable()"): (
+        "refuses a token from the environment that holds whitespace or control characters; never shown"
+    ),
+}
+
+
+def _private_lists(rel: str, src: str) -> list[tuple[int, str]]:
+    import ast
+
+    found = []
+    tree = ast.parse(src)
+    docstrings = {
+        id(n.body[0].value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        and n.body
+        and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant)
+    }
+    for node in ast.walk(tree):
+        seg = ""
+        if id(node) in docstrings:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            seg = ast.get_source_segment(src, node) or ""
+            value = node.value
+            controls = {c for c in value if (ord(c) < 32 and c not in "\n\t") or 0x7F <= ord(c) <= 0x9F}
+            spelled = bool(_CONTROL_ESCAPE.search(seg)) and "[" in seg  # a character class naming controls
+            if not (
+                spelled or _NOT_PRINTABLE_ASCII.search(seg) or _NOT_PRINTABLE_ASCII.search(value) or len(controls) > 1
+            ):
+                continue
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr in _CHARACTER_CALLS:
+                seg = ast.get_source_segment(src, node) or ""
+            elif isinstance(f, ast.Name) and f.id == "chr" and node.args and isinstance(node.args[0], ast.Constant):
+                c = node.args[0].value
+                if isinstance(c, int) and (c < 0x20 or 0x7F <= c <= 0x9F or 0x200B <= c <= 0x206F or c == 0xFEFF):
+                    seg = ast.get_source_segment(src, node) or ""
+        if seg and (rel, seg) not in ALLOWED_PRIVATE:
+            found.append((getattr(node, "lineno", 0), seg[:120]))
+    return found
 
 
 def test_no_module_outside_sanitize_keeps_its_own_control_character_list() -> None:
+    """A private copy of what `sanitize.visible` does is how eleven modules came to miss U+061C, the soft hyphen
+    and the tag block. This reads every module's syntax tree and refuses, outside sanitize.py: a string (a regex
+    literal, or a pattern held in a constant) with a character class naming control, C1, bidi, zero-width, BOM or
+    tag code points in any case of hex or in octal; "anything but printable ASCII" classes (``[^ -~]``,
+    ``[^\\x20-\\x7e]``); a literal holding two or more raw control characters; ``unicodedata.category``,
+    ``str.isprintable``, ``str.translate`` and ``str.maketrans``; and ``chr()`` of a control or format code point.
+
+    What it cannot catch: a pattern assembled at run time from pieces that are each innocent (``"\\\\x" + "1b"``),
+    a list of integers compared with ``ord()``, bytes patterns, a codec's error handler, and a helper that calls
+    one of these through another name. Review still has to look for those.
+    """
     src = Path(__file__).resolve().parents[1] / "src" / "kube_noob"
-    found = []
+    found = {}
     for path in sorted(src.rglob("*.py")):
         rel = path.relative_to(src.parents[1]).as_posix()
-        if rel == "src/kube_noob/sanitize.py" or rel in ALLOWED_PRIVATE:
+        if rel == "src/kube_noob/sanitize.py" or "/data/" in rel:
             continue
-        if _PRIVATE_LIST.search(path.read_text(encoding="utf-8")):
-            found.append(rel)
-    assert found == [], (
+        hits = _private_lists(rel, path.read_text(encoding="utf-8"))
+        if hits:
+            found[rel] = hits
+    assert found == {}, (
         "a private control-character list; use sanitize.visible / visible_lines / visible_squeezed / has_invisible "
-        f"(or add the file to ALLOWED_PRIVATE with the reason): {found}"
+        f"(or add (file, expression) to ALLOWED_PRIVATE with the reason): {found}"
     )
-    for rel in ALLOWED_PRIVATE:  # the allowlist cannot outlive the files it names
-        assert (src.parents[1] / rel).is_file(), rel
+    for rel, seg in ALLOWED_PRIVATE:  # the allowlist cannot outlive the patterns it names
+        assert seg in (src.parents[1] / rel).read_text(encoding="utf-8"), (rel, seg)
+
+
+@pytest.mark.parametrize(
+    "evasion",
+    [
+        're.sub(r"[\\x00-\\x1F]", " ", s)',
+        'X = r"[\\x7F-\\x9F]"',
+        'BAD = re.compile("[^\\x20-\\x7e]")',
+        'BAD = re.compile("[^ -~]")',
+        'BAD = "[\\033]"',
+        "s.translate(TABLE)",
+        "unicodedata.category(c)",
+        "c.isprintable()",
+        "chr(0x1b)",
+        'BAD = "[\\u202a-\\u202e]"',
+    ],
+)
+def test_the_structural_check_sees_the_usual_ways_to_write_a_list(evasion: str) -> None:
+    assert _private_lists("src/kube_noob/x.py", f"import re, unicodedata\n{evasion}\n"), evasion
+
+
+# ------------------------------------------------------------------- the rule `visible` follows (review, G279)
+
+#: Real text whose format characters are part of the word: each must come out exactly as it went in.
+LEGITIMATE = {
+    "hindi conjunct with ZWJ": "\u0915\u094d\u200d\u0937",
+    "hindi word": "\u0928\u092e\u0938\u094d\u0924\u0947",
+    "sinhala yansaya with ZWJ": "\u0dc1\u0dca\u200d\u0dbb\u0dd3",
+    "kannada": "\u0c95\u0ca8\u0ccd\u0ca8\u0ca1",
+    "malayalam chillu with ZWJ": "\u0d28\u0d4d\u200d",
+    "persian with ZWNJ": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+    "arabic": "\u0645\u0631\u062d\u0628\u0627",
+    "hebrew": "\u05e9\u05dc\u05d5\u05dd",
+    "japanese": "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8",
+    "emoji ZWJ family": "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+    "emoji with variation selector and ZWJ": "\u2764\ufe0f\u200d\U0001f525",
+    # assigned after Python 3.11's Unicode 14 table: kept the same on every interpreter
+    "unicode 15 emoji": "\U0001fae8\U0001f6dc",
+    "unicode 16 legacy computing": "\U0001cc00\U0001cc01",
+    "unassigned today": "\U0002fa1f\U000300ff",
+}
+
+
+@pytest.mark.parametrize("name", sorted(LEGITIMATE))
+def test_text_in_scripts_that_need_joiners_survives_unchanged(name: str) -> None:
+    text = LEGITIMATE[name]
+    for fn in (sanitize.visible, sanitize.visible_lines, sanitize.visible_squeezed):
+        assert fn(text) == text, (fn.__name__, name)
+    assert not sanitize.has_invisible(text)
+    cleaned, _ = sanitize.clean(text)
+    assert cleaned == text, name  # `clean` keeps the joiners in the same places
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a\u202eb", "ab"),  # format characters are removed without a space
+        ("pay\u200bpal", "paypal"),
+        ("x\u200dy", "xy"),  # a joiner between ASCII letters only splits a word
+        ("x\u200cy", "xy"),
+        ("\u05e9\u200f\u05dc", "\u05e9\u05dc"),  # RLM: invisible, removed without a space
+        ("\ufeffkind", "kind"),
+        ("a\U000e0041b", "ab"),
+        ("soft\u00adhyphen", "softhyphen"),
+        ("a\ufff9b\ufffbc", "abc"),
+        ("a\x1b[31mred\x1b[0m", "a red "),
+        ("a\x1b]8;;http://evil.example\x1b\\link\x1b]8;;\x1b\\b", "a link b"),
+        ("a\x1b]52;c;ZWNobyBwd25k\x07b", "a b"),
+        ("a\x9bb\x85c\x07d", "a b c d"),
+        ("a\u2028b\u2029c", "a b c"),
+        ("a\ud800b", "a b"),
+        ("a\ue000b", "a b"),  # private use: what it shows depends on the reader's font
+    ],
+)
+def test_hostile_characters_do_not_survive(text: str, expected: str) -> None:
+    assert sanitize.visible(text) == expected
+
+
+def test_crlf_is_a_line_break() -> None:
+    assert sanitize.visible_lines("one\r\ntwo\rthree\n") == "one\ntwo three\n"
+    assert sanitize.visible("one\r\ntwo") == "one two"
+
+
+def test_the_format_list_covers_every_format_character_this_interpreter_knows() -> None:
+    """The list is fixed so output does not depend on the Python version; this fails on an interpreter whose
+    Unicode table has a format character the list lacks, so the list is updated rather than silently short."""
+    import unicodedata
+
+    from kube_noob.sanitize import _FORMAT
+
+    missing = [hex(c) for c in range(0x110000) if unicodedata.category(chr(c)) == "Cf" and c not in _FORMAT]
+    assert missing == []
+
+
+# ------------------------------------------------------------------------- every CLI command, one boundary
+
+
+def _leaves() -> list[tuple[str, ...]]:
+    import argparse
+
+    from kube_noob.cli import build_parser
+
+    def walk(p: argparse.ArgumentParser, path: tuple[str, ...]) -> list[tuple[str, ...]]:
+        subs = [a for a in p._actions if isinstance(a, argparse._SubParsersAction)]
+        if not subs:
+            return [path]
+        return [leaf for a in subs for name, sp in a.choices.items() for leaf in walk(sp, (*path, name))]
+
+    return sorted(set(walk(build_parser(), ())))
+
+
+def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
+    def yaml_escaped(s: str) -> str:
+        return "".join(
+            f"\\U{ord(c):08x}" if ord(c) > 0xFFFF else (f"\\u{ord(c):04x}" if ord(c) > 0x7E or ord(c) < 0x20 else c)
+            for c in s
+        )
+
+    poison = yaml_escaped(HOSTILE + "\x1b]52;c;ZWNobyBwd25k\x07" + "\ud800")
+    manifest = tmp_path / "m.yaml"
+    manifest.write_text(
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n"
+        f'  name: "web{poison}"\n  namespace: shop\n'
+        "spec:\n  selector: {matchLabels: {app: web}}\n  template:\n    metadata: {labels: {app: web}}\n"
+        "    spec:\n      containers:\n"
+        f'      - name: "c{poison}"\n        image: "nginx:latest{poison}"\n'
+        "        securityContext: {privileged: true}\n---\n"
+        "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n"
+        f'  name: "deny{poison}"\n  namespace: shop\nspec: {{podSelector: {{}}, policyTypes: [Ingress]}}\n',
+        encoding="utf-8",
+    )
+    plain = HOSTILE + "\x1b]52;c;ZWNobyBwd25k\x07"
+    events = tmp_path / "ev.txt"
+    events.write_text(
+        f"Back-off restarting failed container web{plain} in pod web-1\nError: ImagePullBackOff {plain}\n",
+        encoding="utf-8",
+    )
+    denial = tmp_path / "den.txt"
+    denial.write_text(
+        'Error from server: admission webhook "validate.kyverno.svc-fail" denied the request:\n\n'
+        "resource Deployment/shop/web was blocked due to the following policies\n\ndisallow-latest-tag:\n"
+        f"  validate-image-tag: 'validation error: Using a mutable image tag e.g. latest {plain} is not allowed.'\n",
+        encoding="utf-8",
+    )
+    return {"M": str(manifest), "EV": str(events), "DEN": str(denial), "OUT": str(tmp_path / "out.json"), "T": plain}
+
+
+#: Commands driven with hostile input. Every value is an argv tail; M, EV, DEN, OUT and T are filled in.
+DRIVEN: dict[str, list[list[str]]] = {
+    "audit": [["-f", "M"], ["-f", "M", "--compact"], ["--format", "yaml", "-f", "M"], ["--format", "sarif", "-f", "M"]],
+    "validate": [["-f", "M"]],
+    "redteam": [["-f", "M"]],
+    "fix": [["-f", "M"]],
+    "gate": [["-f", "M"], ["-f", "M", "--github-annotations"], ["--format", "yaml", "-f", "M"]],
+    "policy reach": [["--from", "shop:app=web", "--to", "shop:app=web", "--port", "8080", "-f", "M"]],
+    "policy explain": [["-f", "DEN"], ["--format", "yaml", "-f", "DEN"]],
+    "diagnose": [["-f", "EV"], ["--format", "yaml", "-f", "EV"]],
+    "signals": [["-f", "EV"], ["--format", "yaml", "-f", "EV"]],
+    "insight": [["-f", "EV"], ["--format", "yaml", "-f", "EV"]],
+    "known-issues": [["T"]],
+    "vuln threat": [["-f", "M"], ["--format", "yaml", "-f", "M"]],
+    "posture scan": [["-f", "M"]],
+    "posture snapshot": [["-f", "M", "-o", "OUT"]],
+    "operators inventory": [["-f", "M"]],
+    "ksi": [["-f", "M"]],
+    "build diagnose": [["-f", "EV"]],
+}
+#: Commands not driven here, each with the reason. All of them still write through the same boundary, which
+#: `test_every_command_writes_through_the_boundary` holds for every command the parser has.
+NOT_DRIVEN: dict[str, str] = {
+    **dict.fromkeys(
+        ["admission serve", "serve", "mcp", "watch"], "a long-running server or loop; its output is the same streams"
+    ),
+    **dict.fromkeys(["debug", "bundle"], "needs a live cluster; the live text is covered in test_absent_vs_unread*"),
+    **dict.fromkeys(
+        [
+            "corpus advisories",
+            "corpus build",
+            "corpus history",
+            "corpus jira",
+            "corpus jira-projects",
+            "corpus known-issues",
+            "ask",
+        ],
+        "needs the network or a model",
+    ),
+    **dict.fromkeys(
+        [
+            "corpus add-docs",
+            "corpus db-bundle",
+            "corpus db-check",
+            "corpus import",
+            "corpus jira-audit",
+            "corpus jira-changes",
+            "corpus jira-snapshot",
+            "corpus seal",
+            "corpus stats",
+            "corpus unseal",
+            "corpus verify",
+            "incidents confirm",
+            "incidents list",
+            "incidents show",
+            "learning forget",
+            "learning note",
+            "learning profile",
+            "learning show",
+            "memory add",
+            "memory import",
+            "memory init",
+            "memory match",
+            "memory migrate-learning",
+            "memory outcome",
+            "memory replay",
+            "memory stats",
+            "memory validate",
+            "train bench",
+            "train export",
+            "train grade",
+            "train tasks",
+            "ticket",
+            "upgrade-risks",
+        ],
+        "reads or writes a local data directory or corpus this test does not build",
+    ),
+    **dict.fromkeys(
+        [
+            "completion",
+            "config",
+            "demo",
+            "doctor",
+            "explain",
+            "generate",
+            "rules",
+            "search",
+            "selftest",
+            "learn exercise",
+            "learn lesson",
+            "learn progress",
+            "learn quiz",
+            "learn submit",
+            "learn tracks",
+            "protocol",
+            "policy generate",
+        ],
+        "prints kube-noob's own bundled text, not text from the input",
+    ),
+    **dict.fromkeys(
+        [
+            "admission review",
+            "build analytics",
+            "build audit",
+            "build history",
+            "code report",
+            "exceptions check",
+            "helm-audit",
+            "helm-chart",
+            "must-gather analyze",
+            "policy migrate-check",
+            "posture diff",
+            "posture report",
+            "rhacs compare",
+            "vuln report",
+        ],
+        "takes an input shape (a chart, a must-gather, SARIF, a scanner report, a snapshot, a policy export, an "
+        "AdmissionReview) this table has no hostile fixture for; its writers are covered by the module tests above",
+    ),
+}
+
+
+def test_every_command_is_driven_or_named_with_a_reason() -> None:
+    names = {" ".join(leaf) for leaf in _leaves()}
+    assert set(DRIVEN) | set(NOT_DRIVEN) == names, {
+        "new, add it to DRIVEN or NOT_DRIVEN": sorted(names - set(DRIVEN) - set(NOT_DRIVEN)),
+        "gone": sorted((set(DRIVEN) | set(NOT_DRIVEN)) - names),
+    }
+    assert not set(DRIVEN) & set(NOT_DRIVEN)
+
+
+@pytest.mark.parametrize(("command", "tail"), [(c, t) for c, tails in sorted(DRIVEN.items()) for t in tails], ids=str)
+def test_a_command_driven_with_hostile_input_prints_none_of_it(
+    command: str, tail: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kube_noob.cli import main
+
+    inputs = _hostile_inputs(tmp_path)
+    fmt = [tail[0], tail[1]] if tail[:1] == ["--format"] else []
+    rest = tail[2:] if fmt else tail
+    argv = [*fmt, *command.split(), *(inputs.get(x, x) for x in rest)]
+    rc = main(argv)
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert rc in (0, 1, 3), (rc, text[-500:])  # never 4: one hostile name must not fail the run
+    assert text.strip(), argv
+    assert _clean(text) and "\ud800" not in text and "\x07" not in text, ascii(text)[:400]
+
+
+@pytest.mark.parametrize("leaf", _leaves(), ids=" ".join)
+def test_every_command_writes_through_the_boundary(
+    leaf: tuple[str, ...], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Whatever a command writes, to stdout or stderr, reaches the reader through `sanitize.visible_lines`."""
+    import argparse
+
+    from kube_noob import cli
+
+    def dispatch(a: argparse.Namespace, s: Any) -> int:
+        print(f"{' '.join(leaf)} {HOSTILE}")
+        print(f"{' '.join(leaf)} {HOSTILE}", file=__import__("sys").stderr)
+        return 0
+
+    monkeypatch.setattr(cli, "_dispatch", dispatch)
+    monkeypatch.setattr(cli, "_settings", lambda a: None)
+    monkeypatch.setattr(
+        argparse.ArgumentParser, "parse_args", lambda self, argv=None: argparse.Namespace(cmd=leaf[0], format="text")
+    )
+    assert cli.main(list(leaf)) == 0
+    out = capsys.readouterr()
+    assert _clean(out.out + out.err) and " ".join(leaf) in out.out
+
+
+def test_the_yaml_view_carries_no_format_characters_and_json_escapes_them(capsys: pytest.CaptureFixture[str]) -> None:
+    from kube_noob.cli import _emit, main
+
+    main(["--format", "yaml", "known-issues", HOSTILE])
+    assert _clean(capsys.readouterr().out)
+    _emit({"name": HOSTILE}, "json")
+    printed = capsys.readouterr().out
+    assert _clean(printed) and json.loads(printed)["name"] == HOSTILE  # ensure_ascii: escaped, not dropped
+
+
+def test_one_name_holding_a_lone_surrogate_does_not_fail_the_audit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kube_noob.cli import main
+
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        'apiVersion: v1\nkind: Pod\nmetadata: {name: "web\\ud800", namespace: shop}\n'
+        "spec: {containers: [{name: c, image: 'nginx:latest'}]}\n",
+        encoding="utf-8",
+    )
+    for argv in (["audit", "-f", str(m)], ["validate", "-f", str(m)], ["--format", "sarif", "audit", "-f", str(m)]):
+        assert main(argv) in (0, 1), argv
+        out = capsys.readouterr().out
+        assert "\ud800" not in out and "surrogates" not in out

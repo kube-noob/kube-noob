@@ -163,41 +163,124 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
     return json.loads(data)
 
 
-_TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]{0,256}(?:\x07|\x1b\\)?)")
-#: Character categories that never print: controls (Cc), format characters (Cf: bidi marks and overrides,
-#: zero-width characters, the soft hyphen, tag characters), surrogates (Cs), private use (Co), unassigned code points
-#: (Cn), and line and paragraph separators (Zl, Zp).
-_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# Terminal control sequences, removed whole: CSI (ESC [ ... final), the string sequences OSC (ESC ], which carries
+# OSC 8 hyperlinks and OSC 52 clipboard writes), DCS (ESC P), SOS (ESC X), PM (ESC ^) and APC (ESC _), each to BEL
+# or ST, and the two-character escapes. A lone ESC that starts none of these is a control character like any other.
+_TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]{0,512}(?:\x07|\x1b\\)?|[ -/]*[0-~])")
+
+#: Format characters (Unicode general category Cf), FIXED here rather than read from ``unicodedata``: the
+#: interpreter's Unicode table differs across the supported Pythons (3.11 has Unicode 14, 3.13 has 15.1), and output
+#: must not. This is the Cf set of Unicode 15.1, plus the whole tag block; a test fails if this interpreter knows a
+#: Cf character the list lacks. Anything the interpreter merely does not know (category Cn) is kept, not blanked.
+_FORMAT_RANGES = (
+    (0x00AD, 0x00AD),  # soft hyphen
+    (0x0600, 0x0605),  # Arabic prepended concatenation marks
+    (0x061C, 0x061C),  # Arabic letter mark
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),  # Mongolian vowel separator
+    (0x200B, 0x200F),  # zero width space, ZWNJ, ZWJ, LRM, RLM
+    (0x202A, 0x202E),  # bidi embeddings and overrides
+    (0x2060, 0x2064),  # word joiner, invisible operators
+    (0x2066, 0x206F),  # bidi isolates, deprecated format characters
+    (0xFEFF, 0xFEFF),  # byte order mark / zero width no-break space
+    (0xFFF9, 0xFFFB),  # interlinear annotation marks
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),  # Egyptian hieroglyph format controls
+    (0x1BCA0, 0x1BCA3),  # shorthand format controls
+    (0x1D173, 0x1D17A),  # musical symbol beam and phrase controls
+    (0xE0000, 0xE007F),  # the tag block
+)
+_FORMAT = frozenset(c for lo, hi in _FORMAT_RANGES for c in range(lo, hi + 1))
+_JOINERS = frozenset({0x200C, 0x200D})  # ZWNJ and ZWJ: kept after a printing non-ASCII character
 
 
-def _invisible(ch: str) -> bool:
-    if ch.isascii():
-        return ch < " " or ch == "\x7f"
-    return unicodedata.category(ch) in _INVISIBLE_CATEGORIES
+def _controlish(o: int) -> bool:
+    """C0 and C1 controls, DEL, line and paragraph separators, lone surrogates and private-use characters: replaced,
+    never removed, so what they separated stays separated. Private use is in the list because what it shows depends
+    on the reader's font, so what the reader sees cannot be known; the ranges are fixed by Unicode, not by the
+    interpreter's table."""
+    return (
+        o < 0x20
+        or 0x7F <= o <= 0x9F
+        or o in (0x2028, 0x2029)
+        or 0xD800 <= o <= 0xF8FF  # surrogates, then the BMP private use area
+        or o >= 0xF0000
+    )
+
+
+def _printing_non_ascii(ch: str) -> bool:
+    o = ord(ch)
+    return o > 0x7F and not _controlish(o) and o not in _FORMAT
 
 
 def visible(text: str, *, replacement: str = " ", keep: str = "") -> str:
-    """``text`` with every character that does not print replaced by ``replacement`` (a space), and terminal escape
-    sequences removed. The one place a shown string from untrusted input is made printable: a hand-kept list of
-    invisible code points missed U+061C, the soft hyphen and the tag block, so this works on Unicode categories
-    instead. ``keep`` names characters left as they are (``visible_lines`` keeps the newline and the tab). Callers
-    collapse whitespace and cap the length themselves. Text with none of these characters is returned unchanged."""
+    """``text`` as it should reach a terminal or a file a person reads. The rule (G279):
+
+    * terminal control sequences (CSI, OSC -- hyperlinks and clipboard writes --, DCS, APC, PM, SOS) are replaced
+      by ``replacement``; so is every C0 and C1 control character, DEL, the line and paragraph separators and a
+      lone surrogate. CR LF counts as one line break. ``keep`` names characters left alone (the newline and the
+      tab for ``visible_lines``);
+    * format characters are REMOVED without a space: bidi overrides, embeddings, isolates and marks (LRM, RLM,
+      ALM), the tag block, the soft hyphen, the BOM, zero-width spaces, interlinear annotation marks. They print
+      nothing, so removing them changes no visible text, and a space would split a word;
+    * ZWJ and ZWNJ are kept after a printing non-ASCII character -- inside an emoji sequence, in the scripts
+      that need them (Devanagari, Sinhala, Kannada conjuncts, a Malayalam chillu at the end of a word, Persian
+      ZWNJ) -- and removed after ASCII or at the start, where they only split a word. ``clean`` keeps them in the
+      same places;
+    * private-use characters are replaced like controls (their glyph is whatever the reader's font says);
+    * everything else is kept, including code points this interpreter's Unicode table does not know yet, so the
+      result is the same on every supported Python.
+
+    Callers collapse whitespace and cap the length themselves. Text with none of these characters is returned
+    unchanged.
+    """
+    if text.isascii() and "\x1b" not in text and all(" " <= ch < "\x7f" or ch in keep for ch in text):
+        return text
     stripped = _TERMINAL_ESCAPE.sub(replacement, text) if "\x1b" in text else text
-    if text.isascii():
-        return "".join(replacement if (ch < " " or ch == "\x7f") and ch not in keep else ch for ch in stripped)
-    return "".join(
-        replacement if ch not in keep and unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped
-    )
+    out: list[str] = []
+    n = len(stripped)
+    i = 0
+    while i < n:
+        ch = stripped[i]
+        o = ord(ch)
+        if ch in keep:
+            out.append(ch)
+        elif ch == "\r" and i + 1 < n and stripped[i + 1] == "\n":
+            out.append("\n" if "\n" in keep else replacement)
+            i += 1
+        elif _controlish(o):
+            out.append(replacement)
+        elif o in _JOINERS:
+            if i > 0 and _printing_non_ascii(stripped[i - 1]):
+                out.append(ch)
+        elif o in _FORMAT:
+            pass
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def replace_surrogates(text: str) -> str:
+    """``text`` with every lone surrogate replaced by U+FFFD. A JSON or YAML escape such as ``\\ud800`` decodes to
+    one, and it is not text: encoding it to UTF-8 raises, which made one such name fail a whole audit (G279)."""
+    if text.isascii() or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
 
 
 def visible_lines(text: str) -> str:
     """``visible`` for multi-line text -- a terminal line, a log, a whole Markdown document: the newline and the tab
-    are kept, every other character that does not print becomes a space and terminal escapes are removed."""
+    are kept (CR LF becomes a newline), everything else that does not print is handled as ``visible`` says."""
     return visible(text, keep="\n\t")
 
 
 def visible_squeezed(text: str) -> str:
-    """``visible`` for one line, where each RUN of characters that do not print becomes a single space -- what a
+    """``visible`` for one line, where each RUN of replaced characters becomes a single space -- what a
     C0-range substitution did, so a scanner's CR LF still reads as one space. Ordinary spaces are untouched."""
     out: list[str] = []
     run = False
@@ -213,9 +296,9 @@ def visible_squeezed(text: str) -> str:
 
 
 def has_invisible(text: str, *, keep: str = "") -> bool:
-    """Whether ``text`` holds a character ``visible`` would replace (other than those in ``keep``), or a terminal
-    escape. For refusing a value outright -- a file name, a remembered command -- rather than cleaning it."""
-    return any(_invisible(ch) and ch not in keep for ch in text)
+    """Whether ``visible`` would change ``text`` (other than for the characters in ``keep``). For refusing a value
+    outright -- a file name, a remembered command -- rather than cleaning it."""
+    return visible(text, keep=keep) != text
 
 
 def _chars(*points: int | tuple[int, int]) -> str:
@@ -233,9 +316,13 @@ ZWJ = chr(0x200D)
 BOM = chr(0xFEFF)
 _TAGS = re.compile("[" + _chars((0xE0000, 0xE007F)) + "]")
 _BIDI = re.compile("[" + _chars((0x202A, 0x202E), (0x2066, 0x2069), 0x200E, 0x200F, 0x061C) + "]")
+ZWNJ = chr(0x200C)
 _ZERO_WIDTH = re.compile("[" + _chars(0x200B, 0x200C, 0x2060, 0xFEFF, 0x180E, (0x2061, 0x2064)) + "]")
 _SPLITTERS = re.compile("[" + _chars(0x00AD, 0x034F) + "]")  # soft hyphen, combining grapheme joiner
-_EMOJI_JOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWJ + r"(?=[^\x00-\x7f])")  # inside an emoji sequence: kept
+# ZWJ or ZWNJ after a non-ASCII character -- inside an emoji sequence, in a script that needs them (Persian,
+# Devanagari, Sinhala, Malayalam): kept, the same places `visible` keeps them. After ASCII they only split a word.
+_EMOJI_JOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWJ)
+_SCRIPT_NONJOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWNJ)
 _VS_AFTER_ASCII = re.compile(r"(?<=[A-Za-z0-9])[" + _chars((0xFE00, 0xFE0F)) + "]")  # never part of an emoji
 _FILLERS = re.compile("[" + _chars(0x3164, 0xFFA0, 0x115F, 0x1160) + "]")  # Hangul fillers look like spaces
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -534,7 +621,11 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     if head.startswith(BOM):
         head = head[1:]  # a byte-order mark from a Windows editor: dropped, not a finding
-    kept_joins = _EMOJI_JOIN.sub("\x00", head) if ZWJ in head and "\x00" not in head else None
+    kept_joins = (
+        _SCRIPT_NONJOIN.sub("\x01", _EMOJI_JOIN.sub("\x00", head))
+        if (ZWJ in head or ZWNJ in head) and "\x00" not in head and "\x01" not in head
+        else None
+    )
     work = kept_joins if kept_joins is not None else head
     for rx, kind in ((_TAGS, "unicode-tags"), (_BIDI, "bidi-override")):
         n = len(rx.findall(work))
@@ -546,7 +637,7 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
     if zero or split:
         findings.append(Finding("zero-width", f"{zero + split} character(s) removed", field))
         work = _VS_AFTER_ASCII.sub("", _SPLITTERS.sub("", _ZERO_WIDTH.sub("", work.replace(ZWJ, ""))))
-    head = work.replace("\x00", ZWJ) if kept_joins is not None else work
+    head = work.replace("\x00", ZWJ).replace("\x01", ZWNJ) if kept_joins is not None else work
 
     def sub(rx: re.Pattern[str], kind: str, repl: Any) -> None:
         nonlocal head

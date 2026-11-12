@@ -10,7 +10,6 @@ env values and token-like strings in logs are redacted; arguments are validated 
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -398,7 +397,9 @@ def classify_read_failure(resource: str, failure: str | BaseException, name: str
             return "not-read"
         body = str(getattr(failure, "body", "") or "").strip()
         try:
-            parsed = json.loads(body) if body.startswith("{") else None
+            from kube_noob.sanitize import loads_bounded
+
+            parsed = loads_bounded(body) if body.startswith("{") else None
         except ValueError:
             parsed = None
         if isinstance(parsed, dict):

@@ -985,7 +985,10 @@ def check_reachability(
         if agree:
             enforcement_unknown = []
             inv.notes.append(
-                "Every reading of that tier -- "
+                "Both readings of that tier -- enforced and ignored -- give the same answer here, so the verdict "
+                "stands either way."
+                if len(apis) == 1
+                else "Every reading of those tiers -- "
                 + " and ".join(apis)
                 + " each enforced or ignored, in every combination a CNI could have -- gives the same answer here, "
                 "so the verdict stands either way."
