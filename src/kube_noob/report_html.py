@@ -924,6 +924,11 @@ def _ksi_sections(report: dict[str, Any], sec: Sections) -> list[str]:
                     f'<p class="note">Declined to decide: <span class="mono">'
                     f"{_esc(', '.join(r['notEvaluatedRules']))}</span>{_esc(more)}.</p>"
                 )
+            if r.get("partlyEvaluatedRules"):
+                out.append(
+                    f'<p class="note">Found something and declined on other objects: <span class="mono">'
+                    f"{_esc(', '.join(r['partlyEvaluatedRules']))}</span>.</p>"
+                )
     return out
 
 

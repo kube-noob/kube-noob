@@ -24,6 +24,9 @@ MAX_DECLINE_REASONS = 3
 MAX_DECLINE_NAMES = 20
 #: How many (object, reason) entries one rule keeps in the report's `declined` map.
 MAX_DECLINED_ENTRIES = 50
+#: How the two assumptions about the version begin. They are the only caveats that are how the audit READ the
+#: input rather than what it did not read, and the gate's Markdown lists exactly these under "Assumptions" (G272).
+ASSUMED_VERSION_PREFIXES = ("No Kubernetes version given", "No OpenShift version given")
 
 
 def build_context(
@@ -49,6 +52,7 @@ def build_context(
         # and left in it made KN-S036 report every image against an allowlist of "  " (G245). The settings
         # validator already refuses them; a programmatic caller gets the same treatment.
         allowed_registries=tuple(e.strip() for e in allowed_registries if e.strip()),
+        version_stated=version is not None,
     )
 
 
@@ -72,9 +76,9 @@ def analyze(
         resources=[d.ref() for d in docs],
     )
     if platform in OPENSHIFT_FAMILY and version is None:
-        report.assumptions.append(f"No OpenShift version given; assumed Kubernetes {ctx.k8s_version} semantics.")
+        report.assumptions.append(f"{ASSUMED_VERSION_PREFIXES[1]}; assumed Kubernetes {ctx.k8s_version} semantics.")
     if platform == "kubernetes" and version is None:
-        report.assumptions.append(f"No Kubernetes version given; assumed {ctx.k8s_version}.")
+        report.assumptions.append(f"{ASSUMED_VERSION_PREFIXES[0]}; assumed {ctx.k8s_version}.")
     if partial_bundle:
         report.assumptions.append(
             "Audited part of a namespace, so rules that fire because another object is absent "
@@ -143,6 +147,11 @@ def analyze(
         withheld = max(0, len(rest) - MAX_DECLINE_NAMES) + unnamed
         if withheld:
             tail += f"; and {withheld} more not named"
+        # How many objects it DID read in full: a partial verdict says "clean or found on N, declined on M"
+        # rather than letting the N decide the rule's word (G272).
+        decided = len(ctx.examined.get(rid, set()) - {res for res, _ in entries})
+        if decided:
+            tail += f"; {decided} other object{'s' if decided != 1 else ''} read in full"
         report.assumptions.append(
             f"{rid} was not evaluated in full, so it is not counted as clean: "
             f"{'; '.join(reason for _, reason in shown)}{tail}."
@@ -150,6 +159,7 @@ def analyze(
         report.declined[rid] = {
             "entries": [{"resource": res, "reason": reason} for res, reason in entries[:MAX_DECLINED_ENTRIES]],
             "withheld": max(0, len(entries) - MAX_DECLINED_ENTRIES),
+            "decided": decided,
         }
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).

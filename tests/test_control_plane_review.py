@@ -90,8 +90,10 @@ AA = "--authorization-mode=AlwaysAllow"
         ("tini", _pod(["tini", "--", "kube-apiserver", AA])),
         ("env", _pod(["/usr/bin/env", "kube-apiserver", AA])),
         ("hyperkube alias", _pod(["/hyperkube", "apiserver", AA])),
-        ("k3s", _pod(["k3s", "server", "--kube-apiserver-arg=authorization-mode=AlwaysAllow"])),
-        ("rke2", _pod(["rke2", "server", "--kube-apiserver-arg=authorization-mode=AlwaysAllow"])),
+        # An embedded AlwaysAllow is READ as a finding since the third review (test_control_plane_review3.py); what
+        # depends on the distribution's own defaults still declines.
+        ("k3s", _pod(["k3s", "server", "--kube-apiserver-arg=anonymous-auth=false"])),
+        ("rke2", _pod(["rke2", "server", "--kube-apiserver-arg=anonymous-auth=false"])),
         ("non-string in command", _pod(["kube-apiserver", AA, 6443])),
         ("command is a string", _pod("kube-apiserver --authorization-mode=AlwaysAllow")),
     ],

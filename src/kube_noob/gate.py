@@ -726,11 +726,10 @@ def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
 
 def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
     """The audit's assumptions and the rules that reached no verdict, as SARIF warnings (G269, G272)."""
-    from kube_noob.cli import not_evaluated_line
+    from kube_noob.cli import caveat_lines
 
     notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
-    if line := not_evaluated_line(rep.get("controlSummary") or {}):
-        notes.append({"level": "warning", "message": {"text": line}})
+    notes += [{"level": "warning", "message": {"text": ln}} for ln in caveat_lines(rep.get("controlSummary") or {})]
     return notes
 
 
@@ -968,17 +967,17 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
-    from kube_noob.cli import not_evaluated_line
+    # Two sections, not one: "assumed 1.35" is how the audit read the input, and everything else is something it
+    # did not read. "Assumptions" is an ALLOWLIST -- the assumed-version lines -- because a split by "is this a
+    # declined rule" put a RayCluster's unaudited pods and a kind with no bundled schema under "Assumptions", as if
+    # they had been read (G272).
+    from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
+    from kube_noob.cli import caveat_lines
 
-    # Two sections, not one: "assumed 1.35" is how the audit read the input, and a rule that declined is what it
-    # did not read. Under one "Not evaluated in full" heading the version assumption read as a declined rule
-    # (G272). A decline is recognised by the rule id the report's `declined` map names, not by its wording.
-    declined = tuple(f"{rid} was not evaluated" for rid in report.get("declined") or {})
     caveats = [str(a) for a in report.get("assumptions") or []]
-    gaps = [a for a in caveats if declined and a.startswith(declined)]
-    assumed = [a for a in caveats if not (declined and a.startswith(declined))]
-    if line := not_evaluated_line(report.get("controlSummary") or {}):
-        gaps.append(line)
+    assumed = [a for a in caveats if a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps = [a for a in caveats if not a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps += caveat_lines(report.get("controlSummary") or {})
     for heading, items in (("### Assumptions", assumed), ("### Not evaluated in full", gaps)):
         if not items:
             continue

@@ -367,7 +367,12 @@ def test_an_authorization_combination_the_api_server_refuses_declines(flags: lis
     ],
 )
 def test_the_accepted_neighbours_of_a_refused_combination_are_read(flags: list[str]) -> None:
-    assert _clean(_r(_pod(["kube-apiserver", *flags, "--anonymous-auth=false"])), "KN-S038")
+    """Accepted by the API server, so not "refused"; but ABAC and Webhook decide from a file not in the input,
+    so since the third review the authorizer declines and anonymous authentication is still read."""
+    report = _r(_pod(["kube-apiserver", *flags, "--anonymous-auth=false"]))
+    line = next(a for a in report.assumptions if a.startswith("KN-S038"))
+    assert _declined(report, "KN-S038") and not _hits(report, "KN-S038") and "refuses" not in line
+    assert _hits(_r(_pod(["kube-apiserver", *flags, "--anonymous-auth=true"])), "KN-S038")
 
 
 # --- 8. a known boolean given bare is true, not a possible swallow --------------------------------------------------
@@ -383,7 +388,8 @@ def test_a_bare_apiserver_boolean_does_not_decline(flag: str) -> None:
     "flag", ["--experimental-initial-corrupt-check", "--enable-v2", "-strict-reconfig-check", "--enable-pprof"]
 )
 def test_a_bare_etcd_boolean_does_not_decline(flag: str) -> None:
-    assert _clean(_r(_pod(["etcd", flag, *TLS])), "KN-S039")
+    # On an image that says etcd 3.5: --enable-v2 is a 3.5 boolean that 3.6 refuses (test_control_plane_review3.py).
+    assert _clean(_r(_pod(["etcd", flag, *TLS], image="registry.k8s.io/etcd:3.5.15-0")), "KN-S039")
 
 
 def test_an_unknown_bare_flag_before_a_flag_still_declines() -> None:

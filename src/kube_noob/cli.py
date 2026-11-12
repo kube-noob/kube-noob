@@ -319,6 +319,8 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         if r.get("notEvaluatedRules"):
             more = f" and {r['moreNotEvaluated']} more" if r.get("moreNotEvaluated") else ""
             lines.append(f"{'':<19}not evaluated: {', '.join(r['notEvaluatedRules'])}{more}")
+        if r.get("partlyEvaluatedRules"):
+            lines.append(f"{'':<19}partly evaluated: {', '.join(r['partlyEvaluatedRules'])}")
         # From the row, not from EVIDENCE: one source, so the text and the JSON cannot drift apart.
         if r.get("warning"):
             lines.append(f"{'':<19}WARNING: {r['warning']}")
@@ -416,6 +418,23 @@ def _one_line(value: object) -> str:
     return text if len(text) <= MAX_TEXT_LINE else f"{text[:MAX_TEXT_LINE]}... ({len(text) - MAX_TEXT_LINE} more)"
 
 
+def partly_evaluated_line(summary: dict[str, Any]) -> str:
+    """One bounded line naming the rules that found something and declined on some object, or ""."""
+    ids = [str(r) for r in summary.get("partlyEvaluatedRules") or []]
+    if not ids:
+        return ""
+    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
+    return (
+        f"partly evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules found something and "
+        "declined on other objects; their findings are counted, and the declined objects are not clean"
+    )
+
+
+def caveat_lines(summary: dict[str, Any]) -> list[str]:
+    """The not-evaluated and partly-evaluated lines, in that order, leaving out an empty one."""
+    return [ln for ln in (not_evaluated_line(summary), partly_evaluated_line(summary)) if ln]
+
+
 def not_evaluated_line(summary: dict[str, Any]) -> str:
     """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did."""
     ids = [str(r) for r in summary.get("notEvaluatedRules") or []]
@@ -436,7 +455,7 @@ def _print_report(rep: dict[str, Any]) -> None:
     )
     for a in rep.get("assumptions", []):
         print(f"  note: {_one_line(a)}")
-    if line := not_evaluated_line(rep.get("controlSummary") or {}):
+    for line in caveat_lines(rep.get("controlSummary") or {}):
         print(f"  {line}")
     if limit := rep.get("notCheckedBeyond"):
         # Print it before the findings, not after: somebody reading a short report in a terminal has to see the

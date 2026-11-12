@@ -205,13 +205,22 @@ def summary(
             excepted[c] = excepted.get(c, 0) + 1
     clean: dict[str, int] = {}
     unevaluated: dict[str, int] = {}
+    partly: dict[str, int] = {}
     withheld: dict[str, int] = {}
     not_evaluated_rules: list[str] = []
+    partly_evaluated_rules: list[str] = []
     if evaluated_rule_ids is not None:
         ran = set(evaluated_rule_ids)
         with_findings = set(rule_ids) | set(excepted_rule_ids or ())
         hidden = set(fired_rule_ids or ()) - with_findings
         for rid, cs in RULE_CONTROLS.items():
+            if (rid in with_findings or rid in hidden) and rid not in ran:
+                # It found something AND declined somewhere: the finding counts as a finding, and the rule is
+                # named, because before G272's third review it was named nowhere -- neither clean nor in the
+                # not-evaluated list, so the declined objects read as covered.
+                partly_evaluated_rules.append(rid)
+                for c in cs:
+                    partly[c] = partly.get(c, 0) + 1
             if rid in with_findings:
                 continue  # already counted as a finding or an accepted exception
             if rid in hidden:
@@ -234,6 +243,8 @@ def summary(
         if evaluated_rule_ids is not None:
             entry["clean"] = clean.get(c, 0)
             entry["notEvaluated"] = unevaluated.get(c, 0)
+            if partly.get(c):
+                entry["partlyEvaluated"] = partly[c]
             if fired_rule_ids is not None:
                 entry["withheld"] = withheld.get(c, 0)
         controls.append(entry)
@@ -242,6 +253,9 @@ def summary(
         # The counts said HOW MANY rules of a control did not run; nothing said WHICH, outside the KSI view, so a
         # rule that declined quietly was invisible in the text view and the SARIF (G272).
         out["notEvaluatedRules"] = sorted(not_evaluated_rules)
+        # Rules that found something on some objects and declined on others (`declined` names those objects).
+        # Disjoint from notEvaluatedRules, so every rule that was not evaluated in full is in exactly one (G272).
+        out["partlyEvaluatedRules"] = sorted(partly_evaluated_rules)
     note = "Findings are evidence about these controls; an assessment decides whether a control is met."
     if excepted:
         note += (

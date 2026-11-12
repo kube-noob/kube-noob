@@ -37,7 +37,8 @@ save it with `kubenoob_learning_profile_set`.
 1. **Audit & Validation Brief** - platform, versions, assumptions, before/after severity counts. What the audit did
    not decide is part of the brief: read `assumptions`, `declined` (per rule, the objects it could not read and why)
    and `controlSummary.notEvaluatedRules` (rules that reached no verdict). A rule listed there is neither clean nor
-   a finding; never report it as passed.
+   a finding; never report it as passed. `controlSummary.partlyEvaluatedRules` found something and declined on
+   other objects: report the findings, and never the declined objects as covered.
 2. **Production Manifest / Solution** - the final YAML (from the tool output, never retyped from memory).
 3. **Red Team Findings & Safeguards** - exposed scenarios, remaining blockers, verification commands for the user
    to run (`oc apply --dry-run=server -f`, `kubectl diff -f`); never apply anything yourself.

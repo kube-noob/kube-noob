@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 342 to
-74 929 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 374 to
+74 961 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1118,7 +1118,14 @@ fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the Alw
 authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
 certificates switched off (a trusted CA file switches them on too, as etcd reads it; `--auto-tls` with no
 `--cert-file` or `--key-file` switches them off again, because etcd then replaces its TLS settings with a generated
-certificate's). Both recognise the component by the binary the container runs, never by its name or a label;
+certificate's). Both recognise the component by what the container runs, never by its name or a label, and
+recognition is fail-safe: a container is passed over only when nothing points at the binary -- no image whose name
+has it as a dash-separated component (`etcd-amd64`, `kube-apiserver-amd64`, `hyperkube`; not `etcd-operator`),
+none of its flags, no `ETCD_*` variable, no mention of it (or of k3s, rke2 or k0s) as a command word in argv, args,
+env values or a script -- or when it is positively something else: `etcdctl`, `k3s agent`, or a script on the
+etcd image made only of etcdctl and coreutils. A path is the program only in a `bin` or `sbin` directory, `.` or
+`/`, so `tar czf b /var/lib/etcd` is not etcd. `--insecure-port` on a network address is a CRITICAL finding on a
+stated release before 1.24;
 kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
 absent flag is the upstream default, named in the finding with the releases it was checked at:
 anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
@@ -1128,10 +1135,14 @@ provider with `insecure: true` and an `ldap://` URL.
 
 Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
 `--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
-`envFrom` can set any `ETCD_*` variable; a shell script (directly, as `busybox sh` or after `env`), a wrapper such
-as `tini` or `go-runner`, k3s, rke2 or k0s, or an image entrypoint that runs the binary is not executed; nor is any
-other entrypoint -- a script file, `s6-svscan`, `/pause`, `python3 -c` -- when the image is the binary's, an
-argument is one of its flags or an argument names it; a `$(VAR)` anywhere in argv is not expanded; a flag
+`envFrom` can set any `ETCD_*` variable (an empty `--config-file=` falls through to `ETCD_CONFIG_FILE`, as etcd
+reads it); a shell script (directly, as `busybox sh` or after `env`), a wrapper such as `tini` or `go-runner`, an
+image entrypoint (no `command`, or `command: []`), or any other entrypoint -- a script file, `s6-svscan`, `/pause`,
+`python3 -c` -- that something points at is not executed; k3s, rke2 and k0s set the API server's other flags from
+their own defaults (an AlwaysAllow passed through `--kube-apiserver-arg` is still read as a finding); ABAC and
+Webhook authorize from a file not in the input; `--insecure-port` on 1.24 or later, or on an assumed version, is a
+flag the server refuses; `--enable-v2` is refused by etcd 3.6 unless the image says 3.5; a kubeadm
+`ClusterConfiguration` or an OpenShift `KubeAPIServer` writes the flags and is named as seen and not read; a `$(VAR)` anywhere in argv is not expanded; a flag
 kube-noob does not know, given without `=` before another flag, may swallow it (so `--version` or `-h` there is
 not read as one); an authorization-mode combination the API server refuses to start with, and a `KMS` encryption
 type with no `kms` block, are not read as a setting; an encryption type or identity provider type openshift/api
@@ -1142,8 +1153,11 @@ reason names `--platform openshift`). In each case the rule is left out of the e
 object, up to a cap -- in the text view, the JSON (`declined`), the SARIF notifications, the MCP result and the
 gate's JSON, SARIF, Markdown and HTML. When the rule found nothing anywhere, its controls count it as not
 evaluated and `controlSummary.notEvaluatedRules` names it. When it found something on one object and declined on
-another, the finding is reported and counted under its controls as a finding, and the decline is still stated in
-`assumptions` and `declined`; it is not in `notEvaluatedRules`, which lists rules that reached no verdict at all. An
+another, the finding is reported and counted under its controls as a finding, the decline is still stated in
+`assumptions` and `declined`, and `controlSummary.partlyEvaluatedRules` names it (as do the KSI rows, the OSCAL
+control remarks, the text view, the SARIF and the gate); it is not in `notEvaluatedRules`, which lists rules that
+reached no verdict at all, so every rule not evaluated in full is in exactly one of the two. `declined[rule].decided`
+says how many objects the rule read in full beside the ones it declined. An
 input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
 "not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
 `exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale.
