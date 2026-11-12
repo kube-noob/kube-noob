@@ -52,6 +52,7 @@ import yaml
 
 from kube_noob.debug.cluster import redact_text
 from kube_noob.mustgather.ingest import Bundle, classify, root_of
+from kube_noob.sanitize import visible
 from kube_noob.signals import KINDS, Signal, for_text
 from kube_noob.signals.catalogue import get as catalogue_get
 from kube_noob.signals.core import extract
@@ -82,7 +83,6 @@ _NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?\Z")
 _LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
 _REASON = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}\Z")
 _VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]{1,64})?\Z")
-_HIDDEN = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 _SUFFIX = re.compile(r"\.(?:ya?ml|json)$")
 _ERRORISH = re.compile(
     r"(?i)\b(error|failed|failure|denied|forbidden|panic|fatal|unable|cannot|timeout|timed out|refused|invalid|"
@@ -238,7 +238,7 @@ def _text(value: Any, limit: int = TEXT_LIMIT) -> str:
     if value is None or isinstance(value, dict | list):
         return ""
     s = value if isinstance(value, str) else str(value)
-    s = " ".join(_HIDDEN.sub(" ", s[: limit * 4]).split())
+    s = " ".join(visible(s[: limit * 4]).split())
     s = redact_text(s)
     return s if len(s) <= limit else s[: limit - 3] + "..."
 

@@ -124,6 +124,7 @@ PRIVILEGED_SCCS = frozenset(
     {"privileged", "hostaccess", "hostmount-anyuid", "hostnetwork", "hostnetwork-v2", "node-exporter"}
 )
 _RBAC_GROUP = "rbac.authorization.k8s.io"
+_RBAC_KINDS = frozenset({"Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"})
 _IDENTITY_RESOURCES = frozenset({"roles", "clusterroles", "users", "groups", "serviceaccounts"})
 
 # Documented meaning of the user-facing ClusterRoles, used only when the input does not carry them.
@@ -291,14 +292,14 @@ canonical_form = _canonical_form  # one canonical form of an object, for orderin
 class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
-    dropped_secrets: int = 0
+    dropped_unread: int = 0
 
     def add(self, obj: Any, kind: str | None = None) -> None:
         if not isinstance(obj, dict):
             return
         k = kind or str(obj.get("kind") or "")
         if k == "Secret":
-            self.dropped_secrets += 1  # never analysed, never echoed
+            self.dropped_unread += 1  # never analysed, never echoed
             return
         if k not in KINDS:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
@@ -309,6 +310,11 @@ class Inventory:
 
             if unread_pod_specs(Document(index=0, data=obj)):
                 self.not_read.append(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked")
+            return
+        api = obj.get("apiVersion")
+        if k in _RBAC_KINDS and isinstance(api, str) and api.split("/")[0] != _RBAC_GROUP:
+            # A CRD that happens to be called Role is not RBAC: reading it as one would invent rights (G270's lesson).
+            self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_RBAC_GROUP}, so it was ignored")
             return
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:
             raise ScanError(f"more than {MAX_OBJECTS} objects; scan fewer namespaces")
@@ -1584,7 +1590,7 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         "workloads": len({id(site.obj) for site in sites}),
         "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
         "notRead": sorted(set(inv.not_read))[:50],
-        "secretsIgnored": inv.dropped_secrets,
+        "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
 
@@ -1609,7 +1615,12 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
             except KubeNoobError as exc:  # forbidden or not served (no Routes or SCCs on Kubernetes)
                 inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue
-            for item in _list(data.get("items")) if isinstance(data, dict) else []:
+            items = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                # A response with no items list is not an empty list: it read as "no RoleBindings" (G270's lesson).
+                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: the response carried no items list")
+                continue
+            for item in items:
                 inv.add(item, kind)
     inv.canonicalize()
     return inv

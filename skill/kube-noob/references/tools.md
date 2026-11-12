@@ -248,6 +248,13 @@ List audit rules. All rule ids with stage, category and default severity.
 
 - no arguments
 
+## operator_inventory
+
+Installed OLM operators in manifests. Which OLM operators the given ClusterServiceVersions, Subscriptions, InstallPlans and OperatorGroups describe: package, version (and whether it was stated or read off the name), catalog, channel, approval mode, namespace and the namespaces it serves (copies OLM writes into each target namespace are folded into one operator), phase, a pending upgrade or a Manual approval waiting. A Subscription with no installed CSV, and a CSV with no Subscription, each get their own state. What the input could not show is part of the answer: with no ClusterServiceVersions the verdict is not-determined, never zero operators. Secret objects are dropped unread.
+
+- `manifests`* (string): OLM objects as YAML: ClusterServiceVersions, Subscriptions, InstallPlans, OperatorGroups (a List, or `oc get csv,sub,ip,og -A -o yaml` output, works). Other kinds are ignored; Secret objects are dropped unread.
+- `top` (integer): How many operators to return.
+
 ## policy_generate
 
 Turn audit rules into admission policies. Generate ValidatingAdmissionPolicy (with binding) and/or Kyverno ValidatingPolicy YAML from kube-noob's audit rules, in audit (warn and record) or enforce mode, for a platform. One policy per rule decidable from one object; each names its rule, fix and source. Rules that need other objects or that the API server already enforces are listed with the reason. Nothing is applied.
@@ -276,7 +283,7 @@ Blast radius of one workload in manifests. If this workload is compromised, what
 - `mermaid` (boolean): Also return the graph as a Mermaid flowchart (text).
 - `namespace` (null/string): Default: default.
 - `whole_bundle` (boolean): True only when the manifests are everything that applies to this workload (its RoleBindings, the ClusterRoleBindings, its Services, Routes and Ingresses): an absence in them then counts as an answer. Otherwise the answer is never complete, because files cannot show what they leave out.
-- `workload`* (string): The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as posture_scan prints it (Deployment/shop/web). A Pod is resolved to the owner the scan scores.
+- `workload`* (string): The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as posture_scan prints it (Deployment/shop/web). A Pod is scored on its own spec, its owners as context.
 
 ## posture_report
 

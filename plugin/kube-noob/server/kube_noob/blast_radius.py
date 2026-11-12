@@ -38,6 +38,7 @@ import unicodedata
 from typing import Any
 
 from kube_noob import attack_paths as ap
+from kube_noob.sanitize import visible
 
 SCHEMA_ID = "kube-noob/blast-radius"
 SCHEMA_VERSION = 1
@@ -129,7 +130,7 @@ SCHEMA: dict[str, Any] = {
         "paths",
         "pathsWithheld",
         "notRead",
-        "secretsIgnored",
+        "droppedUnread",
         "limitations",
     ],
     "properties": {
@@ -245,7 +246,7 @@ SCHEMA: dict[str, Any] = {
         "paths": {"type": "array", "items": {"type": "object"}},
         "pathsWithheld": {"type": "integer", "minimum": 0},
         "notRead": _STR_LIST,
-        "secretsIgnored": {"type": "integer", "minimum": 0},
+        "droppedUnread": {"type": "integer", "minimum": 0},
         "limitations": _STR_LIST,
     },
 }
@@ -925,7 +926,7 @@ def reach(
             "paths": [p.as_dict(i + 1) for i, p in enumerate(paths[: min(MAX_LISTED, list_cap)])],
             "pathsWithheld": max(0, len(paths) - min(MAX_LISTED, list_cap)),
             "notRead": sorted(set(inv.not_read))[: min(50, list_cap)],
-            "secretsIgnored": inv.dropped_secrets,
+            "droppedUnread": inv.dropped_unread,
             "limitations": limitations,
         }
         clipped = [0]
@@ -989,9 +990,10 @@ _SAFE = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678
 
 
 def flat(text: Any) -> str:
-    """One line: every run of whitespace, newlines included, is one space. A name or path in the input carrying a
-    newline otherwise printed a forged row into the text view (G273)."""
-    return " ".join(str(text).split())
+    """One printable line: every non-printing character and terminal escape made a space by `sanitize.visible` (the
+    one implementation, G270), then every run of whitespace, newlines included, one space. A name or path in the
+    input carrying a newline otherwise printed a forged row into the text view (G273)."""
+    return " ".join(visible(str(text)).split())
 
 
 def mermaid_label(text: str) -> str:
@@ -1090,7 +1092,7 @@ def render_text(graph: dict[str, Any]) -> str:
         )
     if graph["notRead"]:
         out.append("\nnot read: " + "; ".join(flat(x) for x in graph["notRead"][:10]))
-    ignored = graph["secretsIgnored"]
+    ignored = graph["droppedUnread"]
     if ignored:
         out.append(f"{ignored} Secret object(s) in the input were ignored, unread.")
     out.append("")

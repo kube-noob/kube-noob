@@ -601,7 +601,7 @@ class _ReachAnchor(_In):
         max_length=512,
         pattern=_WORKLOAD_REF,
         description="The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as "
-        "posture_scan prints it (Deployment/shop/web). A Pod is resolved to the owner the scan scores.",
+        "posture_scan prints it (Deployment/shop/web). A Pod is scored on its own spec, its owners as context.",
     )
     namespace: str | None = Field(
         None, max_length=63, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", description="Default: default."
@@ -631,6 +631,28 @@ class ClusterPostureReachIn(_ReachAnchor):
         description="Namespaces to read (default: all the account can list). Grants in namespaces not read are "
         "reported as not determined.",
     )
+
+
+class OperatorInventoryIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="OLM objects as YAML: ClusterServiceVersions, Subscriptions, InstallPlans, OperatorGroups (a "
+        "List, or `oc get csv,sub,ip,og -A -o yaml` output, works). Other kinds are ignored; Secret objects are "
+        "dropped unread.",
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+
+
+class ClusterOperatorInventoryIn(_In):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: every namespace, which needs a cluster-wide grant). With "
+        "namespaces the answer is partial and says so.",
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
 
 
 class BuildDiagnoseIn(_In):
@@ -1540,6 +1562,19 @@ class Toolkit:
             inv, p.workload, p.namespace, mermaid=p.mermaid, live=True, namespaces_read=list(p.namespaces)
         )
 
+    def operator_inventory(self, p: OperatorInventoryIn) -> dict[str, Any]:
+        """Which OLM operators the objects describe, and what they could not say."""
+        from kube_noob import operators
+
+        out = operators.inventory(operators.from_manifests(p.manifests), top=p.top)
+        self._observe([f"operators:{out['verdict']}"])
+        return out
+
+    def cluster_operator_inventory(self, p: ClusterOperatorInventoryIn) -> dict[str, Any]:
+        from kube_noob import operators
+
+        return operators.inventory(operators.collect_live(get_backend(self.settings), list(p.namespaces)), top=p.top)
+
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
         memory for the error lines."""
@@ -1673,6 +1708,10 @@ class Toolkit:
         out["findings"] = rep["findings"][: p.top]
         if p.case_draft:
             out["caseDraft"] = mg_report.case_draft(rep)
+        from kube_noob import operators
+        from kube_noob.mustgather import operators as mg_operators
+
+        out["operatorInventory"] = operators.inventory(mg_operators.collect(bundle))
         self._observe([f"signal:{s['kind']}:{s['name']}" for s in rep["signals"][:20]])
         return out
 
@@ -2270,6 +2309,19 @@ class Toolkit:
                 self.posture_reach,
             ),
             ToolSpec(
+                "operator_inventory",
+                "Installed OLM operators in manifests",
+                "Which OLM operators the given ClusterServiceVersions, Subscriptions, InstallPlans and OperatorGroups "
+                "describe: package, version (and whether it was stated or read off the name), catalog, channel, "
+                "approval mode, namespace and the namespaces it serves (copies OLM writes into each target namespace "
+                "are folded into one operator), phase, a pending upgrade or a Manual approval waiting. A Subscription "
+                "with no installed CSV, and a CSV with no Subscription, each get their own state. What the input "
+                "could not show is part of the answer: with no ClusterServiceVersions the verdict is not-determined, "
+                "never zero operators. Secret objects are dropped unread.",
+                OperatorInventoryIn,
+                self.operator_inventory,
+            ),
+            ToolSpec(
                 "build_diagnose",
                 "Diagnose a failed build log",
                 "Read a failed GitHub Actions, Jenkins, Tekton or OpenShift build log: the failing step (and why it is "
@@ -2487,6 +2539,16 @@ class Toolkit:
                     open_world=True,
                 ),
                 ToolSpec(
+                    "cluster_operator_inventory",
+                    "Installed OLM operators in the cluster (live, read-only)",
+                    "Read ClusterServiceVersions and Subscriptions from the cluster (never Secrets) and list the "
+                    "installed operators like operator_inventory. A 404 says the cluster has no OLM; a 403 says the "
+                    "inventory is not determined. Neither is reported as zero operators.",
+                    ClusterOperatorInventoryIn,
+                    self.cluster_operator_inventory,
+                    open_world=True,
+                ),
+                ToolSpec(
                     "cluster_check_namespace",
                     "Check a namespace now (live, read-only)",
                     "Run one watch poll on a namespace: find crash loops, OOM kills, image pulls, policy denials, "
@@ -2547,7 +2609,8 @@ class Toolkit:
                     "Analyse a must-gather",
                     "Open an OpenShift must-gather (or oc adm inspect output) safely and say what is wrong, most "
                     "severe first: the cluster version and update, cluster operators, nodes, machine config pools, "
-                    "OLM operators, pods, warning events and etcd log hints. Each finding has its evidence file, its "
+                    "OLM operators, pods, warning events and etcd log hints, and an installed-operator inventory. Each "
+                    "finding has its evidence file, its "
                     "signals, read-only commands to confirm it, and the known OpenShift bugs and team memory entries "
                     "that match it for the version the cluster runs. Nothing is extracted or run and Secrets are "
                     "never read."

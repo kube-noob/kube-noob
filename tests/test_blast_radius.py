@@ -361,7 +361,7 @@ def test_named_secrets_are_listed_by_name_and_never_read() -> None:
     graph = _reach(docs, "deployment/app", "shop")
     assert sorted(e["to"] for e in _edges(graph, "can read")) == ["secret:shop/db", "secret:shop/tls"]
     assert _node(graph, "secret:shop/db")["label"] == "Secret shop/db"
-    assert graph["secretsIgnored"] == 1 and "aHVudGVy" not in json.dumps(graph)
+    assert graph["droppedUnread"] == 1 and "aHVudGVy" not in json.dumps(graph)
 
 
 def test_node_escape_legs_name_the_field_that_proves_them() -> None:
@@ -1183,3 +1183,46 @@ def test_the_deprecated_service_account_field_is_named_as_it_is_written() -> Non
     edge = _edges(_reach(docs, "deployment/web", "shop"), "uses token of")[0]
     assert edge["evidence"]["field"] == "spec.template.spec.serviceAccount"
     assert edge["evidence"]["text"].startswith("spec.serviceAccount=adm;")
+
+
+# --- lessons of the operator-inventory review (G270) that apply to the shared scan code -----------------------------
+
+
+def test_a_live_list_without_an_items_list_is_not_read_rather_than_empty() -> None:
+    """A response with no `items` read as "no RoleBindings": the RBAC leg then said nothing was bound."""
+
+    class NoItems(FakeBackend):
+        def get(
+            self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any
+        ) -> dict[str, Any]:
+            return {"kind": "List"} if resource == "rolebindings" else super().get(resource, name, namespace, **kw)
+
+    inv = ap.collect_live(NoItems([*_web(), *_bound(SECRET_READER)]), [])
+    assert any(n.startswith("rolebindings: the response carried no items list") for n in inv.not_read)
+    graph = br.reach(inv, "deployment/web", "shop", live=True)
+    assert _leg(graph, "rbac")["status"] == "not determined" and graph["complete"] is False
+
+
+def test_a_role_of_another_api_group_is_not_rbac() -> None:
+    """A CRD called Role in another API group is not RBAC: reading it as one would invent a right."""
+    fake = _role("Role", "r", SECRET_READER)
+    fake["apiVersion"] = "example.io/v1"
+    docs = [*_web(), fake, _binding("RoleBinding", "v", "Role", "r", [WEB])]
+    inv = ap.Inventory.from_documents(copy.deepcopy(docs))
+    assert any("apiVersion example.io/v1 is not rbac.authorization.k8s.io" in n for n in inv.not_read)
+    graph = _reach(docs, "deployment/web", "shop")
+    assert _leg(graph, "secrets")["status"] != "reached"
+    assert any("Role/shop/r is not in the input" in r for r in _undetermined(graph))
+
+
+def test_invisible_and_bidirectional_characters_are_removed_from_the_text_views(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One implementation, `sanitize.visible`: a right-to-left override or an Arabic letter mark in a name could make
+    a printed path read as something else."""
+    name = "web" + chr(0x202E) + "gnp.exe" + chr(0x061C) + chr(0x200B)
+    graph = _reach([*_web(volumes=[{"name": "v", "hostPath": {"path": f"/data/{name}"}}])], "deployment/web", "shop")
+    text = br.render_text(graph)
+    for ch in (chr(0x202E), chr(0x061C), chr(0x200B)):
+        assert ch not in text
+    assert br.flat("a" + chr(0x1B) + "[31mb" + chr(0x2028) + "c") == "a b c"

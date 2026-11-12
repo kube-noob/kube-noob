@@ -122,13 +122,13 @@ already reach, and not a new engine, integration or credential.
 | R4 | ~~A detection-coverage statement for the logging family~~ | **Shipped** (G244, corrected by G249 and G252). From the same `APIServer` object `KN-S035` reads, `kube_noob.audit.detection` states which categories of API activity the cluster's settings can record and which they cannot, per group where a `customRules` entry overrides the top level. Every row is read from the policy manifests `cluster-kube-apiserver-operator` generates the real policy from, not from the API type's summary comment, which is stale on Events -- dropped through 4.17 standalone, through 4.18 on a hosted control plane, because HyperShift vendors its own copy of that generator. Two rows are therefore decided by `--platform` and `--version` together and reported as undecidable without them; a Kubernetes version is mapped rather than compared; and an unknown profile, a malformed `spec.audit`, a non-mapping `metadata` and a bundle with two singletons are all undecidable rather than guessed. It appears in `kube-noob audit` and the `audit_manifests` tool, only on OpenShift and only when the bundle carries the object |
 | R6 | **Admission sees the pod specs inside operator CRDs** -- *webhook done, policies left* | **Half shipped** (G248): the bundled webhook runs the audit, so it could always find a privileged container in a KServe predictor or a Ray head; the chart simply never asked the API server to send those resources, and now it does for `serving.kserve.io` and `ray.io`, with the list asserted against the audit's own table of pod-spec-carrying kinds. What is left is the generated ValidatingAdmissionPolicies and Kyverno policies: each kind's pod spec sits at a different path, a worker-group list needs an `all` over it, and a variable that indexes a path the object does not have fails the policy closed -- under `failurePolicy: Fail` a wrong guess denies every InferenceService in the cluster. It needs the kind-cluster job with CRD stand-ins (scripts/policy_kind_crds.yaml already carries six), not a local test, and the generated file states the gap until then |
 | R7 | ~~`kubectl debug` goes through a subresource nothing matches~~ | **Shipped for the webhook** (G250), and closed for the policies with a reason rather than a change. The webhook evaluates `pods/ephemeralcontainers` and no other subresource: the owner check does not apply there (no owner carries an ephemeral container) and only the findings the request ADDS are reported, so a Pod that already breaks an enforced rule can still be debugged. The generated policies are deliberately not extended to it: a ValidatingAdmissionPolicy has no before-and-after comparison, so one matching the subresource would refuse every debug of an already-failing Pod -- a trap rather than a control |
-| R5 | **Operator and add-on vulnerability surface** | Reachable once **E2**'s operator inventory exists, by matching installed ClusterServiceVersion versions against the known-issue corpus already shipped. Gated on E2, recorded so it is not rediscovered |
+| R5 | **Operator and add-on vulnerability surface** | Unblocked: **E2**'s operator inventory shipped (G270), so what is left is matching each operator's `package` and `version` against the known-issue corpus already shipped. Recorded so it is not rediscovered |
 
 ### The moat backlog, reconciled 2026-11-05
 
 The private build queue (M0-M13, 57 items) was last written on 2026-11-02 and its own tally said 21 done and 36
 todo. Re-reading it against the code on 2026-11-05 gave 21 shipped, 7 partial, 29 not started; as of 2026-11-11 it
-is **23 shipped, 6 partial, 28 not started** (I2 and V3 shipped, I1 found partly built). The partials are the finding,
+is **24 shipped, 6 partial, 27 not started** (I2, E2 and V3 shipped, I1 found partly built). The partials are the finding,
 because most of them were recorded as untouched and one as finished:
 
 - **`I6` REST API was marked done and is not.** Twelve routes ship with a generated OpenAPI document and a
@@ -160,11 +160,15 @@ because most of them were recorded as untouched and one as finished:
 
 Between 2026-11-02 and 2026-11-10 none of the work moved a moat item from todo to shipped: it all belonged to the
 correctness track above. That was the right order by this file's own principle, and worth saying plainly rather
-than leaving the two tallies to imply progress neither of them made. I2 is the first, V3 the second.
+than leaving the two tallies to imply progress neither of them made. I2 is the first; E2 and V3 followed.
 
-Next from that queue, in order, with what each already has: **E2** installed-operator inventory (two allowlist
-entries; the must-gather analyser already parses ClusterServiceVersions, and E1 and the upgrade pre-mortem both
-need the inventory), **GOV3**'s three missing criteria, and the rest of **I1** -- the
+**E2** installed-operator inventory shipped on 2026-11-11 (G270): `operators inventory` over manifests, a
+must-gather or the cluster, with `clusterserviceversions` and `subscriptions` on the read-only allowlist. Each
+operator carries a package name and a version labelled with where it came from, which is what R5 needs; E1 and the
+upgrade pre-mortem can now read it too.
+
+Next from that queue, in order, with what each already has: **GOV3**'s three missing criteria, and the rest of
+**I1** -- the
 only item that makes the north-star claim (alert to evidence pack in a minute) measurable. Its receiver route
 already ships and every analyser it needs already works, so what is left is the report and the clock.
 
@@ -188,9 +192,9 @@ remembered:
 ## The surfaces: what is code and what a person actually looks at
 
 Measured 2026-11-06, not estimated, and generated by `scripts/doc_numbers.py` rather than typed. The engine is
-about 66,000 lines across 151 modules with about 46,000 lines of tests (both to the nearest thousand, because a
-line count that changes with every commit is not a claim worth gating on), and exactly 93 rules, 49 MCP tools,
-109 commands and 14 chart templates. The part a human looks at is three things, and only
+about 67,000 lines across 153 modules with about 47,000 lines of tests (both to the nearest thousand, because a
+line count that changes with every commit is not a claim worth gating on), and exactly 93 rules, 50 MCP tools,
+111 commands and 14 chart templates. The part a human looks at is three things, and only
 one of them is in this repository:
 
 | Surface | State | Who renders it |

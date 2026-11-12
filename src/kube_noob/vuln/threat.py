@@ -480,7 +480,7 @@ def model(
         "applications": out_apps,
         "attackVersion": attack.VERSION,
         "attribution": attack.ATTRIBUTION,
-        "secretsIgnored": inv.dropped_secrets,
+        "secretsIgnored": inv.dropped_unread,
         "statuses": {
             "open": "a mitigating rule fails on the element, or the right exists",
             "mitigated": "every mitigating rule passes on the element",
