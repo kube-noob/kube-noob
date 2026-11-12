@@ -392,7 +392,11 @@ kube-noob --format json must-gather analyze must-gather.local.542134234462771228
 Before you open a case, `--report` writes `report.md` and `report.json` with every finding matched to the known
 OpenShift bugs for the version the cluster runs (and to your team's approved memory entries), and `--case-draft`
 adds `case-draft.md`: environment, update history, evidence files, matched bugs and the read-only checks to paste,
-with a `[FILL IN: ...]` for everything only you know. `kube-noob demo must-gather` shows the whole flow offline.
+with a `[FILL IN: ...]` for everything only you know. `knownIssuesVerdict` says whether the findings were looked up
+at all: an OKD must-gather (a version such as `4.20.0-okd-scos.6`) is `not-determined`, titled OKD, and every file says
+why, in the same words `operators issues --must-gather` uses -- the bundled release notes are OpenShift Container
+Platform's; a cluster with no ClusterVersion is `not-applicable`. `kube-noob demo must-gather` shows the whole flow
+offline.
 
 ```bash
 kube-noob must-gather analyze must-gather.tar.gz --report case-01 --case-draft
@@ -417,6 +421,108 @@ findings: 2 critical, 8 high, 10 medium, 2 low, 2 info
            next: oc describe pod -n shop web-7d9f
   MEDIUM   etcd: etcd logged "slow fdatasync" 1 time(s) on 1 member(s)
 ```
+
+### Which operators are installed, at what version, and from where?
+
+`operators inventory` lists what OLM installed: each operator's package, version (and whether `spec.version` stated
+it or it was read off the name), catalog, channel, approval mode, its namespace and the namespaces it serves, its
+phase, an upgrade waiting to happen and a Manual approval waiting for a person. OLM copies an operator's
+ClusterServiceVersion into every namespace it serves; those copies are folded into one operator with the list of
+namespaces, never counted as more installs. A Subscription with nothing installed, and a ClusterServiceVersion with
+no Subscription (catalog and channel then say unknown), each get a state of their own.
+
+It reads manifests, a must-gather or the cluster (ClusterServiceVersions and Subscriptions only, read-only). What it
+could not read is part of the answer, and the list is `listed` only when nothing it needs was skipped: no
+ClusterServiceVersions read is "not determined"; a file it could not parse, a file the must-gather reader skipped, an
+object it could not use, or a namespace with CSVs and no Subscription in the files you gave makes it `partial` and is
+named; a cluster that answers 404 for `operators.coreos.com` on both reads is "not an OLM cluster". None of them is
+reported as zero operators. A Subscription counts as installed only through the CSV its `installedCSV` names.
+`--require-complete` exits 5 on anything but a complete answer. With `-f DIR`, every `.yaml`, `.yml` and `.json` file
+is read on its own. Operators installed by Helm or plain manifests are outside it, and it says so.
+
+```bash
+kube-noob operators inventory --must-gather must-gather.tar.gz
+oc get csv,sub,ip,og -A -o yaml > olm.yaml
+kube-noob operators inventory -f olm.yaml --format json
+kube-noob --cluster-enabled operators inventory --live --require-complete
+```
+
+```text
+operator inventory (must-gather): partial -- 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator
+  rhacs-operator.v4.6.0  package unknown  version 4.6.0 (derived from the name)  state subscription-not-read  phase Failed [InstallCheckFailed]
+      namespace rhacs-operator; copied into 1: shop
+      catalog unknown, channel unknown, approval unknown (not read)
+not read: subscriptions (not-read) not in this must-gather (namespaces/<ns>/operators.coreos.com/subscriptions)
+```
+
+From an MCP client, `kubenoob_operator_inventory` takes the objects as YAML, `kubenoob_cluster_operator_inventory`
+reads the cluster when cluster access is on, and `kubenoob_analyze_must_gather` and `kube-noob must-gather
+analyze` return the same inventory as `operatorInventory`.
+
+### Do the release notes report a problem with an operator I run?
+
+`operators issues` is a **lookup in the OpenShift release notes, not a vulnerability check and not a gate** on "do my
+operators have known issues". It takes the same inputs as `operators inventory`, through the same reading code, and
+for each installed operator lists the known and fixed issues in the bundled release notes (4.20 to 4.22, as of the
+date it prints) that use a name kube-noob has for it, for the release the cluster runs.
+
+What it can say is limited by the release notes more than by kube-noob. They key issues by OpenShift release and
+text, not by operator or operator version, so the match goes through a table of names per package: the product's
+name (`named`), and component names and abbreviations only its stack uses, such as `linuxptp-daemon` or `OSSM`
+(`mentioned`, a weaker tier, never merged into the first). An issue that also names another product or a platform
+component (the Cluster Ingress Operator, the web console, FRR-K8s) is shown as a mention with that reason: it is about
+where the two meet, and its fix may be in the platform. On the bundled notes that leaves seven packages with issues
+that name them outright and six more that are only mentioned; "named" says the notes name the product, not that it
+is affected. Most operators have no table entry and are `no-alias` -- not matched, which is not the same as no issue.
+
+- **Open issues come first.** A known issue with no fix listed stays listed at later releases ("listed for OpenShift
+  4.20; no fix listed since"), the rule `known-issues` uses. Each row gives its issue link, release-notes file and
+  corpus date; each package's list is given once however many operators share it, with what was withheld per class.
+- **A fix is never decided.** The notes list "fixed in 4.21.4" and do not say whether that ships in the OpenShift
+  payload or the operator's own bundle, so `installedHasFix` is `not-determined`; `fixReleaseVsCluster` says only
+  whether 4.21.4 is at or before the cluster's version.
+- **Only Red Hat's build.** An operator from `community-operators`, `certified-operators` or `redhat-marketplace`
+  is not looked up; one from any other catalog (a mirror, a custom one) keeps its matches, labelled as unverified.
+- **The release.** `--openshift-version`, and the must-gather's or the live ClusterVersion named `version`, which is
+  read even when a version is given, so a disagreement is reported. An update in progress searches both releases and
+  is incomplete, even when the version you give is the one it is updating from; `releasesSearched` lists only the
+  releases actually searched. A version taken from `status.desired` says so. A cluster that does not serve
+  ClusterVersion is not OpenShift, and an OKD version (`4.20.0-okd-scos.6`) is not OpenShift Container Platform: the
+  notes do not apply to either, and a release outside 4.20-4.22 is not determined for every operator.
+- **One gate, for the evidence.** `complete` is exactly "`incompleteBecause` is empty", and `--require-complete` exits 5
+  unless it is: the inventory read in full, and the release known, settled, indexed and OpenShift's. So a cluster the
+  release notes do not cover -- not OpenShift, OKD, or a release outside the index -- exits 5 too, and the refusal
+  names the reason. That is the documented applicability of the answer, not a crash. Whether every operator was
+  matched is a different question, about kube-noob's name table rather than about unread evidence, so it is not an exit
+  code: `allMatched` is true only when at least one operator was looked up, every one was, and none came from a catalog
+  kube-noob cannot verify. A gate on it is `jq -e '.allMatched == true'`. The verdict says which: `matched`,
+  `partly-matched` (some not matched, or matches only from an unverified catalog, which the summary says),
+  `not-matched`, `partial`, `not-determined`, `nothing-to-match` or `no-olm`.
+
+```bash
+kube-noob operators issues --must-gather must-gather.tar.gz
+kube-noob operators issues -f olm.yaml --openshift-version 4.21.9 --format json
+kube-noob --cluster-enabled operators issues --live --require-complete
+kube-noob operators issues -f olm.yaml --openshift-version 4.21.9 --format json | jq -e '.allMatched == true'
+```
+
+```text
+operator known issues (manifests): partly-matched -- 1 of 2 installed operator(s) were not matched against the release notes; 1 named and 0 only mentioned in the OpenShift 4.22 release notes as of 2026-10-27 (6 open, 9 fixed issue(s)); 0 looked up and named in no issue (a release-note lookup, not a vulnerability check)
+complete: yes; all matched: no
+  openshift-ptp/ptp-operator.v4.22.0-202601010000  named: the OpenShift 4.22 release notes name this product in 4 issue(s) and only mention it in 11 more
+      OCPBUGS-66413 [open, mentioned, OpenShift 4.22]
+        via 'PTP': uses 'PTP', a component name or abbreviation, not the product's name
+      OCPBUGS-74358 [fixed, named, OpenShift 4.22]
+        fix listed for OpenShift 4.22.0; cluster at 4.22.3: at-or-before; in this operator: not-determined
+  openshift-sriov-network-operator/sriov-network-operator.v4.22.0-202602050101  no-alias: not matched against the release notes (no alias): ...
+```
+
+From an MCP client, `kubenoob_operator_known_issues` takes the objects as YAML and an `openshift_version`,
+`kubenoob_cluster_operator_known_issues` reads the cluster and its ClusterVersion when cluster access is on, and
+`kubenoob_analyze_must_gather` and `kube-noob must-gather analyze` carry the answer as `operatorKnownIssues`, with at
+most five issues per package; its hints point at `kube-noob operators issues --must-gather` for the rest. The next
+step that would make this an answer about the operators rather than the release notes is a join through the local
+Red Hat Jira copy, which keeps each ticket's components and fix versions (roadmap R5).
 
 ### Why was this denied?
 
@@ -647,7 +753,7 @@ kube-noob gate --chart deploy/helm/shop --values deploy/helm/shop/values-prod.ya
 GitHub Actions (add `github/codeql-action/upload-sarif` after it to see findings in code scanning):
 
 ```yaml
-- uses: aashishmahajan/kube-noob@<tag>
+- uses: kube-noob/kube-noob@<tag>
   with:
     chart: deploy/helm/shop
     values: deploy/helm/shop/values-prod.yaml

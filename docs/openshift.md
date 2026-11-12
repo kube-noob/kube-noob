@@ -227,12 +227,12 @@ contents); your cluster's logging decides how long that is kept. Details: [PRIVA
 
 - PyPI: `kube-noob` is published with Trusted Publishing and provenance on every tag.
 - MCP Registry: `io.github.kube-noob/kube-noob` is published by the release workflow.
-- Homebrew: `brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob`, then
+- Homebrew: `brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob`, then
   `brew trust --formula kube-noob/kube-noob/kube-noob` and `brew install kube-noob`. The release workflow writes the formula once PyPI has the version, and CI installs it
   that way on macOS and Linux after every release and every week. Other ways and fixes: [install.md](install.md).
 - Container image: `ghcr.io/kube-noob/kube-noob:<version>` is multi-arch and signed with cosign. Verify it
   with the commands in [SECURITY.md](../SECURITY.md).
-- Claude plugin: `/plugin marketplace add aashishmahajan/kube-noob`. It runs the bundled server source with
+- Claude plugin: `/plugin marketplace add kube-noob/kube-noob`. It runs the bundled server source with
   dependencies pinned by hash in `uv.lock`. The Claude plugin directory listing is a manual submission (see
   [release readiness](release-readiness.md)).
 - OpenShift Helm chart catalog: ready to submit to the community tier; steps in [openshift-catalog.md](openshift-catalog.md).

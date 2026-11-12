@@ -52,6 +52,7 @@ import yaml
 
 from kube_noob.debug.cluster import redact_text
 from kube_noob.mustgather.ingest import Bundle, classify, root_of
+from kube_noob.sanitize import visible
 from kube_noob.signals import KINDS, Signal, for_text
 from kube_noob.signals.catalogue import get as catalogue_get
 from kube_noob.signals.core import extract
@@ -82,7 +83,6 @@ _NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?\Z")
 _LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
 _REASON = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}\Z")
 _VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]{1,64})?\Z")
-_HIDDEN = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 _SUFFIX = re.compile(r"\.(?:ya?ml|json)$")
 _ERRORISH = re.compile(
     r"(?i)\b(error|failed|failure|denied|forbidden|panic|fatal|unable|cannot|timeout|timed out|refused|invalid|"
@@ -238,7 +238,7 @@ def _text(value: Any, limit: int = TEXT_LIMIT) -> str:
     if value is None or isinstance(value, dict | list):
         return ""
     s = value if isinstance(value, str) else str(value)
-    s = " ".join(_HIDDEN.sub(" ", s[: limit * 4]).split())
+    s = " ".join(visible(s[: limit * 4]).split())
     s = redact_text(s)
     return s if len(s) <= limit else s[: limit - 3] + "..."
 
@@ -476,7 +476,25 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
     """Findings for the ClusterVersion; True while an update is in progress."""
     if not objs:
         return False
-    obj = objs.get(("", "version")) or next(iter(objs.values()))
+    obj = objs.get(("", "version"))
+    if obj is None:
+        # The cluster's ClusterVersion is the singleton named "version"; any other is not it, and picking the first
+        # of several by file order would make the version an accident of naming. It is still a ClusterVersion, so the
+        # cluster is OpenShift (``has_clusterversion``) and each object's conditions are still findings, named for
+        # the object they came from. None of them says an update is in progress for the cluster.
+        names = sorted(_text(name, 64) for _, name in objs)
+        shown = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+        cluster["version"] = ""
+        cluster["clusterVersionNote"] = (
+            f"ClusterVersion present but none named version ({len(objs)} object(s): {shown}): the cluster version is "
+            "not determined"
+        )
+        for key in sorted(objs):
+            other = objs[key]
+            o_status = _d(other.doc.get("status"))
+            o_history = [h for h in _l(o_status.get("history"))[:200] if isinstance(h, dict)]
+            _clusterversion_findings(f"ClusterVersion/{_text(key[1], 64)}", o_status, o_history, other.path, out)
+        return False
     doc, path = obj.doc, obj.path
     status, spec = _d(doc.get("status")), _d(doc.get("spec"))
     desired = _text(_d(status.get("desired")).get("version"), 64)
@@ -484,10 +502,29 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
     current = next((_text(h.get("version"), 64) for h in history if h.get("state") == "Completed"), "")
     cluster["version"] = current if _VERSION.match(current) else desired if _VERSION.match(desired) else ""
     cluster["desiredVersion"] = desired
+    # the newest Completed entry as written (it may not be a version), None when no update completed: for readers
+    # that must not fall back to status.desired when a completed entry is unreadable
+    completed = next((h for h in history if h.get("state") == "Completed"), None)
+    cluster["completedVersion"] = None if completed is None else _text(completed.get("version"), 64)
     cluster["channel"] = _text(spec.get("channel"), 64)
     cluster["history"] = [
         {k: _text(h.get(k), 64) for k in ("version", "state", "startedTime", "completionTime")} for h in history[:5]
     ]
+    return _clusterversion_findings("ClusterVersion/version", status, history, path, out)
+
+
+def has_clusterversion(cluster: dict[str, Any]) -> bool:
+    """Whether the must-gather holds a ClusterVersion at all -- the one named ``version`` (which sets
+    ``desiredVersion``, even when it holds no readable version) or only others (``clusterVersionNote``). Either way the
+    cluster is OpenShift; only the version may be unknown."""
+    return "desiredVersion" in cluster or bool(cluster.get("clusterVersionNote"))
+
+
+def _clusterversion_findings(
+    name: str, status: dict[str, Any], history: list[dict[str, Any]], path: str, out: list[Finding]
+) -> bool:
+    """The findings one ClusterVersion's conditions and history raise, for the object ``name``; True when it is
+    Progressing."""
     conds = _conditions(status)
     progressing = _status(conds.get("Progressing")) == "True"
     nxt = ["oc adm upgrade", "oc get clusterversion version -o yaml"]
@@ -515,7 +552,7 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
             Finding(
                 "clusterversion",
                 sev,
-                "ClusterVersion/version",
+                name,
                 title,
                 reason=_reason(cond.get("reason")),
                 message=message,
@@ -535,7 +572,7 @@ def _clusterversion(objs: dict[tuple[str, str], _Obj], out: list[Finding], clust
             Finding(
                 "clusterversion",
                 "high",
-                "ClusterVersion/version",
+                name,
                 f"the update to {target or 'the desired version'} stopped partway (history state Partial) "
                 "and is not progressing",
                 platform=True,
@@ -1174,7 +1211,9 @@ def render_text(analysis: Analysis) -> str:
     c = analysis.cluster
     head = []
     if c.get("version"):
-        head.append(f"OpenShift {c['version']}")
+        from kube_noob.mustgather.report import okd_of
+
+        head.append(f"OKD {c['version']}" if okd_of(c) else f"OpenShift {c['version']}")
         if c.get("desiredVersion") and c["desiredVersion"] != c["version"]:
             head.append(f"updating to {c['desiredVersion']}")
     if c.get("platform"):
@@ -1188,6 +1227,10 @@ def render_text(analysis: Analysis) -> str:
             f"{ops.get('available', 0)}/{ops['total']} cluster operators Available, {ops.get('degraded', 0)} Degraded"
         )
     counts = analysis.counts()
+    if c.get("clusterVersionNote"):
+        head.insert(0, f"OpenShift, version not determined: {c['clusterVersionNote']}")
+    elif not c.get("version") and has_clusterversion(c):
+        head.insert(0, "OpenShift, version not determined: the ClusterVersion named version holds no version")
     lines = ["; ".join(head) or "cluster version not in this must-gather"]
     lines.append("findings: " + ", ".join(f"{counts[s]} {s}" for s in SEVERITIES))
     for f in analysis.findings:

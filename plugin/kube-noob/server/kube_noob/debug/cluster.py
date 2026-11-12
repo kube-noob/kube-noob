@@ -103,6 +103,14 @@ ALLOWED_RESOURCES: dict[str, ResourceDef] = {
     "egressfirewalls": ResourceDef("k8s.ovn.org/v1", "egressfirewalls", True),
     "centrals": ResourceDef("platform.stackrox.io/v1alpha1", "centrals", True),
     "securedclusters": ResourceDef("platform.stackrox.io/v1alpha1", "securedclusters", True),
+    # OLM-installed operators, read by the operator inventory (kube_noob.operators). Group, version, plural and scope
+    # are the published CRDs, operator-framework/api e1a542ceb01262523627440bde3a0b3387bdeb16
+    # crds/operators.coreos.com_{clusterserviceversions,subscriptions}.yaml: operators.coreos.com, v1alpha1 (served,
+    # storage), Namespaced. Neither carries a credential; a Subscription's spec.config can carry env values, which the
+    # inventory never reads and the redaction above masks. A cluster without OLM answers 404, which the inventory
+    # reports as "not an OLM cluster" -- distinct from a 403, which it reports as not determined.
+    "clusterserviceversions": ResourceDef("operators.coreos.com/v1alpha1", "clusterserviceversions", True),
+    "subscriptions": ResourceDef("operators.coreos.com/v1alpha1", "subscriptions", True),
 }
 
 ALIASES = {
@@ -164,6 +172,13 @@ ALIASES = {
     "rolebinding": "rolebindings",
     "clusterrole": "clusterroles",
     "clusterrolebinding": "clusterrolebindings",
+    # the CRDs' own short names (operator-framework/api crds/, the commit cited at the resource table)
+    "csv": "clusterserviceversions",
+    "csvs": "clusterserviceversions",
+    "clusterserviceversion": "clusterserviceversions",
+    "sub": "subscriptions",
+    "subs": "subscriptions",
+    "subscription": "subscriptions",
 }
 
 _NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?\Z")

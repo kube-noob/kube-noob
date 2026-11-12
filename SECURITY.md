@@ -63,7 +63,7 @@ each tier and what it needs.
 
 | Tier | Switch | Allows | Needs |
 |---|---|---|---|
-| R | `cluster.enabled` | get, list and logs on the allowlisted resources (including Roles, RoleBindings, ClusterRoles and ClusterRoleBindings for the attack-path scan); Secrets never | get/list/watch RBAC |
+| R | `cluster.enabled` | get, list and logs on the allowlisted resources (including Roles, RoleBindings, ClusterRoles and ClusterRoleBindings for the attack-path scan, and OLM ClusterServiceVersions and Subscriptions for the operator inventory); Secrets never | get/list/watch RBAC |
 | R | `ci.githubEnabled` | GET of a repository's GitHub Actions runs, attempts and jobs, to `ci.githubApiUrl` only, no redirects | a token with `actions: read` in `$GITHUB_TOKEN` |
 | R | `rhacs.enabled` | GET of RHACS Central's policies (`/v1/policies`) and of the image scans you name (`/v1/images/<digest>`, `vuln report --rhacs-image`), to `rhacs.endpoint` only, no redirects | an RHACS API token that can read policies and images (for example the Analyst role) in `$ROX_API_TOKEN` |
 | P | `probe.enabled` | an ephemeral debug container or a probe Job | patch on `pods/ephemeralcontainers`; create and delete on Jobs (chart Role only when enabled) |
@@ -92,4 +92,24 @@ gh attestation verify dist/kube_noob-*.whl --repo kube-noob/kube-noob
 cosign verify ghcr.io/kube-noob/kube-noob:<version> \
   --certificate-identity-regexp 'https://github.com/kube-noob/kube-noob/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Those commands verify what was built after the project moved into the `kube-noob` organisation: the image for
+0.9.0 and later, and the wheel for 0.9.1 and later. There is no 0.8.0 or 0.9.0 wheel: neither release reached
+PyPI (the 0.8.0 run failed before publishing and the 0.9.0 run failed at the PyPI step), so PyPI goes from 0.7.1
+to 0.9.1.
+0.7.1 and earlier were published from the previous account, and a signature cannot be moved: their images are at `ghcr.io/aashishmahajan/kube-noob`, their certificates name that repository, and
+`gh attestation verify --repo kube-noob/kube-noob` finds no attestation for their wheels. For one of those images:
+
+```bash
+cosign verify ghcr.io/aashishmahajan/kube-noob:<version> \
+  --certificate-identity-regexp 'https://github.com/aashishmahajan/kube-noob/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+For one of those wheels, PyPI's own provenance names the publisher it was built by (`"repository":
+"aashishmahajan/kube-noob"`):
+
+```bash
+curl -fsS https://pypi.org/integrity/kube-noob/<version>/kube_noob-<version>-py3-none-any.whl/provenance
 ```

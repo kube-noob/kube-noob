@@ -266,6 +266,22 @@ List audit rules. All rule ids with stage, category and default severity.
 
 - no arguments
 
+## operator_inventory
+
+Installed OLM operators in manifests. Which OLM operators the given ClusterServiceVersions, Subscriptions, InstallPlans and OperatorGroups describe: package, version (and whether it was stated or read off the name), catalog, channel, approval mode, namespace and the namespaces it serves (copies OLM writes into each target namespace are folded into one operator), phase, a pending upgrade or a Manual approval waiting. A Subscription with no installed CSV, and a CSV with no Subscription, each get their own state. What the input could not show is part of the answer: with no ClusterServiceVersions the verdict is not-determined, never zero operators. Secret objects are dropped unread.
+
+- `manifests`* (string): OLM objects as YAML: ClusterServiceVersions, Subscriptions, InstallPlans, OperatorGroups (a List, or `oc get csv,sub,ip,og -A -o yaml` output, works). Other kinds are ignored; Secret objects are dropped unread.
+- `top` (integer): How many operators to return.
+
+## operator_known_issues
+
+Which installed operators the release notes name in a reported issue. For each OLM operator the objects describe (as operator_inventory reads them), the issues in the bundled OpenShift release notes that name its product, for the cluster's release (openshift_version): id, link, known or fixed, the OpenShift release of the fix, the release-notes source and the corpus date. Matching goes through a table of the names the notes use per package: an operator with no entry is 'no-alias', never clean, and a release outside the index is not determined. A fix is stated as an OpenShift release, so whether the installed operator carries it is always not determined. Secret objects are dropped unread.
+
+- `issues_per_package` (integer): How many issues to return per package.
+- `manifests`* (string): OLM objects as YAML, as for operator_inventory (`oc get csv,sub -A -o yaml` output works). Secret objects are dropped unread.
+- `openshift_version` (null/string): The cluster's OpenShift version (4.21, 4.21.9 or 4.21.0-rc.1): only that release's notes are searched. Without it every indexed release is searched and the answer is incomplete.
+- `top` (integer): How many operators to return.
+
 ## policy_generate
 
 Turn audit rules into admission policies. Generate ValidatingAdmissionPolicy (with binding) and/or Kyverno ValidatingPolicy YAML from kube-noob's audit rules, in audit (warn and record) or enforce mode, for a platform. One policy per rule decidable from one object; each names its rule, fix and source. Rules that need other objects or that the API server already enforces are listed with the reason. Nothing is applied.
