@@ -287,6 +287,7 @@ Where it is applied (found in the code):
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/hook.py` `_run` calls `sanitize.loads_bounded`
+- `kube_noob/hook.py` `write_settings` calls `sanitize.loads_bounded`
 - `kube_noob/insight.py` `_json` calls `sanitize.json_nesting_ok`
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`

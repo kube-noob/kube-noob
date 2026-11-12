@@ -26,6 +26,7 @@ kubectl apply ...`` sets the variable for kubectl, not for the hook, and the lin
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -36,6 +37,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from kube_noob import sanitize
 
 MAX_INPUT = 1_000_000
 #: Seconds this hook gives itself before it blocks for lack of time. The configured hook timeout (below) is well
@@ -163,8 +166,12 @@ def check(command: str, cwd: Path, deadline: float, options: Options | None = No
 
     o = options or Options()
     plan = verify.plan(command, cwd=cwd, deadline=deadline, platform=o.platform, version=o.version)
-    if not plan.undetermined and not plan.deny and all(c["class"] in {"read-only", "local"} for c in plan.commands):
-        return _pass()  # no kube tool, or only ones that read: untouched
+    # A line with no kube tool has no commands here at all, and that is the pass-through case on purpose: the
+    # reader has already put anything it could not see into `undetermined`, so "nothing that changes a cluster"
+    # is a positive finding, not an empty one.
+    changes = [c for c in plan.commands if c["class"] not in {"read-only", "local"}]
+    if not plan.undetermined and not plan.deny and len(changes) == 0:
+        return _pass()
     result = verify.evaluate(
         plan.sources, command=plan, from_command=True, platform=o.platform, version=o.version, fail_on=o.fail_on
     )
@@ -226,7 +233,7 @@ def settings_path(scope: str, project_dir: Path, home: Path) -> Path:
 def merged(existing: dict[str, Any], options: Options | None = None) -> tuple[dict[str, Any], bool]:
     """``existing`` with this hook added to PreToolUse, and whether anything changed. Every other key, event and
     hook is kept as it was; a second install adds nothing."""
-    out = json.loads(json.dumps(existing))
+    out = copy.deepcopy(existing)
     hooks = out.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise InstallError("the settings file's `hooks` is not an object; fix it by hand first")
@@ -256,9 +263,11 @@ def write_settings(path: Path, options: Options | None = None) -> bool:
             raise InstallError(f"{path} is not a file")
         text = path.read_text(encoding="utf-8")
         try:
-            loaded = json.loads(text) if text.strip() else {}
+            loaded = sanitize.loads_bounded(text, sanitize.MAX_JSON_DEPTH_FILE) if text.strip() else {}
         except json.JSONDecodeError as exc:
             raise InstallError(f"{path} is not valid JSON ({exc.msg} at line {exc.lineno}); fix it first") from exc
+        except sanitize.JsonTooDeep as exc:
+            raise InstallError(f"{path}: {exc}") from exc
         if not isinstance(loaded, dict):
             raise InstallError(f"{path} does not hold a JSON object")
         existing = loaded
