@@ -483,10 +483,14 @@ def _print_exceptions(rep: dict[str, Any]) -> None:
     print(f"exceptions: {c['active']} active, {c['expired']} expired, {c['refused']} refused")
     for e in ex["entries"]:
         if e["status"] != "active":
-            print(f"  [{e['status'].upper()}] {e['id']} ({e['rule']}): {e['reason']}")
+            print(f"  [{e['status'].upper()}] {_one_line(e['id'])} ({_one_line(e['rule'])}): {_one_line(e['reason'])}")
     for f in rep.get("excepted", []):
+        # The owner is the exception file's text: a newline in it forged a report line (G272).
         x = f["exception"]
-        print(f"  excepted {f['ruleId']} {f['resource']} by {x['id']} (owner {x['owner']}, until {x['expires']})")
+        print(
+            f"  excepted {f['ruleId']} {_one_line(f['resource'])} by {_one_line(x['id'])} "
+            f"(owner {_one_line(x['owner'])}, until {x['expires']})"
+        )
     undecided = set(ex.get("unusedNotEvaluated") or [])
     for eid in ex.get("unused", []):
         if eid in undecided:

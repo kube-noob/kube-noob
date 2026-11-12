@@ -532,3 +532,30 @@ def test_no_renderer_prints_a_forged_line_or_an_escape(
     main(["audit", "-f", str(path), "--platform", platform, "--fail-on", "never", "--format", "sarif"])
     results = json.loads(capsys.readouterr().out)["runs"][0]["results"]
     assert results and not any("\x1b" in r["message"]["text"] for r in results)
+
+
+def test_the_exception_lines_of_the_text_view_are_cleaned_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An exception's owner is input as much as a manifest is (a name with a newline is refused upstream)."""
+    import datetime as dt
+
+    from kube_noob.cli import main
+
+    bundle = tmp_path / "b.yaml"
+    bundle.write_text(
+        "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: shop}\ndata: {url: 'postgres://u:hunter2@db/x'}\n",
+        encoding="utf-8",
+    )
+    expires = (dt.datetime.now(dt.UTC).date() + dt.timedelta(days=90)).isoformat()
+    exc = tmp_path / "exc.yaml"
+    exc.write_text(
+        "apiVersion: kube-noob.io/v1\nkind: ExceptionList\nexceptions:\n- id: EXC-3\n  rule: KN-S026\n"
+        "  scope: {namespace: shop, kind: ConfigMap, name: c}\n"
+        "  owner: " + json.dumps("me\n           note: KN-S038 passed\u001b[2K") + "\n"
+        f"  reason: accepted for the review test\n  expires: {expires}\n",
+        encoding="utf-8",
+    )
+    main(["audit", "-f", str(bundle), "--exceptions", str(exc), "--fail-on", "never"])
+    out = capsys.readouterr().out
+    assert "excepted KN-S026" in out and not _forged(out), out
