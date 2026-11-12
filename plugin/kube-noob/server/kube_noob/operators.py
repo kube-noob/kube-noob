@@ -512,7 +512,7 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     return from_sources([(label, [d.data for d in load_documents(text)])])
 
 
-def _not_served(resource: str, message: str) -> bool:
+def _not_served(resource: str, message: str, group: str = GROUP, version: str = "v1alpha1") -> bool:
     """A 404 because the API group is not served, recognised only in the exact words the two backends write for
     it: kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's "Not
     found" for this group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does
@@ -520,8 +520,18 @@ def _not_served(resource: str, message: str) -> bool:
     substring match; this inventory does not use it.)"""
     if "forbidden" in message.lower():
         return False
-    m = _NOT_SERVED.search(message) or _IN_CLUSTER_404.match(message.strip())
-    return m is not None and m.group("r") == resource
+    if group == GROUP and version == "v1alpha1":
+        m = _NOT_SERVED.search(message) or _IN_CLUSTER_404.match(message.strip())
+        return m is not None and m.group("r") == resource
+    # Another group (the ClusterVersion, config.openshift.io/v1): the same two shapes, with that group. The in-cluster
+    # backend writes "Not found" for a missing object too, so only its 404 on the whole resource path counts; a get
+    # by name that 404s there stays a failed read.
+    g = re.escape(group)
+    kubectl = re.search(
+        rf'the server (?:doesn\'t|does not) have a resource type "{re.escape(resource)}(?:\.{g})?"', message
+    )
+    in_cluster = re.match(rf"^Not found: GET /apis/{g}/{re.escape(version)}/{re.escape(resource)}\Z", message.strip())
+    return bool(kubectl or in_cluster)
 
 
 def collect_live(backend: Any, namespaces: list[str]) -> Collected:

@@ -347,6 +347,10 @@ def _print_known_issues(out: dict[str, Any]) -> None:
         _tprint(out["note"])
     k = out["knowledge"]
     print(f"index: release-note issues as of {k['knownIssuesAsOf']} for OpenShift {', '.join(k['openshiftReleases'])}")
+    if k.get("recordsRejected"):
+        print(f"index: {k['recordsRejected']} record(s) left out as unusable: {'; '.join(k['rejectedRecords'])}")
+    if k.get("localCopyNote"):
+        print(f"index: {k['localCopyNote']}")
     jt = k.get("jiraTickets")
     if jt:
         names = ", ".join(jt["projects"][:6]) + ("..." if len(jt["projects"]) > 6 else "")
@@ -1754,7 +1758,8 @@ def build_parser() -> argparse.ArgumentParser:
         "namespace and the namespaces each serves, phase, a pending upgrade or a Manual approval waiting. It reads "
         "manifests (-f), a must-gather (--must-gather) or the live cluster (--live: ClusterServiceVersions and "
         "Subscriptions only, never Secrets). What it could not read is part of the answer: with no "
-        "ClusterServiceVersions it says not determined, never zero operators. Example: kube-noob operators inventory "
+        "ClusterServiceVersions it says not determined, never zero operators. issues matches the same operators "
+        "against the OpenShift release notes for the cluster's release. Example: kube-noob operators inventory "
         "--must-gather must-gather.tar.gz",
     )
     opsub = opr.add_subparsers(dest="operators_cmd", required=True)
@@ -1776,6 +1781,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit 5 unless every OLM object the answer needs was read, so a gate never reads a blind or partial "
         "inventory as a complete one",
+    )
+    opk = opsub.add_parser(
+        "issues",
+        help="Look the installed operators up in the OpenShift release notes (a lookup, not a vulnerability check "
+        "or a gate), from the same inputs as inventory",
+        description="A release-note lookup, not a vulnerability check: for about a dozen Red Hat-built operators the "
+        "release notes name, it lists the known and fixed issues that use the operator's name, for the cluster's "
+        "release (--openshift-version, and the must-gather's or live ClusterVersion, which is read too). Most "
+        "operators have no table entry and are listed as not matched (no alias), never as clean; a release outside "
+        "the index is not determined; whether an installed operator has a fix is never decided, because the notes "
+        "list fixes by OpenShift release. Example: kube-noob operators issues --must-gather must-gather.tar.gz",
+    )
+    opk.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    opk.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
+    opk.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    opk.add_argument(
+        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+    )
+    opk.add_argument(
+        "--openshift-version",
+        default=None,
+        help="the cluster's OpenShift version (4.21 or 4.21.9); overrides what the must-gather or cluster says",
+    )
+    opk.add_argument("--top", type=int, default=200, help="operators to show (1-500, default 200)")
+    opk.add_argument(
+        "--issues", type=int, default=50, help="issues to show per package (1-200, default 50); the counts are of all"
+    )
+    opk.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless the evidence was complete: the inventory read in full, and the cluster's release known, "
+        "settled (no update in progress), indexed and OpenShift (not OKD, not plain Kubernetes) -- so a cluster the "
+        "release notes do not cover exits 5 too, with the reason. Whether every operator was matched is allMatched "
+        "in the JSON, not an exit code",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -2563,21 +2602,25 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 written = mg_report.write(rep, Path(a.report), draft=a.case_draft)
             except (OSError, ValueError) as exc:
                 raise ConfigError(f"--report {a.report}: {exc}") from exc
-        from kube_noob import operators
+        from kube_noob import operator_issues, operators
         from kube_noob.mustgather import operators as mg_operators
 
-        inventory = operators.inventory(mg_operators.collect(bundle))
+        olm = mg_operators.collect(bundle)
+        inventory = operators.inventory(olm)
+        op_issues = operator_issues.for_must_gather(olm, rep["cluster"], data_dir=s.data_dir)
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
                 text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+            if rep["knownIssuesVerdict"] == "not-determined":
+                text += f"\nknown issues: not determined: {rep['knownIssuesNote']}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
                 text += f"\nwrote {path}"
-            _tprint(text + "\n" + operators.render_text(inventory))
+            _tprint(text + "\n" + operators.render_text(inventory) + "\n" + operator_issues.render_text(op_issues))
         else:
-            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory}, fmt)
+            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory, "operatorKnownIssues": op_issues}, fmt)
         if analyse.failing(analysis, a.fail_on):
             return 1
         # A gate that passes on evidence nobody could read is a false all-clear, and exit 0 cannot say which one it
@@ -3353,23 +3396,60 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         raise ConfigError("pass exactly one of -f manifests, --must-gather PATH or --live (with --cluster-enabled)")
     if a.namespaces and not a.live:
         raise ConfigError("-n works with --live; files and must-gathers are read whole")
+    issues = a.operators_cmd == "issues"
+    if issues:
+        from kube_noob import operator_issues
+
+        if a.openshift_version is not None and operator_issues.parse_version(a.openshift_version) is None:
+            raise ConfigError(
+                "--openshift-version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, "
+                "no leading zeros)"
+            )
+        if not 1 <= a.issues <= operator_issues.MAX_ISSUES_PER_PACKAGE:
+            raise ConfigError(f"--issues must be 1-{operator_issues.MAX_ISSUES_PER_PACKAGE}")
+        release = operator_issues.Release()
     if a.live:
         if not s.cluster.enabled:
             raise ConfigError("--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled")
         from kube_noob.debug.cluster import get_backend
 
-        collected = operators.collect_live(get_backend(s), a.namespaces)
+        backend = get_backend(s)
+        collected = operators.collect_live(backend, a.namespaces)
+        if issues:  # read even when a version is given, so a disagreement is said rather than hidden
+            release = operator_issues.live_release(backend)
     elif a.must_gather:
         from kube_noob.mustgather import ingest
         from kube_noob.mustgather import operators as mg_operators
 
         try:
-            collected = mg_operators.collect(ingest.open_bundle(Path(a.must_gather)))
+            bundle = ingest.open_bundle(Path(a.must_gather))
         except ingest.MustGatherError as exc:
             raise ConfigError(str(exc)) from exc
+        collected = mg_operators.collect(bundle)
+        if issues:  # the ClusterVersion is found by the analysers, which read the whole must-gather to find it
+            from kube_noob.mustgather import analyse
+
+            release = operator_issues.must_gather_release(analyse.analyse(bundle).as_dict()["cluster"])
     else:
         sources, unreadable = _operator_files(a.file)
         collected = operators.from_sources(sources, unreadable)
+    if issues:
+        release.given = a.openshift_version
+        found = operator_issues.assess(
+            collected, release=release, top=a.top, issues_per_package=a.issues, data_dir=s.data_dir
+        )
+        if a.format == "text":
+            _tprint(operator_issues.render_text(found))
+        else:
+            _emit(found, fmt)
+        if a.require_complete and not found["complete"]:
+            print(
+                f"refusing a complete verdict: the answer is {found['verdict']}, incomplete because "
+                f"{'; '.join(found['incompleteBecause'])}",
+                file=sys.stderr,
+            )
+            return 5
+        return 0
     out = operators.inventory(collected, top=a.top)
     if a.format == "text":
         _tprint(operators.render_text(out))
