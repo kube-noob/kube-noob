@@ -30,7 +30,7 @@ kube-noob is one engine. What changes from one place to another is how Claude, o
 | Claude Desktop | `{"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.9.2", "kube-noob", "mcp"]}}}` in its MCP server configuration | The MCP server over stdio, every tool |
 | claude.ai chat | The [Agent Skill](#agent-skill) zip, uploaded under **Customize > Skills** | The tools in claude.ai's code sandbox, offline. The directory plugin's skills load in chat too, but chat has no shell on your machine: they give you the command and read the output you paste |
 | Any MCP client | The CLI by any method above, then the client pointed at `kube-noob mcp` | The MCP server over stdio, every tool |
-| Plain kubectl | `kubectl-noob` on your `PATH`: [kubectl, without krew](#kubectl-without-krew) today, and through krew once the krew-index pull request ([krew/SUBMIT.md](../krew/SUBMIT.md)) merges | `kubectl noob <args>` runs `kube-noob <args>` unchanged, falling back to a pinned `uvx` run when kube-noob is not on `PATH` |
+| Plain kubectl | `kubectl-noob` on your `PATH`: [kubectl, without krew](#kubectl-without-krew) today, and through krew once the krew-index pull request ([krew/SUBMIT.md](../krew/SUBMIT.md)) merges | `kubectl noob` passes every argument to the kube-noob CLI unchanged (`kubectl noob audit -f k8s/` is `kube-noob audit -f k8s/`), falling back to a pinned `uvx` run when kube-noob is not on `PATH` |
 
 The directory plugin cannot carry the engine itself: the directory accepts Markdown, JSON and images from an
 organization that is not Verified, and refuses a local MCP server and every other file type. A remote MCP server
