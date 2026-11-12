@@ -72,8 +72,8 @@ def slot_wait(budget_seconds: float) -> float:
 
 def busy_message(waited: float) -> str:
     return (
-        f"busy: {MAX_CONCURRENT_REPORTS} alert reports are already being built and no slot came free within "
-        f"{waited:g}s; nothing was read or kept, retry later"
+        f"busy: all {MAX_CONCURRENT_REPORTS} report slots are in use, each by a report being built, and none came "
+        f"free within {waited:g}s; nothing was kept, retry after {RETRY_AFTER_SECONDS} s"
     )
 
 

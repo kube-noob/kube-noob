@@ -52,15 +52,20 @@ filter refuses any text it would change. It replaces with `***` (or a marker suc
   alphabets, with a digit or both cases), the whole value;
 - `name=value`, `name: value` and `"name": "value"` for `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`
   (`apikey`, `api-key`) and `access_key`, also with up to four words in front: `client_secret=`,
-  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`;
+  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`. A reference to a Secret is not its
+  value and is left as written: `kubectl describe`'s `<set to the key 'password' in secret 'orders-db'>`, and
+  `<secret name>/<key>` when the key is itself a word such as `password` (`orders-db/password`);
 - `apikey <value>` and `access_key <value>` when the value is 16 characters or more with letters and digits (so
   "rotate the apikey whenever a teammate leaves" stays as written);
-- secrets passed as flags: `--password x`, `--db-password=x`, `--api-key x`, `--client-secret x`, `--token=x`, `--pwd x`;
+- secrets passed as flags: `--password x`, `--db-password=x`, `--api-key x`, `--client-secret x`, `--token=x`, `--pwd x`,
+  `--access-key x`;
 - JWTs; AWS access key ids; Stripe-style `sk_live_`/`rk_test_` keys of 24 characters or more; Vault, GitHub and Slack
   tokens; the password in `scheme://user:password@host`;
 - a private key from its `-----BEGIN ... PRIVATE KEY-----` line to its END line; a key cut short (no END after it) loses
-  its base64 body, and a BEGIN line with no body after it, which holds no key material, is left as written; the
-  `"private_key": "..."` string of a service-account key file.
+  its base64 body -- lines separated by whitespace, by JSON-escaped `\n`, or by a newline and a log prefix (an RFC 3339
+  timestamp, a CRI `stdout F`, `kubectl logs --prefix`'s `[pod/name/container]`), or the body flattened onto the BEGIN
+  line -- and a BEGIN line with no body after it, which holds no key material, is left as written; the
+  `"private_key": "..."` string of a service-account key file, also when it is cut short before its closing quote.
 
 What it does not catch, so treat any text you hand kube-noob as possibly still holding these:
 
@@ -68,10 +73,11 @@ What it does not catch, so treat any text you hand kube-noob as possibly still h
   look the same;
 - a password glued to a short flag, `-p<password>` (MySQL's form);
 - URL-encoded names, such as `password%3D` followed by the value;
-- a private key split across fields or lines that are not whitespace-separated base64 (two labels, a JSON string
-  outside a `private_key` field);
+- a private key split across fields or quoted line by line (two labels, a JSON list of `"..."` lines), or whose lines
+  carry a log prefix other than the three above;
 - a bare random string with no name and no known prefix, a Basic value under 8 characters or of one case without a
-  digit, and a bare Bearer value under 16 characters or without a digit.
+  digit, a bare Bearer value under 16 characters or without a digit, an `apikey <value>` under 16 characters or
+  without a digit, and a JWT whose segments are under 8 characters.
 
 ## What it sends, and where
 

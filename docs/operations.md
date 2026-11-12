@@ -239,20 +239,27 @@ What to watch:
   log line `alert report <id> not stored` carries the same reason; the dashboard's "Reports kept, not kept" panel
   counts them.
 - `kube_noob_alert_report_duration_seconds` is the receipt-to-report time, from the request reaching the route to the
-  report being ready (before it is written), including any wait for a slot. At most two reports are built at once,
-  by the receiver and the `alert_report` MCP tool together. A post takes a slot before its body is read and waits at
-  most 5 s for one (half of `alertReports.budgetSeconds` when that is under 10 s); then it is answered 503 with
-  `Retry-After: 5`, which Alertmanager retries like any 5xx, and an MCP call gets a busy tool error. The budget (30 s)
-  counts from receipt, wait included, and no alert starts after it, so a post is answered within the budget plus the
-  alert in progress plus the time to render and keep the report; the histogram's buckets run to 600 s. A post whose
-  sender has gone by the time its report would start, or would be kept, is dropped and kept nowhere;
-  `kube_noob_alert_reports_dropped_total` counts those (`client-gone`) and the refusals (`busy`). Large request bodies
-  (over 256 KiB) in flight are capped at eight on every route; one more is answered 503 before it is read. Measured
-  on the 2-core build machine on 2026-11-12, the server in its own process with 64 connections allowed: 20 worst-case
-  posts at once (below) gave two reports in 12.1 s and eighteen 503s at 5.2 s, a server peak of 126 MB and `/healthz`
-  p50 44 ms; 120 such posts from senders that gave up after 3 s built and kept nothing, peak 130 MB (410 MB, with four
-  abandoned reports kept, before this change); 64 such MCP calls at once gave two reports and 62 busy answers, peak
-  194 MB, `/healthz` p50 53 ms. `kube-noob demo
+  report being ready (before it is written), including the time to receive the body and any wait for a slot. Every
+  request body must arrive within 10 s, or the request is answered 408 and holds nothing afterwards; a body over
+  256 KiB holds one of eight large-body places from the moment it is in memory until its tool takes it (an alert
+  report: until it holds a report slot), and a request that finds all eight taken waits for one until its read
+  deadline and is then answered 503. At most two reports are built at once, by the receiver and the `alert_report` MCP
+  tool together; a post takes a slot after its body is read, waits at most 5 s for one (half of
+  `alertReports.budgetSeconds` when that is under 10 s), and is then answered 503 with `Retry-After: 5`, which
+  Alertmanager retries like any 5xx; an MCP call gets a busy tool error (a JSON-RPC error with the same message when
+  the refusal comes before the call is parsed). The budget (30 s) counts from receipt, and no alert starts after it,
+  so a post is answered within the read deadline plus the slot wait plus the budget's remainder plus the alert in
+  progress and the time to keep the report; the histogram's buckets run to 600 s. A post whose sender has gone by the
+  time its report would start, or would be kept, is dropped and kept nowhere -- including a sender that half-closes
+  its connection after sending -- and is answered 499, which the sender never sees;
+  `kube_noob_alert_reports_dropped_total` counts those (`client-gone`) and the refusals (`busy`). Measured on the
+  2-core build machine on 2026-11-12, the server in its own process with 64 connections allowed: 20 worst-case posts
+  at once (below) gave two reports in 11.5 s and eighteen 503s, a server peak of 169 MB and `/healthz` p50 38 ms; 120
+  such posts from senders that gave up after 3 s built and kept nothing, peak 187 MB (410 MB, with four abandoned
+  reports kept, before the second review); 64 such MCP calls at once peaked at 217 MB (624 MB before) with `/healthz`
+  p50 32 ms; two senders trickling a 5 KB alert post a byte every 20 s no longer delay real posts (each answered in
+  under 0.1 s), and eight trickling 300 KB posts no longer refuse large ones; ten parallel 320 KB audits all answer.
+  `kube-noob demo
   alerts` posts the bundled payload to an in-process server and fails over 2 s. Measured on the 2-core, 7 GB build
   machine on 2026-11-12, idle apart from one other test run: the bundled payload 0.09 s as the first request of a
   fresh process, then p50 22 ms and p95 23 ms over 250 posts; the review's worst in-bounds payloads 4.5 s (150 alerts,
@@ -261,6 +268,9 @@ What to watch:
   `budgetSeconds` is for.
 - `kube_noob_alert_reports_evicted_total` rising steadily means retention is doing its job; reports you need longer
   belong in a ticket, not in a larger `maxReports`.
+- A stored report is read only if it is a regular file with one link, owned by the server's user: a backup made with
+  hard links to the store's files elsewhere (`cp -al`, rsnapshot) gives them a second link, and the server then refuses
+  to read them (500, "not a regular file of this server's own, with one link"). Back the folder up by copying.
 - `retentionNotRemoved` on a POST means retention could not remove an older report file: the report was stored, and
   the log names the count. An entry under a report's name that is not a regular file (a directory, a FIFO, a link)
   is no report: the list counts it under `ignored`, and nothing reads it or counts it toward `maxReports`. Remove it

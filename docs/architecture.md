@@ -140,11 +140,16 @@ flowchart LR
   replaced; each alert is handed alone to the `diagnose` tool (no cluster read, no fetch), with the names its steps may
   use taken for the namespace and pod only from the alert's own labels (other names, such as a forbidden message's
   verb and user, still from its text) and only when they are valid Kubernetes names; a `service` label that names the
-  scrape target (kube-state-metrics, `job` equal to it, an `endpoint` label) is not the alert's service. A post gets
+  scrape target (kube-state-metrics, `job` equal to it, an `endpoint` label) is not the alert's service, except on
+  TargetDown, whose subject is the target; an exporter's own pod and namespace (node-exporter, a monitoring namespace on
+  a node alert) are not the subject, and `exported_namespace`/`exported_pod` are when the plain ones name the exporter
+  (`signals.alertmanager.subject_labels`, which cites the upstream ServiceMonitors). A post gets
   `alertReports.budgetSeconds` of work counted from receipt, then the alerts not reached keep `not-evaluated` rows. At
   most two reports are built at once by the receiver and the `alert_report` MCP tool together (one set of slots in the
-  Toolkit); the receiver takes a slot before it reads the body, answers 503 with `Retry-After` when none comes free
-  within 5 s (an MCP call gets a busy tool error), and drops a post whose sender has gone without building or keeping
+  Toolkit). The receiver reads the body first (1.5 MiB, within 10 s or 408, holding a large-body ticket while it is
+  over 256 KiB), then takes a slot on the event loop, answers 503 with `Retry-After` when none comes free within 5 s
+  (an MCP call takes its slot the same way, before its worker thread starts, and gets a busy tool error), and drops a
+  post whose sender has gone without building or keeping
   it. The body is read, the report built and the answer rendered in worker threads, so a large post cannot stall
   `/healthz` or another route. Only the HTTP server writes reports, into `<dataDir>/alert-reports`:
   the folder is opened with `O_NOFOLLOW` and must be the process's own (made 0700 by the writer only), files are

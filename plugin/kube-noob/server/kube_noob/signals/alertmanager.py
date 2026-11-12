@@ -102,6 +102,17 @@ def _labels(value: Any, transform: Callable[[str], str] | None = None) -> dict[s
     return out
 
 
+def _platform(labels: dict[str, str]) -> bool:
+    """Whether an alert comes from an OpenShift platform component, whose ``version`` label is the cluster's release:
+    an ``openshift-*`` namespace or the cluster-version-operator. Any other alert's ``version`` is its application's,
+    and ``version="4.2"`` on an orders API is not OpenShift 4.2 (G274)."""
+    return labels.get("namespace", "").startswith("openshift-") or "cluster-version-operator" in (
+        labels.get("job"),
+        labels.get("service"),
+        labels.get("container"),
+    )
+
+
 def release(labels: dict[str, str], common: dict[str, str] | None = None) -> tuple[str, str] | None:
     """The OpenShift release an alert names, and where it came from. One order for every reader (``parse`` for
     diagnose, ``split`` for the report), so the two never name different releases for the same alert (G274):
@@ -109,11 +120,14 @@ def release(labels: dict[str, str], common: dict[str, str] | None = None) -> tup
     1. the alert's own ``openshift_version``, 2. the payload's common ``openshift_version``, 3. the alert's own
     ``version``, 4. the payload's common ``version``.
 
-    ``openshift_version`` says what it is; ``version`` often names an application's release, so an explicit
-    ``openshift_version`` anywhere beats it. Between two of the same name the alert's own is the more specific claim.
-    Only an OpenShift 4 release (``4.21`` or ``4.21.3``) counts."""
+    ``openshift_version`` says what it is. ``version`` often names an application's release, so it counts only on an
+    alert from an OpenShift platform component (``_platform``), and an explicit ``openshift_version`` anywhere beats
+    it. Between two of the same name the alert's own is the more specific claim. Only an OpenShift 4 release (``4.21``
+    or ``4.21.3``) counts."""
     common = common or {}
     for key in VERSION_LABELS:
+        if key == "version" and not _platform({**common, **labels}):
+            continue
         for source, where in ((labels, "label"), (common, "commonLabels")):
             value = source.get(key, "")
             if _OCP_RELEASE.match(value):
@@ -149,13 +163,86 @@ def _service_is_the_alerts(labels: dict[str, str]) -> bool:
     )
 
 
+#: Namespaces the monitoring stack itself runs in (kube-prometheus and OpenShift).
+MONITORING_NAMESPACES = frozenset({"monitoring", "openshift-monitoring", "openshift-user-workload-monitoring"})
+#: Pod-name prefixes of exporters, which report metrics about other objects: a pod label like these is the exporter's
+#: own pod, not the alert's subject. Prometheus and Alertmanager pods are not here: an alert about them is about them.
+EXPORTER_POD_PREFIXES = (
+    "blackbox-exporter-",
+    "kube-state-metrics-",
+    "node-exporter-",
+    "openshift-state-metrics-",
+    "prometheus-node-exporter-",
+)
+#: Labels naming a namespaced object an alert is about; with none of them, a node alert has no subject namespace.
+OBJECT_LABELS = (
+    "pod",
+    "persistentvolumeclaim",
+    "deployment",
+    "statefulset",
+    "daemonset",
+    "replicaset",
+    "job_name",
+    "cronjob",
+    "horizontalpodautoscaler",
+    "poddisruptionbudget",
+    "resourcequota",
+    "service",
+)
+
+
+def _from_exporter(labels: dict[str, str]) -> bool:
+    return (
+        labels.get("job", "") in EXPORTER_SERVICES
+        or labels.get("service", "") in EXPORTER_SERVICES
+        or labels.get("pod", "").startswith(EXPORTER_POD_PREFIXES)
+    )
+
+
+def subject_labels(labels: dict[str, str]) -> dict[str, str]:
+    """The labels that name what an alert is about, with the scrape target's own taken out (G274).
+
+    Upstream decides which is which: kube-prometheus scrapes kube-state-metrics with ``honorLabels: true`` and drops
+    the target's ``pod``, ``service``, ``endpoint`` and ``namespace``; OpenShift's cluster-monitoring-operator scrapes
+    it with ``honorLabels: true`` and no such drop, so a metric without a namespace of its own (``kube_node_*``) keeps
+    ``namespace="openshift-monitoring"``; node-exporter is scraped without ``honorLabels``, so its series carry the
+    exporter pod's ``pod`` and ``namespace``; and a scrape without ``honorLabels`` moves the subject's labels to
+    ``exported_namespace`` and ``exported_pod``. So: when ``pod`` or ``namespace`` name the exporter and ``exported_*``
+    exist, those are the subject; an exporter pod is never the subject; a node alert from an exporter in a monitoring
+    namespace has no subject namespace; and ``service`` names the subject only when it is not the scrape target --
+    except for TargetDown, whose subject IS the target."""
+    out = dict(labels)
+    pod, namespace = labels.get("pod", ""), labels.get("namespace", "")
+    exporter_pod = pod.startswith(EXPORTER_POD_PREFIXES)
+    exported = labels.get("exported_namespace") or labels.get("exported_pod")
+    if exported and (exporter_pod or (_from_exporter(labels) and namespace in MONITORING_NAMESPACES)):
+        for label in ("namespace", "pod"):
+            out.pop(label, None)
+            if labels.get(f"exported_{label}"):
+                out[label] = labels[f"exported_{label}"]
+    elif exporter_pod:
+        out.pop("pod", None)
+        out.pop("namespace", None)
+    elif (
+        _from_exporter(labels)
+        and namespace in MONITORING_NAMESPACES
+        and labels.get("node")
+        and not any(labels.get(k) for k in OBJECT_LABELS if k != "service")
+    ):
+        out.pop("namespace", None)
+    target_down = labels.get("alertname") == "TargetDown" and labels.get("job") == labels.get("service")
+    if not target_down and not _service_is_the_alerts(labels):
+        out.pop("service", None)
+    return out
+
+
 def label_context(labelsets: list[dict[str, str]]) -> dict[str, str]:
     """The names the labels agree on, each of the shape a command may hold; a disagreement leaves the placeholder.
-    A ``service`` label counts only when it is the alert's subject, not the exporter that scraped it."""
+    Each alert's labels are read for its subject first (``subject_labels``)."""
+    subjects = [subject_labels(ls) for ls in labelsets]
     out: dict[str, str] = {}
     for label, key, shape in CONTEXT_LABELS:
-        sets = [ls for ls in labelsets if label != "service" or _service_is_the_alerts(ls)]
-        values = {ls[label] for ls in sets if ls.get(label)}
+        values = {ls[label] for ls in subjects if ls.get(label)}
         if len(values) == 1:
             (value,) = values
             if shape.match(value):

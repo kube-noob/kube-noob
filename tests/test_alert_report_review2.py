@@ -145,7 +145,7 @@ def _stored(tmp_path: Path) -> list[str]:
 # --- N1. the wait for a slot is bounded, holds no body, and abandoned posts are dropped -----------------------------
 
 
-def test_a_post_that_cannot_get_a_slot_is_refused_with_503_before_its_body_is_read(
+def test_a_post_that_cannot_get_a_slot_is_refused_with_503_within_the_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("KUBE_NOOB_HTTP_TOKEN", TOKEN)
@@ -157,7 +157,8 @@ def test_a_post_that_cannot_get_a_slot_is_refused_with_503_before_its_body_is_re
     assert ex.status == 503
     assert int(ex.headers["retry-after"]) >= 1
     assert "busy" in json.loads(ex.body)["error"]
-    assert ex.chunks_read == 0, "a post refused for want of a slot must not have its body read into memory"
+    # Third review: the body is read first (bounded by size, a read deadline and the large-body tickets), because a
+    # slot taken before the body let a sender that trickled hold it (test_alert_report_review3.py).
     assert waited < 3, f"the wait for a slot is bounded; it took {waited:.1f}s"
     assert _stored(tmp_path) == []
 
@@ -504,7 +505,11 @@ def test_diagnose_and_the_report_read_the_same_version(
 ) -> None:
     kit = _kit(tmp_path)
     for order in (False, True):
-        alerts = [_alert("etcdHighFsyncDurations", namespace="openshift-etcd", **own), _alert("etcdMembersDown", **own)]
+        # Both from the platform (an openshift-* namespace): since the third review a `version` label counts only there.
+        alerts = [
+            _alert("etcdHighFsyncDurations", namespace="openshift-etcd", **own),
+            _alert("etcdMembersDown", namespace="openshift-etcd", **own),
+        ]
         if order:
             alerts.reverse()
         text = _payload(*alerts, commonLabels=common)
@@ -798,19 +803,20 @@ def test_a_thread_waiting_for_a_slot_gives_up_after_the_bound(tmp_path: Path, mo
     assert len(errors) == 6 and all(isinstance(e, ServerBusy) for e in errors)
 
 
-def test_large_mcp_bodies_in_flight_are_bounded_before_they_are_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_large_mcp_bodies_waiting_in_memory_are_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The MCP SDK parses a call's body before the tool can wait for a report slot, so each waiting MCP call held its
-    whole body (about 10 MB parsed); twenty took the server to 311 MB. Large bodies in flight are capped instead."""
-    from kube_noob.server import http
+    whole body (about 10 MB parsed); twenty took the server to 311 MB. Large bodies in memory are capped instead (the
+    third review made the cap count bytes in memory, wait for room and release when the tool takes the body)."""
+    from kube_noob.server import admission
 
     monkeypatch.setenv("KUBE_NOOB_HTTP_TOKEN", TOKEN)
-    monkeypatch.setattr(http, "MAX_LARGE_BODIES", 0)
-    big = b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{},"pad":"' + b"x" * http.LARGE_BODY_BYTES + b'"}'
+    monkeypatch.setattr(admission, "MAX_LARGE_BODIES", 0)
+    monkeypatch.setattr(admission, "READ_SECONDS", 0.5)
+    big = (
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{},"pad":"' + b"x" * admission.LARGE_BODY_BYTES + b'"}'
+    )
     ex = _call(http_app(_server(tmp_path)), "/mcp", big)
     assert ex.status == 503 and int(ex.headers["retry-after"]) >= 1
-    assert ex.chunks_read == 0, "refused before its body was read"
     # The neighbours: a small body is not counted, and a large one is admitted again once the earlier one finished.
     from starlette.testclient import TestClient
 
@@ -821,7 +827,7 @@ def test_large_mcp_bodies_in_flight_are_bounded_before_they_are_read(
     }
     with TestClient(http_app(_server(tmp_path)), base_url="http://testserver") as c:
         assert c.post("/mcp", content=b'{"jsonrpc":"2.0","id":1,"method":"ping"}', headers=headers).status_code != 503
-    monkeypatch.setattr(http, "MAX_LARGE_BODIES", 1)
+    monkeypatch.setattr(admission, "MAX_LARGE_BODIES", 1)
     with TestClient(http_app(_server(tmp_path)), base_url="http://testserver") as c:
         assert c.post("/mcp", content=big, headers=headers).status_code != 503
         assert c.post("/mcp", content=big, headers=headers).status_code != 503

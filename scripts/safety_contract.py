@@ -95,7 +95,9 @@ LOCAL_STATE_SWITCHES: dict[str, str] = {k: why for k, (group, why) in DEFAULT_ON
 # used to read booleans only, so `Literal["off", "on"] = "on"`, a default URL or a default-on boolean inside a list of
 # models passed it silently (G274).
 REVIEWED_VALUES: dict[str, str] = {
-    "web.allowedDomains": "the documentation domains `fetch_docs` may read, consulted only with `webEnabled` (off)",
+    "web.allowedDomains": "a host allowlist, used twice: the hosts web lookups (`fetch_docs`, a model's web search) "
+    "may reach, only with `webEnabled` (off; `net.py`), and the hosts `kube-noob corpus jira` and the "
+    "`jira.syncEnabled` (off) background sync may sync from (`sources/jira.py`, `jira_http`)",
     "ci.githubApiUrl": "the GitHub API `kube-noob build history` reads, reached only with `ci.githubEnabled` (off)",
     "jira.baseUrl": "Red Hat's public Jira, read only by `kube-noob corpus jira` or `jira.syncEnabled` (off)",
 }
@@ -904,31 +906,48 @@ def _walk(model: Any, prefix: tuple[str, ...] = ()) -> Iterable[tuple[str, Any]]
         yield key, value
 
 
-def _model_class(annotation: Any) -> Any:
-    """The pydantic model a list, tuple or set annotation holds, or None."""
+def _model_in(annotation: Any) -> tuple[str, Any] | None:
+    """``(kind, model)`` when an annotation holds pydantic models: ``"[]"`` a list, tuple or set of them, ``"{}"`` a
+    dict whose values are, ``""`` the model itself or an Optional one; else None."""
     import typing
 
     from pydantic import BaseModel
 
+    def model(arg: Any) -> Any:
+        inner = typing.get_args(arg)[0] if typing.get_origin(arg) is typing.Annotated else arg
+        return inner if isinstance(inner, type) and issubclass(inner, BaseModel) else None
+
     origin = typing.get_origin(annotation)
     if origin is typing.Annotated:
-        return _model_class(typing.get_args(annotation)[0])
+        return _model_in(typing.get_args(annotation)[0])
+    if model(annotation) is not None:
+        return "", annotation
+    args = typing.get_args(annotation)
     if origin in (list, tuple, set, frozenset):
-        for arg in typing.get_args(annotation):
-            inner = typing.get_args(arg)[0] if typing.get_origin(arg) is typing.Annotated else arg
-            if isinstance(inner, type) and issubclass(inner, BaseModel):
-                return inner
+        for arg in args:
+            if model(arg) is not None:
+                return "[]", model(arg)
+    if origin in (dict, Mapping) and len(args) == 2 and model(args[1]) is not None:
+        return "{}", model(args[1])
     if origin in (typing.Union, types.UnionType):
-        for arg in typing.get_args(annotation):
-            found = _model_class(arg)
-            if found is not None:
+        for arg in args:
+            if arg is not type(None) and (found := _model_in(arg)) is not None:
                 return found
     return None
 
 
 def _class_defaults(cls: Any, prefix: tuple[str, ...]) -> Iterable[tuple[str, Any, Any]]:
+    """What a model is when nothing is set: an instance made with no arguments, so a validator that turns a field on
+    counts as the default it is (G274); only a model with required fields falls back to its field defaults."""
     from pydantic import BaseModel
 
+    try:
+        instance = cls()
+    except Exception:  # noqa: BLE001 - required fields: read the declared defaults instead
+        instance = None
+    if instance is not None:
+        yield from _walk_typed(instance, prefix)
+        return
     for fname, info in cls.model_fields.items():
         if info.is_required():
             continue
@@ -941,6 +960,9 @@ def _class_defaults(cls: Any, prefix: tuple[str, ...]) -> Iterable[tuple[str, An
 
 
 def _walk_typed(model: Any, prefix: tuple[str, ...] = ()) -> Iterable[tuple[str, Any, Any]]:
+    """``_walk`` with each leaf's annotation, into nested models, lists and dicts of models (``key[]`` and ``key{}``
+    for the item model's own defaults, ``key[i]`` and ``key{k}`` for items present) and Optional models left unset
+    (their defaults, under ``key``)."""
     from pydantic import BaseModel
 
     for fname, info in type(model).model_fields.items():
@@ -949,13 +971,22 @@ def _walk_typed(model: Any, prefix: tuple[str, ...] = ()) -> Iterable[tuple[str,
         if isinstance(value, BaseModel):
             yield from _walk_typed(value, key)
             continue
-        item = _model_class(info.annotation)
-        if item is not None:
+        found = _model_in(info.annotation)
+        if found is not None:
+            kind, item = found
             *head, last = key
-            yield from _class_defaults(item, (*head, f"{last}[]"))
-            for i, element in enumerate(value or []):
-                if isinstance(element, BaseModel):
-                    yield from _walk_typed(element, (*head, f"{last}[{i}]"))
+            if kind == "[]":
+                yield from _class_defaults(item, (*head, f"{last}[]"))
+                for i, element in enumerate(value or []):
+                    if isinstance(element, BaseModel):
+                        yield from _walk_typed(element, (*head, f"{last}[{i}]"))
+            elif kind == "{}":
+                yield from _class_defaults(item, (*head, f"{last}{{}}"))
+                for name, element in (value or {}).items():
+                    if isinstance(element, BaseModel):
+                        yield from _walk_typed(element, (*head, f"{last}{{{name}}}"))
+            elif value is None:
+                yield from _class_defaults(item, key)
         yield ".".join(key), value, info.annotation
 
 
@@ -1033,17 +1064,29 @@ def default_violations(settings: Any | None = None, reviewed: Mapping[str, Any] 
     return problems
 
 
+#: A host name with a top-level domain, or an IPv4 address that is not loopback: a default that names somewhere to go
+#: even without a scheme ("telemetry.example.com").
+_HOST = re.compile(
+    r"(?i)^(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}|(?!127\.)(?:[0-9]{1,3}\.){3}[0-9]{1,3})"
+    r"(?::[0-9]{1,5})?(?:/\S*)?\Z"
+)
+
+
 def _switched_values(settings: Any) -> dict[str, str]:
-    """Non-boolean settings whose default could switch something on or reach out, with what the default is."""
+    """Non-boolean settings whose default could switch something on or reach out, with what the default is: a
+    Literal choice that is neither its first one nor an off value (or any non-off choice of a Literal that has an off
+    value), a URL or a bare host, a non-empty collection."""
     out: dict[str, str] = {}
     for key, value, annotation in _walk_typed(settings):
         if isinstance(value, bool) or key == "dataDir":
             continue
         choices = _literal_choices(annotation)
-        if choices and {str(c).lower() for c in choices} & OFF_CHOICES and str(value).lower() not in OFF_CHOICES:
-            out[key] = f"the switch choice {value!r}"
-        elif isinstance(value, str) and "://" in value:
-            out[key] = f"the URL {value}"
+        off = str(value).lower() in OFF_CHOICES
+        has_off = bool({str(c).lower() for c in choices} & OFF_CHOICES)
+        if choices and not off and (has_off or value != choices[0]):
+            out[key] = f"the choice {value!r}"
+        elif isinstance(value, str) and ("://" in value or _HOST.match(value)):
+            out[key] = f"the address {value}"
         elif isinstance(value, list | tuple | set | frozenset | dict) and value:
             out[key] = f"a non-empty {type(value).__name__} ({len(value)} item(s))"
     return out

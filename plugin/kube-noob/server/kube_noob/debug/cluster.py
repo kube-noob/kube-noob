@@ -197,6 +197,17 @@ def _bearer(m: re.Match[str]) -> str:
     return m.group(1) + "***" if _has_digit_and_letter(m.group(2)) else m.group(0)
 
 
+#: `<secret name>/<key>`, where the key is itself a credential word: a reference to a Secret, not its value.
+_SECRET_REFERENCE = re.compile(
+    r"[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?/"
+    r"(?i:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|key|credentials?)\Z"
+)
+
+
+def _named_value(m: re.Match[str]) -> str:
+    return m.group(0) if _SECRET_REFERENCE.match(m.group(3)) else m.group(1) + m.group(2) + "***"
+
+
 def _stripe(m: re.Match[str]) -> str:
     return "***api-key***" if _has_digit_and_letter(m.group(1)) else m.group(0)
 
@@ -214,15 +225,19 @@ _AFTER_JWT: list[tuple[re.Pattern[str], Any]] = [
     (re.compile(r"\b(AKIA|ASIA)[A-Z0-9]{16}\b"), "***aws-key-id***"),
     # A service-account key file's `"private_key": "-----BEGIN ...\n..."`: the key travels JSON-escaped, so the PEM scan
     # (which reads whitespace between lines, not a backslash and an n) would leave its body.
-    (re.compile(r'(?i)("private[_-]?key"\s*:\s*")(?:[^"\\]|\\.)*"'), r'\1***"'),
+    # Unterminated too, up to the end of the line (a JSON string holds no raw newline): a key file cut short still
+    # holds its key.
+    (re.compile(r'(?i)("private[_-]?key"\s*:\s*")(?:[^"\\\n]|\\.)*+("?)'), r"\1***\2"),
     # `password=x`, `"token": "x"`, and the same keys with a prefix: `client_secret=`, `aws_secret_access_key=`,
     # `DB_PASSWORD=` (the prefix is at most four words, so a long `a-a-a-...` run costs a bounded amount per word).
+    # Not a reference to a secret: `kubectl describe` prints `DB_PASSWORD: <set to the key 'password' in secret
+    # 'orders-db'>`, and `DB_PASSWORD: orders-db/password` names a Secret and its key -- neither holds the value (G274).
     (
         re.compile(
             r"(?i)\b((?:[a-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key))"
-            r"(\"?\s*[:=]\s*\"?)[^\s\"',;]+"
+            r"(\"?\s*[:=]\s*\"?)(?!<set to the key )([^\s\"',;]+)"
         ),
-        r"\1\2***",
+        _named_value,
     ),
 ]
 _AFTER_KEYS: list[tuple[re.Pattern[str], Any]] = [
@@ -244,14 +259,25 @@ _AFTER_KEYS: list[tuple[re.Pattern[str], Any]] = [
 # it is left as it is: it holds no key material.
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-#: The body of a cut key: optional RFC 1421 header lines, then whitespace-separated base64 lines of 16 characters or
-#: more, then one shorter last line when it ends its line. Each line is a token with no whitespace in it, so the engine
-#: never has two ways to split the text and the match costs what it consumes.
+#: The body of a cut key: optional RFC 1421 header lines, then base64 lines of 16 characters or more, then one shorter
+#: last line when it ends its line. Lines are separated by whitespace, by JSON-escaped newlines (`\\n`), or by a newline
+#: and the prefix a log line carries -- an RFC 3339 timestamp, a CRI `stdout F`, `kubectl logs --prefix`'s
+#: `[pod/name/container]` -- and the first line may follow the header with nothing between (a key flattened onto one
+#: line). Every separator and line is an atomic group or a possessive run, so the engine never re-splits what it has
+#: matched and the cost is what it consumes (G274).
+_PEM_NL = r"(?:\r?\n|\\r\\n|\\n)"
+_PEM_PREFIX = (
+    r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.,]{8,18}(?:Z|[+-][0-9]{2}:?[0-9]{2})?[ \t]++"
+    r"(?:std(?:out|err)[ \t]++[FP][ \t]++)?|\[[^\]\n]{1,253}\][ \t]++)"
+)
+_PEM_SEP = rf"(?>(?:[ \t]|{_PEM_NL})++)(?>{_PEM_PREFIX})?"
+_PEM_LINE = r"[A-Za-z0-9+/]{16,}+={0,2}+"
 _PEM_BODY = re.compile(
     r"(?:[ \t]*\r?\n(?:Proc-Type|DEK-Info):[^\n]{0,200})*"
-    r"(?P<lines>(?:\s+[A-Za-z0-9+/]{16,}={0,2})+)"
-    r"(?:[ \t]*\r?\n[ \t]*[A-Za-z0-9+/]{1,15}={0,2}[ \t]*(?=\r?\n|\Z))?"
+    rf"(?P<lines>(?:{_PEM_SEP})?{_PEM_LINE}(?:{_PEM_SEP}{_PEM_LINE})*+)"
+    rf"(?:{_PEM_SEP}[A-Za-z0-9+/]{{1,15}}+={{0,2}}+(?=[ \t]*(?:\r?\n|\\[rn]|[\"']|\Z)))?"
 )
+_PEM_FIRST = re.compile(r"[A-Za-z0-9+/]{16,}")
 
 
 def _looks_like_base64(token: str) -> bool:
@@ -290,7 +316,8 @@ def _sub_private_keys(text: str) -> str:
             end = None
             continue
         body = _PEM_BODY.match(text, head.end())
-        if body is not None and _looks_like_base64(body.group("lines").split()[0]):
+        first = _PEM_FIRST.search(body.group("lines")) if body is not None else None
+        if body is not None and first is not None and _looks_like_base64(first.group(0)):
             out += [text[cursor:start], "***PRIVATE KEY (cut)***"]
             cursor = pos = body.end()
         else:
@@ -337,11 +364,11 @@ def _sub_jwts(text: str) -> str:
 # but even bounded the engine tried it at every dash, about 400 steps each, so a run of 2,000 dashes cost 20 ms and an
 # in-bounds Alertmanager payload of them a minute (G274). The text it rewrites is exactly what `sub` rewrote.
 _FLAG_SECRET = re.compile(
-    r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|pwd|secret|token|api[-_]?key)[=\s]+)[^\s\"',;]+"
+    r"(?i)(--?[a-z0-9_.-]{0,64}(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key)[=\s]+)[^\s\"',;]+"
 )
 #: A keyword followed by what `_FLAG_SECRET` needs after it. Every match of `_FLAG_SECRET` contains one, starting at
 #: most 66 characters after the match does (`--` plus the 64-character prefix), so only those windows are tried.
-_FLAG_KEYWORD = re.compile(r"(?i)(?:password|passwd|pwd|secret|token|api[-_]?key)[=\s]+[^\s\"',;]")
+_FLAG_KEYWORD = re.compile(r"(?i)(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key)[=\s]+[^\s\"',;]")
 _FLAG_REACH = 66
 
 

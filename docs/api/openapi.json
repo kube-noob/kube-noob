@@ -748,6 +748,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -851,6 +874,29 @@
      },
      "500": {
       "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
@@ -968,6 +1014,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -1071,6 +1140,29 @@
      },
      "500": {
       "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
@@ -1188,6 +1280,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -1291,6 +1406,29 @@
      },
      "500": {
       "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
@@ -1408,6 +1546,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -1511,6 +1672,29 @@
      },
      "500": {
       "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
@@ -1726,6 +1910,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -1836,6 +2043,29 @@
         }
        }
       }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
      }
     },
     "requestBody": {
@@ -1939,6 +2169,29 @@
      },
      "500": {
       "description": "Internal error, or kube-noob's own stored data is damaged (the message says which)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
+     "503": {
+      "description": "Busy: too many large request bodies (over 256 KiB) were already waiting in memory and none was taken within the read deadline; nothing was run. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
@@ -2057,8 +2310,21 @@
        }
       }
      },
+     "408": {
+      "description": "The request body did not arrive within the read deadline (10 s)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "499": {
+      "description": "The sender went away before the answer; no body is sent and nothing was kept"
+     },
      "503": {
-      "description": "Busy: two reports were already being built and no slot came free within the wait (at most 5 s); the body was not read and nothing was kept. Retry after the Retry-After header",
+      "description": "Busy: all report slots were in use by reports being built and none came free within the wait (at most 5 s), or too many large bodies were already waiting in memory; nothing was kept. Retry after the Retry-After header",
       "content": {
        "application/json": {
         "schema": {
