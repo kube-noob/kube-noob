@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
@@ -21,7 +21,8 @@
               "-B",
               "${CLAUDE_PLUGIN_ROOT}/hooks/kube_noob_hook.py"
             ],
-            "timeout": 60
+            "timeout": 60,
+            "onFailure": "block"
           }
         ]
       }

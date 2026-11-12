@@ -246,7 +246,7 @@ def test_helm_render_passes_the_callers_kubernetes_version(monkeypatch: pytest.M
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout="apiVersion: v1\nkind: ConfigMap\n", stderr="")
 
-    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda: "helm")
+    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda *_: "helm")
     monkeypatch.setattr("kube_noob.generate.helm_render.subprocess.run", fake_run)
     render_chart(chart, kube_version=None)
     assert "--kube-version" not in seen["args"]

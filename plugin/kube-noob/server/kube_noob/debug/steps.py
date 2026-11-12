@@ -158,6 +158,9 @@ KUBE_GLOBAL_VALUE_FLAGS = frozenset(
         "--log-flush-frequency",
         "--profile",
         "--profile-output",
+        # kubectl's preferences file (kubernetes/kubectl pkg/kuberc/kuberc.go, AddFlags): its aliases can make
+        # `get` run `delete`, so `--kuberc FILE get` was read as a get.
+        "--kuberc",
     }
 )
 #: Names a kubectl runs under: the binary, the `k` alias the Kubernetes docs suggest
@@ -176,29 +179,45 @@ def kube_subcommand(args: list[str]) -> tuple[str, str, int]:
     i = 0
     while i < len(args):
         t = args[i]
+        if t == "--":
+            break  # everything after `--` is an argument, never a flag or a subcommand kubectl looks for
         if t in KUBE_GLOBAL_VALUE_FLAGS:
             i += 2
             continue
         if t.startswith("-") and t != "-":
             i += 1
             continue
-        nxt = next((a for a in args[i + 1 :] if not a.startswith("-")), "")
+        rest = args[i + 1 : args.index("--", i + 1) if "--" in args[i + 1 :] else len(args)]
+        nxt = next((a for a in rest if not a.startswith("-")), "")
         return t, nxt, i
     return "", "", -1
 
 
 def dry_run(args: list[str]) -> str:
-    """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server" or "" (none)."""
+    """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server" or "" (none).
+
+    The LAST occurrence wins (pflag sets the flag each time it is seen), nothing after `--` is a flag, and `none`
+    or `false` is no dry run: `delete ns prod --dry-run=client --dry-run=none` deletes."""
+    found = ""
     for i, t in enumerate(args):
+        if t == "--":
+            break
         if t == "--dry-run":
             nxt = args[i + 1] if i + 1 < len(args) else ""
             if nxt in {"client", "server", "none"}:  # helm also takes `--dry-run server`
-                return "" if nxt == "none" else nxt
-            return "client"
-        if t.startswith("--dry-run="):
+                found = "" if nxt == "none" else nxt
+            else:
+                found = "client"
+        elif t.startswith("--dry-run="):
             v = t.split("=", 1)[1].lower()
-            return "client" if v in _DRY_RUN_CLIENT else "server" if v == "server" else ""
-    return ""
+            found = "client" if v in _DRY_RUN_CLIENT else "server" if v == "server" else ""
+    return found
+
+
+def runs_local_code(args: list[str]) -> bool:
+    """kustomize with plugins, exec functions or helm enabled runs programs on this machine (kustomize's own
+    flags: --enable-alpha-plugins, --enable-exec, --enable-helm, and kubectl kustomize's --enable-helm)."""
+    return any(a.split("=", 1)[0] in {"--enable-alpha-plugins", "--enable-exec", "--enable-helm"} for a in args)
 
 
 def _classify_segment(seg: str) -> StepKind:
@@ -219,9 +238,9 @@ def classify_argv(toks: list[str]) -> StepKind:
     ``classify_step`` produces them by splitting a step on white space. One decision table serves both."""
     if not toks:
         return "read"
-    tool = toks[0].rsplit("/", 1)[-1]  # /usr/local/bin/oc -> oc
-    if tool.lower().endswith(".exe"):
-        tool = tool[:-4]
+    from kube_noob.debug.shell import program
+
+    tool = program(toks[0])  # /usr/local/bin/oc, oc.exe, kubectl1.30 and Kubectl name their tool
     rest = toks[1:]
     sub = rest[0] if rest else ""
     nxt = rest[1] if len(rest) > 1 else ""
@@ -231,13 +250,24 @@ def classify_argv(toks: list[str]) -> StepKind:
     if tool in KUBE_CLIS:
         sub, nxt, _ = kube_subcommand(rest)
         seg = " ".join(toks)
-        # diff sends server-side dry-run requests and stores nothing; kustomize renders a directory locally.
-        if sub in _KUBE_READ or sub in {"diff", "kustomize", ""}:  # "": `kubectl` alone prints its help
+        if any(a == "--kuberc" or a.startswith("--kuberc=") for a in rest):
+            return "change"  # a preferences file named here can alias any subcommand to any other
+        if sub == "diff":
+            # Stores nothing in the cluster, but runs a diff program on this machine: `diff`, or whatever
+            # KUBECTL_EXTERNAL_DIFF names (kubectl pkg/cmd/diff/diff.go), which a step cannot see.
+            return "exec"
+        if sub == "cluster-info" and nxt == "dump":
+            return "exec"  # writes a directory of objects and pod logs with --output-directory
+        if sub == "kustomize":
+            return "exec" if runs_local_code(rest) else "read"  # renders locally; --enable-helm runs helm
+        if sub in _KUBE_READ or sub == "":  # "": `kubectl` alone prints its help
             return "read"
         if sub == "auth":
             return "read" if nxt in {"can-i", "whoami"} else "change"
         if sub == "config":
             return "read" if nxt in _KUBECONFIG_READ else "change"
+        if sub == "plugin":
+            return "read" if nxt == "list" else "exec"
         if sub == "rollout":
             return "read" if nxt in {"status", "history"} else "change"
         if sub in _KUBE_EXEC:
@@ -261,6 +291,8 @@ def classify_argv(toks: list[str]) -> StepKind:
             return "read"  # helm renders and prints; nothing is installed
         return "read" if sub in _HELM_READ else "change"
     if tool == "kustomize":
+        if runs_local_code(rest):
+            return "exec"
         return "read" if sub in {"build", "cfg", "version", "help", ""} else "change"
     if tool == "rosa":
         return "read" if sub in _ROSA_READ else "change"

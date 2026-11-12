@@ -1250,16 +1250,19 @@ kube-noob demo verify
 A deny lists the findings the change adds at or above `--fail-on`, each with its file and line, the rule, a one-line
 fix and whether the generated admission policy would refuse it in enforce mode, and the `kube-noob fix` command when
 the mechanical fixer clears a failing rule (it runs the fixer to find out). `not-determined` is never an allow: a URL,
-`-f -` with nothing on stdin, `exec`, a delete, a strategic-merge patch, `--context`, a flag or wrapper verify does
-not model, a file outside the working directory or behind a link. It sees through `sh -c`, `bash -lc`, `eval` of a
+`-f -` with nothing on stdin, `exec`, a delete other than pods by name, a strategic-merge patch, `--context`, a flag
+or wrapper verify does not model, a file outside the working directory or behind a link, a file an earlier command on
+the same line may have written, a deployer it does not model (`helmfile`, `argocd`, `terraform` ...). A day-2 change
+that cannot add a manifest finding -- a restart, a scale, a label, deleting pods by name -- is allowed. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).
 The same check is the `verify_change` MCP tool, which takes the command and the text of the files it names.
 
 An agent will not always choose to call a checker, so make the harness do it. In Claude Code, a PreToolUse hook runs
-before every Bash command, passes the ones that change no cluster untouched, and blocks a kubectl, oc or helm change
-unless verify allows it (not-determined and the hook's own errors block too):
+before every Bash command, passes the ones that change no cluster untouched and the changes verify allows, blocks a
+deny (and its own errors), and asks you, with the reasons, about a change verify could not decide (in a `-p` run,
+where nobody can answer, Claude Code refuses it):
 
 ```bash
 kube-noob hook install --claude-code --project --platform openshift --version 4.20
@@ -1267,7 +1270,8 @@ kube-noob hook install --claude-code --project --platform openshift --version 4.
 ```
 
 The first prints the settings to merge into `.claude/settings.json`; the second merges them (existing hooks kept,
-atomic, never through a link). The plugin (`kube-noob@kube-noob`) carries the same hook, off until you turn on its
+atomic, never through a link). Both set `"onFailure": "block"`, so a hook that cannot start or runs out of time blocks
+rather than passes; that needs Claude Code v2.1.295 or later, and an older version lets the command through. The plugin (`kube-noob@kube-noob`) carries the same hook, off until you turn on its
 `verify_cluster_commands` option in `/config`. For a harness without hooks, run
 `kube-noob verify --command "$CMD"` before executing `$CMD` and refuse on a non-zero exit; for a repository, the
 `kube-noob-verify` pre-commit hook runs `kube-noob verify -f .`. A human who needs to run something the check refuses

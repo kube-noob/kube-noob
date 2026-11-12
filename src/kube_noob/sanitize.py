@@ -152,15 +152,15 @@ def safe_load_all_bounded(text: str, limit: int = MAX_YAML_DEPTH) -> list[Any]:
     return list(yaml.safe_load_all(text))
 
 
-def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
+def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH, object_pairs_hook: Any = None) -> Any:
     """``json.loads`` with the bracket depth counted first, so every reader refuses a nesting bomb identically.
 
     Raises ``JsonTooDeep`` (a ``ValueError``) rather than letting the interpreter decide, and otherwise behaves
-    exactly like ``json.loads``.
+    exactly like ``json.loads`` (``object_pairs_hook`` is passed through, for a reader that must see repeated keys).
     """
     if not json_nesting_ok(data, limit):
         raise JsonTooDeep(f"JSON nested too deeply (more than {limit} levels)")
-    return json.loads(data)
+    return json.loads(data, object_pairs_hook=object_pairs_hook)
 
 
 _TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]{0,256}(?:\x07|\x1b\\)?)")

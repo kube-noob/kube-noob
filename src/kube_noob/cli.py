@@ -569,12 +569,12 @@ def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         "cni": a.cni,
     }
     try:
-        against = gate.collect(a.against, _read) if a.against else None
+        against = verify.collect(a.against, _read) if a.against else None
         if a.change_command is not None:
             plan = verify.plan(a.change_command, cwd=Path.cwd(), platform=platform, version=a.pversion)
             result = verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
         else:
-            result = verify.evaluate(gate.collect(a.file, _read), against=against, **common)
+            result = verify.evaluate(verify.collect(a.file, _read), against=against, **common)
     except (gate.GateError, verify.VerifyError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
     if a.format == "text":
@@ -2284,9 +2284,16 @@ def main(argv: list[str] | None = None) -> int:
         # Before the configuration is read and outside the error handling below: the hook answers in Claude Code's
         # protocol, where 2 blocks and every other non-zero code lets the command through. A configuration error
         # mapped to 4 here would have been a pass.
-        from kube_noob import hook
+        try:
+            from kube_noob import hook
 
-        return hook.main(options=hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on))
+            return hook.main(options=hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on))
+        except BaseException:  # noqa: BLE001 - any failure here is a blocked command, never exit 1 (a pass)
+            import contextlib
+
+            with contextlib.suppress(OSError, ValueError):
+                sys.stderr.write("kube-noob hook failed; the command is blocked.\n")
+            return 2
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)

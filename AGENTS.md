@@ -108,6 +108,21 @@ A behaviour change updates, in the same commit:
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations.
 
+How two commands fit the table (G280):
+
+- `kube-noob verify` uses 0, 1 and 5 only. 1 is "findings at or above `--fail-on`": the audit's findings, a grant in
+  the command that the memory verifier counts as one (cluster-admin, the privileged SCC, wildcard RBAC), or a
+  literal credential in `set env` (KN-S013's finding, before there is a manifest). 5 is "the evidence was
+  incomplete": what the change does could not be read from its text and the local files -- a URL, a delete whose
+  target is cluster state, an `exec`. A deny with something unread is still 1, the reverse of `gate`, which exits 5
+  there: the gate reports pass or fail over a set it promises to have read, while verify reports one change, and
+  more evidence cannot turn its deny into an allow. Both are listed in the output.
+- `kube-noob hook claude-code` does not use this table. It answers in Claude Code's hook protocol, where the caller
+  reads exit codes: 0 lets the call proceed (with a JSON `ask` on stdout when the user must decide), 2 blocks it,
+  and every other code would let it through -- so once it is running the hook exits with nothing but 0 or 2, a
+  configuration error or a crash included. A hook that cannot start at all is what `"onFailure": "block"` in the
+  settings it installs is for.
+
 ## Versions
 
 Only `python scripts/bump_version.py <version> "<reason>"` changes a version; it updates PyPI, the MCP Registry

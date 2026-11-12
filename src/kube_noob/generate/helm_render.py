@@ -16,9 +16,50 @@ from kube_noob.audit.model import Report
 from kube_noob.errors import KubeNoobError
 from kube_noob.generate.helm import lint_chart_metadata
 
+#: Rendered output larger than this is not read: a chart is not supposed to be a 5 MB bundle, and the audit after it
+#: has to finish inside a hook's time budget.
+MAX_RENDERED = 5_000_000
+MAX_CHART_FILES = 5_000
 
-def helm_binary() -> str | None:
-    return shutil.which("helm")
+
+def helm_binary(project: Path | None = None) -> str | None:
+    """The `helm` on PATH, looked up only in absolute PATH entries outside ``project`` and the current directory.
+
+    `shutil.which("helm")` honoured a relative PATH entry (`bin`, `.`) and so ran a `helm` the checked-out
+    repository supplies -- a program from the tree under review, run by the tool reviewing it (G280)."""
+    import os
+
+    cwd = Path.cwd().resolve()
+    roots = [cwd, *([project.resolve()] if project is not None else [])]
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry):
+            continue
+        p = Path(entry).resolve()
+        if any(p == r or p.is_relative_to(r) for r in roots):
+            continue
+        found = shutil.which("helm", path=str(p))
+        if found:
+            return found
+    return None
+
+
+def chart_problem(chart: Path, root: Path | None = None) -> str | None:
+    """Why a chart directory is not rendered: a symbolic link anywhere in it (helm would follow it out of the
+    tree), more than 5,000 files, or a directory outside ``root``."""
+    import os
+
+    chart = Path(chart)
+    if root is not None and not chart.resolve().is_relative_to(root.resolve()):
+        return "the chart is outside the working directory"
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(chart, followlinks=False):
+        for name in [*dirnames, *filenames]:
+            count += 1
+            if count > MAX_CHART_FILES:
+                return f"the chart has more than {MAX_CHART_FILES} files"
+            if Path(dirpath, name).is_symlink():
+                return f"{Path(dirpath, name).relative_to(chart)} is a symbolic link; helm would follow it"
+    return None
 
 
 def kube_version_arg(platform: str, version: str | None) -> str | None:
@@ -45,26 +86,39 @@ def render_chart(
     release: str = "release",
     timeout: float = 60.0,
     kube_version: str | None = None,
+    set_values: list[tuple[str, str]] | None = None,
+    project: Path | None = None,
 ) -> str:
-    helm = helm_binary()
+    """``set_values``: (flag, value) pairs for --set, --set-string, --set-json or --set-literal, passed as argv.
+    ``project``: the tree under review; a `helm` inside it is never run, and a chart with a link in it is refused."""
+    helm = helm_binary(project)
     if helm is None:
         raise KubeNoobError(
-            "The `helm` binary is not on PATH; install Helm 3.8+ to render charts "
-            "(https://helm.sh/docs/intro/install/)."
+            "The `helm` binary is not on PATH (absolute PATH entries outside the working directory only); install "
+            "Helm 3.8+ to render charts (https://helm.sh/docs/intro/install/)."
         )
     chart = Path(chart_dir)
     if not (chart / "Chart.yaml").is_file():
         raise KubeNoobError(f"{chart} is not a chart directory (no Chart.yaml)")
+    problem = chart_problem(chart, project)
+    if problem:
+        raise KubeNoobError(f"{chart}: {problem}")
     args = [helm, "template", release, str(chart), "--namespace", namespace]
     if kube_version:
         args += ["--kube-version", kube_version]
     for vf in values_files or []:
         args += ["--values", vf]
+    for flag, value in set_values or []:
+        if flag not in {"--set", "--set-string", "--set-json", "--set-literal"} or "\n" in value or "\x00" in value:
+            raise KubeNoobError(f"{flag} {value[:40]!r} is not passed to helm")
+        args += [flag, value]
     with tempfile.TemporaryDirectory() as home:
         env = {"HELM_CACHE_HOME": home, "HELM_CONFIG_HOME": home, "HELM_DATA_HOME": home, "PATH": "/usr/bin:/bin"}
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env, check=False)
     if proc.returncode != 0:
         raise KubeNoobError(f"helm template failed: {proc.stderr.strip()[:2000]}")
+    if len(proc.stdout) > MAX_RENDERED:
+        raise KubeNoobError(f"helm template rendered more than {MAX_RENDERED:,} characters; not read")
     return proc.stdout
 
 
