@@ -506,3 +506,16 @@ def test_detection_coverage_reads_only_the_object_named_cluster(text: str, why: 
     cov = _r(text, "openshift", "4.20").detection_coverage
     assert cov is not None and why in cov["undecided"]
     assert set(cov) == {"from", "undecided", "controls", "source", "cannotSay"}, "a verdict was drawn anyway"
+
+
+def test_the_apiservice_policy_is_generated_only_for_the_engine_that_would_run_it() -> None:
+    """Kyverno's default resourceFilters exclude APIService, so its policy was installed and checked nothing: the
+    kind-cluster acceptance caught the bad fixture admitted. VAP only, and the Kyverno skip says why."""
+    from kube_noob.generate import policies as pol
+
+    kyverno = pol.generate(engines=("kyverno",), rules=["KN-S037"], mode="enforce")
+    assert not kyverno.documents
+    assert [s["ruleId"] for s in kyverno.skipped] == ["KN-S037"]
+    assert "[APIService,*,*]" in kyverno.skipped[0]["reason"] and kyverno.skipped[0]["reason"].startswith("kyverno:")
+    vap = pol.generate(engines=("vap",), rules=["KN-S037"], mode="enforce")
+    assert vap.documents and not vap.skipped

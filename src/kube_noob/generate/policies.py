@@ -356,6 +356,10 @@ class Check:
     skip_owned: bool = False
     rbac_names: bool = False
     variables: tuple[tuple[str, str], ...] = field(default=())
+    # The engines a policy for this rule would actually run on. A rule whose kind an engine's default
+    # configuration never sends to its policies is generated for the others only, with the reason in
+    # ENGINE_SKIPS, rather than as a policy that looks installed and checks nothing (G272).
+    engines: tuple[Engine, ...] = ("vap", "kyverno")
 
     @property
     def rule(self) -> Rule:
@@ -364,6 +368,13 @@ class Check:
 
 _OPENSHIFT_ONLY = "OpenShift API: generated with --platform openshift, rosa-classic or rosa-hcp"
 _ROSA_ONLY = "a ROSA rule: generated with --platform rosa-classic or rosa-hcp"
+
+# Rules generated for some engines and not others, with the reason for each engine left out.
+ENGINE_SKIPS: dict[tuple[str, Engine], str] = {
+    ("KN-S037", "kyverno"): "Kyverno's default configuration never sends APIService objects to its policies "
+    "(resourceFilters `[APIService,*,*]` in the v1.19.1 install.yaml), so a Kyverno policy for this rule would be "
+    "installed and check nothing; the ValidatingAdmissionPolicy is generated",
+}
 
 # Rules not turned into admission policies, with the reason. Every rule is in exactly one of NOT_GENERATED and the
 # checks (tests/test_policy_generate.py keeps it so).
@@ -787,6 +798,7 @@ def _checks(
                 "!(has(object.spec.service) && has(object.spec.insecureSkipTLSVerify) && "
                 "object.spec.insecureSkipTLSVerify == true)",
             ),
+            engines=("vap",),
         ),
         Check("KN-N009", ("Ingress",), (f"!has(object.metadata.annotations) || !({_NGINX_RISKY})",)),
         Check("KN-N010", ("ConfigMap",), (f"!has(object.data) || !({_NGINX_CONFIGMAP})",)),
@@ -1024,6 +1036,7 @@ def _with_kinds(c: Check, kinds: tuple[str, ...]) -> Check:
         skip_owned=c.skip_owned,
         rbac_names=c.rbac_names,
         variables=c.variables,
+        engines=c.engines,
     )
 
 
@@ -1306,6 +1319,9 @@ def generate(
             skipped.append({"ruleId": rid, "reason": reason})
             continue
         for engine in engines:
+            if engine not in c.engines:
+                skipped.append({"ruleId": rid, "reason": f"{engine}: {ENGINE_SKIPS[(rid, engine)]}"})
+                continue
             docs.extend(documents(c, engine, mode, platform, exclude, exceptions))
             row = {"ruleId": rid, "engine": engine, "name": name_of(rid), "coverage": c.coverage}
             if c.limitation:
