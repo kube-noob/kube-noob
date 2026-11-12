@@ -353,8 +353,10 @@ def test_a_shell_wrapped_etcd_declines() -> None:
 
 
 def test_a_script_that_only_mentions_the_data_directory_is_not_etcd() -> None:
+    """No etcd in the input: the rule declines quietly (nothing to look at is not clean), and says nothing."""
     report = _report(_pod("backup", ["/bin/sh", "-c", "tar czf /backup/x.tgz /var/lib/etcd"]))
-    assert _clean(report, "KN-S039")
+    assert "KN-S039" not in report.evaluated_rules
+    assert not any(a.startswith("KN-S039") for a in report.assumptions)
 
 
 # =====================================================================================================

@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 173 to
-74 760 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 342 to
+74 929 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1079,8 +1079,9 @@ Five rules read the settings that decide whether the cluster's own components ve
 (an absent `caBundle` is not a finding: the API server then uses its system trust roots, and OpenShift's service CA
 fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the AlwaysAllow authorizer and anonymous
 authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
-certificates switched off. Both recognise the component by the binary the container runs, never by its name or
-a label, and an absent flag is the upstream default, named in the finding with the releases it was checked at:
+certificates switched off (a trusted CA file switches them on too, as etcd reads it). Both recognise the component
+by the binary the container runs, never by its name or a label, and an absent flag is the upstream default, named
+in the finding with the releases it was checked at:
 anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
 `--authorization-mode` nor `--authorization-config` authorizes everything. On OpenShift, `KN-S040` reports
 encryption at rest switched off on the same `APIServer` object `KN-S035` reads, and `KN-S041` an LDAP identity
@@ -1088,12 +1089,17 @@ provider with `insecure: true` and an `ldap://` URL.
 
 Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
 `--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
-`envFrom` can set any `ETCD_*` variable; a shell script that runs the binary is not executed; a value passed as
-`$(VAR)` is not expanded; an encryption type or identity provider type openshift/api does not define is not
-guessed at. On ROSA with HCP the API server, etcd and the OAuth server are configured from the `HostedCluster` on
-the management cluster, and on the rest of the OpenShift family the API server is operator-managed. In each case
-the rule is left out of the evaluated list, its controls count it as not evaluated, and the report states why in
-one line -- in the text view, the JSON, the SARIF notifications and the MCP result alike.
+`envFrom` can set any `ETCD_*` variable; a shell script, a wrapper such as `tini` or `go-runner`, k3s, rke2 or
+k0s, or an image entrypoint that runs the binary is not executed; a `$(VAR)` anywhere in argv is not expanded; a
+flag kube-noob does not know, given without `=` before another flag, may swallow it; an encryption type or
+identity provider type openshift/api does not define is not guessed at. On ROSA with HCP the API server, etcd
+and the OAuth server are configured from the `HostedCluster` on the management cluster, on the rest of the
+OpenShift family the API server is operator-managed, and off OpenShift the OpenShift objects are not read (the
+reason names `--platform openshift`). In each case the rule is left out of the evaluated list, its controls count
+it as not evaluated, and the report states why -- naming every declined object, up to a cap -- in the text view,
+the JSON (`declined`), the SARIF notifications, the MCP result and the gate's JSON, SARIF, Markdown and HTML. An
+input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
+"not evaluated:" line still name it.
 
 ```bash
 kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33

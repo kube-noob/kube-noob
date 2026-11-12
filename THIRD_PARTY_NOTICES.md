@@ -34,6 +34,7 @@ copyright designation.
 
 | Material | Upstream | License | Where |
 |---|---|---|---|
+| OpenShift's etcd static pod manifest, unmodified below a provenance header | openshift/cluster-etcd-operator `bindata/etcd/pod.yaml` @f3a37e434b476fe7da5d3cdc2c893d1f594a5480 (release-4.18) | Apache-2.0 | `tests/fixtures/control-plane/openshift-etcd-pod.yaml` |
 | RHACS default policies (89 policies as an export, `exclusions` removed) | stackrox/stackrox `pkg/defaults/policies/files` @dce8fb594ee287a5386fece8be1df3ee1adedc72 | Apache-2.0 | `tests/fixtures/rhacs/default-policies-export.json` |
 | RPM version comparison vectors (91 cases) | rpm-software-management/rpm `tests/rpmvercmp.at` @4f7be32ef288a231893dd4c45d4ef36584e3d4b6 | facts used as test data (rpm is GPL-2.0-or-later / LGPL-2.0-or-later; no code copied) | `tests/test_vuln.py` |
 | Legacy Kyverno policy snippets (require-labels, disallow-latest-tag, add-network-policy, cleanup-bare-pods, adapted and trimmed; the rest original) | kyverno/policies branch release-1.19 @282e77f6d54e1e1a636190ff2dacc3d02c2d689c; the deny example follows kyverno/website `guides/migration-to-cel.md` @b0131526d7d8d6e4fa80856adb75aa4d7b2f4c89 | Apache-2.0 | `tests/fixtures/kyverno-migrate/` (each file names its source) |

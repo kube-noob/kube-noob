@@ -206,6 +206,7 @@ def summary(
     clean: dict[str, int] = {}
     unevaluated: dict[str, int] = {}
     withheld: dict[str, int] = {}
+    not_evaluated_rules: list[str] = []
     if evaluated_rule_ids is not None:
         ran = set(evaluated_rule_ids)
         with_findings = set(rule_ids) | set(excepted_rule_ids or ())
@@ -217,6 +218,8 @@ def summary(
                 bucket = withheld  # it ran and it DID find something; this view just does not show it
             else:
                 bucket = clean if rid in ran else unevaluated
+                if rid not in ran:
+                    not_evaluated_rules.append(rid)
             for c in cs:
                 bucket[c] = bucket.get(c, 0) + 1
     ordered = sorted(
@@ -235,6 +238,10 @@ def summary(
                 entry["withheld"] = withheld.get(c, 0)
         controls.append(entry)
     out: dict[str, Any] = {"catalog": CATALOG, "controls": controls}
+    if evaluated_rule_ids is not None:
+        # The counts said HOW MANY rules of a control did not run; nothing said WHICH, outside the KSI view, so a
+        # rule that declined quietly was invisible in the text view and the SARIF (G272).
+        out["notEvaluatedRules"] = sorted(not_evaluated_rules)
     note = "Findings are evidence about these controls; an assessment decides whether a control is met."
     if excepted:
         note += (

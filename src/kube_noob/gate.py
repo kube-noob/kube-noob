@@ -336,6 +336,10 @@ def run(
                 report.evaluated_rules or None,
                 report.fired_rules or None,
             ),
+            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
+            # API server the audit had declined, and said nothing anywhere (G272).
+            "assumptions": list(report.assumptions),
+            **({"declined": report.declined} if report.declined else {}),
         }
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
@@ -720,6 +724,16 @@ def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
     return props
 
 
+def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
+    """The audit's assumptions and the rules that reached no verdict, as SARIF warnings (G269, G272)."""
+    from kube_noob.cli import not_evaluated_line
+
+    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    if line := not_evaluated_line(rep.get("controlSummary") or {}):
+        notes.append({"level": "warning", "message": {"text": line}})
+    return notes
+
+
 def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
     """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
 
@@ -745,7 +759,7 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         }
         for f in rep["findings"]
     ]
-    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes = _caveat_notes(rep)
     notes += [
         {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
         for u in rep.get("unreadable") or []
@@ -950,12 +964,41 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
+    from kube_noob.cli import not_evaluated_line
+
+    caveats = [str(a) for a in report.get("assumptions") or []]
+    if line := not_evaluated_line(report.get("controlSummary") or {}):
+        caveats.append(line)
+    if caveats:
+        shown = caveats[:MD_CAVEATS]
+        more = [f"- and {len(caveats) - MD_CAVEATS} more in the JSON report"] if len(caveats) > MD_CAVEATS else []
+        lines += ["### Not evaluated in full", "", *[f"- {_cell(a, 1200)}" for a in shown], *more, ""]
     return "\n".join(lines)
+
+
+#: How many audit caveats the Markdown summary lists before pointing at the JSON report.
+MD_CAVEATS = 20
+
+
+def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
+    """The gate's SARIF: its results, and what the audit under it could not decide, as the audit's SARIF carries.
+
+    The gate runs the same audit and dropped its caveats on the way out: a static pod the audit declined left the
+    gate's SARIF, Markdown and HTML silent, and `passed: true` (G272).
+    """
+    notes = _caveat_notes(report)
+    notes += [
+        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
+        for u in report.get("unreadable") or []
+    ]
+    if not notes:
+        return sarif(report)
+    return sarif(report, invocation={"executionSuccessful": True, "toolExecutionNotifications": notes})
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:
     if sarif_path:
-        Path(sarif_path).write_text(json.dumps(sarif(report), indent=1) + "\n", encoding="utf-8")
+        Path(sarif_path).write_text(json.dumps(sarif_of_gate(report), indent=1) + "\n", encoding="utf-8")
     if summary:
         Path(summary).write_text(markdown(report), encoding="utf-8", errors="replace")
     if quality:

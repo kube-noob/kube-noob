@@ -399,6 +399,34 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+#: How many rule ids the text view and the SARIF name on the "not evaluated" line before giving a count.
+MAX_NOT_EVALUATED_NAMED = 20
+
+
+_TEXT_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+#: How long one line of the audit's text view may be. A manifest-derived string (a container name, a flag value)
+#: is the user's text, and a newline in it forged a line of the report; a 100,000-character one flooded it (G272).
+MAX_TEXT_LINE = 2000
+
+
+def _one_line(value: object) -> str:
+    """One terminal line: control characters and line breaks collapsed to spaces, and capped."""
+    text = " ".join(_TEXT_CONTROL.sub(" ", str(value)).split())
+    return text if len(text) <= MAX_TEXT_LINE else f"{text[:MAX_TEXT_LINE]}... ({len(text) - MAX_TEXT_LINE} more)"
+
+
+def not_evaluated_line(summary: dict[str, Any]) -> str:
+    """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did."""
+    ids = [str(r) for r in summary.get("notEvaluatedRules") or []]
+    if not ids:
+        return ""
+    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
+    return (
+        f"not evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules reached no verdict on "
+        "this input, so they are neither clean nor findings"
+    )
+
+
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
     print(
@@ -406,7 +434,9 @@ def _print_report(rep: dict[str, Any]) -> None:
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
     )
     for a in rep.get("assumptions", []):
-        print(f"  note: {a}")
+        print(f"  note: {_one_line(a)}")
+    if line := not_evaluated_line(rep.get("controlSummary") or {}):
+        print(f"  {line}")
     if limit := rep.get("notCheckedBeyond"):
         # Print it before the findings, not after: somebody reading a short report in a terminal has to see the
         # limit before they read an empty finding list as a clean one.
@@ -417,12 +447,14 @@ def _print_report(rep: dict[str, Any]) -> None:
         where = f"{f['file']}:{f['line']}" if f.get("file") and f.get("line") else ""
         if not where:
             where = f.get("file") or (f"L{f['line']}" if f.get("line") else "")
-        print(f"[{f['severity'].upper():8}] {f['ruleId']:9} {f['resource']} {where} {f['path']}")
-        print(f"           {f['message']}")
+        print(f"[{f['severity'].upper():8}] {f['ruleId']:9} {_one_line(f['resource'])} {where} {f['path']}")
+        print(f"           {_one_line(f['message'])}")
         print(f"           fix: {f['remediation']}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
-    touched = (rep.get("controlSummary") or {}).get("controls") or []
+    # Only controls that HAVE findings: the list also holds clean and not-evaluated controls, and printing those
+    # as "(0)" made a control no rule looked at read exactly like a clean one (G272).
+    touched = [c for c in (rep.get("controlSummary") or {}).get("controls") or [] if c.get("findings")]
     if touched:
         print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
     if cov := rep.get("detectionCoverage"):
@@ -434,7 +466,7 @@ def _print_report(rep: dict[str, Any]) -> None:
         if sc["verdict"] == "exposed":
             print(f"[RED-TEAM {sc['severity'].upper()}] {sc['scenarioId']}: {sc['question']}")
             for e in sc["evidence"][:4]:
-                print(f"           - {e}")
+                print(f"           - {_one_line(e)}")
 
 
 def _print_exceptions(rep: dict[str, Any]) -> None:

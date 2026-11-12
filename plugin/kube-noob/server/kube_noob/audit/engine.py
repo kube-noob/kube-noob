@@ -20,6 +20,10 @@ from kube_noob.yamlio import Document, load_documents
 ALL_STAGES = frozenset(Stage)
 #: How many reasons one declined rule lists before it says how many more there were.
 MAX_DECLINE_REASONS = 3
+#: How many further declined objects that line names before it gives a count instead.
+MAX_DECLINE_NAMES = 20
+#: How many (object, reason) entries one rule keeps in the report's `declined` map.
+MAX_DECLINED_ENTRIES = 50
 
 
 def build_context(
@@ -126,14 +130,27 @@ def analyze(
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
     # A rule that declined and said why gets one line, sorted by id so the same input gives the same bytes. The
-    # count is capped per rule: a hundred declined containers are three reasons and a count, not a hundred lines.
+    # line gives the first few reasons in full and then NAMES every further object, up to a cap, with a count of
+    # the ones it could not name: capping reasons alone left the fourth and fifth declined objects named nowhere
+    # in any format (G272). The JSON carries the bounded map in `declined`.
     for rid in sorted(ctx.declined):
-        reasons = ctx.declined[rid]
-        more = f"; and {len(reasons) - MAX_DECLINE_REASONS} more" if len(reasons) > MAX_DECLINE_REASONS else ""
+        entries = ctx.declined[rid]
+        shown = entries[:MAX_DECLINE_REASONS]
+        named = {res for res, _ in shown if res}
+        rest = list(dict.fromkeys(res for res, _ in entries[MAX_DECLINE_REASONS:] if res and res not in named))
+        unnamed = sum(1 for res, _ in entries[MAX_DECLINE_REASONS:] if not res)
+        tail = f"; also not evaluated: {', '.join(rest[:MAX_DECLINE_NAMES])}" if rest else ""
+        withheld = max(0, len(rest) - MAX_DECLINE_NAMES) + unnamed
+        if withheld:
+            tail += f"; and {withheld} more not named"
         report.assumptions.append(
             f"{rid} was not evaluated in full, so it is not counted as clean: "
-            f"{'; '.join(reasons[:MAX_DECLINE_REASONS])}{more}."
+            f"{'; '.join(reason for _, reason in shown)}{tail}."
         )
+        report.declined[rid] = {
+            "entries": [{"resource": res, "reason": reason} for res, reason in entries[:MAX_DECLINED_ENTRIES]],
+            "withheld": max(0, len(entries) - MAX_DECLINED_ENTRIES),
+        }
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that

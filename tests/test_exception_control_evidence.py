@@ -80,7 +80,8 @@ def test_a_run_with_no_exceptions_is_unchanged() -> None:
     before = _audit()
     assert not any("excepted" in c for c in before["controlSummary"]["controls"])
     assert "excepted" not in before["controlSummary"]["note"]
-    assert set(before["controlSummary"]) == {"catalog", "controls", "note"}
+    # `notEvaluatedRules` names the rules that reached no verdict (G272); it is about coverage, not exceptions.
+    assert set(before["controlSummary"]) == {"catalog", "controls", "note", "notEvaluatedRules"}
 
 
 def test_open_findings_still_outrank_excepted_ones_in_the_order() -> None:

@@ -81,14 +81,17 @@ class AuditContext:
     # without the reason a reader sees a count and has to guess whether the input was incomplete, the platform
     # was wrong, or the object was in a shape kube-noob does not read. `analyze` turns these into assumptions,
     # so the reason reaches the text view, the JSON and the MCP result alike (G272).
-    declined: dict[str, list[str]] = field(default_factory=dict)
+    # Each entry is (the object it is about, or "" for the bundle; the reason). The object is kept apart from the
+    # reason so a report can name every declined object even when it lists only the first few reasons.
+    declined: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
-    def cannot_decide(self, rule_id: str, reason: str | None = None) -> None:
+    def cannot_decide(self, rule_id: str, reason: str | None = None, resource: str | None = None) -> None:
         self.undecided.add(rule_id)
         if reason:
+            entry = (resource or "", reason)
             seen = self.declined.setdefault(rule_id, [])
-            if reason not in seen:
-                seen.append(reason)
+            if entry not in seen:
+                seen.append(entry)
 
     @property
     def is_openshift(self) -> bool:
@@ -4034,16 +4037,73 @@ def cluster_apiservers(ctx: AuditContext) -> list[Document]:
     return [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
 
 
-def _singleton(docs: list[Document]) -> Document | None:
-    """The cluster-scoped config object the platform reads: the one named `cluster`, or the only one there is.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+#: How much of one input-derived fragment a message carries. A flag value or a container name is the user's own
+#: text: cleaned of invisible and control characters, collapsed to one line and cut here, so it can neither forge
+#: a line of the text view nor flood a SARIF message (G272).
+SHOWN_LIMIT = 200
 
-    Several objects of which none is named `cluster` is a bundle that does not say which configuration the cluster
-    has; the caller declines rather than picking one (the same stance `kube_noob.audit.detection` takes).
+
+def _shown(value: object, limit: int = SHOWN_LIMIT) -> str:
+    """``value`` as one visible line of at most ``limit`` characters, saying how much was cut."""
+    from kube_noob.sanitize import clean
+
+    text = str(value)
+    if len(text) > limit * 4:
+        cut = len(text) - limit * 4
+        text = text[: limit * 4]
+    else:
+        cut = 0
+    text = " ".join(_CONTROL_CHARS.sub(" ", clean(text)[0]).split())
+    if len(text) > limit:
+        cut += len(text) - limit
+        text = text[:limit]
+    return f"{text}... ({cut} more characters)" if cut else text
+
+
+def _quoted(value: object, limit: int = SHOWN_LIMIT) -> str:
+    return f"'{_shown(value, limit)}'"
+
+
+def _singleton(docs: list[Document]) -> tuple[Document | None, str]:
+    """The cluster-scoped config object the platform reads, or why there is none to read.
+
+    OpenShift reads only the object named `cluster`. A lone object with another name is not that one, so its
+    settings say nothing about the cluster, and two objects named `cluster` -- which the API server cannot hold
+    at once -- are a bundle that disagrees with itself. Both decline with their own reason (G272).
     """
-    if len(docs) == 1:
-        return docs[0]
     named = [d for d in docs if d.name == "cluster"]
-    return named[0] if len(named) == 1 else None
+    if len(named) == 1:
+        return named[0], ""
+    kind = docs[0].kind if docs else "object"
+    if not named:
+        refs = ", ".join(_shown(d.ref(), 120) for d in docs[:5])
+        more = f" and {len(docs) - 5} more" if len(docs) > 5 else ""
+        return None, (
+            f"the bundle carries config.openshift.io {kind} objects ({refs}{more}) and none named 'cluster', the "
+            "only one the platform reads"
+        )
+    return None, (
+        f"the bundle carries {len(named)} objects named 'cluster' of kind config.openshift.io {kind}, which the API "
+        "server cannot hold at once, so which configuration the cluster has cannot be read from it"
+    )
+
+
+def _off_openshift(ctx: AuditContext, r: Rule, docs: list[Document]) -> None:
+    """An OpenShift-only rule on another platform: not evaluated, and said so when its object IS in the bundle.
+
+    Returning quietly used to count the rule as evaluated and clean, so a plain Kubernetes audit reported SC-28(1)
+    and AU-2 as satisfied by rules that never looked at anything (G272).
+    """
+    if not docs:
+        ctx.cannot_decide(r.rule_id)
+        return
+    refs = ", ".join(_shown(d.ref(), 120) for d in docs[:5])
+    ctx.cannot_decide(
+        r.rule_id,
+        f"{refs} is OpenShift configuration, audited here as {ctx.platform}: pass --platform openshift (or "
+        "rosa-classic, rosa-hcp) to read it",
+    )
 
 
 @rule(
@@ -4073,41 +4133,47 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     same shape again, in someone else's API (G202, G216).
 
     On a bundle that does not carry the object this declines rather than passing: on OpenShift the singleton
-    always exists, so its absence means it was not collected, not that auditing is on.
+    always exists, so its absence means it was not collected, not that auditing is on. Off OpenShift it declines
+    too, saying which flag reads the object when it is there, and an object not named `cluster` is not the
+    singleton (G272).
     """
-    if not ctx.is_openshift:
-        return  # the resource does not exist off OpenShift; see N15 on telling that apart from a pass
     docs = cluster_apiservers(ctx)
+    if not ctx.is_openshift:
+        _off_openshift(ctx, r, docs)
+        return
     if not docs:
         ctx.cannot_decide(r.rule_id)
         return
-    for d in docs:
-        spec = d.data.get("spec") if isinstance(d.data, dict) else None
-        audit = spec.get("audit") if isinstance(spec, dict) else None
-        if not isinstance(audit, dict):
-            continue  # the default is Default; an absent audit block is not an absent profile
-        if str(audit.get("profile", "")) == AUDIT_PROFILE_NONE:
-            yield r.finding(
-                d,
-                ("spec", "audit", "profile"),
-                "spec.audit.profile is None, so the API server records no requests at all: there is no audit "
-                "evidence for anything that happens on this cluster, and nothing to forward to a SIEM.",
-            )
-        rules = audit.get("customRules")
-        if not isinstance(rules, list):
+    d, why = _singleton(docs)
+    if d is None:
+        ctx.cannot_decide(r.rule_id, why)
+        return
+    spec = d.data.get("spec") if isinstance(d.data, dict) else None
+    audit = spec.get("audit") if isinstance(spec, dict) else None
+    if not isinstance(audit, dict):
+        return  # the default is Default; an absent audit block is not an absent profile
+    if str(audit.get("profile", "")) == AUDIT_PROFILE_NONE:
+        yield r.finding(
+            d,
+            ("spec", "audit", "profile"),
+            "spec.audit.profile is None, so the API server records no requests at all: there is no audit "
+            "evidence for anything that happens on this cluster, and nothing to forward to a SIEM.",
+        )
+    rules = audit.get("customRules")
+    if not isinstance(rules, list):
+        return
+    for i, entry in enumerate(rules):
+        if not isinstance(entry, dict) or str(entry.get("profile", "")) != AUDIT_PROFILE_NONE:
             continue
-        for i, entry in enumerate(rules):
-            if not isinstance(entry, dict) or str(entry.get("profile", "")) != AUDIT_PROFILE_NONE:
-                continue
-            group = str(entry.get("group") or "(unnamed group)")
-            yield r.finding(
-                d,
-                ("spec", "audit", "customRules", i, "profile"),
-                f"spec.audit.customRules[{i}] logs nothing for group {group!r}. customRules are evaluated in "
-                f"order and the first match overrides spec.audit.profile "
-                f"({str(audit.get('profile') or 'Default')!r}), so this cluster looks audited and is not, for "
-                f"everyone in that group.",
-            )
+        group = _shown(entry.get("group") or "(unnamed group)", 120)
+        yield r.finding(
+            d,
+            ("spec", "audit", "customRules", i, "profile"),
+            f"spec.audit.customRules[{i}] logs nothing for group '{group}'. customRules are evaluated in "
+            f"order and the first match overrides spec.audit.profile "
+            f"('{_shown(audit.get('profile') or 'Default', 60)}'), so this cluster looks audited and is not, for "
+            f"everyone in that group.",
+        )
 
 
 # =====================================================================================================
@@ -4117,9 +4183,13 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 # checked at the release tags named, rather than recalled:
 #   kubernetes/kubernetes fba15ecefa95 (master, 1.38 development): kube-aggregator apiregistration/v1 types.go,
 #     pkg/kubeapiserver/options/authentication.go and authorization.go; the same defaults at v1.6.0 ... v1.37.0.
-#   etcd-io/etcd d11eca9a9c16 (main): server/embed/config.go, server/etcdmain/config.go, pkg/flags/flag.go; the
-#     same defaults at v3.4.0, v3.5.0 and v3.6.0.
+#   etcd-io/etcd d11eca9a9c16 (main): server/embed/config.go, server/etcdmain/config.go, pkg/flags/flag.go and
+#     client/pkg/transport/listener.go; the same defaults at v3.4.0, v3.5.0 and v3.6.0.
 #   openshift/api 61403fc4e89f (master): config/v1/types_apiserver.go and types_oauth.go.
+#
+# Each rule here declines QUIETLY when nothing of its kind is in the input: no APIService, no container that
+# runs kube-apiserver or etcd, no OpenShift singleton. "Nothing to look at" is not "looked and found it clean",
+# and counting it clean made every application bundle evidence for AC-14 and SC-28(1) (G272).
 
 #: The group an APIService lives in. A kind of that name in any other group is a different resource.
 APISERVICE_GROUP = "apiregistration.k8s.io"
@@ -4145,13 +4215,18 @@ def _s037(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 
     `spec.service` nil means the group is served by the API server itself and there is no remote end, so a local
     APIService is out of scope whatever it says. `insecureSkipTLSVerify` is a plain bool in the API type; any
-    other value is an object the API server refuses to decode, which this rule declines rather than guesses.
+    other value, a spec that is not a mapping and a service that is not one are objects the API server refuses to
+    decode, which this rule declines rather than guesses.
     """
-    for d in ctx.by_kind("APIService"):
-        if d.api_version.split("/", 1)[0] != APISERVICE_GROUP:
-            continue
+    docs = [d for d in ctx.by_kind("APIService") if d.api_version.split("/", 1)[0] == APISERVICE_GROUP]
+    if not docs:
+        ctx.cannot_decide(r.rule_id)
+        return
+    for d in docs:
         spec = d.data.get("spec") if isinstance(d.data, dict) else None
+        ref = _shown(d.ref(), 160)
         if not isinstance(spec, dict):
+            ctx.cannot_decide(r.rule_id, f"{ref} has no spec mapping, which the API server does not accept", ref)
             continue
         service = spec.get("service")
         if service is None:
@@ -4163,104 +4238,204 @@ def _s037(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             what = (
                 "spec.service is not a mapping"
                 if not isinstance(service, dict)
-                else (f"spec.insecureSkipTLSVerify is {flag!r}, not a boolean")
+                else f"spec.insecureSkipTLSVerify is {_quoted(flag, 60)}, not a boolean"
             )
-            ctx.cannot_decide(r.rule_id, f"{d.ref()}: {what}, which the API server does not accept")
+            ctx.cannot_decide(r.rule_id, f"{ref}: {what}, which the API server does not accept", ref)
             continue
-        target = f"{service.get('namespace') or '<no namespace>'}/{service.get('name') or '<no name>'}"
-        group = f"{spec.get('group') or '<no group>'}/{spec.get('version') or '<no version>'}"
+        target = _shown(f"{service.get('namespace') or '<no namespace>'}/{service.get('name') or '<no name>'}", 160)
+        group = _shown(f"{spec.get('group') or '<no group>'}/{spec.get('version') or '<no version>'}", 160)
         yield r.finding(
             d,
             ("spec", "insecureSkipTLSVerify"),
-            f"{d.ref()} sets insecureSkipTLSVerify: true, so the API server sends every request for {group} -- "
+            f"{ref} sets insecureSkipTLSVerify: true, so the API server sends every request for {group} -- "
             f"with the identity of the user who made it -- to whatever answers on Service {target}, without checking "
             "its certificate. Anyone who can take over that Service's endpoints can answer for the whole API group.",
         )
 
 
-#: Shells whose `-c` script may start a control-plane binary. Such a container is RECOGNISED and then declined:
-#: the flags are in a script kube-noob does not execute, so neither a finding nor a pass can be read from it.
+#: Shells whose script may start a control-plane binary. Such a container is RECOGNISED and then declined: the
+#: flags are in a script kube-noob does not execute, so neither a finding nor a pass can be read from it.
 _SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh"})
+#: Distributions that run the API server and etcd inside one binary of their own, configured through that
+#: binary's flags (`--kube-apiserver-arg`, `--etcd-arg`) and configuration file.
+_EMBEDDING = frozenset({"k3s", "rke2", "k0s"})
+#: The subcommand of each that runs the control plane.
+_EMBEDDING_SERVER = {"k3s": "server", "rke2": "server", "k0s": "controller"}
+#: How much of one shell script is searched for the binary. A script longer than this is declined unread.
+_SCRIPT_SCAN = 65_536
+_SCRIPT_START = r"(?:^|[\s;&|()`'\"])"
+_SCRIPT_PATTERNS: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {}
 
 
 def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
 
-def _control_plane_argv(c: dict[str, Any], binary: str) -> tuple[str, list[str], int] | None:
-    """How a container runs ``binary``: ``("direct", flags, skip)``, ``("shell" | "unreadable", [], 0)`` or None.
+def _image_name(image: object) -> str:
+    """The repository's last path segment: `registry.k8s.io/kube-apiserver:v1.34.0` is `kube-apiserver`."""
+    if not isinstance(image, str):
+        return ""
+    return image.split("@", 1)[0].rsplit("/", 1)[-1].partition(":")[0]
 
-    ``skip`` is how many argv tokens come before the flags (the binary, or ``hyperkube`` and the binary).
 
-    Recognition is by the program the container executes and nothing else -- not its name, its image or a label,
-    any of which a different program can carry. ``command[0]`` must be the binary (any directory), or
-    ``hyperkube`` followed by it. A container with no ``command`` runs its image's entrypoint, which no manifest
-    states, so it is not recognised. A shell whose script runs the binary with flags is recognised as a shell
-    wrapper, and the binary with an ``args`` that is not a list of strings as unreadable; the caller declines both.
+def _in_script(binary: str, text: str) -> bool:
+    """Does a shell script run ``binary``?
+
+    As a word anywhere (`exec etcd \\`, `kube-apiserver $FLAGS`, `exec kube-apiserver "$@"`), not followed by a
+    name character, so `etcdctl` and `etcd-operator` are not it; or as a path ending in it followed by an argument,
+    a quote, an expansion or a line continuation, so `/usr/local/bin/etcd --x` is it and `tar czf b /var/lib/etcd`
+    is not. A script over `_SCRIPT_SCAN` characters counts as running it: unread is not absent.
+    """
+    if len(text) > _SCRIPT_SCAN:
+        return binary in text
+    pats = _SCRIPT_PATTERNS.get(binary)
+    if pats is None:
+        b = re.escape(binary)
+        pats = (
+            re.compile(_SCRIPT_START + b + r"(?![\w./-])"),
+            re.compile(_SCRIPT_START + r"/[^\s/]*(?:/[^\s/]+)*/" + b + r"(?=[ \t]+[-\"'$\\]|[ \t]*\\\r?\n)"),
+        )
+        _SCRIPT_PATTERNS[binary] = pats
+    return any(p.search(text) for p in pats)
+
+
+@dataclass(frozen=True)
+class _Launch:
+    """How a container runs a control-plane binary: its flags when they can be read, else why they cannot."""
+
+    tokens: tuple[str, ...] = ()
+    #: How many argv tokens come before the flags (the binary, or `hyperkube` and the binary).
+    skip: int = 0
+    declined: str = ""
+
+
+def _launch(c: dict[str, Any], binary: str, hints: frozenset[str], env_prefix: str | None) -> _Launch | None:
+    """Recognise a container that runs ``binary``, or None when it does not.
+
+    Recognition is by what the container executes, never by its name or a label. Read directly: `command[0]` is
+    the binary (any directory), or `hyperkube` followed by it. Recognised and DECLINED, with the reason: a shell
+    whose script runs it; a wrapper (`tini`, `go-runner`, `env`, anything else) with the binary later in argv,
+    whose argument handling is not read; `hyperkube apiserver`; `k3s server` and `rke2 server`, which embed it;
+    no `command` at all, when the image is the binary's or the args or `env_prefix` variables are its settings (the
+    image's entrypoint is not in the manifest); and a command or args that are not a list of strings. Declining
+    every one of these is the point: before G272's review each of them was silent, evaluated and clean.
     """
     command, args = c.get("command"), c.get("args")
-    if not isinstance(command, list) or not command or not all(isinstance(t, str) for t in command):
+
+    def strings(v: object) -> list[str]:
+        if isinstance(v, str):
+            return [v]
+        return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+
+    texts = [*strings(command), *strings(args)]
+    image = _image_name(c.get("image"))
+    image_hit = image == binary or image in _EMBEDDING
+    readable = (
+        isinstance(command, list)
+        and bool(command)
+        and all(isinstance(t, str) for t in command)
+        and (args is None or (isinstance(args, list) and all(isinstance(t, str) for t in args)))
+    )
+    if readable and isinstance(command, list):
+        argv: list[str] = [*command, *(args if isinstance(args, list) else [])]
+        head = _basename(argv[0])
+        if head == binary:
+            return _Launch(tuple(argv[1:]), 1)
+        if head == "hyperkube" and len(argv) > 1 and argv[1] == binary:
+            return _Launch(tuple(argv[2:]), 2)
+        if head in _SHELLS:
+            if any(_in_script(binary, t) for t in argv[1:]):
+                return _Launch(declined="from a shell script, whose flags are not read")
+            return None
+        if head == "hyperkube" and binary == "kube-apiserver" and len(argv) > 1 and argv[1] == "apiserver":
+            return _Launch(declined="through hyperkube's 'apiserver' alias, which is not read")
+        if head in _EMBEDDING and len(argv) > 1 and argv[1] == _EMBEDDING_SERVER[head]:
+            return _Launch(
+                declined=f"inside {head} {argv[1]}, which configures it through its own flags and configuration "
+                "file, which are not read"
+            )
+        if any(_basename(t) == binary for t in argv[1:]):
+            return _Launch(declined=f"through {_quoted(head, 80)}, whose handling of the arguments is not read")
         return None
-    readable = args is None or (isinstance(args, list) and all(isinstance(t, str) for t in args))
-    argv: list[str] = [*command, *(args if readable and args else [])]
-    head = _basename(argv[0])
-    runs = head == binary or (head == "hyperkube" and len(argv) > 1 and argv[1] == binary)
-    if runs and not readable:
-        return "unreadable", [], 0
-    if head == binary:
-        return "direct", argv[1:], 1
-    if head == "hyperkube" and len(argv) > 1 and argv[1] == binary:
-        return "direct", argv[2:], 2
-    if head in _SHELLS:
-        started = re.compile(rf"(?:^|[\s;&|(/]){re.escape(binary)}\s+-")
-        if any(started.search(t) for t in argv[1:]):
-            return "shell", [], 0
+    if command is None:
+        env = c.get("env")
+        named = [str(e.get("name") or "") for e in env if isinstance(e, dict)] if isinstance(env, list) else []
+        flagged = any(t.startswith("-") and t.lstrip("-").partition("=")[0] in hints for t in texts)
+        settings = env_prefix is not None and any(n.startswith(env_prefix) for n in named)
+        if image_hit or flagged or settings:
+            return _Launch(
+                declined="with no command, so it runs its image's entrypoint, which the manifest does not state"
+            )
+        return None
+    if image_hit or any(_basename(t) == binary or _in_script(binary, t) for t in texts):
+        return _Launch(declined="with a command or args that are not a list of strings, which the API server refuses")
     return None
 
 
-def _flag_values(
-    tokens: list[str], names: frozenset[str], bools: frozenset[str], single_dash: bool
-) -> dict[str, list[tuple[str, int]]]:
-    """Every value given for each flag in ``names``, in order, with the index of the token that carried it.
+_HELP = frozenset({"version", "help", "h"})
 
-    pflag (kube-apiserver) reads only ``--name``; Go's ``flag`` package (etcd) reads ``-name`` too. A boolean
-    given bare is true and never consumes the next token; any other flag given without ``=`` takes the next
-    token whatever it looks like, as both parsers do. ``--`` ends the flags. A value flag that is the last token
-    has no value; both parsers refuse to start then, so it is recorded as ``DANGLING`` for the caller to decline.
+
+def _asks_version_or_help(tokens: tuple[str, ...]) -> bool:
+    """`--version`, `--help` or `-h`: the binary prints and exits, so this container is not a server."""
+    for t in tokens:
+        if t == "--":
+            return False
+        if not t.startswith("-"):
+            continue
+        name, eq, value = t.lstrip("-").partition("=")
+        if name in _HELP and (not eq or value not in _GO_FALSE):
+            return True
+    return False
+
+
+def _flag_values(
+    tokens: tuple[str, ...] | list[str], names: frozenset[str], bools: frozenset[str], single_dash: bool
+) -> tuple[dict[str, list[tuple[str, int]]], str | None]:
+    """Every value given for each flag in ``names``, in order, with the index of its token -- or why not.
+
+    pflag (kube-apiserver) reads `--name` and one-letter `-x` shorthands; Go's `flag` package (etcd) reads `-name`
+    too. A boolean given bare is true and never consumes the next token; any other flag given without `=` takes
+    the next token whatever it looks like, as both parsers do. So when a flag kube-noob does not know is given
+    without `=` and followed by a token that starts with `-`, whether that next flag is real or swallowed as a
+    value depends on a flag table this rule does not carry: declined, in both directions (G272). Also declined:
+    a known value flag with no value or with a flag as its value, an argument that is not a flag (a subcommand,
+    or a value whose flag is not known), and anything after `--`.
     """
     out: dict[str, list[tuple[str, int]]] = {}
-    i = 0
-    while i < len(tokens):
+    i, n = 0, len(tokens)
+    while i < n:
         t = tokens[i]
         if t == "--":
+            if i + 1 < n:
+                return out, f"passes {_quoted(tokens[i + 1], 80)} after '--', as an argument rather than a flag"
             break
-        body = t[2:] if t.startswith("--") else (t[1:] if single_dash and t.startswith("-") else None)
-        if body is None or not body:
-            i += 1
-            continue
+        if t.startswith("--"):
+            body, long = t[2:], True
+        elif t.startswith("-") and len(t) > 1:
+            body, long = t[1:], single_dash
+        else:
+            return out, f"has an argument {_quoted(t, 80)} that is not a flag (a subcommand, or a stray value)"
         name, eq, value = body.partition("=")
-        if name in names:
-            if eq:
+        nxt = tokens[i + 1] if i + 1 < n else None
+        if eq:
+            if long and name in names:
                 out.setdefault(name, []).append((value, i))
-            elif name in bools:
-                out.setdefault(name, []).append(("true", i))
-            elif i + 1 < len(tokens):
-                out.setdefault(name, []).append((tokens[i + 1], i + 1))
-                i += 1
-            else:
-                out.setdefault(name, []).append((DANGLING, i))
+        elif long and name in bools:
+            out.setdefault(name, []).append(("true", i))
+        elif long and name in names:
+            if nxt is None or nxt.startswith("-"):
+                return out, f"gives --{name} no value before {_quoted(nxt, 80) if nxt else 'the end'}"
+            out.setdefault(name, []).append((nxt, i + 1))
+            i += 1
+        elif nxt is not None and nxt.startswith("-"):
+            return out, (
+                f"has {_quoted(t, 80)} followed by {_quoted(nxt, 80)}: whether {_quoted(t, 80)} takes a value, and so "
+                "swallows the next flag, is not known here"
+            )
+        elif nxt is not None:
+            i += 1  # its value, or a positional the binary refuses; either way not one of these flags
         i += 1
-    return out
-
-
-#: Why a recognised control-plane container's flags were not read, by the kind `_control_plane_argv` returned.
-_UNREAD = {
-    "shell": "from a shell script, whose flags are not read",
-    "unreadable": "with an args list that is not all strings, which the API server would not accept",
-}
-
-#: The value `_flag_values` records for a value flag given as the last token, with nothing after it.
-DANGLING = "\x00"
+    return out, None
 
 
 #: strconv.ParseBool, which both pflag and Go's flag package use for a boolean flag's value.
@@ -4281,12 +4456,48 @@ def _argv_path(c: ContainerRef, skip: int, index: int) -> PathT:
     return (*c.path, "args", absolute - len(command))
 
 
+def _where(d: Document, c: ContainerRef) -> tuple[str, str]:
+    """(how a message names this container, the object reference a decline records), both cleaned."""
+    ref = _shown(d.ref(), 160)
+    return f"{ref} container {_quoted(c.name, 80)}", ref
+
+
 #: The upstream default of `--anonymous-auth` and of an empty `--authorization-mode`, and the releases they were
 #: checked at. Both are the same at every tag from v1.6.0 to v1.37.0 and on master (1.38 development).
 ANONYMOUS_AUTH_DEFAULT = "true"
 APISERVER_DEFAULTS_CHECKED = "every Kubernetes release from v1.6.0 to v1.37.0 and master at fba15ecefa95"
 _APISERVER_DEFAULTS_THROUGH = (1, 38)
 _APISERVER_FLAGS = frozenset({"anonymous-auth", "authorization-mode", "authorization-config", "authentication-config"})
+#: The authorization modes kube-apiserver accepts (pkg/kubeapiserver/authorizer/modes/modes.go at fba15ecefa95,
+#: AuthorizationModeChoices). Any other value, including one with spaces around it, makes it refuse to start.
+AUTHORIZATION_MODES = frozenset({"AlwaysAllow", "AlwaysDeny", "ABAC", "Webhook", "RBAC", "Node"})
+
+
+def _authorization_modes(values: list[str]) -> tuple[list[str], str]:
+    """The `--authorization-mode` list as pflag's StringSlice builds it, or why it cannot be read.
+
+    Each occurrence is one CSV record (an empty value is an empty list) appended to the last; a value with a quote
+    is CSV quoting, which is not interpreted here; and a mode outside AUTHORIZATION_MODES -- `alwaysallow`, a mode
+    with spaces round it, an empty field -- makes the API server refuse to start, so it is declined, not read.
+    """
+    modes: list[str] = []
+    for v in values:
+        if not v:
+            continue
+        if '"' in v:
+            return [], f"quotes its --authorization-mode value ({_quoted(v, 80)}), which is CSV quoting not read here"
+        modes.extend(v.split(","))
+    unknown = [m for m in modes if m not in AUTHORIZATION_MODES]
+    if unknown:
+        return [], (
+            f"names {_quoted(','.join(unknown), 80)} in --authorization-mode, which kube-apiserver does not accept, "
+            "so it refuses to start with these arguments"
+        )
+    return modes, ""
+
+
+#: Flags that mark a container with no `command` as an API server: its own, and k3s/rke2's pass-through.
+_APISERVER_HINTS = _APISERVER_FLAGS | {"etcd-servers", "kube-apiserver-arg"}
 
 
 @rule(
@@ -4315,7 +4526,9 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 
     On the OpenShift family the API server is operator-managed and on ROSA with HCP it is not in the cluster at
     all, so a kube-apiserver container here is declined with that reason rather than read as if a person had
-    written its arguments.
+    written its arguments. Every launch shape `_launch` does not read directly is declined; `$(VAR)` anywhere in
+    argv and any flag that might swallow another are declined; `--version` and `--help` are not servers; and no
+    API server in the input at all is a quiet decline, not a clean result (G272).
     """
     minor = parse_minor(ctx.k8s_version)
     beyond = (
@@ -4324,31 +4537,35 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if minor > _APISERVER_DEFAULTS_THROUGH
         else ""
     )
+    recognised = False
     for d, _pt, c in _containers(ctx):
-        how = _control_plane_argv(c.container, "kube-apiserver")
-        if how is None:
+        launch = _launch(c.container, "kube-apiserver", _APISERVER_HINTS, None)
+        if launch is None or (not launch.declined and _asks_version_or_help(launch.tokens)):
             continue
-        where = f"{d.ref()} container {c.name}"
+        recognised = True
+        where, ref = _where(d, c)
         if ctx.is_openshift:
             ctx.cannot_decide(
                 r.rule_id,
                 f"{where} runs kube-apiserver on {ctx.platform}, where the control plane is operator-managed and is "
                 "configured through the platform's own configuration rather than by these arguments (on ROSA with "
                 "HCP it runs outside the cluster altogether)",
+                ref,
             )
             continue
-        kind, tokens, skip = how
-        if kind != "direct":
-            ctx.cannot_decide(r.rule_id, f"{where} starts kube-apiserver {_UNREAD[kind]}")
+        if launch.declined:
+            ctx.cannot_decide(r.rule_id, f"{where} starts kube-apiserver {launch.declined}", ref)
             continue
-        flags = _flag_values(tokens, _APISERVER_FLAGS, frozenset({"anonymous-auth"}), single_dash=False)
-        seen = [v for vs in flags.values() for v, _ in vs]
-        if any("$(" in v for v in seen):
-            ctx.cannot_decide(r.rule_id, f"{where} passes a flag through $(VAR) expansion, whose value is not read")
+        if any("$(" in t for t in launch.tokens):
+            ctx.cannot_decide(
+                r.rule_id, f"{where} passes an argument through $(VAR) expansion, whose value is not read", ref
+            )
             continue
-        if DANGLING in seen:
-            ctx.cannot_decide(r.rule_id, f"{where} ends with a flag that has no value, which kube-apiserver refuses")
+        flags, problem = _flag_values(launch.tokens, _APISERVER_FLAGS, frozenset({"anonymous-auth"}), False)
+        if problem:
+            ctx.cannot_decide(r.rule_id, f"{where} {problem}", ref)
             continue
+        skip = launch.skip
         # --- authorization ---
         always_allow = False
         if flags.get("authorization-config"):
@@ -4356,11 +4573,15 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 r.rule_id,
                 f"{where} names --authorization-config, which replaces --authorization-mode and is a file on the "
                 "node that is not in the input",
+                ref,
             )
         else:
             given = flags.get("authorization-mode", [])
-            modes = [m.strip() for v, _ in given for m in v.split(",") if m.strip()]
-            if not modes:
+            modes, bad = _authorization_modes([v for v, _ in given])
+            if bad:
+                ctx.cannot_decide(r.rule_id, f"{where} {bad}", ref)
+                always_allow = True  # undecided authorizer: do not read anonymous as if it were Node,RBAC
+            elif not modes:
                 # Absent, or given empty (`--authorization-mode=`): either way the slice is empty, and upstream's
                 # Complete() fills an empty slice with AlwaysAllow when there is no --authorization-config.
                 always_allow = True
@@ -4377,11 +4598,12 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 yield r.finding(
                     d,
                     _argv_path(c, skip, given[-1][1]),
-                    f"{where} has AlwaysAllow in --authorization-mode ({','.join(modes)}): any request no earlier "
-                    "authorizer denies is allowed, and RBAC and Node only allow or abstain, so an authenticated "
-                    "client can do anything.",
+                    f"{where} has AlwaysAllow in --authorization-mode ({_quoted(','.join(modes))}): any request no "
+                    "earlier authorizer denies is allowed, and RBAC and Node only allow or abstain, so an "
+                    "authenticated client can do anything.",
                 )
-        # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it) ---
+        # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it; not read while the
+        # authorizer itself is undecided, because AlwaysAllow there would turn it off) ---
         if always_allow:
             continue
         given_anon = flags.get("anonymous-auth", [])
@@ -4389,7 +4611,9 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             value, idx = given_anon[-1]
             parsed = _go_bool(value)
             if parsed is None:
-                ctx.cannot_decide(r.rule_id, f"{where} sets --anonymous-auth={value!r}, which is not a boolean")
+                ctx.cannot_decide(
+                    r.rule_id, f"{where} sets --anonymous-auth={_quoted(value, 60)}, which is not a boolean", ref
+                )
             elif parsed:
                 yield r.finding(
                     d,
@@ -4404,6 +4628,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 r.rule_id,
                 f"{where} names --authentication-config without --anonymous-auth: the file, which is not in the "
                 "input, may configure the anonymous authenticator",
+                ref,
             )
         else:
             yield r.finding(
@@ -4414,19 +4639,32 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 "system:anonymous in group system:unauthenticated.",
                 severity=Severity.MEDIUM,
             )
+    if not recognised:
+        ctx.cannot_decide(r.rule_id)
 
 
-#: etcd's URL flags, which are listeners or the addresses etcd tells others to use; and its two boolean switches.
+#: etcd's URL flags, which are listeners or the addresses etcd tells others to use, with their defaults.
 _ETCD_CLIENT_URLS = ("listen-client-urls", "listen-client-http-urls", "advertise-client-urls")
-_ETCD_PEER_URLS = ("listen-peer-urls",)
+_ETCD_PEER_URLS = ("listen-peer-urls", "initial-advertise-peer-urls")
 _ETCD_URL_DEFAULTS = {
     "listen-client-urls": "http://localhost:2379",
     "listen-client-http-urls": "",
     "advertise-client-urls": "http://localhost:2379",
     "listen-peer-urls": "http://localhost:2380",
+    "initial-advertise-peer-urls": "http://localhost:2380",
 }
+#: Per side: the switch, and the CA file that turns client certificates on by itself. etcd's TLSInfo.ServerConfig
+#: requires and verifies a client certificate when EITHER is set (client/pkg/transport/listener.go, v3.5.0 and
+#: v3.6.0: `if info.TrustedCAFile != "" || info.ClientCertAuth { cfg.ClientAuth = RequireAndVerifyClientCert }`).
+#: With the switch and no CA file, Go verifies the certificate against the system roots: a certificate is still
+#: required, so that is not "anyone is accepted".
+_ETCD_CERT_SETTINGS = (
+    ("client", "client-cert-auth", "trusted-ca-file", Severity.CRITICAL),
+    ("peer", "peer-client-cert-auth", "peer-trusted-ca-file", Severity.HIGH),
+)
 _ETCD_BOOLS = frozenset({"client-cert-auth", "peer-client-cert-auth"})
-_ETCD_FLAGS = frozenset({*_ETCD_URL_DEFAULTS, *_ETCD_BOOLS, "config-file"})
+_ETCD_FLAGS = frozenset({*_ETCD_URL_DEFAULTS, *_ETCD_BOOLS, "trusted-ca-file", "peer-trusted-ca-file", "config-file"})
+_ETCD_HINTS = _ETCD_FLAGS | {"etcd-arg"}
 
 
 def _etcd_env(name: str) -> str:
@@ -4440,7 +4678,7 @@ class _Undecidable(Exception):
 def _is_loopback(host: str) -> bool:
     import ipaddress
 
-    if host.lower() == "localhost":
+    if host.lower().rstrip(".") == "localhost":
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -4461,12 +4699,12 @@ def _network_urls(value: str, flag: str) -> tuple[list[str], list[str]]:
             parts = urlsplit(raw)
             host = parts.hostname or ""
         except ValueError as exc:
-            raise _Undecidable(f"--{flag} value {raw!r} is not a URL") from exc
+            raise _Undecidable(f"--{flag} value {_quoted(raw, 80)} is not a URL") from exc
         scheme = parts.scheme.lower()
         if scheme in {"unix", "unixs"}:
             continue  # a socket on the node, not a network listener
         if scheme not in {"http", "https"}:
-            raise _Undecidable(f"--{flag} value {raw!r} has a scheme etcd's TLS settings do not describe")
+            raise _Undecidable(f"--{flag} value {_quoted(raw, 80)} has a scheme etcd's TLS settings do not describe")
         if _is_loopback(host):
             continue
         (plain if scheme == "http" else tls).append(raw)
@@ -4487,37 +4725,47 @@ def _network_urls(value: str, flag: str) -> tuple[list[str], list[str]]:
     ("etcd-embed-config", "etcd-flags-env"),
 )
 def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
-    """etcd's listeners and client-certificate switches, read from its argv and its ETCD_* environment.
+    """etcd's listeners and client-certificate settings, read from its argv and its ETCD_* environment.
 
     etcd takes each flag from the command line, else from the matching ETCD_* variable, else its default (a flag
     on the command line shadows the variable: pkg/flags SetFlagsFromEnv). A `--config-file` (or ETCD_CONFIG_FILE)
-    replaces all of that, and `envFrom` can set any ETCD_* variable this manifest does not show, so both decline.
-    Loopback and unix-socket listeners are not findings; the defaults are loopback.
+    replaces all of that, and `envFrom` can set any ETCD_* variable this manifest does not show, so both decline
+    the container. Loopback and unix-socket listeners are not findings; the defaults are loopback. A trusted CA
+    file turns client certificates on as surely as the switch. One undecidable setting declines that setting and
+    keeps what was decided beside it (G272).
     """
+    recognised = False
     for d, _pt, c in _containers(ctx):
-        how = _control_plane_argv(c.container, "etcd")
-        if how is None:
+        launch = _launch(c.container, "etcd", _ETCD_HINTS, "ETCD_")
+        if launch is None or (not launch.declined and _asks_version_or_help(launch.tokens)):
             continue
-        where = f"{d.ref()} container {c.name}"
-        kind, tokens, skip = how
-        if kind != "direct":
-            ctx.cannot_decide(r.rule_id, f"{where} starts etcd {_UNREAD[kind]}")
+        recognised = True
+        where, ref = _where(d, c)
+        if launch.declined:
+            ctx.cannot_decide(r.rule_id, f"{where} starts etcd {launch.declined}", ref)
             continue
-        try:
-            findings = _etcd_findings(r, d, c, where, tokens, skip)
-        except _Undecidable as why:
-            ctx.cannot_decide(r.rule_id, f"{where}: {why}")
-            continue
+        findings, reasons = _etcd_findings(r, d, c, where, launch.tokens, launch.skip)
+        for why in reasons:
+            ctx.cannot_decide(r.rule_id, f"{where}: {why}", ref)
         yield from findings
+    if not recognised:
+        ctx.cannot_decide(r.rule_id)
 
 
-def _etcd_findings(r: Rule, d: Document, c: ContainerRef, where: str, tokens: list[str], skip: int) -> list[Finding]:
-    """Findings for one etcd container, or _Undecidable. Built as a list so a late refusal discards early ones."""
+def _etcd_findings(
+    r: Rule, d: Document, c: ContainerRef, where: str, tokens: tuple[str, ...], skip: int
+) -> tuple[list[Finding], list[str]]:
+    """What one etcd container decides, and why it could not decide the rest."""
     if c.container.get("envFrom"):
-        raise _Undecidable("envFrom can set any ETCD_* variable, ETCD_CONFIG_FILE included, and is not read")
-    flags = _flag_values(tokens, _ETCD_FLAGS, _ETCD_BOOLS, single_dash=True)
+        return [], ["envFrom can set any ETCD_* variable, ETCD_CONFIG_FILE included, and is not read"]
+    if any("$(" in t for t in tokens):
+        return [], ["it passes an argument through $(VAR) expansion, whose value is not read"]
+    flags, problem = _flag_values(tokens, _ETCD_FLAGS, _ETCD_BOOLS, single_dash=True)
+    if problem:
+        return [], [f"it {problem}"]
     env: dict[str, tuple[Any, int]] = {}
-    for i, e in enumerate(c.container.get("env") or []):
+    raw_env = c.container.get("env")
+    for i, e in enumerate(raw_env if isinstance(raw_env, list) else []):
         if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].startswith("ETCD_"):
             env[e["name"]] = (e, i)  # the last entry of a name is the one the container gets
 
@@ -4525,79 +4773,89 @@ def _etcd_findings(r: Rule, d: Document, c: ContainerRef, where: str, tokens: li
         """(value, where it was set) -- (None, None) for etcd's default."""
         if flags.get(name):
             value, idx = flags[name][-1]
-            if "$(" in value:
-                raise _Undecidable(f"--{name} is passed through $(VAR) expansion")
-            if value == DANGLING:
-                raise _Undecidable(f"--{name} is the last argument and has no value, which etcd refuses")
             return value, _argv_path(c, skip, idx)
         entry = env.get(_etcd_env(name))
         if entry is None:
             return None, None
         e, i = entry
-        if "valueFrom" in e or not isinstance(e.get("value", ""), str) or "$(" in str(e.get("value", "")):
-            raise _Undecidable(f"{_etcd_env(name)} comes from a reference or an expansion, whose value is not read")
-        value = str(e.get("value", ""))
+        value = e.get("value", "")
+        if "valueFrom" in e or not isinstance(value, str) or "$(" in value:
+            raise _Undecidable(
+                f"{_etcd_env(name)} is not a plain string value (a reference, a $(VAR) expansion or a non-string), "
+                "so its value is not read"
+            )
         return (value, (*c.path, "env", i, "value")) if value else (None, None)  # etcd ignores an empty variable
 
-    config, _ = setting("config-file")
+    try:
+        config, _ = setting("config-file")
+    except _Undecidable as why:
+        return [], [str(why)]
     if config:
-        raise _Undecidable("it is configured from a --config-file, which replaces its flags and is not in the input")
+        return [], ["it is configured from a --config-file, which replaces its flags and is not in the input"]
     out: list[Finding] = []
+    reasons: list[str] = []
     exposed: dict[str, bool] = {"client": False, "peer": False}
     for side, names, sev in (
         ("client", _ETCD_CLIENT_URLS, Severity.CRITICAL),
         ("peer", _ETCD_PEER_URLS, Severity.HIGH),
     ):
         for name in names:
-            value, path = setting(name)
-            plain, tls = _network_urls(value if value is not None else _ETCD_URL_DEFAULTS[name], name)
+            try:
+                value, path = setting(name)
+                plain, tls = _network_urls(value if value is not None else _ETCD_URL_DEFAULTS[name], name)
+            except _Undecidable as why:
+                reasons.append(str(why))
+                continue
             if tls and name.startswith("listen"):
                 exposed[side] = True
-            if plain and path is not None:
-                if not name.startswith("listen"):
-                    said = (
-                        "tells its clients to connect in plaintext, so what they read and write, Secrets included, "
-                        "crosses the network unencrypted"
-                    )
-                elif side == "client":
-                    said = (
-                        "accepts plaintext client connections on a network address, where no client certificate "
-                        "can be required: anyone who can reach the port reads and writes the cluster's state, "
-                        "Secrets included"
-                    )
-                else:
-                    said = (
-                        "replicates with its peers in plaintext on a network address, where no peer certificate can "
-                        "be required: anyone who can reach the port sees the cluster's state, Secrets included"
-                    )
-                out.append(
-                    r.finding(d, path, f"{where} --{name} includes {', '.join(plain)}: etcd {said}.", severity=sev)
+            if not plain or path is None:
+                continue
+            urls = _quoted(", ".join(plain))
+            if not name.startswith("listen"):
+                said = (
+                    "tells its clients to connect in plaintext, so what they read and write, Secrets included, "
+                    "crosses the network unencrypted"
+                    if side == "client"
+                    else "tells its peers to connect to it in plaintext, so the cluster's state, Secrets included, "
+                    "is replicated unencrypted"
                 )
-    for side, switch, sev in (
-        ("client", "client-cert-auth", Severity.CRITICAL),
-        ("peer", "peer-client-cert-auth", Severity.HIGH),
-    ):
+            elif side == "client":
+                said = (
+                    "accepts plaintext client connections on a network address, where no client certificate can be "
+                    "required: anyone who can reach the port reads and writes the cluster's state, Secrets included"
+                )
+            else:
+                said = (
+                    "replicates with its peers in plaintext on a network address, where no peer certificate can be "
+                    "required: anyone who can reach the port sees the cluster's state, Secrets included"
+                )
+            out.append(r.finding(d, path, f"{where} --{name} includes {urls}: etcd {said}.", severity=sev))
+    for side, switch, ca, sev in _ETCD_CERT_SETTINGS:
         if not exposed[side]:
-            continue  # only loopback, a socket or plaintext (already reported) listens on that side
-        value, path = setting(switch)
+            continue  # only loopback, a socket, plaintext (already reported) or an undecided listener
+        try:
+            value, path = setting(switch)
+            ca_value, _ = setting(ca)
+        except _Undecidable as why:
+            reasons.append(str(why))
+            continue
         parsed = False if value is None else _go_bool(value)
         if parsed is None:
-            raise _Undecidable(f"--{switch} is {value!r}, which is not a boolean")
-        if parsed:
+            reasons.append(f"--{switch} is {_quoted(value, 60)}, which is not a boolean")
             continue
-        said = (
-            f"sets --{switch}=false" if value is not None else f"does not set --{switch}, and etcd's default is false"
-        )
+        if parsed or ca_value:
+            continue
+        said = f"sets --{switch}=false" if value is not None else f"does not set --{switch} (etcd's default is false)"
         out.append(
             r.finding(
                 d,
                 path if path is not None else (*c.path, "command", 0),
-                f"{where} {said}, while its {side} side listens with TLS on a network address: any {side} that "
-                "can reach the port is accepted without a certificate.",
+                f"{where} {said} and names no --{ca}, while its {side} side listens with TLS on a network address: "
+                f"any {side} that can reach the port is accepted without a certificate.",
                 severity=sev,
             )
         )
-    return out
+    return out, reasons
 
 
 #: The values of `spec.encryption.type` openshift/api defines. `KMS` is behind the KMSEncryption feature gate,
@@ -4630,9 +4888,10 @@ def _s040(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     encryption is the `HostedCluster`'s `spec.secretEncryption` on the management cluster rather than anything in
     this object.
     """
-    if not ctx.is_openshift:
-        return  # the resource does not exist off OpenShift
     docs = cluster_apiservers(ctx)
+    if not ctx.is_openshift:
+        _off_openshift(ctx, r, docs)
+        return
     if not docs:
         # Not collected: declined without a sentence, exactly as KN-S035 declines, so an audit of an application's
         # manifests on OpenShift is not padded with a note about an object nobody passed. `notEvaluatedRules`
@@ -4646,25 +4905,22 @@ def _s040(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             "spec.secretEncryption on the management cluster, not by the APIServer object in this cluster",
         )
         return
-    doc = _singleton(docs)
+    doc, why = _singleton(docs)
     if doc is None:
-        ctx.cannot_decide(
-            r.rule_id,
-            "the bundle carries several config.openshift.io APIServer objects and none is the singleton named "
-            "'cluster', so which configuration the cluster has cannot be read from it",
-        )
+        ctx.cannot_decide(r.rule_id, why)
         return
     spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
     enc = spec.get("encryption") if isinstance(spec, dict) else None
     if (spec is not None and not isinstance(spec, dict)) or (enc is not None and not isinstance(enc, dict)):
-        ctx.cannot_decide(r.rule_id, f"{doc.ref()} has a spec or spec.encryption that is not a mapping")
+        ctx.cannot_decide(r.rule_id, f"{_shown(doc.ref(), 160)} has a spec or spec.encryption that is not a mapping")
         return
     raw = enc.get("type") if isinstance(enc, dict) else None
     kind = "" if raw is None else raw
     if not isinstance(kind, str) or (kind not in ENCRYPTION_ON and kind not in ENCRYPTION_OFF):
         ctx.cannot_decide(
             r.rule_id,
-            f"{doc.ref()} sets spec.encryption.type to {raw!r}, which openshift/api does not define "
+            f"{_shown(doc.ref(), 160)} sets spec.encryption.type to {_quoted(raw, 60)}, which openshift/api does "
+            "not define "
             f"({', '.join(sorted(ENCRYPTION_ON | {'identity'}))})",
         )
         return
@@ -4708,9 +4964,10 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     means the system roots. A type this list does not know is declined by name, not assumed safe. On a hosted
     control plane the OAuth server is configured from `HostedCluster.spec.configuration.oauth`, so this declines.
     """
-    if not ctx.is_openshift:
-        return
     docs = [d for d in ctx.by_kind("OAuth") if d.api_version.split("/", 1)[0] == OAUTH_GROUP]
+    if not ctx.is_openshift:
+        _off_openshift(ctx, r, docs)
+        return
     if not docs:
         ctx.cannot_decide(r.rule_id)  # not collected: the singleton exists on every OpenShift cluster (as KN-S040)
         return
@@ -4721,31 +4978,28 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             "spec.configuration.oauth on the management cluster, not from the OAuth object in this cluster",
         )
         return
-    doc = _singleton(docs)
+    doc, why = _singleton(docs)
     if doc is None:
-        ctx.cannot_decide(
-            r.rule_id,
-            "the bundle carries several config.openshift.io OAuth objects and none is the singleton named "
-            "'cluster', so which configuration the cluster has cannot be read from it",
-        )
+        ctx.cannot_decide(r.rule_id, why)
         return
+    ref = _shown(doc.ref(), 160)
     spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
     providers = spec.get("identityProviders") if isinstance(spec, dict) else None
     if providers is None:
         return  # no identity provider, so no connection to secure
     if not isinstance(providers, list):
-        ctx.cannot_decide(r.rule_id, f"{doc.ref()} spec.identityProviders is not a list")
+        ctx.cannot_decide(r.rule_id, f"{ref} spec.identityProviders is not a list")
         return
     for i, p in enumerate(providers):
         if not isinstance(p, dict):
-            ctx.cannot_decide(r.rule_id, f"{doc.ref()} spec.identityProviders[{i}] is not a mapping")
+            ctx.cannot_decide(r.rule_id, f"{ref} spec.identityProviders[{i}] is not a mapping")
             continue
-        name = str(p.get("name") or f"identityProviders[{i}]")
+        name = _shown(p.get("name") or f"identityProviders[{i}]", 80)
         kind = p.get("type")
         if not isinstance(kind, str) or kind not in IDENTITY_PROVIDER_TYPES:
             ctx.cannot_decide(
                 r.rule_id,
-                f"{doc.ref()} identity provider {name!r} has type {kind!r}, which openshift/api does not define",
+                f"{ref} identity provider '{name}' has type {_quoted(kind, 60)}, which openshift/api does not define",
             )
             continue
         if kind != "LDAP":
@@ -4755,7 +5009,7 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         url = ldap.get("url") if isinstance(ldap, dict) else None
         if not isinstance(ldap, dict) or not isinstance(insecure, bool) or not isinstance(url, str):
             ctx.cannot_decide(
-                r.rule_id, f"{doc.ref()} LDAP identity provider {name!r} has no readable ldap.url and ldap.insecure"
+                r.rule_id, f"{ref} LDAP identity provider '{name}' has no readable ldap.url and ldap.insecure"
             )
             continue
         if not insecure:
@@ -4765,13 +5019,13 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             continue  # ldaps:// always uses TLS, whatever insecure says
         if scheme != "ldap":
             ctx.cannot_decide(
-                r.rule_id, f"{doc.ref()} LDAP identity provider {name!r} has a URL that is not ldap:// or ldaps://"
+                r.rule_id, f"{ref} LDAP identity provider '{name}' has a URL that is not ldap:// or ldaps://"
             )
             continue
         yield r.finding(
             doc,
             ("spec", "identityProviders", i, "ldap", "insecure"),
-            f"Identity provider {name!r} is LDAP with insecure: true and an ldap:// URL, so the OAuth server talks to "
+            f"Identity provider '{name}' is LDAP with insecure: true and an ldap:// URL, so the OAuth server talks to "
             "the directory in plaintext: the bind password and the password of every user who logs in cross the "
             "network unencrypted, and the directory's identity is never checked.",
         )

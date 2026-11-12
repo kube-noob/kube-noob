@@ -137,6 +137,9 @@ class Report:
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
     detection_coverage: dict[str, Any] | None = None
+    # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
+    # rule declined with a reason, so every result that had none stays byte-identical.
+    declined: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def max_severity(self) -> Severity | None:
         return max((f.severity for f in self.findings), default=None)
@@ -179,6 +182,7 @@ class Report:
             # Only when the bundle carried the cluster audit configuration, so every result that never saw one
             # stays byte-identical (R4, G244).
             **({"detectionCoverage": self.detection_coverage} if self.detection_coverage else {}),
+            **({"declined": self.declined} if self.declined else {}),
         }
 
 
