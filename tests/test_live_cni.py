@@ -92,6 +92,8 @@ class Cluster:
         if resource in self.forbidden:
             raise ClusterAccessError(f"{resource} is forbidden: User cannot list {resource} at the cluster scope")
         kind = _KINDS.get(resource)
+        if resource == "clusterinformations" and not any(o["kind"] == "ClusterInformation" for o in self.objects):
+            kind = None  # no Calico: the API does not serve the CRD (served but empty is Calico, version unknown)
         if kind is None:
             raise ClusterAccessError(f'the server doesn\'t have a resource type "{resource}"')
         hits = [
@@ -185,8 +187,10 @@ def test_another_variant_is_not_read_as_open_source_calico() -> None:
 
 
 def test_an_information_object_without_a_version_is_not_a_version() -> None:
+    """Calico is installed (the CRD is served) and its version is not known: G209's `unknown`, so an answer the
+    AdminNetworkPolicy decides is withheld rather than evaluated as enforced (G279)."""
     out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP, _info(None)]))
-    assert out["verdict"] == "denied" and "inertPolicies" not in out
+    assert out["verdict"] == "undetermined" and "inertPolicies" not in out
 
 
 @pytest.mark.parametrize("version", ["3", "not-a-version", ""])

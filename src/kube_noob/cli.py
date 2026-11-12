@@ -2945,7 +2945,10 @@ def _print_reach(out: dict[str, Any]) -> None:
         # The verdict says UNDETERMINED and the two direction lines can both read "allowed", so without this the
         # terminal shows a conclusion with no reason while the JSON carries both `undeterminedBy` and `summary`.
         # A caveat belongs in the surface that is read, not only in the one that is parsed.
-        _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
+        if out.get("readFrom"):  # live: what decided may be a read that failed, not a kind left unevaluated
+            _tprint(f"  undetermined by: {', '.join(out['undeterminedBy'])} (the summary below says why)")
+        else:
+            _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
     for entry in out.get("inertPolicies", []):
         # The verdict can read ALLOWED while the operator believes an AdminNetworkPolicy is denying it. That gap
         # is the whole finding, so it goes on the line below the verdict, not into the JSON alone.

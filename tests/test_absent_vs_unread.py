@@ -70,7 +70,12 @@ METRICS_DOWN = (
             "forbidden",
         ),
         ("Forbidden by RBAC: GET /apis/crd.projectcalico.org/v1/clusterinformations.", "forbidden"),
-        ("forbidden\n" + KUBECTL_404, "forbidden"),
+        (
+            "Error from server (Forbidden): clusterinformations.crd.projectcalico.org is forbidden\n" + KUBECTL_404,
+            "forbidden",
+        ),
+        # "forbidden" alone, outside the backend's own line, is not kubectl saying it (a name can be "forbidden")
+        ("forbidden\n" + KUBECTL_404, "not-served"),
         ("kubectl timed out after 30.0s", "not-read"),
         ("", "not-read"),
     ],
@@ -84,7 +89,7 @@ def test_absence_is_recognised_only_in_the_words_a_backend_writes_for_it(message
     [
         ('Error from server (NotFound): deployments.apps "web" not found', "not-found"),
         ("Not found: GET /apis/apps/v1/namespaces/shop/deployments/web", "not-found"),
-        ('error: the server doesn\'t have a resource type "deployments"', "not-found"),
+        ('error: the server doesn\'t have a resource type "deployments"', "not-served"),
         ('Error from server (NotFound): deployments.apps "other" not found', "not-read"),
         ('Error from server (NotFound): namespaces "shop" not found', "not-read"),
         ("Not found: GET /apis/apps/v1/namespaces/shop/deployments/other", "not-read"),
@@ -287,10 +292,10 @@ def test_a_workload_that_could_not_be_read_is_not_reported_as_absent_from_the_ma
         inventory_from_cluster(Cluster(WORKLOADS, errors=errors), "monitoring/prometheus", "shop/orders")
 
 
-def test_a_workload_answered_from_another_kind_says_which_kind_could_not_be_read() -> None:
+def test_a_workload_whose_first_kind_could_not_be_read_is_not_answered_from_another_kind() -> None:
     """`shop/orders` names a Deployment first. When Deployments cannot be read and a Pod of that name can, the
-    answer is about the Pod -- and says that the Deployment, which would have been the one asked about, was not
-    looked at, rather than answering silently for a different object."""
+    object asked about is not established: answering about the Pod (the first version of G279 did, with a note
+    under an exit-0 verdict) is answering a different question. The error says how to ask for the Pod."""
     pod = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -301,10 +306,12 @@ def test_a_workload_answered_from_another_kind_says_which_kind_could_not_be_read
     cluster = Cluster([*WORKLOADS, ALLOW_ALL, pod], errors={"deployments": forbidden})
     _KINDS["pods"] = "Pod"
     try:
-        inv = inventory_from_cluster(cluster, "shop/orders", "shop/orders")
+        with pytest.raises(ClusterAccessError, match="name the kind"):
+            inventory_from_cluster(cluster, "shop/orders", "shop/orders")
+        inv = inventory_from_cluster(cluster, "shop/pod/orders", "shop/pod/orders")
     finally:
         del _KINDS["pods"]
-    assert any(n.startswith("shop/orders was read as a Pod, but deployments could not be read") for n in inv.notes)
+    assert inv.resolve("shop/pod/orders").ref == "pod/orders"
 
 
 # -------------------------------------------------------------------- the same through a real kubectl process

@@ -1764,11 +1764,16 @@ class Toolkit:
         backend = get_backend(self.settings)
         inv = inventory_from_cluster(backend, p.source, p.destination, p.cni)
         platform = p.platform
+        platform_note = ""
         if platform is None:
             with contextlib.suppress(Exception):  # the platform only picks oc or kubectl in the commands
-                platform = "openshift" if cluster_info(backend).get("openshift") else "kubernetes"
+                info = cluster_info(backend)
+                platform = info.get("platform")
+                platform_note = str(info.get("platformNotRead") or "")
         cli = "oc" if platform in {"openshift", "rosa-classic", "rosa-hcp"} else "kubectl"
         out = check_reachability(inv, p.source, p.destination, p.port, p.protocol, cli)
+        if platform_note:  # an unread platform is not "kubernetes": the commands below say kubectl for want of one
+            out["notes"] = [*out.get("notes", []), f"{platform_note}; the commands are written for kubectl"]
         out["readFrom"] = f"live cluster via {backend.name} (read-only)"
         self._observe([f"netpol:{out['verdict']}"])
         return out

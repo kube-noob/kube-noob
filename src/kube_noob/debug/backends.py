@@ -25,6 +25,7 @@ from kube_noob.debug.cluster import (
     _NAME,
     _SELECTOR,
     Backend,
+    BackendReadError,
     _check,
     _list_hint,
     _redact_obj,
@@ -35,6 +36,25 @@ from kube_noob.errors import ClusterAccessError
 from kube_noob.net import USER_AGENT
 
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+
+
+class InClusterReadError(BackendReadError):
+    """An HTTP error from the API server, with the status it sent: the classifier decides from the status and the
+    body, never from a path that echoes a namespace or a name (G279)."""
+
+    def __init__(self, path: str, *, status: int, body: str = "") -> None:
+        if status == 403:
+            shown = (
+                f"Forbidden by RBAC: GET {path}. Grant the sidecar's ServiceAccount read access "
+                "(see deploy/helm values rbac.*)."
+            )
+        elif status == 404:
+            shown = f"Not found: GET {path}"
+        else:
+            shown = f"API error {status} for GET {path}: {body[:300]}"
+        super().__init__(shown, status=status, body=body)
+
+
 # The lines kubectl and oc write for their own failure (kubectl/pkg/cmd/util/helpers.go v1.35.0: checkErr's
 # "error: ", StandardErrorMessage's "Error from server" and "Unable to connect to the server").
 _ERROR_LINES = ("error: ", "Error from server", "Unable to connect to the server")
@@ -89,16 +109,25 @@ class KubectlBackend:
         if self.context:
             argv += ["--context", self.context]
         try:
+            # bytes, decoded with replacement: a byte that is not UTF-8 on either stream is part of a failed or odd
+            # answer, not a UnicodeDecodeError that escapes every caller (G279)
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=self.timeout + 5, check=False, stdin=subprocess.DEVNULL
+                argv, capture_output=True, timeout=self.timeout + 5, check=False, stdin=subprocess.DEVNULL
             )
         except subprocess.TimeoutExpired as exc:
             raise ClusterAccessError(f"{self.name} timed out after {self.timeout}s") from exc
         if proc.returncode != 0:
-            raise ClusterAccessError(
-                f"{self.name} {' '.join(args[:3])} failed: {redact_text(_stderr_for_message(proc.stderr))[:800]}"
+            stderr = proc.stderr.decode("utf-8", "replace")
+            # The shown message is cut at 800 characters; the classifier reads the whole stderr (redacted), so a
+            # discovery warning about this resource's own group that comes after seven others still counts.
+            raise BackendReadError(
+                f"{self.name} {' '.join(args[:3])} failed: {redact_text(_stderr_for_message(stderr))[:800]}",
+                stderr=redact_text(stderr),
             )
-        return proc.stdout
+        try:
+            return proc.stdout.decode("utf-8")
+        except UnicodeDecodeError as exc:  # an answer that is not UTF-8 is not an answer kube-noob can read
+            raise BackendReadError(f"{self.name} {' '.join(args[:3])}: the answer was not UTF-8") from exc
 
     def get(
         self,
@@ -124,7 +153,13 @@ class KubectlBackend:
         if field_selector:
             args += ["--field-selector", field_selector]
         args += ["--output", "json"]
-        data = json.loads(self._run(args) or "{}")
+        out = self._run(args)
+        try:
+            data = json.loads(out or "{}")
+        except ValueError as exc:
+            raise BackendReadError(
+                f"{self.name} get {args[1]}: the answer was not JSON ({redact_text(out.strip()[:120])!r})"
+            ) from exc
         return _redact_obj(data, _list_hint(data, plural))  # type: ignore[no-any-return]
 
     def logs(self, namespace: str, pod: str, container: str | None, tail: int, previous: bool) -> str:
@@ -164,16 +199,14 @@ class InClusterBackend:
         token = self._token_file.read_text(encoding="utf-8").strip()  # re-read: projected tokens rotate
         with cluster_client(self._base, token, self._ca, self.timeout) as c:
             resp = c.get(path, params=params)
-        if resp.status_code == 403:
-            raise ClusterAccessError(
-                f"Forbidden by RBAC: GET {path}. Grant the sidecar's ServiceAccount read "
-                "access (see deploy/helm values rbac.*)."
-            )
-        if resp.status_code == 404:
-            raise ClusterAccessError(f"Not found: GET {path}")
         if resp.status_code >= 400:
-            raise ClusterAccessError(f"API error {resp.status_code} for GET {path}: {resp.text[:300]}")
-        return resp.text if as_text else resp.json()
+            raise InClusterReadError(path, status=resp.status_code, body=redact_text(resp.text[:4000]))
+        if as_text:
+            return resp.text
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise BackendReadError(f"GET {path}: the answer was not JSON") from exc
 
     def get(
         self,

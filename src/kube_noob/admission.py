@@ -320,7 +320,11 @@ class Lookups:
         self.backend, self.ttl, self.max_namespaces, self.sleep = backend, ttl, max_namespaces, sleep
         self.rng = rng or random.Random()  # noqa: S311 - pacing jitter, not crypto
         self._lock = threading.Lock()
-        self._cache: dict[str, list[dict[str, Any]]] = {}
+        # per namespace, per resource: the last list that was read whole. A failed refresh of one resource keeps its
+        # last good list and marks it stale; it never becomes "none exist", which would raise cross-object warnings
+        # about objects that are there (G279).
+        self._cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._stale: dict[str, set[str]] = {}
         self._cluster: list[dict[str, Any]] = []
         self._wanted: deque[str] = deque(maxlen=max_namespaces)
         self.reads = 0
@@ -330,16 +334,23 @@ class Lookups:
         with self._lock:
             if namespace not in self._wanted:
                 self._wanted.append(namespace)
-            return [*self._cache.get(namespace, []), *self._cluster]
+            cached = self._cache.get(namespace, {})
+            return [*(o for r in CONTEXT_RESOURCES for o in cached.get(r, [])), *self._cluster]
+
+    def stale(self, namespace: str) -> list[str]:
+        """The resources whose last refresh in ``namespace`` failed, so their objects are the last good copy."""
+        with self._lock:
+            return sorted(self._stale.get(namespace, set()))
 
     def _list(self, resource: str, namespace: str | None) -> list[dict[str, Any]]:
         self.reads += 1
         from kube_noob.debug.cluster import list_items
 
-        # A response without an items list raises, so the caller keeps its old copy instead of an empty one (G279)
+        # A response without an items list, or with items that are not objects, raises, so the caller keeps its
+        # old copy instead of an empty one (G279)
         items = list_items(self.backend.get(resource, namespace=namespace), resource)
         kind = CONTEXT_KINDS[resource]
-        return [{**i, "kind": kind} for i in items if isinstance(i, dict)][:500]
+        return [{**i, "kind": kind} for i in items][:500]
 
     def refresh(self) -> None:
         with self._lock:
@@ -349,19 +360,23 @@ class Lookups:
         except Exception as exc:  # noqa: BLE001 - forbidden or unreachable: keep the old copy
             self.errors.append(f"storageclasses: {type(exc).__name__}")
             cluster = self._cluster
-        fresh: dict[str, list[dict[str, Any]]] = {}
+        fresh: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        failed: dict[str, set[str]] = {}
         for ns in namespaces:
-            items: list[dict[str, Any]] = []
+            fresh[ns], failed[ns] = {}, set()
             for resource in CONTEXT_RESOURCES:
                 self.sleep(self.rng.uniform(0.05, 0.2))
                 try:
-                    items.extend(self._list(resource, ns))
+                    fresh[ns][resource] = self._list(resource, ns)
                 except Exception as exc:  # noqa: BLE001 - one failed read must not stop the refresher
                     self.errors.append(f"{resource} in {ns}: {type(exc).__name__}")
-            fresh[ns] = items
+                    failed[ns].add(resource)
         with self._lock:
             self._cluster = cluster
-            self._cache.update(fresh)
+            for ns, lists in fresh.items():
+                kept = self._cache.setdefault(ns, {})
+                kept.update(lists)  # resources that failed keep their last good list
+                self._stale[ns] = {r for r in failed[ns] if r in kept}
             self.errors = self.errors[-50:]
 
     def start(self) -> threading.Thread:

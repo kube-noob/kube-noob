@@ -672,7 +672,13 @@ def debug_workload(
     return {
         "backend": backend.name,
         "target": f"{kind}/{namespace}/{name}",
-        "cluster": {k: info.get(k) for k in ("kubernetes", "openshift", "newerThanKnowledge", "warnings") if k in info},
+        # platformNotRead travels too: without it an unread ClusterVersion showed as `openshift: null` and the
+        # known-issue match below silently ran without a platform (G279)
+        "cluster": {
+            k: info.get(k)
+            for k in ("kubernetes", "openshift", "platformNotRead", "newerThanKnowledge", "warnings")
+            if k in info
+        },
         "evidence": ev["summary"],
         "logs": {k: v[-6000:] for k, v in ev["logs"].items()},
         **result.as_dict(),
@@ -687,6 +693,11 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         f"# Diagnostic bundle: {result['target']}",
         "",
         f"Collected read-only via `{result['backend']}`. Secrets were not read; sensitive values are redacted.",
+        *(
+            ["", f"**Platform not known:** {(result.get('cluster') or {})['platformNotRead']}."]
+            if (result.get("cluster") or {}).get("platformNotRead")
+            else []
+        ),
         "",
         "## Evidence",
         *(f"- {e}" for e in result.get("evidence", [])),
