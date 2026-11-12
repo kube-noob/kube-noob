@@ -4313,7 +4313,12 @@ def _in_script(binary: str, text: str) -> bool:
 def _names(binary: str, token: str) -> bool:
     """Is ``token`` the binary as one argv word (`kube-apiserver`, `/usr/local/bin/etcd`)? A token with a space
     in it is a script or a sentence, and `tar czf b /var/lib/etcd` ends in `/etcd` without naming the program."""
-    return _basename(token) == binary and not any(ch.isspace() for ch in token)
+    return _basename(token) == binary and re.search(r"\s", token) is None
+
+
+def _expands(tokens: tuple[str, ...]) -> bool:
+    """Does any argv token carry a `$(VAR)` the kubelet expands, whose value is not in the manifest?"""
+    return any("$(" in t for t in tokens)
 
 
 def _is_hint(token: str, hints: frozenset[str]) -> bool:
@@ -4776,7 +4781,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         flags: dict[str, list[tuple[str, int]]] = {}
         problem: str | None = None
         exits: bool | str = False
-        if not launch.declined and not any("$(" in t for t in launch.tokens):
+        if not launch.declined and not _expands(launch.tokens):
             # --version and --help are read only where pflag would read them as flags: `--etcd-prefix --version`
             # gives --etcd-prefix the value, and an ambiguous argv is declined below, not taken as a job (G272).
             flags, problem = _flag_values(launch.tokens, _APISERVER_READ, _APISERVER_BOOLS, False, pflag=True)
@@ -5054,7 +5059,7 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         flags: dict[str, list[tuple[str, int]]] = {}
         problem: str | None = None
         exits: bool | str = False
-        if not launch.declined and not any("$(" in t for t in launch.tokens):
+        if not launch.declined and not _expands(launch.tokens):
             flags, problem = _flag_values(launch.tokens, _ETCD_READ, _ETCD_KNOWN_BOOLS, single_dash=True)
             if problem is None:
                 exits = _exits_at_once(flags, pflag=False)
