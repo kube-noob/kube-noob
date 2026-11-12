@@ -123,7 +123,8 @@ def test_the_install_hints_name_only_documented_install_routes() -> None:
         [SH, str(km.SCRIPT), "audit"], capture_output=True, text=True, check=False, env={"PATH": "/nonexistent"}
     )
     assert "kube-noob/tap" not in out.stderr and "kube-noob/tap" not in km.MANIFEST.read_text(encoding="utf-8")
-    assert "brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob" in out.stderr
+    assert "brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob" in out.stderr
+    assert "aashishmahajan" not in km.SCRIPT.read_text(encoding="utf-8"), "the org moved; G275 repoints every link"
     assert "brew trust --formula kube-noob/kube-noob/kube-noob" in out.stderr
 
 
@@ -193,3 +194,37 @@ def test_with_nothing_installed_it_says_so_and_exits_127() -> None:
     # a heredoc fed to `cat` printed "cat: not found" here instead of the instructions.
     for line in ("pipx install", "brew install", "astral.sh/uv", "offline by default"):
         assert line in out.stderr, f"the install message lost {line!r} -- is it using an external command?"
+
+
+def _bash_blocks(path: Path) -> list[str]:
+    return re.findall(r"^```bash\n(.*?)^```", path.read_text(encoding="utf-8"), flags=re.M | re.S)
+
+
+def test_the_no_krew_install_stops_on_a_failed_digest_check() -> None:
+    """Four separate lines, pasted as a block, extracted the archive after a FAILED check (G276). One chained line:
+    nothing after the check runs unless it printed OK, and it works where `shasum` is missing (minimal Linux)."""
+    install = ROOT / "docs" / "install.md"
+    blocks = [b for b in _bash_blocks(install) if "kubectl-noob-v" in b]
+    assert len(blocks) == 1
+    lines = blocks[0].strip().splitlines()
+    assert len(lines) == 1, "one line, so a failed step stops the rest"
+    line = lines[0]
+    assert "#" not in line.replace("sha256: ", ""), "no comments in a block the owner pastes"
+    check = line.index("-c -")
+    assert line.index("tar -xzf") > check and " && mkdir" in line[check:]
+    assert "sha256sum -c -" in line and "shasum -a 256 -c -" in line and 'test -n "$want"' in line
+    assert f"/v{__version__}/" in line, "the release the manifest at that tag describes"
+
+
+def test_the_krew_index_steps_refuse_an_archive_without_the_licence() -> None:
+    """Run today, the steps would have opened the krew-index pull request with the v0.9.2 manifest, whose archive has
+    no LICENSE; krew's checklist refuses that. Both the check and the pull request step now stop first, and the
+    branch is created only after the asynchronous fork exists."""
+    blocks = _bash_blocks(ROOT / "krew" / "SUBMIT.md")
+    check = next(b for b in blocks if "shasum" in b)
+    pr = next(b for b in blocks if "gh pr create" in b)
+    assert "grep -qx LICENSE" in check and "grep -qx LICENSE" in pr
+    assert pr.index("grep -qx LICENSE") < pr.index("gh repo fork")
+    assert "sleep" in pr and pr.index("sleep") < pr.index('git/refs" -f ref=')
+    for b in blocks:
+        assert len(b.strip().splitlines()) == 1 and not b.lstrip().startswith("#"), "one pasteable line each"

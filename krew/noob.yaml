@@ -22,7 +22,7 @@ spec:
   platforms:
     - bin: kubectl-noob
       uri: https://github.com/kube-noob/kube-noob/releases/download/v0.9.2/kubectl-noob-v0.9.2.tar.gz
-      sha256: 944265bb37b1738871ac11f23e42d238e1603c9db66802287f12b9e235581ea8
+      sha256: a9b7ee5c8b55a96e83aa5050007004a19dc314af176171be732e45c09dc9064c
       selector:
         matchExpressions:
           - key: os

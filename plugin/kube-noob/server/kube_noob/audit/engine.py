@@ -123,6 +123,14 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    if ctx.unreadable_shapes:
+        # A field of the wrong type (`resources: 1`) used to crash the whole audit, exit 1 (G276). Now each rule that
+        # cannot read it is named here and left out of the evaluated list; the schema check reports the field.
+        named = ", ".join(f"{rid} ({kind})" for rid, kind in sorted(ctx.unreadable_shapes.items()))
+        report.assumptions.append(
+            f"{len(ctx.unreadable_shapes)} rule(s) were not evaluated because a field in the input has the wrong type "
+            f"for what the rule reads: {named}. Fix the field (the schema findings name it) and audit again."
+        )
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that

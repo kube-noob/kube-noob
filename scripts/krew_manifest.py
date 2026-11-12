@@ -84,7 +84,7 @@ def _gzip_stored(data: bytes) -> bytes:
 
     Compressed deflate output is not a property of the input: zlib and zlib-ng, which some Python builds link,
     produce different bytes for the same data, so the same archive hashed differently on a developer's machine and
-    in CI. A stored block has one encoding. The archive is about 16 KB either way. mtime 0, no file name, OS 255.
+    in CI. A stored block has one encoding. The archive is about 20 KB. mtime 0, no file name, OS 255.
     """
     out = bytearray(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff")
     chunks = [data[i : i + 0xFFFF] for i in range(0, len(data), 0xFFFF)] or [b""]

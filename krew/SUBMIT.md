@@ -52,10 +52,11 @@ longer names a Homebrew tap the install guide does not document.
    latest release:
 
 ```bash
-V=$(gh release view --repo kube-noob/kube-noob --json tagName --jq .tagName | sed 's/^v//') && curl -fsSLO "https://github.com/kube-noob/kube-noob/releases/download/v$V/kubectl-noob-v$V.tar.gz" && curl -fsSL "https://raw.githubusercontent.com/kube-noob/kube-noob/v$V/krew/noob.yaml" -o noob.yaml && echo "$(sed -n 's/^ *sha256: //p' noob.yaml)  kubectl-noob-v$V.tar.gz" | shasum -a 256 -c - && tar -tzf "kubectl-noob-v$V.tar.gz"
+V=$(gh release view --repo kube-noob/kube-noob --json tagName --jq .tagName | sed 's/^v//') && curl -fsSLO "https://github.com/kube-noob/kube-noob/releases/download/v$V/kubectl-noob-v$V.tar.gz" && curl -fsSL "https://raw.githubusercontent.com/kube-noob/kube-noob/v$V/krew/noob.yaml" -o noob.yaml && want=$(sed -n 's/^ *sha256: //p' noob.yaml) && test -n "$want" && if command -v sha256sum >/dev/null 2>&1; then echo "$want  kubectl-noob-v$V.tar.gz" | sha256sum -c -; else echo "$want  kubectl-noob-v$V.tar.gz" | shasum -a 256 -c -; fi && tar -tzf "kubectl-noob-v$V.tar.gz" | grep -qx LICENSE && echo "v$V: digest matches and LICENSE is in the archive"
 ```
 
-   It has to print `OK`, then `kubectl-noob` and `LICENSE`. Stop if it prints anything else.
+   It has to end with `digest matches and LICENSE is in the archive`. It stops before that line when the digest does
+   not match or the archive has no `LICENSE`, which is the v0.9.2 archive: run today, it stops there, as it should.
 
 3. On a machine with kubectl and krew, install from that manifest and archive, as the pull request template asks
    ([testing locally](https://krew.sigs.k8s.io/docs/developer-guide/testing-locally/)), then remove it again with
@@ -68,10 +69,11 @@ kubectl krew install --manifest=noob.yaml --archive="kubectl-noob-v$V.tar.gz" &&
 4. Sign the Kubernetes CLA, if this GitHub account has not.
 
 5. Fork krew-index, add `plugins/noob.yaml` from the release tag on a branch, and open the pull request. Nothing here
-   needs a local clone:
+   needs a local clone. It refuses to start unless that release's archive carries `LICENSE`, and it waits for the fork
+   to exist before branching, because `gh repo fork` returns before GitHub has finished creating it:
 
 ```bash
-V=$(gh release view --repo kube-noob/kube-noob --json tagName --jq .tagName | sed 's/^v//') && me=$(gh api user --jq .login) && gh repo fork kubernetes-sigs/krew-index --clone=false --default-branch-only && gh api -X POST "repos/$me/krew-index/git/refs" -f ref=refs/heads/add-noob -f sha="$(gh api repos/kubernetes-sigs/krew-index/git/ref/heads/master --jq .object.sha)" && gh api -X PUT "repos/$me/krew-index/contents/plugins/noob.yaml" -f message="Add noob plugin" -f branch=add-noob -f content="$(gh api "repos/kube-noob/kube-noob/contents/krew/noob.yaml?ref=v$V" --jq .content | tr -d '\n')" && gh pr create --repo kubernetes-sigs/krew-index --base master --head "$me:add-noob" --title "Add noob plugin" --body "kube-noob: offline Kubernetes and OpenShift manifest audit, NetworkPolicy reachability and must-gather reader. No AI inside. Apache-2.0; the licence is in the archive. The plugin is a POSIX shell passthrough to the kube-noob CLI, with a pinned uvx fallback so it works without a Python environment. Tested with kubectl krew install --manifest --archive against the release asset."
+V=$(gh release view --repo kube-noob/kube-noob --json tagName --jq .tagName | sed 's/^v//') && curl -fsSL "https://github.com/kube-noob/kube-noob/releases/download/v$V/kubectl-noob-v$V.tar.gz" | tar -tzf - | grep -qx LICENSE && me=$(gh api user --jq .login) && gh repo fork kubernetes-sigs/krew-index --clone=false --default-branch-only && for i in 1 2 3 4 5 6 7 8 9 10 11 12; do gh api "repos/$me/krew-index/git/ref/heads/master" >/dev/null 2>&1 && break; sleep 10; done && gh api -X POST "repos/$me/krew-index/git/refs" -f ref=refs/heads/add-noob -f sha="$(gh api repos/kubernetes-sigs/krew-index/git/ref/heads/master --jq .object.sha)" && gh api -X PUT "repos/$me/krew-index/contents/plugins/noob.yaml" -f message="Add noob plugin" -f branch=add-noob -f content="$(gh api "repos/kube-noob/kube-noob/contents/krew/noob.yaml?ref=v$V" --jq .content | tr -d '\n')" && gh pr create --repo kubernetes-sigs/krew-index --base master --head "$me:add-noob" --title "Add noob plugin" --body "kube-noob: offline Kubernetes and OpenShift manifest audit, NetworkPolicy reachability and must-gather reader. No AI inside. Apache-2.0; the licence is in the archive. The plugin is a POSIX shell passthrough to the kube-noob CLI, with a pinned uvx fallback when kube-noob is not installed. Tested with kubectl krew install --manifest --archive against the release asset."
 ```
 
 6. Watch the "Validate plugin manifests" check on the pull request. A digest failure there means the manifest and the

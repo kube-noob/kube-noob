@@ -167,7 +167,70 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+# `KUBE_NOOB_FOR_MODEL=1`: the CLI's JSON and YAML are being read by a model (the directory plugin's skills run the
+# CLI through Claude's Bash tool), so they get what the MCP server gives a model and the terminal does not need
+# (G276): every string passes through `kube_noob.sanitize` (text from the input shaped like instructions is
+# neutralised, the result flagged `untrusted`), `knowledgeAsOf` is stamped as `tool_runner` stamps it, and the keys
+# that say what was NOT read or decided come first, because a reader that sees only the start of a long result (a
+# tool output cap) must still see them. An environment variable rather than a flag so that a command line written
+# for this mode still runs on a release that does not have it; such a release prints no `forModel` key, and the
+# skills say so. Unset, output is byte-for-byte what it was.
+FOR_MODEL_ENV = "KUBE_NOOB_FOR_MODEL"
+FIRST_KEYS = (
+    "verdict",
+    "status",
+    "undetermined",
+    "undeterminedBy",
+    "untrusted",
+    "injectionSignals",
+    "injectionSignalsTruncated",
+    "knowledgeAsOf",
+    "assumptions",
+    "unreadable",
+    "notEvaluated",
+    "notRead",
+    "notChecked",
+    "unparsed",
+    "coverage",
+    "skipped",
+    "limitations",
+    "withheld",
+    "excluded",
+    "notShipped",
+    "secretsIgnored",
+    "openQuestions",
+    "note",
+    "notes",
+    "causeNote",
+    "summary",
+)
+# Set once per run in `main`, from the settings, when the mode is on.
+_MODEL_KNOWLEDGE: dict[str, str] = {}
+
+
+def _for_model() -> bool:
+    return os.environ.get(FOR_MODEL_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def for_model(obj: Any) -> Any:
+    """The document a model reads: sanitised, flagged, stamped, the not-evaluated keys first. Non-dicts are only
+    sanitised."""
+    from kube_noob import sanitize
+
+    cleaned = sanitize.result(obj)
+    if not isinstance(cleaned, dict):
+        return cleaned
+    if "line" in _MODEL_KNOWLEDGE:
+        cleaned.setdefault("knowledgeAsOf", _MODEL_KNOWLEDGE["line"])
+    out: dict[str, Any] = {"forModel": True}
+    out.update({k: cleaned[k] for k in FIRST_KEYS if k in cleaned})
+    out.update({k: v for k, v in cleaned.items() if k not in out})
+    return out
+
+
 def _emit(obj: Any, fmt: str) -> None:
+    if _for_model():
+        obj = for_model(obj)
     if fmt == "json":
         print(json.dumps(obj, indent=2, default=str))
     else:
@@ -2134,6 +2197,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         s = _settings(a)
+        if _for_model():
+            from kube_noob.knowledge_status import line as knowledge_line
+
+            _MODEL_KNOWLEDGE["line"] = knowledge_line(s.data_dir)
         return _dispatch(a, s)
     except ClarificationNeeded as exc:
         _emit({"status": "needs-clarification", "questions": exc.questions}, "yaml" if a.format == "text" else a.format)
@@ -2150,6 +2217,15 @@ def main(argv: list[str] | None = None) -> int:
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
         return 141
+    except Exception as exc:
+        # Anything else is a kube-noob bug. Python's own exit status for an uncaught exception is 1, which is this
+        # CLI's "findings at or above --fail-on": a crash on a wrong-typed field read as a policy violation in a
+        # pipeline and as an answer in the plugin's skills (G276). 4 is "a kube-noob error"; KUBE_NOOB_DEBUG=1
+        # re-raises for the traceback.
+        if os.environ.get("KUBE_NOOB_DEBUG", "").lower() in ("1", "true", "yes"):
+            raise
+        print(f"error: internal error ({type(exc).__name__}): {' '.join(str(exc).split())[:300]}", file=sys.stderr)
+        return 4
 
 
 def _dispatch(a: argparse.Namespace, s: Settings) -> int:
@@ -2254,17 +2330,17 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 f"{' and more' if len(sources) > 3 else ''}). Run `fix` per file to keep them.",
                 file=sys.stderr,
             )
+        log = {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]}
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
+            if a.format == "json":
+                # The YAML went to the file, so stdout is free for the document `--format json` asked for: the change
+                # log as JSON, where it used to go to stderr as YAML and leave stdout empty (G276).
+                _emit({"output": a.output, **log}, "json")
+                return 0
         else:
             print(res["manifests"], end="")
-        print(
-            yaml.safe_dump(
-                {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
-                sort_keys=False,
-            ),
-            file=sys.stderr,
-        )
+        print(yaml.safe_dump(log, sort_keys=False), file=sys.stderr)
         return 0
 
     if a.cmd == "protocol":
@@ -2302,14 +2378,16 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if out["status"] != "ok":
                 _emit(out, fmt)
                 return 3
+            report = {k: out[k] for k in ("assumptions", "prerequisites", "audit")}
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
+                if a.format == "json":
+                    # As for `fix -o`: the manifests are in the file, the report is the JSON document (G276).
+                    _emit({"output": a.output, **report}, "json")
+                    return 0
             else:
                 print(out["manifests"], end="")
-            print(
-                yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
-                file=sys.stderr,
-            )
+            print(yaml.safe_dump(report, sort_keys=False), file=sys.stderr)
             return 0
         from kube_noob.generate.helm import generate_chart
 
@@ -2323,9 +2401,14 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         chart_report, lint = audit_chart(a.chart, a.platform, a.pversion, a.values, a.namespace)
         d = chart_report.as_dict()
         d["chartLint"] = lint
-        _print_report(d) if a.format == "text" else _emit(d, fmt)
-        for issue in lint:
-            print(f"[CHART] {issue}")
+        if a.format == "text":
+            _print_report(d)
+            for issue in lint:
+                print(f"[CHART] {issue}")
+        else:
+            # The lint issues are already in the document as `chartLint`. Printing them after it as well made the
+            # JSON output two things, and no JSON parser reads that (G276).
+            _emit(d, fmt)
         top = chart_report.max_severity()
         return 1 if top is not None and top >= 3 else 0
 

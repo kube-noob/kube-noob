@@ -16,11 +16,11 @@ every time, and they run where you put them.
 3. **With no AI at all**: the CLI below. Audits, diagnoses, cited search, lessons and evidence bundles need no model
    and no network, which suits CI gates and air-gapped clusters.
 4. **With Claude, from the plugin directory** (the `kube-noob-skills` plugin): the same seven skills with no MCP
-   server and no code in the plugin. Each skill finds the kube-noob CLI you installed (`kube-noob`, then
-   `kubectl noob`, then a pinned `uvx` run if you agree), runs it through Claude's Bash tool with `--format json`, and
-   reads the verdict and what was not evaluated from the output. Ask "is this production ready for OpenShift 4.20?"
-   with a manifest pasted, and Claude runs `kube-noob protocol` on it. With no CLI, the skill says nothing was audited
-   and gives the install command, rather than answering from memory as if it had checked.
+   server and no code in the plugin. Each skill checks for the kube-noob CLI you installed, runs it through Claude's
+   Bash tool on your pasted text in a private folder, and reads the verdict and what was not evaluated from the JSON.
+   Ask "is this production ready for OpenShift 4.20?" with a manifest pasted, and Claude runs `kube-noob protocol` on
+   it. With no CLI, the skill says nothing was audited and gives the install command, rather than answering from
+   memory as if it had checked.
 
 `kube-noob ask` is the one optional command that uses a model: one you configure, and only a local one under the
 offline lock.

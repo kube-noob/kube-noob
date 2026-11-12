@@ -14,25 +14,32 @@ logs, explaining policy denials, checking whether one pod can reach another, mat
 OpenShift issues, generating audited manifests and Helm charts, and graded exercises. They also carry the facts a
 general model most often gets wrong about these platforms.
 
-## What this plugin contains, runs and fetches
+## What this plugin contains, runs, reads and writes
 
-This plugin is Markdown and one image. **There is no MCP server here, no script, no hook and no bundled code.** The
-checks are done by the kube-noob command-line tool, which you install yourself (below). The skills tell Claude to run
-it through Claude Code's Bash tool, so you see every command and approve it with your normal permission prompt. The
-plugin changes no permission setting and pre-approves no command.
+This plugin is Markdown and one image. **There is no MCP server here, no script, no hook and no bundled code**, and it
+downloads nothing. The checks are done by the kube-noob command-line tool, which you install yourself (below). The
+skills tell Claude to run it through Claude Code's Bash tool, under your own permission settings: you are asked before
+each command unless you have already allowed such commands without asking. The plugin changes no permission setting and
+pre-approves no command.
 
-- Before any check, a skill looks for the engine in this order: `kube-noob --version`, then `kubectl noob --version`
-  (the krew plugin), then, only if you agree, `uvx --from kube-noob==0.9.2 kube-noob --version`. That last one is
-  the only thing this plugin can cause to be fetched: uv downloads that pinned kube-noob release and its dependencies
-  from PyPI the first time it runs.
-- If none of them is there, the skill says that kube-noob is not installed and nothing has been audited, and gives
-  you the install command. It does not answer as if a check had run.
-- Every check runs as `kube-noob <command> ... --format json` on files Claude writes from what you pasted, under
-  `/tmp`. The skills never turn on kube-noob's cluster access, web lookups or model calls, so kube-noob reads only
-  those files and sends nothing anywhere.
-- A few commands write where you asked them to: `fix`, `generate` and `helm-chart` write YAML to the path given with
-  `-o`; `learn submit` and `learn quiz` record your progress in kube-noob's local data folder; `learning profile` and
-  `incidents confirm` save what you asked to save there.
+- **Finding the engine.** A skill runs `kube-noob --version`. If that fails it says that kube-noob is not installed and
+  nothing has been audited, gives you the install command, and does not answer as if a check had run. It does not use
+  `kubectl noob`, which downloads kube-noob when kube-noob is not installed.
+- **A private folder.** Claude makes one folder per session with `umask 077 && mktemp -d`, writes what you pasted into
+  it with its file-writing tool, and removes it with `rm -rf` when the work is done.
+- **How kube-noob runs.** Every command runs as
+  `KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob <command> ... --format json`, with the output
+  written to that folder. The first variable makes kube-noob clean text from your input that is shaped like
+  instructions before Claude reads it; the second stops it counting rule ids in its data folder. The skills never turn
+  on kube-noob's cluster access, web lookups or model calls.
+- **What it reads.** The files in that folder; and, when you point at them, a chart folder (`helm-audit ./mychart`,
+  which runs your installed `helm template`), a rendered chart (`helm template` run by Claude, with your approval), a
+  Containerfile and its build context (`build audit`), a must-gather folder (`must-gather analyze`), SARIF files and a
+  repository (`code report`), and kube-noob's own local stores (`incidents list`, `learning show`, `config`).
+- **What it writes.** The private folder; the learning progress kube-noob keeps in its data folder when you read a
+  lesson, submit an exercise or answer a quiz; a profile (`learning profile`) or an incident fix (`incidents confirm`)
+  only when you ask to save one. A generated chart is written to the private folder and copied into your project only
+  if you ask.
 
 In chat on claude.ai there is no shell on your machine, so the skills give you the command to run and read the output
 you paste back.
@@ -43,14 +50,13 @@ you paste back.
 pipx install kube-noob==0.9.2
 ```
 
-Homebrew, uv, the container image and the krew plugin are in
+pipx installs that release from PyPI. Homebrew, uv and the container image are in
 [the install guide](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md).
 
 The full `kube-noob` plugin, from the project's own marketplace, gives Claude the same engine as MCP tools instead of
 shell commands:
 
 ```
-/plugin marketplace add kube-noob/kube-noob
 /plugin install kube-noob@kube-noob
 ```
 

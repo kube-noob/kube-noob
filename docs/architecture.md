@@ -66,12 +66,12 @@ flowchart LR
   `KUBE_NOOB_*` variables say. Its trust boundary is the model that runs it: arguments are validated by the tool's
   model, input is capped at 5 MiB, and results are cleaned and flagged like MCP results.
 - The directory plugin (`plugin/kube-noob-skills`) is a fifth surface with no code of its own: seven skills that tell
-  Claude to run the installed CLI through its Bash tool, with `--format json`, on files written from pasted text with
-  a quoted heredoc. Its trust boundary is the user's permission prompt (it pre-approves nothing) and the CLI's own
-  argument parsing; the commands it runs never turn on cluster, web or model access (held by
-  `tests/test_directory_plugin.py`). One difference from the MCP and skill surfaces: the CLI's JSON is not passed
-  through `kube_noob.sanitize`, so text quoted from the input reaches the model uncleaned, and the skills tell it to
-  treat every string as data.
+  Claude to run the installed CLI through its Bash tool, in a private `mktemp -d` folder, with `--format json` and
+  `KUBE_NOOB_FOR_MODEL=1`. That variable makes `cli._emit` do what `tool_runner.call` does for MCP: every string goes
+  through `kube_noob.sanitize`, the result is flagged `untrusted` when something was neutralised, `knowledgeAsOf` is
+  stamped, and the keys that say what was not read come first. Unset, the CLI's output is unchanged. Its trust
+  boundary is the user's permission settings (it pre-approves nothing) and the CLI's own argument parsing; the commands
+  it runs never turn on cluster, web or model access (held by `tests/test_directory_plugin.py`).
 - The HTTP transport authenticates with a bearer token (constant time) unless bound to loopback (sidecar).
 - REST routes (`kube_noob.server.rest`, `/v1/...`) sit beside MCP on the same app and run the same toolkit call
   (`mcp_app.run_tool`: validation, sanitising, `knowledgeAsOf`, the content-free audit line, now with `via=rest`).

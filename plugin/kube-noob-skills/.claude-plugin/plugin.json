@@ -23,5 +23,5 @@
     "sre",
     "security"
   ],
-  "icon": "./.claude-plugin/icon.png"
+  "icon": "./icon.png"
 }

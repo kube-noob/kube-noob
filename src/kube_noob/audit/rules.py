@@ -77,6 +77,10 @@ class AuditContext:
     # registries an organisation approved, so KN-S036 declines without it rather than passing every image.
     allowed_registries: tuple[str, ...] = ()
     undecided: set[str] = field(default_factory=set)
+    # Rules that met a field of a type they cannot read (`resources: 1` where a list belongs) and stopped. They are
+    # undecided too, and named with the exception type, because "this rule could not read your input" is part of
+    # the answer and a crash was not (G276).
+    unreadable_shapes: dict[str, str] = field(default_factory=dict)
 
     def cannot_decide(self, rule_id: str) -> None:
         self.undecided.add(rule_id)
@@ -4094,7 +4098,16 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
         if stages is not None and r.stage not in stages:
             continue
         if r.check is not None:
-            findings.extend(r.check(ctx, r))
+            # Findings the rule produced before it met a shape it could not read are real, so they are kept; the
+            # rule itself is recorded as not evaluated, never as evaluated-and-clean.
+            produced: list[Finding] = []
+            try:
+                for f in r.check(ctx, r):
+                    produced.append(f)
+            except (TypeError, AttributeError, KeyError, IndexError, ValueError) as exc:
+                ctx.cannot_decide(r.rule_id)
+                ctx.unreadable_shapes[r.rule_id] = type(exc).__name__
+            findings.extend(produced)
             if evaluated is not None and r.rule_id not in ctx.undecided:
                 evaluated.append(r.rule_id)
     return findings
