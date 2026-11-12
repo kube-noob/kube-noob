@@ -357,7 +357,7 @@ SCENARIOS: dict[str, Scenario] = {
             "support engineers, SREs",
             _mustgather,
         ),
-        Scenario("doctor", "What kube-noob itself can reach, and the lock", "security, platform admins", _doctor),
+        Scenario("doctor", "Show and lock what kube-noob itself can reach", "security, platform admins", _doctor),
     )
 }
 # Old demo names, kept because a demo name is a public id (scripts, recordings, docs). `posture` showed `doctor`
