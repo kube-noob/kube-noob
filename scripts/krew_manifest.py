@@ -3,7 +3,8 @@
 
 `krew/kubectl-noob.in` is the source; the version is substituted into it here so the committed
 `krew/kubectl-noob` is the file that actually ships, and `krew/noob.yaml` carries the SHA-256 of the archive
-built from it. The archive is byte-reproducible -- fixed mtime, uid, gid and name, and gzip with no timestamp --
+built from it. The archive is byte-reproducible -- fixed mtime, uid, gid and name, and gzip with no timestamp and
+no compression, because compressed bytes differ between zlib builds --
 so the digest in the manifest is a property of the script rather than of the machine that packed it. Without
 that, every release would produce a different hash for identical content and the manifest could not be checked.
 
@@ -18,12 +19,12 @@ matrix to publish. Windows is not claimed, because the script is not a Windows e
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import io
 import re
 import sys
 import tarfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,11 +76,23 @@ def archive(ver: str | None = None) -> bytes:
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         for name, payload, mode in members:
             tar.addfile(_member(name, payload, mode), io.BytesIO(payload))
-    # mtime=0 in the gzip header too, or the digest changes every second.
-    out = io.BytesIO()
-    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0, compresslevel=9) as gz:
-        gz.write(raw.getvalue())
-    return out.getvalue()
+    return _gzip_stored(raw.getvalue())
+
+
+def _gzip_stored(data: bytes) -> bytes:
+    """gzip (RFC 1952) whose deflate stream is stored blocks only (RFC 1951 BTYPE 00): no compression.
+
+    Compressed deflate output is not a property of the input: zlib and zlib-ng, which some Python builds link,
+    produce different bytes for the same data, so the same archive hashed differently on a developer's machine and
+    in CI. A stored block has one encoding. The archive is about 16 KB either way. mtime 0, no file name, OS 255.
+    """
+    out = bytearray(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff")
+    chunks = [data[i : i + 0xFFFF] for i in range(0, len(data), 0xFFFF)] or [b""]
+    for n, chunk in enumerate(chunks):
+        out.append(1 if n == len(chunks) - 1 else 0)  # BFINAL on the last block, BTYPE 00, padded to the byte
+        out += len(chunk).to_bytes(2, "little") + (len(chunk) ^ 0xFFFF).to_bytes(2, "little") + chunk
+    out += zlib.crc32(data).to_bytes(4, "little") + (len(data) & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes(out)
 
 
 def manifest(ver: str | None = None) -> str:

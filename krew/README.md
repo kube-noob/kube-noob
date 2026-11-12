@@ -34,6 +34,10 @@ The manifest states a digest, so the digest has to be a property of the script r
 packed it. The archive fixes each member's name, mode, mtime, uid, gid and user name, and gzips with no timestamp.
 Without that, every release would produce a different hash for identical content and `--check` could never pass.
 
+The gzip stream is also uncompressed (stored deflate blocks). Compressed deflate bytes depend on the zlib build:
+once the archive grew to include `LICENSE`, a Python linked against zlib-ng hashed it differently from CI's zlib, so
+the local gate passed and CI failed. A stored block has one encoding, and the archive is about 20 KB.
+
 ## Releasing it (owner)
 
 The release workflow already checks the manifest and builds `dist/kubectl-noob-v<version>.tar.gz`, asserting that

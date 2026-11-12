@@ -60,6 +60,29 @@ def test_the_archive_is_byte_reproducible() -> None:
     assert hashlib.sha256(km.archive()).hexdigest() != ""
 
 
+def test_the_archive_bytes_do_not_depend_on_the_zlib_build() -> None:
+    """The digest has to be the same on every machine that builds it, and compressed output is not: zlib and zlib-ng
+    (which some Python builds link) produce different deflate streams for the same input. The archive with LICENSE in it
+    hashed b586a8ef... on a zlib-ng Python and b641267b... on CI's zlib, so CI failed while the local gate passed.
+    Stored (uncompressed) deflate blocks have exactly one encoding, so every block must be one."""
+    data = km.archive()
+    assert data[:4] == b"\x1f\x8b\x08\x00", "gzip, deflate, no optional header fields"
+    pos, final = 10, False
+    while not final:
+        header = data[pos]
+        final, btype = bool(header & 1), (header >> 1) & 3
+        assert btype == 0, f"a compressed deflate block at byte {pos}: its bytes depend on the zlib build"
+        size = int.from_bytes(data[pos + 1 : pos + 3], "little")
+        assert int.from_bytes(data[pos + 3 : pos + 5], "little") == size ^ 0xFFFF
+        pos += 5 + size
+    assert len(data) == pos + 8, "nothing after the last block but the CRC-32 and the size"
+    import gzip
+    import zlib
+
+    payload = gzip.decompress(data)
+    assert data[pos:] == zlib.crc32(payload).to_bytes(4, "little") + len(payload).to_bytes(4, "little")
+
+
 def test_the_manifest_digest_is_the_archive_digest(doc: dict) -> None:
     platform = doc["spec"]["platforms"][0]
     assert platform["sha256"] == hashlib.sha256(km.archive()).hexdigest()
