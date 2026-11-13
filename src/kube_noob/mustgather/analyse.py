@@ -233,6 +233,9 @@ class Analysis:
 class _Obj:
     path: str
     doc: dict[str, Any]
+    #: Dotted paths two readings of this object disagree on (G288): dropped from `doc`, so an analyser reads the
+    #: fields the copies agree on and nothing from either copy where they do not.
+    undetermined: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------------------------------- helpers ----
@@ -432,52 +435,128 @@ def _route(path: str) -> tuple[str, str, str] | None:
 
 MAX_CONFLICTS = 200
 MAX_DIFFERING_FIELDS = 12
+#: Fields two gather images write differently for the same object without the object having changed: dropped before
+#: two readings are compared, so a second image that also collects Nodes is a second reading, not a conflict (round
+#: 1, 1). `*` stands for every element of a list. Each entry says why the field is volatile.
+VOLATILE_PATHS: dict[tuple[str, ...], str] = {
+    ("metadata", "resourceVersion"): "changes on every write to the object, including status heartbeats",
+    ("metadata", "managedFields"): "field-ownership bookkeeping with the time of each manager's last write",
+    ("metadata", "generation"): "a counter the API server increments on spec writes; no analyser reads it",
+    ("status", "observedGeneration"): "the generation a controller last saw; no analyser reads it",
+    ("status", "conditions", "*", "lastHeartbeatTime"): "the kubelet's last heartbeat, rewritten every few seconds",
+    ("status", "conditions", "*", "lastTransitionTime"): "when a condition last flipped; the status is what is read",
+    ("status", "conditions", "*", "lastProbeTime"): "a probe timestamp (Pods); the status is what is read",
+}
+#: The key a list element is matched by when two readings of a list are compared element by element.
+_LIST_KEYS = ("type", "name")
+_DROPPED = object()
+
+
+def _strip_volatile(doc: Any) -> Any:
+    """A deep copy of ``doc`` without the volatile paths."""
+
+    def strip(node: Any, path: tuple[str, ...]) -> Any:
+        if isinstance(node, dict):
+            out: dict[str, Any] = {}
+            for k, v in node.items():
+                here = (*path, str(k))
+                if here in VOLATILE_PATHS:
+                    continue
+                out[k] = strip(v, here)
+            return out
+        if isinstance(node, list):
+            return [strip(x, (*path, "*")) for x in node]
+        return node
+
+    return strip(doc, ())
+
+
+def _list_key(item: Any) -> str | None:
+    if isinstance(item, dict):
+        for k in _LIST_KEYS:
+            if isinstance(item.get(k), str):
+                return str(item[k])
+    return None
+
+
+def _note_differs(differs: list[str], path: str) -> None:
+    if path not in differs and len(differs) < MAX_DIFFERING_FIELDS:
+        differs.append(path)
+
+
+def _agree(a: Any, b: Any, prefix: str, differs: list[str]) -> Any:
+    """What two readings agree on, with the dotted paths they disagree on appended to ``differs``. Dicts recurse;
+    a list whose elements carry a `type` or `name` key is compared element by element (so Ready can disagree while
+    MemoryPressure is still read); any other difference drops the whole value (``_DROPPED``)."""
+    if a == b:
+        return a
+    if isinstance(a, dict) and isinstance(b, dict):
+        out: dict[str, Any] = {}
+        for k in sorted(set(a) | set(b), key=str):
+            here = f"{prefix}{_text(k, 64)}"
+            if k not in a or k not in b:
+                _note_differs(differs, here)
+                continue
+            if a[k] == b[k]:
+                out[k] = a[k]
+            else:
+                sub = _agree(a[k], b[k], here + ".", differs)
+                if sub is not _DROPPED:
+                    out[k] = sub
+        return out
+    if isinstance(a, list) and isinstance(b, list) and a and b:
+        ka = [_list_key(x) for x in a]
+        kb = [_list_key(x) for x in b]
+        if all(ka) and all(kb) and len(set(ka)) == len(ka) and len(set(kb)) == len(kb):
+            base = prefix.rstrip(".")
+            by_b = dict(zip(kb, b, strict=True))
+            kept: list[Any] = []
+            for key, item in zip(ka, a, strict=True):
+                if key not in by_b:
+                    _note_differs(differs, f"{base}[{_text(key, 64)}]")
+                    continue
+                if item == by_b[key]:
+                    kept.append(item)
+                else:
+                    # the element as a whole is not determined: a condition with its status gone would read as
+                    # "the kubelet stopped reporting", which is a third claim neither reading made
+                    _note_differs(differs, f"{base}[{_text(key, 64)}]")
+            for key in kb:
+                if key not in ka:
+                    _note_differs(differs, f"{base}[{_text(key, 64)}]")
+            return kept
+    _note_differs(differs, prefix.rstrip(".") or "(document)")
+    return _DROPPED
 
 
 @dataclass
 class _Collected:
     objects: dict[str, dict[tuple[str, str], _Obj]]
     files: Counter[str]
-    #: bucket -> the keys collected more than once with different content; no analyser reads them (G288)
+    #: bucket -> the keys collected more than once with different content on a field an analyser may read (G288);
+    #: the object is in its bucket with the agreeing fields only
     conflicting: dict[str, set[tuple[str, str]]]
     conflicts: list[dict[str, Any]]
     duplicates: list[dict[str, Any]]
 
 
-def _differing_fields(a: Any, b: Any, prefix: str = "", depth: int = 0, out: list[str] | None = None) -> list[str]:
-    """Dotted paths (two levels deep at most) where two readings of one object differ, so a reader knows whether
-    it is `status.conditions` or a label that disagrees."""
-    out = [] if out is None else out
-    if len(out) >= MAX_DIFFERING_FIELDS:
-        return out
-    if isinstance(a, dict) and isinstance(b, dict) and depth < 2:
-        for key in sorted(set(a) | set(b), key=str):
-            if a.get(key) != b.get(key):
-                _differing_fields(a.get(key), b.get(key), f"{prefix}{_text(key, 64)}.", depth + 1, out)
-        return out
-    out.append(prefix.rstrip(".") or "(document)")
-    return out
-
-
 def _collect(bundle: Bundle, loader: _Loader) -> _Collected:
-    """Objects per analyser bucket, keyed (namespace, name). An object several files hold with the same content is a
-    duplicate, noted; one they hold with different content is a conflict: it is taken out of its bucket, so no
-    analyser answers from either copy, and reported with both paths and the fields that differ. The first file in
-    path order used to win silently, so a Node Ready in one gather directory and NotReady in another read as Ready
+    """Objects per analyser bucket, keyed (namespace, name). An object several files hold is one reading when the
+    readings agree once the volatile fields are dropped (a second gather image that also collects Nodes), and a
+    conflict when they do not: the analysers then read what the readings agree on and nothing from either where
+    they differ, and the conflict is reported with every path and the fields that differ. The first file in path
+    order used to win silently, so a Node Ready in one gather directory and NotReady in another read as Ready
     (G288)."""
     objects: dict[str, dict[tuple[str, str], _Obj]] = {}
     files: Counter[str] = Counter()
-    seen: dict[tuple[str, tuple[str, str]], _Obj] = {}
-    conflicting: dict[str, set[tuple[str, str]]] = {}
-    conflicts: list[dict[str, Any]] = []
-    duplicates: list[dict[str, Any]] = []
+    readings: dict[tuple[str, tuple[str, str]], list[tuple[str, dict[str, Any]]]] = {}
+    kinds: dict[tuple[str, tuple[str, str]], str] = {}
     for path in sorted(bundle.files):
         routed = _route(path)
         if routed is None:
             continue
         kind, bucket, path_ns = routed
         files[bucket] += 1
-        store = objects.setdefault(bucket, {})
         for doc in loader.load(path):
             for obj in _items(doc, kind):
                 name = _name(obj)
@@ -485,53 +564,53 @@ def _collect(bundle: Bundle, loader: _Loader) -> _Collected:
                     continue
                 ns = _d(obj.get("metadata")).get("namespace")
                 key = (ns if isinstance(ns, str) else path_ns, name)
-                first = seen.get((bucket, key))
-                if first is None:
-                    seen[(bucket, key)] = store[key] = _Obj(path, obj)
-                    continue
-                if first.path == path:
+                rows = readings.setdefault((bucket, key), [])
+                kinds[(bucket, key)] = kind
+                if any(p == path for p, _ in rows):
                     continue  # the same file listing one object twice is one reading, not two
-                entry = _conflict_or_duplicate(conflicts, duplicates, kind, key, first, path, obj)
-                if entry == "conflict":
-                    store.pop(key, None)
-                    conflicting.setdefault(bucket, set()).add(key)
+                rows.append((path, obj))
+    conflicting: dict[str, set[tuple[str, str]]] = {}
+    conflicts: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
+    for (bucket, key), rows in readings.items():
+        store = objects.setdefault(bucket, {})
+        first_path, first_doc = rows[0]
+        if len(rows) == 1:
+            store[key] = _Obj(first_path, first_doc)
+            continue
+        distinct: list[Any] = []
+        for _, d in rows:
+            stripped = _strip_volatile(d)
+            if stripped not in distinct:
+                distinct.append(stripped)
+        ns, name = key
+        shown_ns = _text(ns, 63)
+        shown = f"{kinds[(bucket, key)]}/{shown_ns + '/' if shown_ns else ''}{_shown(name)}"
+        paths = [p for p, _ in rows][:8]
+        row: dict[str, Any] = {"kind": kinds[(bucket, key)], "name": _shown(name), "object": shown, "paths": paths}
+        if shown_ns:
+            row["namespace"] = shown_ns
+        if len(distinct) == 1:
+            store[key] = _Obj(first_path, first_doc)
+            row["why"] = "collected twice with identical content (volatile metadata aside): read once"
+            if len(duplicates) < MAX_CONFLICTS:
+                duplicates.append(row)
+            continue
+        differs: list[str] = []
+        merged: Any = distinct[0]
+        for other in distinct[1:]:
+            merged = _agree(merged, other, "", differs)
+            if merged is _DROPPED:
+                merged = {}
+        store[key] = _Obj(first_path, merged if isinstance(merged, dict) else {}, undetermined=list(differs))
+        conflicting.setdefault(bucket, set()).add(key)
+        row["differs"] = list(differs)
+        row["why"] = (
+            "collected twice with different content: the fields that differ are not determined, the rest are read"
+        )
+        if len(conflicts) < MAX_CONFLICTS:
+            conflicts.append(row)
     return _Collected(objects, files, conflicting, conflicts, duplicates)
-
-
-def _conflict_or_duplicate(
-    conflicts: list[dict[str, Any]],
-    duplicates: list[dict[str, Any]],
-    kind: str,
-    key: tuple[str, str],
-    first: _Obj,
-    path: str,
-    obj: dict[str, Any],
-) -> str:
-    ns, name = key
-    shown_ns = _text(ns, 63)
-    shown = f"{kind}/{shown_ns + '/' if shown_ns else ''}{_shown(name)}"
-    rows = conflicts if first.doc != obj else duplicates
-    existing = next((r for r in rows if r["object"] == shown), None)
-    if existing is not None:
-        if path not in existing["paths"] and len(existing["paths"]) < 8:
-            existing["paths"].append(path)
-        if rows is conflicts:
-            for f in _differing_fields(first.doc, obj):
-                if f not in existing["differs"] and len(existing["differs"]) < MAX_DIFFERING_FIELDS:
-                    existing["differs"].append(f)
-        return "conflict" if rows is conflicts else "duplicate"
-    if len(rows) >= MAX_CONFLICTS:
-        return "conflict" if rows is conflicts else "duplicate"
-    row: dict[str, Any] = {"kind": kind, "name": _shown(name), "object": shown, "paths": [first.path, path]}
-    if shown_ns:
-        row["namespace"] = shown_ns
-    if rows is conflicts:
-        row["differs"] = _differing_fields(first.doc, obj)
-        row["why"] = "collected twice with different content: not determined"
-    else:
-        row["why"] = "collected twice with identical content: read once"
-    rows.append(row)
-    return "conflict" if rows is conflicts else "duplicate"
 
 
 def _logs(bundle: Bundle) -> dict[tuple[str, str, str], list[str]]:
@@ -694,8 +773,12 @@ def _clusteroperators(
         status = _d(obj.doc.get("status"))
         conds = _conditions(status)
         summary["total"] += 1
-        summary["available"] += _status(conds.get("Available")) == "True"
-        summary["degraded"] += _status(conds.get("Degraded")) == "True"
+        for ctype, field_name in (("Available", "available"), ("Degraded", "degraded")):
+            if _undetermined(obj, f"status.conditions[{ctype}]") or _undetermined(obj, "status.conditions"):
+                summary[f"{field_name}NotDetermined"] += 1
+                conds.pop(ctype, None)
+            else:
+                summary[field_name] += _status(conds.get(ctype)) == "True"
         version = next(
             (_text(v.get("version"), 64) for v in _l(status.get("versions")) if _d(v).get("name") == "operator"), ""
         )
@@ -743,8 +826,17 @@ def _nodes(objs: dict[tuple[str, str], _Obj], out: list[Finding], cluster: dict[
         conds = _conditions(_d(doc.get("status")))
         ready = conds.get("Ready")
         summary["total"] += 1
-        summary["controlPlane"] += control
-        summary["ready"] += _status(ready) == "True"
+        # A field two readings disagreed on is not determined, never counted either way (G288 round 1, 1)
+        if _undetermined(obj, "metadata.labels"):
+            summary["controlPlaneNotDetermined"] += 1
+            control = False
+        else:
+            summary["controlPlane"] += control
+        if _undetermined(obj, "status.conditions[Ready]") or _undetermined(obj, "status.conditions"):
+            summary["readyNotDetermined"] += 1
+            ready = None
+        else:
+            summary["ready"] += _status(ready) == "True"
         node = _shown(name)
         nxt = _cmds(
             ("oc describe node {name}", {"name": name}),
@@ -1250,8 +1342,9 @@ def analyse(bundle: Bundle) -> Analysis:
     raw: list[Finding] = []
     _infrastructure(objects.get("infrastructure", {}), cluster)
     updating = _clusterversion(objects.get("clusterversion", {}), raw, cluster)
-    if ("", "version") in collected.conflicting.get("clusterversion", set()):
-        # Two readings of the singleton with different content: picking either would make the version an accident
+    cv_obj = objects.get("clusterversion", {}).get(("", "version"))
+    if cv_obj is not None and any(p.startswith("status") or p == "(document)" for p in cv_obj.undetermined):
+        # Two readings of the singleton disagree on its status: picking either would make the version an accident
         # of file order (G288). The cluster is still OpenShift; only the version is not determined.
         paths = next(
             c["paths"] for c in collected.conflicts if c["kind"] == "ClusterVersion" and c["name"] == "version"
@@ -1264,12 +1357,6 @@ def analyse(bundle: Bundle) -> Analysis:
         )
     _clusteroperators(objects.get("clusteroperators", {}), raw, cluster, updating)
     _nodes(objects.get("nodes", {}), raw, cluster)
-    for bucket, field_name in (("nodes", "nodes"), ("clusteroperators", "clusterOperators")):
-        n = len(collected.conflicting.get(bucket, set()))
-        if n:
-            summary = cluster.setdefault(field_name, {"total": 0})
-            summary["total"] = int(summary.get("total", 0)) + n
-            summary["conflicting"] = n
     _machineconfigpools(objects.get("machineconfigpools", {}), raw)
     _olm(objects.get("olm", {}), raw, cluster)
     _pods(objects.get("pods", {}), raw, bundle, logs)
@@ -1324,9 +1411,23 @@ def failing(analysis: Analysis, fail_on: str) -> list[Finding]:
     return [f for f in analysis.findings if f.severity != "info" and _SEV[f.severity] <= _SEV[fail_on]]
 
 
-def _conflicting(summary: dict[str, Any]) -> str:
-    n = summary.get("conflicting")
-    return f", {n} conflicting" if n else ""
+def _undetermined(obj: _Obj, path: str) -> bool:
+    """Whether two readings of this object disagreed at ``path``, above it or below it."""
+
+    def under(a: str, b: str) -> bool:
+        return a == b or a.startswith(b + ".") or a.startswith(b + "[")
+
+    return any(under(path, p) or under(p, path) for p in obj.undetermined)
+
+
+def not_determined_text(summary: dict[str, Any], fields: tuple[tuple[str, str], ...]) -> str:
+    """``, 1 Ready not determined`` and the like, for a headline or a report line; empty when nothing is."""
+    parts = [f"{summary[key]} {label} not determined" for key, label in fields if summary.get(key)]
+    return (", " + ", ".join(parts)) if parts else ""
+
+
+NODE_ND = (("readyNotDetermined", "Ready"), ("controlPlaneNotDetermined", "control plane"))
+OPERATOR_ND = (("availableNotDetermined", "Available"), ("degradedNotDetermined", "Degraded"))
 
 
 def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) -> str:
@@ -1344,12 +1445,12 @@ def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) 
         head.append(f"platform {c['platform']}")
     nodes = c.get("nodes")
     if nodes:
-        head.append(f"{nodes.get('ready', 0)}/{nodes['total']} nodes Ready" + _conflicting(nodes))
+        head.append(f"{nodes.get('ready', 0)}/{nodes['total']} nodes Ready" + not_determined_text(nodes, NODE_ND))
     ops = c.get("clusterOperators")
     if ops:
         head.append(
             f"{ops.get('available', 0)}/{ops['total']} cluster operators Available, {ops.get('degraded', 0)} Degraded"
-            + _conflicting(ops)
+            + not_determined_text(ops, OPERATOR_ND)
         )
     counts = analysis.counts()
     if c.get("clusterVersionNote"):
@@ -1371,8 +1472,8 @@ def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) 
     for conflict in analysis.conflicts[:20]:
         lines.append(
             f"conflicting: {conflict['object']} collected twice with different content "
-            f"({', '.join(conflict['paths'][:2])}; differs: {', '.join(conflict['differs'][:4]) or 'content'}): "
-            "not determined, read from neither copy"
+            f"({', '.join(conflict['paths'][:3])}; differs: {', '.join(conflict['differs'][:4]) or 'content'}): "
+            "those fields are not determined, the rest are read"
         )
     if len(analysis.conflicts) > 20:
         lines.append(f"conflicting: and {len(analysis.conflicts) - 20} more")

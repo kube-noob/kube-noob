@@ -421,9 +421,10 @@ kube-noob demo must-gather
 ```
 
 `completeness` is the fold of every leg the command runs, not the analysers alone: `legs[]` names each one -- the
-analysers, the files none could read, the objects (one collected twice with different content is a conflict: read
-from neither copy, counted apart in the headline as `1/2 nodes Ready, 1 conflicting`, listed in `conflicts[]` with
-both paths and the fields that differ), the files ingest skipped, the Secrets it never reads, the operator inventory,
+analysers, the files none could read, the objects (one collected twice is one reading when the copies agree apart from volatile metadata such as
+`resourceVersion` and heartbeat times, and a conflict when they differ in a field an analyser reads: those fields
+are not determined -- `1/2 nodes Ready, 1 Ready not determined` -- while the rest are still read, and `conflicts[]`
+lists every path and the fields that differ), the files ingest skipped, the Secrets it never reads, the operator inventory,
 the operator release-note lookup and the finding-level release-note search -- with a state (`complete`, `partial`,
 `not-applicable`) and its reason, and `complete` is true only when no leg is `partial`. `--require-complete` exits 5
 on any partial leg, so an inventory that could not read Subscriptions, a release the update in progress kept from

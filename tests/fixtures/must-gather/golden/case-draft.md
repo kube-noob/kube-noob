@@ -60,6 +60,7 @@ The most severe finding is critical; [FILL IN: the case severity you choose, and
 - 13. medium: Unhealthy: 1 warning event(s) on 1 object(s) in 1 namespace(s): `namespaces/openshift-etcd/core/events.yaml`
 - 14. medium: etcd leader changed: 2 election term(s) seen, terms 5 to 6, 1 'lost leader' line(s): `namespaces/openshift-etcd/pods/etcd-master-0/etcd/etcd/logs/current.log`
 - 15. medium: etcd logged "apply request took too long" 1 time(s) on 1 member(s): `namespaces/openshift-etcd/pods/etcd-master-0/etcd/etcd/logs/current.log`
+- Evidence is partial: operator inventory: 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator; 1 operator state(s) not determined; operator known issues: the inventory is partial; the cluster is updating to 4.20.4; release notes: OpenShift 4.20 was searched (the index covers OpenShift 4.20, 4.21, 4.22 as of 2026-10-27); the running release 4.20.3 was searched and the update target 4.20.4 was not
 
 ## Matched known issues and bugs
 

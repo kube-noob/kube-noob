@@ -37,6 +37,12 @@ def _known(text: str, platform: str, version: str | None, data_dir: Path | None 
     return known_issues.match(text, platform, version, 3, data_dir)
 
 
+def _nd_ops(o: dict[str, Any]) -> str:
+    from kube_noob.mustgather.analyse import OPERATOR_ND, not_determined_text
+
+    return not_determined_text(o, OPERATOR_ND)
+
+
 def okd_of(cluster: dict[str, Any]) -> str | None:
     """The OKD version the analysers' ClusterVersion holds, through the same reading ``operators issues
     --must-gather`` uses (``operator_issues.must_gather_release``), else None."""
@@ -244,15 +250,19 @@ def _environment(r: dict[str, Any]) -> list[str]:
         out.append(f"- Platform: {_md(c['platform'])}{topo}")
     n = c.get("nodes")
     if n:
-        conflicting = f", {n['conflicting']} conflicting" if n.get("conflicting") else ""
+        from kube_noob.mustgather.analyse import NODE_ND, not_determined_text
+
+        control = f"{n.get('controlPlane', 0)} control plane"
+        if n.get("controlPlaneNotDetermined"):
+            control += f", {n['controlPlaneNotDetermined']} control plane not determined"
         out.append(
-            f"- Nodes: {n['total']} ({n.get('controlPlane', 0)} control plane), {n.get('ready', 0)} Ready{conflicting}"
+            f"- Nodes: {n['total']} ({control}), {n.get('ready', 0)} Ready" + not_determined_text(n, NODE_ND[:1])
         )
     o = c.get("clusterOperators")
     if o:
         out.append(
             f"- Cluster operators: {o['total']}, {o.get('available', 0)} Available, {o.get('degraded', 0)} Degraded"
-            + (f", {o['conflicting']} conflicting" if o.get("conflicting") else "")
+            + _nd_ops(o)
         )
     ops = c.get("operators")
     if ops:
@@ -355,11 +365,11 @@ def markdown(r: dict[str, Any]) -> str:
     extra = [f"- Skipped {s['count']}: {_md(s['reason'])}" for s in r["skipped"]]
     extra += [f"- Not read: `{_md(u['path'])}` ({_md(u['reason'])})" for u in r["unparsed"][:20]]
     for c in (r.get("conflicts") or [])[:20]:
-        where = ", ".join(f"`{_md(p)}`" for p in c["paths"][:2])
+        where = ", ".join(f"`{_md(p)}`" for p in c["paths"][:3])
         differs = _md(", ".join(c["differs"][:4]) or "content")
         extra.append(
             f"- Conflict: {_md(c['object'])} was collected twice with different content ({where}; differs: "
-            f"{differs}): not determined, read from neither copy"
+            f"{differs}): those fields are not determined, the rest are read"
         )
     if r.get("duplicates"):
         extra.append(
@@ -429,6 +439,19 @@ def case_draft(r: dict[str, Any]) -> str:
     for f in r["findings"][:15]:
         files = ", ".join(f"`{_md(_short(e))}`" for e in f["evidence"][:2])
         lines.append(f"- {f['rank']}. {f['severity']}: {_md(f['title'])}: {files}")
+    # The draft says what the evidence could not settle, as the report does (round 1, 13): a conflict or a partial
+    # leg copied into a case without this line reads as a complete read of the cluster.
+    for c in (r.get("conflicts") or [])[:10]:
+        lines.append(
+            f"- Conflict: {_md(c['object'])} was collected twice with different content (differs: "
+            f"{_md(', '.join(c.get('differs') or []) or 'content')}); those fields are not determined"
+        )
+    comp = r.get("completeness") or {}
+    partial_legs = [leg for leg in comp.get("legs") or [] if leg.get("state") == "partial"]
+    if partial_legs:
+        lines.append(
+            "- Evidence is partial: " + "; ".join(f"{_md(leg['leg'])}: {_md(leg['why'])}" for leg in partial_legs)
+        )
     lines += ["", "## Matched known issues and bugs", ""]
     if r["knownIssues"]:
         for m in r["knownIssues"]:

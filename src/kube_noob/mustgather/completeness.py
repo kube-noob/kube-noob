@@ -102,7 +102,7 @@ def _objects_leg(analysis: Analysis) -> dict[str, str]:
         )
         more = f"; and {len(analysis.conflicts) - 3} more" if len(analysis.conflicts) > 3 else ""
         n = len(analysis.conflicts)
-        why = f"{n} object(s) collected twice with different content, read from neither: {shown}{more}"
+        why = f"{n} object(s) collected twice with different content (differing fields not determined): {shown}{more}"
         if analysis.duplicates:
             why += f"; {dup}"
         return _leg("objects", "partial", why)
