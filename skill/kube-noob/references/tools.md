@@ -121,10 +121,11 @@ FedRAMP 20x KSI evidence. Which FedRAMP 20x Key Security Indicators an audit's f
 
 ## fix_manifests
 
-Apply safe mechanical fixes. Migrates removed APIs, fixes wrong API groups, hardens securityContext, adds Route TLS, unblocks PDBs, reorders EgressFirewall rules, swaps RWO-only classes for RWX claims. Returns the diff log and manual follow-ups. Does not touch any cluster.
+Apply safe mechanical fixes. Migrates removed APIs, fixes wrong API groups, hardens securityContext, adds Route TLS, unblocks PDBs, reorders EgressFirewall rules, swaps RWO-only classes for RWX claims. Returns the diff log, manual follow-ups, and the audit's verdict before and after under the same partial_bundle assumption audit_manifests would use on these bytes, with a delta of rules fixed, open and introduced. Does not touch any cluster.
 
 - `harden` (boolean): Apply securityContext hardening (restricted profile).
 - `manifests`* (string): One or more YAML documents (Kubernetes/OpenShift objects).
+- `partial_bundle` (boolean): The same input `audit_manifests` takes, with the same default: set when these documents are only part of a namespace. `before` and `after` are then the verdict `audit_manifests` gives on the same bytes with the same value, so the fix is never judged under assumptions the audit did not use (G286).
 - `platform` (string): Target platform.
 - `version` (null/string): Platform version, e.g. '4.22' (OCP) or '1.35'.
 
