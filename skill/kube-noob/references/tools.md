@@ -191,7 +191,7 @@ Is this a reported issue?. Match an error or symptom against the issues listed i
 
 - `limit` (integer)
 - `platform` (null/string)
-- `text`* (string): An error message, events, logs or a symptom in words.
+- `text`* (string): An error message, events, logs or a symptom in words. Past 100,000 characters only the end is matched, and the result says so (inputTruncated).
 - `version` (null/string): The cluster's OpenShift version (4.20 or 4.20.8): keeps only issues that can affect it.
 
 ## learn_exercise
