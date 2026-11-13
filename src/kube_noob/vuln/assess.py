@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from kube_noob.sanitize import visible
 from kube_noob.vuln import rank as ranking
 from kube_noob.vuln import vex as vexmod
 from kube_noob.vuln.kev import Kev
@@ -253,6 +254,7 @@ def render_text(out: dict[str, Any], top: int = 10) -> str:
         )
         lines.extend(f"    note: {n}" for n in img["notes"])
     lines.append(f"VEX: {'; '.join(out['vex']['sources']) or 'none loaded'}. KEV: {out['kev']['catalog']}.")
+    lines.extend(f"note: {visible(n)}" for n in out["ranking"].get("ambiguous") or [])
     ranked = out["ranking"]["ranked"][:top]
     if ranked:
         lines.append(f"top {len(ranked)} by reachability ({out['ranking']['formula']}):")

@@ -87,7 +87,9 @@ def _instructions(settings: Settings) -> str:
         "legacy Kyverno policies (kyverno.io ClusterPolicy, Policy, CleanupPolicy, PolicyException; Kyverno 1.20 "
         "removes them) kubenoob_policy_migrate_check says rule by rule what maps to the CEL policy types, cites the "
         "Kyverno docs and drafts only what maps directly (tell the user to prove each draft with kyverno test); for "
-        "'what could an attacker reach from what we expose?' use kubenoob_posture_scan; for 'what does RHACS check "
+        "'what could an attacker reach from what we expose?' use kubenoob_posture_scan; for 'if this pod is "
+        "compromised, what can it reach?' use kubenoob_posture_reach and say every 'not determined' leg it returns "
+        "(it is not an empty one); for 'what does RHACS check "
         "that kube-noob does not?' pass the policy export to kubenoob_rhacs_compare; "
         + pasted
         + "; for 'what could go wrong with this app?' use kubenoob_threat_model; for a must-gather on disk use "

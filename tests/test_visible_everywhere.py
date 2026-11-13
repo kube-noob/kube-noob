@@ -531,6 +531,23 @@ def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
         f'  name: "deny{poison}"\n  namespace: shop\nspec: {{podSelector: {{}}, policyTypes: [Ingress]}}\n',
         encoding="utf-8",
     )
+    # The same workload under a name a command line can carry: `posture reach` is anchored on it by name, so the
+    # poison sits in the container, the image, the labels and the ServiceAccount it would reach (G273 on G279).
+    anchored = tmp_path / "anchored.yaml"
+    anchored.write_text(
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: shop\n"
+        f'  labels: {{team: "t{poison}"}}\n'
+        "spec:\n  selector: {matchLabels: {app: web}}\n  template:\n    metadata: {labels: {app: web}}\n"
+        f'    spec:\n      serviceAccountName: "sa{poison}"\n      containers:\n'
+        f'      - name: "c{poison}"\n        image: "nginx:latest{poison}"\n'
+        "        securityContext: {privileged: true}\n---\n"
+        f'apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: "sa{poison}"\n  namespace: shop\n---\n'
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n"
+        f'  name: "rb{poison}"\n  namespace: shop\n'
+        f'subjects: [{{kind: ServiceAccount, name: "sa{poison}", namespace: shop}}]\n'
+        f'roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: "admin{poison}"}}\n',
+        encoding="utf-8",
+    )
     plain = HOSTILE + "\x1b]52;c;ZWNobyBwd25k\x07"
     events = tmp_path / "ev.txt"
     events.write_text(
@@ -544,7 +561,14 @@ def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
         f"  validate-image-tag: 'validation error: Using a mutable image tag e.g. latest {plain} is not allowed.'\n",
         encoding="utf-8",
     )
-    return {"M": str(manifest), "EV": str(events), "DEN": str(denial), "OUT": str(tmp_path / "out.json"), "T": plain}
+    return {
+        "M": str(manifest),
+        "A": str(anchored),
+        "EV": str(events),
+        "DEN": str(denial),
+        "OUT": str(tmp_path / "out.json"),
+        "T": plain,
+    }
 
 
 #: Commands driven with hostile input. Every value is an argv tail; M, EV, DEN, OUT and T are filled in.
@@ -563,6 +587,11 @@ DRIVEN: dict[str, list[list[str]]] = {
     "vuln threat": [["-f", "M"], ["--format", "yaml", "-f", "M"]],
     "posture scan": [["-f", "M"]],
     "posture snapshot": [["-f", "M", "-o", "OUT"]],
+    "posture reach": [
+        ["deployment/web", "-n", "shop", "-f", "A"],
+        ["--format", "yaml", "deployment/web", "-n", "shop", "-f", "A"],
+        ["--format", "mermaid", "deployment/web", "-n", "shop", "-f", "A"],
+    ],
     "operators inventory": [["-f", "M"]],
     "operators issues": [["-f", "M"]],
     "ksi": [["-f", "M"]],

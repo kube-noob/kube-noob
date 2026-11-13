@@ -605,6 +605,13 @@ class PostureScanIn(_In):
         "are dropped unread.",
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
 
 
 class ClusterPostureIn(_In):
@@ -612,6 +619,52 @@ class ClusterPostureIn(_In):
         default_factory=list, max_length=50, description="Namespaces to read (default: all the account can list)."
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+
+
+# A Field pattern runs on pydantic's Rust regex engine, where `$` is the end of the text (no final-newline match).
+_WORKLOAD_REF = (
+    r"^[A-Za-z][A-Za-z0-9]{0,62}/(?:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[A-Za-z0-9][A-Za-z0-9._:-]{0,252}"
+    r"(?:\[[A-Za-z0-9/_.-]{1,128}\])?$"
+)
+
+
+class _ReachAnchor(_In):
+    workload: str = Field(
+        ...,
+        min_length=3,
+        max_length=512,
+        pattern=_WORKLOAD_REF,
+        description="The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as "
+        "posture_scan prints it (Deployment/shop/web). A Pod is scored on its own spec, its owners as context.",
+    )
+    namespace: str | None = Field(
+        None, max_length=63, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", description="Default: default."
+    )
+    mermaid: bool = Field(False, description="Also return the graph as a Mermaid flowchart (text).")
+
+
+class PostureReachIn(_ReachAnchor):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.",
+    )
+    whole_bundle: bool = Field(
+        False,
+        description="True only when the manifests are everything that applies to this workload (its RoleBindings, "
+        "the ClusterRoleBindings, its Services, Routes and Ingresses): an absence in them then counts as an answer. "
+        "Otherwise the answer is never complete, because files cannot show what they leave out.",
+    )
+
+
+class ClusterPostureReachIn(_ReachAnchor):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: all the account can list). Grants in namespaces not read are "
+        "reported as not determined.",
+    )
 
 
 class OperatorInventoryIn(_In):
@@ -736,6 +789,13 @@ _CPE = r"^cpe:/[aho]:[a-z0-9_.-]+:[a-z0-9_.-]+:[0-9][a-z0-9_.-]*(?::[A-Za-z0-9_.
 
 
 class VulnReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         ...,
         min_length=1,
@@ -809,6 +869,13 @@ class MustGatherIn(_In):
 
 
 class CodeReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     sarif: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
         max_length=10,
@@ -853,6 +920,13 @@ class ThreatModelIn(_In):
         default_factory=list,
         max_length=10,
         description="Optional scanner reports of its images, to assess public-facing exploits (threat TM-E01).",
+    )
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
     )
 
 
@@ -1683,7 +1757,7 @@ class Toolkit:
     def posture_scan(self, p: PostureScanIn) -> dict[str, Any]:
         from kube_noob import attack_paths
 
-        out = attack_paths.scan_manifests(p.manifests, top=p.top)
+        out = attack_paths.scan_manifests(p.manifests, top=p.top, default_namespace=p.namespace)
         self._observe([f"posture:{len(out['paths'])}"])
         return out
 
@@ -1692,6 +1766,26 @@ class Toolkit:
 
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
         return attack_paths.scan(inv, top=p.top)
+
+    def posture_reach(self, p: PostureReachIn) -> dict[str, Any]:
+        from kube_noob import attack_paths, blast_radius
+        from kube_noob.yamlio import load_documents
+
+        # `namespace` places objects without one there, as `kubectl apply -n` does (G273, fourth review D1).
+        inv = attack_paths.Inventory.from_documents(
+            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+        )
+        out = blast_radius.reach_result(inv, p.workload, p.namespace, mermaid=p.mermaid, whole_bundle=p.whole_bundle)
+        self._observe([f"posture-reach:{len(out['notDetermined'])}"])
+        return out
+
+    def cluster_posture_reach(self, p: ClusterPostureReachIn) -> dict[str, Any]:
+        from kube_noob import attack_paths, blast_radius
+
+        inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
+        return blast_radius.reach_result(
+            inv, p.workload, p.namespace, mermaid=p.mermaid, live=True, namespaces_read=list(p.namespaces)
+        )
 
     def operator_inventory(self, p: OperatorInventoryIn) -> dict[str, Any]:
         """Which OLM operators the objects describe, and what they could not say."""
@@ -1791,7 +1885,13 @@ class Toolkit:
         return self._rhacs_out(policies, list(p.outcomes), {"input": "export"})
 
     def _vuln(
-        self, reports: list[str], vex_texts: list[str], kev_text: str | None, manifests: str | None, **kw: Any
+        self,
+        reports: list[str],
+        vex_texts: list[str],
+        kev_text: str | None,
+        manifests: str | None,
+        namespace: str | None = None,
+        **kw: Any,
     ) -> dict[str, Any]:
         from kube_noob.attack_paths import Inventory as PathInventory
         from kube_noob.attack_paths import workload_reach
@@ -1806,7 +1906,11 @@ class Toolkit:
             index = vexmod.load(self.settings.data_dir, texts=vex_texts, products=kw.get("products", ()))
             kev = kevmod.parse(kev_text, "KEV catalog") if kev_text else None
             reach = (
-                workload_reach(PathInventory.from_documents(d.data for d in load_documents(manifests)))
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(manifests)), default_namespace=namespace
+                    )
+                )
                 if manifests
                 else None
             )
@@ -1822,6 +1926,7 @@ class Toolkit:
             list(p.vex),
             p.kev,
             p.manifests,
+            namespace=p.namespace,
             products=tuple(p.products),
             image=p.image,
             top=p.top,
@@ -1908,7 +2013,13 @@ class Toolkit:
                 for c in p.containerfiles
             ]
             reach = (
-                dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(p.manifests))))
+                dict(
+                    workload_reach(
+                        PathInventory.from_documents(
+                            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+                        )
+                    )
+                )
                 if p.manifests
                 else None
             )
@@ -1934,11 +2045,17 @@ class Toolkit:
 
         vulnerable = None
         if p.reports:
-            out = self._vuln(list(p.reports), [], None, p.manifests)
+            out = self._vuln(list(p.reports), [], None, p.manifests, namespace=p.namespace)
             vulnerable = assess.summary_for_workloads(out)
         platform = p.platform or self.settings.default_platform
         try:
-            return threat.model(p.manifests, platform=platform, version=p.version, vulnerable_images=vulnerable)
+            return threat.model(
+                p.manifests,
+                platform=platform,
+                version=p.version,
+                vulnerable_images=vulnerable,
+                default_namespace=p.namespace,
+            )
         except threat.ThreatError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -2470,12 +2587,27 @@ class Toolkit:
                 "posture_scan",
                 "Attack paths in manifests",
                 "Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a "
-                "compromised pod could do: node access (privileged, hostPath, host namespaces) or Kubernetes API "
-                "rights through its ServiceAccount token (read Secrets, exec, create workloads, escalate). Score = "
+                "compromised pod could do: node access (privileged, hostPath, host namespaces, dangerous capabilities) "
+                "or Kubernetes API rights through its ServiceAccount token, automounted or projected (read Secrets, "
+                "exec, create workloads, mint tokens, escalate, control webhooks). Score = "
                 "exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are "
                 "dropped unread.",
                 PostureScanIn,
                 self.posture_scan,
+            ),
+            ToolSpec(
+                "posture_reach",
+                "Blast radius of one workload in manifests",
+                "If this workload is compromised, what can it reach? Its ServiceAccount, the bindings that name it "
+                "(directly or through the system:serviceaccounts and system:authenticated groups), what they allow, "
+                "the Secrets it may read by RBAC (names and scopes only; Secret contents are never read), the node "
+                "when the pod spec can escape to it, and the namespaces or cluster that covers -- as a bounded "
+                "graph whose every edge names the object and field that prove it, with the paths posture_scan "
+                "ranks through it. A ServiceAccount, Role or binding the manifests do not carry is a 'not "
+                "determined' leg, never an empty one; a reference that matches nothing is an error. Optionally a "
+                "Mermaid flowchart of the same graph.",
+                PostureReachIn,
+                self.posture_reach,
             ),
             ToolSpec(
                 "operator_inventory",
@@ -2708,6 +2840,16 @@ class Toolkit:
                     "(never Secrets) and rank the attack paths like posture_scan.",
                     ClusterPostureIn,
                     self.cluster_posture_scan,
+                    open_world=True,
+                ),
+                ToolSpec(
+                    "cluster_posture_reach",
+                    "Blast radius of one workload in the cluster (live, read-only)",
+                    "Read workloads, ServiceAccounts and RBAC from the cluster (never Secrets) and return what one "
+                    "workload reaches if compromised, like posture_reach. A list the account may not read, or a "
+                    "namespace not read, makes its leg 'not determined'.",
+                    ClusterPostureReachIn,
+                    self.cluster_posture_reach,
                     open_world=True,
                 ),
                 ToolSpec(
