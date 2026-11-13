@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -206,7 +207,7 @@ def test_the_step_summary_never_says_passed_beside_incomplete_evidence(tmp_path:
     assert "passed" not in summary and "passed" not in proc.stdout
     head = (
         "## kube-noob gate: merge allowed · evidence: incomplete "
-        "(vulnerability checks: pass the images' scanner output with --scanner-report)"
+        "(`vulnerability checks: pass the images' scanner output with --scanner-report`)"
     )
     assert summary.startswith(head + "\n\n")
     assert proc.stdout.startswith(head + "\n\n")
@@ -227,7 +228,7 @@ def test_a_complete_pass_and_a_failure_keep_their_words(tmp_path: Path) -> None:
     assert "kube-noob gate failed" in proc.stdout, "ci.yml greps the GitLab log for these words"
     proc, sinks = _run(tmp_path, 2, _report())
     assert sinks["step_summary"].read_text(encoding="utf-8") == (
-        "## kube-noob gate config-error (exit 2): merge blocked · evidence: not-run (the gate wrote no report)\n\n"
+        "## kube-noob gate config-error (exit 2): merge blocked · evidence: not-run (`the gate wrote no report`)\n\n"
     )
 
 
@@ -394,3 +395,125 @@ def test_ci_runs_the_wrapper_sync_check() -> None:
     assert "scripts/ci_wrappers.py --check" in ci
     assert "scripts/ci_wrappers.py --check" in (ROOT / "scripts/check.sh").read_text(encoding="utf-8")
     assert os.access(SCRIPT, os.X_OK)
+
+
+# -- round-1 review (G291) ---------------------------------------------------------------------------------------
+
+
+def test_a_skipped_input_is_a_gap_in_the_gate_report_and_in_the_wrapper(tmp_path: Path) -> None:
+    """pod.yaml beside an unrendered chart: the template was never audited, so neither the gate's own `notRun`
+    nor the wrapper's `evidence` may say complete, and both name the template (review finding 1)."""
+    from kube_noob import gate
+
+    d = tmp_path / "dir3"
+    (d / "chart" / "templates").mkdir(parents=True)
+    pod = "apiVersion: v1\nkind: Pod\nmetadata: {name: p, namespace: n}\n"
+    pod += "spec:\n  containers:\n  - {name: c, image: i}\n"
+    (d / "pod.yaml").write_text(pod, encoding="utf-8")
+    (d / "chart" / "Chart.yaml").write_text("apiVersion: v2\nname: c\nversion: 0.1.0\n", encoding="utf-8")
+    template = "apiVersion: v1\nkind: Pod\n{{- if .Values.x }}\n"
+    (d / "chart" / "templates" / "p.yaml").write_text(template, encoding="utf-8")
+    rep = gate.run(gate.collect([str(d)], lambda p: Path(p).read_text(encoding="utf-8")), fail_on="never")
+    assert any("templates/p.yaml" in n and "Helm template" in n for n in rep["notRun"]), rep["notRun"]
+    assert any("Chart.yaml" in n for n in rep["notRun"]), rep["notRun"]
+    # and through the wrapper, with the real binary
+    real = {"PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin", "KN_PATHS": str(d), "KN_FAIL_ON": "never"}
+    _run(tmp_path, 0, _report(), env=real)  # writes the stub; the real binary is first on PATH from here on
+    (tmp_path / "bin" / "kube-noob").unlink()
+    proc, sinks = _run(tmp_path, 0, _report(), env=real)
+    assert proc.returncode == 0, proc.stderr
+    out = _outputs(sinks)
+    assert out["result"] == "passed" and out["evidence"] == "incomplete"
+    assert "templates/p.yaml" in out["because"] and "Helm template" in out["because"], out["because"]
+
+
+def test_markdown_in_a_file_name_cannot_render_in_the_step_summary(tmp_path: Path) -> None:
+    """The reviewer's file name: an image, a link, a mention, an HTML tag, a code span, a table pipe and an
+    unterminated comment that would swallow the rest of the summary (finding 2). The headline carries the reason
+    inside a code span with backticks removed, so Markdown and HTML in it are text; the plain sinks keep plain text."""
+    name = "![x](https://evil.example/p.png)[click](https://evil.example) @octocat"
+    name += " <img src=x onerror=1> `tick` | pipe <!-- hide"
+    proc, sinks = _run(tmp_path, 0, _report(unreadable=[{"file": name, "why": "x"}]))
+    head = proc.stdout.splitlines()[0]
+    summary = sinks["step_summary"].read_text(encoding="utf-8")
+    assert head.startswith("## kube-noob gate: merge allowed · evidence: incomplete (`") and head.endswith("`)")
+    inner = head.split("(`", 1)[1][:-2]
+    assert "`" not in inner and "\n" not in inner
+    assert "<!--" not in inner and "<img" not in inner and "![" not in inner and "\\](" in inner, inner
+    assert summary.startswith(head + "\n") and "### Not run" in summary, "nothing after the headline is swallowed"
+    out = _outputs(sinks)
+    assert out["because"].startswith("\\!\\[x\\](https://evil.example/p.png)") and "&lt;img" in out["because"]
+    assert "\\`tick\\`" in out["because"], "escaped in the plain sinks, as gate.py's _cell escapes it"
+
+
+def test_the_wrapper_escapes_markdown_with_the_gate_s_own_table() -> None:
+    from kube_noob.gate import _MD_ESCAPE
+
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\\\|"}' in text
+    assert 'for c in "\\\\`*_[]!#~":' in text
+    table = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"} | {c: "\\" + c for c in "\\`*_[]!#~"}
+    assert table == _MD_ESCAPE
+
+
+@pytest.mark.parametrize(
+    ("report", "because"),
+    [
+        ('{"notRun": [], "unreadable": ["x.yaml"]}', "unreadable: unrecognised shape"),
+        ('{"notRun": [], "unreadable": "x.yaml"}', "unreadable: unrecognised shape"),
+        ('{"notRun": [], "unreadable": [{"path": "x.yaml"}]}', "unreadable: unrecognised shape"),
+        ('{"notRun": [null, {"a": 1}, "::error::x\\nline2", 5]}', "None; {'a': 1}; : :error: :x line2; 5"),
+        ('{"notRun": [], "knownIssuesVerdict": "Not-Determined"}', "reported issues: not-determined"),
+        ('{"notRun": [], "knownIssuesVerdict": 7}', "knownIssuesVerdict: unrecognised shape"),
+        ('{"notRun": [], "requiredEvaluated": null}', "required checks: not all evaluated"),
+        ('{"notRun": [], "requiredEvaluated": "false"}', "required checks: not all evaluated"),
+    ],
+)
+def test_an_unrecognised_shape_is_never_complete(tmp_path: Path, report: str, because: str) -> None:
+    """Finding 7: a list that is not a list of dicts, a verdict in another case, a flag that is not True."""
+    _, sinks = _run(tmp_path, 0, report)
+    out = _outputs(sinks)
+    assert (out["evidence"], out["because"]) == ("incomplete", because)
+
+
+def test_the_forward_looking_keys_are_read_when_a_gate_emits_them(tmp_path: Path) -> None:
+    """knownIssuesVerdict and requiredEvaluated are written by the fix/live-false-passes work (G284/G290); a stub
+    that emits them is read today, and their absence is not a gap."""
+    _, sinks = _run(tmp_path, 0, '{"notRun": [], "knownIssuesVerdict": "assessed", "requiredEvaluated": true}')
+    assert _outputs(sinks)["evidence"] == "complete"
+    _, sinks = _run(tmp_path, 0, '{"notRun": [], "knownIssuesVerdict": "not-determined", "requiredEvaluated": true}')
+    assert _outputs(sinks)["because"] == "reported issues: not-determined"
+
+
+def test_exit_5_is_never_beside_complete_evidence(tmp_path: Path) -> None:
+    """Finding 8: the gate's 5 means incomplete whatever the report says."""
+    _, sinks = _run(tmp_path, 5, _report())
+    out = _outputs(sinks)
+    assert out == {
+        "result": "evidence-incomplete",
+        "exit-code": "5",
+        "evidence": "incomplete",
+        "because": "the gate exited 5 (evidence incomplete)",
+    }
+
+
+def test_a_cut_reason_says_how_much_was_cut(tmp_path: Path) -> None:
+    gaps = [f"check {i:04d} did not run" for i in range(2000)]
+    _, sinks = _run(tmp_path, 0, _report(notRun=gaps))
+    because = _outputs(sinks)["because"]
+    full = "; ".join(gaps)
+    assert re.fullmatch(r".{1,600} … \(\+\d+ chars\)", because), because[-60:]
+    assert because.endswith(f" … (+{len(full) - 600} chars)")
+
+
+def test_an_unwritable_work_directory_is_a_configuration_error_with_outputs(tmp_path: Path) -> None:
+    """Finding 10: KN_WORK that cannot be created is exit 2, never 1, and the sinks still get their four lines."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    proc, sinks = _run(tmp_path, 0, _report(), env={"KN_WORK": str(blocker / "work")})
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    out = _outputs(sinks)
+    assert out["result"] == "config-error" and out["exit-code"] == "2" and out["evidence"] == "not-run"
+    assert "KN_WORK" in out["because"] and "work" in out["because"]
+    assert "config-error (exit 2)" in proc.stdout and "passed" not in proc.stdout
+    assert not (tmp_path / "stub-args").exists(), "the gate was not run"

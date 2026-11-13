@@ -180,47 +180,67 @@ spec:
         if [ -n "$KN_CODEQUALITY" ]; then set -- "$@" --codequality "$KN_CODEQUALITY"; fi
         raw="$KN_WORK/kube-noob-gate.out"
         status="$KN_WORK/kube-noob-gate-status"
-        rm -rf "$status"
-        mkdir -p "$status"
-        # A gate that exits 2 or 4 writes none of these; what an earlier step in the same job left behind must not be
-        # read, summarised or uploaded as this run's.
-        rm -f "$raw" "$KN_REPORT" "$KN_SUMMARY" "$KN_SARIF"
-        if [ -n "$KN_CODEQUALITY" ]; then rm -f "$KN_CODEQUALITY"; fi
         # From here nothing may abort before the status is written: a step that dies between the gate and its outputs
         # is exactly the empty `result` this script exists to refuse.
         set +e
         rc=0
-        kube-noob gate "$@" --format json > "$raw" || rc=$?
-        # Workflow commands and the JSON report both come out on stdout, so the stream is captured once and split: the
-        # `::` lines are echoed to the log, where Actions turns them into annotations, and the rest is the report.
-        grep '^::' "$raw" 2>/dev/null
-        grep -v '^::' "$raw" > "$KN_REPORT" 2>/dev/null
-        case "$rc" in
-          0) result=passed ;;
-          1) result=failed ;;
-          2) result=config-error ;;
-          3) result=clarification ;;
-          4) result=internal-error ;;
-          5) result=evidence-incomplete ;;
-          *) result=internal-error ;;
-        esac
+        result=internal-error
         evidence=not-run
         because="the gate report could not be read"
         counts="{}"
-        python3 -I -c '
+        if ! { rm -rf "$status" && mkdir -p "$status"; } 2>/dev/null; then
+          # A work directory that cannot be created is a configuration error (2), not findings (1): the gate is not run,
+          # the sinks still get their four lines, and the exit says so (review finding 10).
+          rc=2
+          result=config-error
+          because="KN_WORK is not writable: $KN_WORK (no directory could be created there)"
+          status=""
+        else
+          # A gate that exits 2 or 4 writes none of these; what an earlier step in the same job left behind must not be
+          # read, summarised or uploaded as this run's.
+          rm -f "$raw" "$KN_REPORT" "$KN_SUMMARY" "$KN_SARIF"
+          if [ -n "$KN_CODEQUALITY" ]; then rm -f "$KN_CODEQUALITY"; fi
+          kube-noob gate "$@" --format json > "$raw" || rc=$?
+          # Workflow commands and the JSON report both come out on stdout, so the stream is captured once and split: the
+          # `::` lines are echoed to the log, where Actions turns them into annotations, and the rest is the report.
+          grep '^::' "$raw" 2>/dev/null
+          grep -v '^::' "$raw" > "$KN_REPORT" 2>/dev/null
+          case "$rc" in
+            0) result=passed ;;
+            1) result=failed ;;
+            2) result=config-error ;;
+            3) result=clarification ;;
+            4) result=internal-error ;;
+            5) result=evidence-incomplete ;;
+            *) result=internal-error ;;
+          esac
+          python3 -I -c '
         import json, sys
-        report, out = sys.argv[1], sys.argv[2]
+        report, out, rc = sys.argv[1], sys.argv[2], sys.argv[3]
+        CUT = 600
+        # The Markdown escape table of kube_noob.gate._cell, written once here so the step summary cannot render a file
+        # name as an image, a link, an HTML tag, a table cell or a comment (tests/test_ci_wrappers.py holds the two equal).
+        ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"}
+        for c in "\\`*_[]!#~":
+            ESCAPE[c] = "\\" + c
+
 
         def clean(text):
             # One printable line: control characters and anything invisible (bidi marks, soft hyphens, tags) are
             # dropped, whitespace is squeezed, and "::" cannot start a workflow command on the Actions log.
             flat = " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())
-            return flat.replace("::", ": :")[:600]
+            return flat.replace("::", ": :")
+
+
+        def escape(text):
+            return "".join(ESCAPE.get(c, c) for c in text)
+
 
         try:
             text = open(report, encoding="utf-8", errors="replace").read()
         except OSError:
             text = ""
+        gaps = []
         if not text.strip():
             evidence, because, counts = "not-run", "the gate wrote no report", {}
         else:
@@ -235,43 +255,77 @@ spec:
             elif not isinstance(rep.get("notRun"), list):
                 evidence, because, counts = "not-run", "the report has no notRun list", {}
             else:
+                # Every entry is a gap, whatever its shape: an unrecognised shape is listed, never dropped.
                 gaps = [clean(g) for g in rep["notRun"]]
-                for u in rep.get("unreadable") or []:
-                    if isinstance(u, dict):
-                        gaps.append(clean(u.get("file")) + " could not be read")
-                if rep.get("knownIssuesVerdict") == "not-determined":
-                    gaps.append("reported issues: not-determined")
-                if rep.get("requiredEvaluated") is False:
+                unreadable = rep.get("unreadable")
+                if unreadable is not None:
+                    if isinstance(unreadable, list) and all(isinstance(u, dict) and "file" in u for u in unreadable):
+                        gaps += [clean(u.get("file")) + " could not be read" for u in unreadable]
+                    else:
+                        gaps.append("unreadable: unrecognised shape")
+                # Forward-looking: `knownIssuesVerdict` and `requiredEvaluated` are written by the gate once the
+                # fix/live-false-passes work lands (G284/G290). Absent, they are not a gap; present, anything but the one
+                # value that means evaluated is.
+                if "knownIssuesVerdict" in rep:
+                    v = rep["knownIssuesVerdict"]
+                    if not isinstance(v, str):
+                        gaps.append("knownIssuesVerdict: unrecognised shape")
+                    elif v.strip().lower().replace("_", "-") == "not-determined":
+                        gaps.append("reported issues: not-determined")
+                if "requiredEvaluated" in rep and rep["requiredEvaluated"] is not True:
                     gaps.append("required checks: not all evaluated")
                 evidence = "incomplete" if gaps else "complete"
                 because = "; ".join(gaps)
                 counts = rep.get("counts") if isinstance(rep.get("counts"), dict) else {}
-        for name, value in (("evidence", evidence), ("because", clean(because)), ("counts", json.dumps(counts, sort_keys=True))):
+        if rc == "5" and evidence == "complete":
+            # The gate said 5; the report cannot overrule it (review finding 8).
+            evidence, because = "incomplete", "the gate exited 5 (evidence incomplete)"
+        because = clean(because)
+        if len(because) > CUT:
+            because = because[:CUT] + " … (+%d chars)" % (len(because) - CUT)
+        because = escape(because)
+        for name, value in (("evidence", evidence), ("because", because), ("counts", json.dumps(counts, sort_keys=True))):
             with open(out + "/" + name, "w", encoding="utf-8") as f:
                 f.write(value + "\n")
-        ' "$KN_REPORT" "$status" 2>/dev/null \
-          && read -r evidence < "$status/evidence" \
-          && read -r because < "$status/because" \
-          && read -r counts < "$status/counts" \
-          || { evidence=not-run; because="the gate report could not be read"; counts="{}"; }
+        ' "$KN_REPORT" "$status" "$rc" 2>/dev/null \
+            && read -r evidence < "$status/evidence" \
+            && read -r because < "$status/because" \
+            && read -r counts < "$status/counts" \
+            || { evidence=not-run; because="the gate report could not be read"; counts="{}"; }
+        fi
         if [ "$rc" = 0 ]; then
           headline="## kube-noob gate: merge allowed · evidence: $evidence"
         else
           headline="## kube-noob gate $result (exit $rc): merge blocked · evidence: $evidence"
         fi
-        if [ -n "$because" ]; then headline="$headline ($because)"; fi
+        if [ -n "$because" ]; then
+          # In a code span, with its own backticks removed, so nothing in a file name renders (review finding 2).
+          span="$because"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$because" | tr -d '`' > "$status/span"
+            read -r span < "$status/span"
+          fi
+          headline="$headline (\`$span\`)"
+        fi
         # The gate's own Markdown starts "## kube-noob gate passed|failed"; that heading is replaced by the headline
         # above, so "passed" never stands beside incomplete evidence. The rest of its summary follows unchanged.
-        printf '%s\n' "$headline" > "$status/summary.md"
+        summary="$status/summary.md"
+        if [ -z "$status" ]; then summary=/dev/null; fi
+        printf '%s\n' "$headline" > "$summary"
         first=
         if [ -f "$KN_SUMMARY" ]; then read -r first < "$KN_SUMMARY" || true; fi
         case "$first" in
-          "## kube-noob gate passed"|"## kube-noob gate failed") tail -n +2 "$KN_SUMMARY" >> "$status/summary.md" ;;
-          "") printf '\n' >> "$status/summary.md" ;;
-          *) printf '\n' >> "$status/summary.md"; cat "$KN_SUMMARY" >> "$status/summary.md" ;;
+          "## kube-noob gate passed"|"## kube-noob gate failed") tail -n +2 "$KN_SUMMARY" >> "$summary" ;;
+          "") printf '\n' >> "$summary" ;;
+          *) printf '\n' >> "$summary"; cat "$KN_SUMMARY" >> "$summary" ;;
         esac
-        cat "$status/summary.md"
-        if [ -n "$GITHUB_STEP_SUMMARY" ]; then cat "$status/summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
+        if [ -n "$status" ]; then
+          cat "$summary"
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+        else
+          printf '%s\n\n' "$headline"
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then printf '%s\n\n' "$headline" >> "$GITHUB_STEP_SUMMARY"; fi
+        fi
         if [ -n "$GITHUB_OUTPUT" ]; then
           printf 'result=%s\nexit-code=%s\nevidence=%s\nbecause=%s\n' "$result" "$rc" "$evidence" "$because" >> "$GITHUB_OUTPUT"
         fi

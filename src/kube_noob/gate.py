@@ -466,6 +466,11 @@ def run(
                     "CodeQL)"
                 ]
             ),
+            # A file the walk found and did not audit -- a Helm template that was never rendered, a YAML file that
+            # is not a manifest -- is a gap in the answer, not a footnote: pod.yaml beside an unrendered chart passed
+            # as `complete` while `skipped` carried the template (G291, review). Listed here so every consumer of
+            # the report (the CI wrappers read `notRun`) sees it, after the four standing entries.
+            *(f"{s['file']}: {s['why']} (skipped, not audited)" for s in skipped),
         ],
     }
 
