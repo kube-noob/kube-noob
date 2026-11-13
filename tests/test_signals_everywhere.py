@@ -159,7 +159,10 @@ def test_payload_reader_is_bounded_and_strips_control_characters() -> None:
     ("labels", "version", "source"),
     [
         ({"openshift_version": "4.20.5", "version": "4.21.0"}, "4.20.5", "label openshift_version"),
-        ({"version": "4.21.0"}, "4.21.0", "label version"),
+        # A `version` label counts only on an OpenShift platform component's alert (G274, third review): an
+        # application's version="4.2" is not OpenShift 4.2.
+        ({"version": "4.21.0", "namespace": "openshift-etcd"}, "4.21.0", "label version"),
+        ({"version": "4.21.0"}, None, None),
         ({"version": "1.2.3"}, None, None),
         ({"version": "4.21.0; rm -rf /"}, None, None),
         ({"openshift_version": "v4.21.0"}, None, None),

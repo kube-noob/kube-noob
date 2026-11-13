@@ -643,6 +643,31 @@ kube-noob incidents show inc-3fa94c0e12
 kube-noob incidents confirm inc-3fa94c0e12 --cause "memory limit cut to 128Mi" --fix "restored the 256Mi limit"
 ```
 
+### An alert fires: the evidence before anyone opens a console
+
+Point an Alertmanager webhook receiver at `POST /v1/alert-reports` on the in-cluster service, and each notification
+becomes an evidence report per alert: the signals it carries, the playbook diagnosis and its likely cause, the
+reported OpenShift bugs for the release that alert's `openshift_version` label names (with the release that fixes
+them), fixes your team approved in its memory repository, and the read-only checks to run first, with the namespace
+and pod taken from the alert's labels. Every section says what it could not determine -- no version label, a release
+outside the ones kube-noob's local issues cover, no playbook, no memory configured or a repository it could not read
+-- and an alert kube-noob recognises nothing in says exactly that instead of looking healthy. With
+`alertReports.store` (and, in the chart, `replicaCount: 1`) the server keeps the report, and on-call or a chat bot
+reads it back by id. The same report comes from a payload file with no server at all:
+
+```bash
+kube-noob alerts report -f examples/alertmanager-etcd.json
+kube-noob alerts report -f payload.json --format json
+kube-noob alerts list
+kube-noob alerts show 20261111T091241.000000Z-6f3a1c2b9d8e7f0112345678
+kube-noob demo alerts
+```
+
+The receipt-to-report time is in every answer and on `/metrics`; a post gets 30 s of work (`alertReports.budgetSeconds`)
+from receipt and names the alerts it did not reach, and when two reports are already being built a post is answered 503
+with `Retry-After` within 5 s, which Alertmanager retries; `kube-noob demo alerts` posts the bundled payload and fails if it takes more
+than 2 s. The receiver configuration is in [operations.md](operations.md).
+
 ### What does this Ceph health code mean? Rook-Ceph and OpenShift Data Foundation
 
 Paste `ceph health detail`, `ceph status` (text or `-f json`), a CephCluster's status or a firing Rook or ODF alert

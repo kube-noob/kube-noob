@@ -166,6 +166,13 @@ receivers:
 
 It reads the payload in memory and stores nothing.
 
+`POST /v1/alert-reports` takes the same payload and answers with an evidence report per alert -- the diagnosis, the
+reported OpenShift issues for the release each alert's labels name, team memory and read-only next steps, each section
+saying what it could not determine -- and, with `alertReports.store: true` and `replicaCount: 1`, keeps it for
+`GET /v1/alert-reports/<id>` (the chart keeps none by default: each of its two replicas has its own volume). Point the receiver there for the
+evidence rather than the names; [operations.md](operations.md#alert-evidence-reports-the-alertmanager-receiver) has
+the receiver and `AlertmanagerConfig` for it, with the retention, the NetworkPolicy setting and the metrics to watch.
+
 ## Compatibility
 
 OpenShift 4.20 and later (Kubernetes 1.33 and later), including ROSA Classic and ROSA HCP. Every change runs the chart

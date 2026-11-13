@@ -414,17 +414,34 @@ _WEAK_WITHOUT_CONTEXT: dict[str, frozenset[str]] = {
 }
 
 
+#: Names an Alertmanager payload's labels alone may set (``kube_noob.signals.alertmanager.label_context``).
+LABEL_ONLY_CONTEXT = ("ns", "pod", "name")
+
+
 def diagnose(
-    text: str, platform: str | None = None, limit: int = 5, signals: list[Signal] | None = None
+    text: str,
+    platform: str | None = None,
+    limit: int = 5,
+    signals: list[Signal] | None = None,
+    context: dict[str, str] | None = None,
 ) -> DiagnoseResult:
     """Rank playbooks for ``text``: one point per matching pattern plus ``SIGNAL_WEIGHT`` when catalogued signals point
     at the playbook (``kube_noob.signals``: an alert name, a container or event reason, a phrase such as "leader
     changed"), times the playbook's weight. ``signals`` overrides the signals read from ``text``, e.g. the ones read
-    from an Alertmanager payload."""
+    from an Alertmanager payload; ``context`` likewise overrides the names steps are filled with."""
     if len(text) > MAX_INPUT:
         text = text[-MAX_INPUT:]
     text = redact_text(text)
     ctx = extract_context(text)
+    if context is not None:
+        # An Alertmanager payload: the namespace and the pod, which decide what every step reads, come from its labels
+        # and never from its annotations, which are prose that anyone writing the alert rule controls (G274). A service
+        # or a claim the labels name wins over the text; one they do not name is still read from the text, and so is
+        # every other name (the verb and resource of a "forbidden" message, its user, a pull secret, a selector):
+        # labels never carry those, and replacing the whole context with the labels' lost them all.
+        for key in LABEL_ONLY_CONTEXT:
+            ctx.pop(key, None)
+        ctx.update(context)
     if signals is None:
         signals = for_text(text)
     linked = playbooks_for(signals)
