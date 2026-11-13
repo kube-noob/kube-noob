@@ -765,7 +765,8 @@ def _hook_install(a: argparse.Namespace, fmt: str) -> int:
         if a.format == "text":
             _tprint(f"Merge this into {path} (keep any hooks already there), or let kube-noob merge it:")
             _tprint(f"  {out['write']}")
-            _tprint(json.dumps(out["merge"], indent=2))
+            sys.stdout.flush()
+            _emit(out["merge"], "json")  # a document: past the text boundary, so it pastes into settings as it is
             _tprint("Needs Claude Code v2.1.295 or later for onFailure; the hook itself blocks with exit 2 on error.")
         else:
             _emit(out, fmt)

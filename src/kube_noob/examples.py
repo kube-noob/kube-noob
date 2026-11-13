@@ -32,6 +32,7 @@ DESCRIPTIONS = {
     "kube-noob-exceptions.yaml": "a risk-acceptance list with owners and expiry dates (exceptions check, gate)",
     "netpol-admin-tiers.yaml": "AdminNetworkPolicy, NetworkPolicy and BaselineAdminNetworkPolicy tiers (policy reach)",
     "netpol-shop.yaml": "NetworkPolicies and Deployments for a small shop (policy reach)",
+    "verify-web.yaml": "a Deployment a check before an action denies, and `kube-noob fix` clears (verify)",
     "problems.yaml": "your own problems as test cases with expected answers (selftest --cases)",
 }
 
