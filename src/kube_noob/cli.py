@@ -26,6 +26,18 @@ from kube_noob.yamlio import json_document
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
 
+_DNS_LABEL = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
+
+
+def _dns_label(value: str | None) -> str | None:
+    """A namespace given with -n, checked as Kubernetes checks one (an RFC 1123 label); exit 2 otherwise."""
+    if value is None:
+        return None
+    if not _DNS_LABEL.fullmatch(value):
+        raise ConfigError(f"-n {value[:80]!r} is not a namespace name (lower-case letters, digits and '-', 1-63)")
+    return value
+
+
 def _read(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
@@ -629,7 +641,11 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         code_builds.append(b)
     try:
         sources = gate.collect(a.file, _read) + gate.render(
-            a.chart, a.values, a.namespace, platform=a.platform or s.default_platform, version=a.pversion
+            a.chart,
+            a.values,
+            a.namespace or "default",
+            platform=a.platform or s.default_platform,
+            version=a.pversion,
         )
         report = gate.run(
             sources,
@@ -650,6 +666,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             sarif_reports=[(p, _read(p)) for p in a.sarif_report],
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
+            default_namespace=_dns_label(a.namespace),
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -867,12 +884,20 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             vulnerable = None
             if a.report:
                 index = vexmod.load(s.data_dir)
-                reach = workload_reach(PathInventory.from_documents(d.data for d in load_documents(text)))
+                reach = workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.threat_namespace)
+                    )
+                )
                 vulnerable = assess.summary_for_workloads(
                     assess.assess(parse_reports(a.report), vex=index, reach=reach)
                 )
             out = threat.model(
-                text, platform=a.platform or s.default_platform, version=a.pversion, vulnerable_images=vulnerable
+                text,
+                platform=a.platform or s.default_platform,
+                version=a.pversion,
+                vulnerable_images=vulnerable,
+                default_namespace=_dns_label(a.threat_namespace),
             )
             if a.format == "text":
                 _tprint(threat.render_markdown(out))
@@ -901,7 +926,13 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         placed: dict[str, Any] | None = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            placed = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            placed = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         out = assess.assess(
             reports,
             vex=index,
@@ -990,7 +1021,13 @@ def _code_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         reach = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            reach = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            reach = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         scans = []
         for path in a.scanner_report:
             if Path(path).is_file() and Path(path).stat().st_size > vr.MAX_BYTES:
@@ -1142,10 +1179,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--format",
-        choices=["text", "json", "yaml", "sarif"],
+        choices=["text", "json", "yaml", "sarif", "mermaid"],
         default=argparse.SUPPRESS,
         help="output format. `sarif` (SARIF 2.1.0) is for `audit` only: it is a format for findings, and a command "
-        "with none to put in it refuses rather than print something else under that name",
+        "with none to put in it refuses rather than print something else under that name. `mermaid` is for "
+        "`posture reach` only, for the same reason: it draws a graph",
     )
     p = argparse.ArgumentParser(
         prog="kube-noob",
@@ -1243,7 +1281,13 @@ def build_parser() -> argparse.ArgumentParser:
     gt.add_argument("-f", "--file", action="append", default=[], help="manifests: a file, a directory, or -; repeat")
     gt.add_argument("--chart", action="append", default=[], help="a Helm chart directory to render; repeat")
     gt.add_argument("--values", action="append", default=[], help="values file for --chart; repeat")
-    gt.add_argument("--namespace", default="default", help="namespace to render charts into")
+    gt.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="namespace to render charts into (default: default), and where manifests without one are placed for "
+        "--scanner-report ranking, as kubectl apply -n does",
+    )
     gt.add_argument(
         "--containerfile",
         action="append",
@@ -1467,6 +1511,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="YAML that runs the images (a file or a directory); ranks findings by exposure and privileges; repeat",
     )
+    vr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
+    )
     vr.add_argument("--image", default=None, help="treat every report as this image (registry/repo:tag or digest)")
     vr.add_argument("--top", type=int, default=20, help="ranked findings to show (1-200)")
     vr.add_argument(
@@ -1486,6 +1536,12 @@ def build_parser() -> argparse.ArgumentParser:
     vt.add_argument("--platform", choices=PLATFORMS)
     vt.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
     vt.add_argument("-r", "--report", action="append", default=[], help="a scanner report of an image; repeat")
+    vt.add_argument(
+        "-n",
+        "--namespace",
+        dest="threat_namespace",
+        help="the namespace objects without one are placed in, as kubectl apply -n does",
+    )
     cd = sub.add_parser(
         "code",
         help="Code findings from SAST tools (SARIF), the images that ship them, the pods that run them",
@@ -1524,6 +1580,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cr.add_argument(
         "-m", "--manifests", action="append", default=[], help="YAML that runs the images (file or directory); repeat"
+    )
+    cr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
     )
     cr.add_argument(
         "-r",
@@ -1872,11 +1934,61 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     psc.add_argument(
-        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+        "-n",
+        "--namespace",
+        dest="namespaces",
+        action="append",
+        default=[],
+        help="with --live: only these namespaces (repeat); with -f: the one namespace objects without one are "
+        "placed in, as kubectl apply -n does",
     )
     psc.add_argument("--top", type=int, default=20, help="paths to show (1-200, default 20)")
     psc.add_argument(
         "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
+    )
+
+    prc = posub.add_parser(
+        "reach",
+        help="Blast radius: what one workload reaches if compromised, as text, a JSON graph or Mermaid",
+        description="Anchored on one workload: the ServiceAccount whose token its pods mount, the bindings that "
+        "name it, what they let it do, the Secrets it may read by RBAC (names and scopes; never their contents), "
+        "the node when the pod spec can escape to it, and which namespaces or the whole cluster that covers. What "
+        "the input cannot show (a ServiceAccount, Role or binding not in it) is reported as not determined. "
+        "--format json|yaml prints the graph (schema kube-noob/blast-radius v1), --format mermaid a flowchart of "
+        "it. Example: kube-noob posture reach deployment/web -n shop -f k8s/",
+    )
+    prc.add_argument(
+        "workload",
+        help="Kind/name with -n (deployment/web), or Kind/namespace/name as posture scan prints it; a Pod is "
+        "scored on its own spec, with its owner chain as context",
+    )
+    prc.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="the workload's namespace (default: default); with -f also where objects without one are placed, as "
+        "kubectl apply -n does",
+    )
+    prc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    prc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    prc.add_argument(
+        "--read-namespace",
+        dest="read_namespaces",
+        action="append",
+        default=[],
+        help="with --live: read only these namespaces (grants elsewhere are then reported as not determined)",
+    )
+    prc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless the answer is complete: every leg determined, nothing truncated, and -- for files -- "
+        "--whole-bundle given, since a set of files cannot show the bindings and Services it leaves out",
+    )
+    prc.add_argument(
+        "--whole-bundle",
+        action="store_true",
+        help="with -f: assert the files are everything that applies to this workload (its RoleBindings, the "
+        "ClusterRoleBindings, its Services, Routes and Ingresses), so an absence in them counts as an answer",
     )
 
     opr = sub.add_parser(
@@ -2464,6 +2576,14 @@ def _main(a: argparse.Namespace) -> int:
         print(
             f"error: --format sarif is for `kube-noob audit`; `{a.cmd}` has no findings to put in a SARIF document "
             "(the gate writes one with `kube-noob gate --sarif PATH`)",
+            file=sys.stderr,
+        )
+        return 2
+    if a.format == "mermaid" and (a.cmd, getattr(a, "posture_cmd", None)) != ("posture", "reach"):
+        sub = getattr(a, f"{a.cmd}_cmd", None)
+        command = f"{a.cmd} {sub}" if isinstance(sub, str) and sub else a.cmd
+        print(
+            f"error: --format mermaid is for `kube-noob posture reach`; `{command}` has no graph to draw",
             file=sys.stderr,
         )
         return 2
@@ -3664,11 +3784,50 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         raise ConfigError(str(exc)) from exc
 
 
+def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import attack_paths as ap
+    from kube_noob import blast_radius as br
+
+    try:
+        if a.live:
+            if a.file:
+                raise ConfigError("pass -f manifests or --live, not both")
+            if not s.cluster.enabled:
+                raise ConfigError(
+                    "--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled"
+                )
+            if a.whole_bundle:
+                raise ConfigError("--whole-bundle is for -f files; a live read says itself what it could not read")
+            from kube_noob.debug.cluster import get_backend
+
+            inv = ap.collect_live(get_backend(s), a.read_namespaces)
+            out = br.reach(inv, a.workload, a.namespace, live=True, namespaces_read=a.read_namespaces)
+        else:
+            if not a.file:
+                raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
+            if a.read_namespaces:
+                raise ConfigError("--read-namespace works with --live; with -f every namespace in the files is read")
+            out = br.reach_manifests(
+                "\n---\n".join(_read(f) for f in a.file), a.workload, a.namespace, whole_bundle=a.whole_bundle
+            )
+    except (ap.ScanError, br.ReachError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if a.format == "text":
+        _tprint(br.render_text(out))
+    elif a.format == "mermaid":
+        print(br.to_mermaid(out))
+    else:
+        _emit(out, fmt)
+    return 5 if a.require_complete and not out["complete"] else 0
+
+
 def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import attack_paths as ap
 
     if a.posture_cmd in {"snapshot", "diff", "report"}:
         return _posture_drift(a, s, fmt)
+    if a.posture_cmd == "reach":
+        return _posture_reach(a, s, fmt)
 
     if not 1 <= a.top <= ap.MAX_PATHS:
         raise ConfigError(f"--top must be 1-{ap.MAX_PATHS}")
@@ -3683,33 +3842,44 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         if not a.file:
             raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
-        if a.namespaces:
-            raise ConfigError("-n works with --live; with -f every namespace in the files is scanned")
+        if len(a.namespaces or []) > 1:
+            raise ConfigError(
+                "with -f, -n is the one namespace objects without a namespace are placed in (as kubectl apply -n); "
+                "every namespace in the files is scanned"
+            )
         try:
-            out = ap.scan_manifests("\n---\n".join(_read(f) for f in a.file), top=a.top)
+            out = ap.scan_manifests(
+                "\n---\n".join(_read(f) for f in a.file),
+                top=a.top,
+                default_namespace=_dns_label((a.namespaces or [None])[0]),
+            )
         except ap.ScanError as exc:
             raise ConfigError(str(exc)) from exc
     if a.format == "text":
-        _tprint(out["summary"])
+        from kube_noob.blast_radius import flat
+
+        # Every field can carry a name or a path from the input, and a newline in one printed a forged row: one line
+        # each, as the blast radius prints them (G273).
+        _tprint(flat(out["summary"]))
         for path in out["paths"]:
             br = path["blastRadius"]
-            head = f"#{path['rank']}  score {path['score']}  {path['exposure']['kind']}"
-            _tprint(f"\n{head} -> {br['capability']} ({br['scope']})")
+            head = f"#{path['rank']}  score {path['score']}  {flat(path['exposure']['kind'])}"
+            _tprint(f"\n{head} -> {flat(br['capability'])} ({flat(br['scope'])})")
             for st in path["steps"]:
-                _tprint(f"    {st['from']} --{st['edge']}--> {st['to']}")
-                _tprint(f"        {st['evidence']}")
-            _tprint("    fix: " + "; or ".join(path["fix"]))
+                _tprint(f"    {flat(st['from'])} --{flat(st['edge'])}--> {flat(st['to'])}")
+                _tprint(f"        {flat(st['evidence'])}")
+            _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
-            _tprint("\nnot read: " + "; ".join(out["notRead"][:10]))
+            _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
         for note in (out.get("assumptions") or [])[:10]:
-            _tprint(f"assumed: {note}")
+            _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:
             _tprint(f"{out['secretsIgnored']} Secret object(s) in the input were ignored, unread.")
         # The input-specific limitations only. The three standing ones are documented; these name objects in THIS
         # scan whose exposure edge could not be traced, and a caveat that lives only in the JSON renderer is the
         # defect G221 was about -- the text reader is the one most likely to act on the number above.
         for line in out["limitations"][len(ap.STANDING_LIMITATIONS) :]:
-            _tprint("\nnote: " + line)
+            _tprint("\nnote: " + flat(line))
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
