@@ -180,7 +180,7 @@ def run(
     """(exit code, stdout, stderr) for one hook call. Never raises: an error blocks."""
     start = time.monotonic()
     try:
-        return _run(raw, env, start + budget, options or Options())
+        return _run(raw, env, start + budget, options or Options(), budget)
     except Exception as exc:  # noqa: BLE001 - a crashed check is not a pass
         return _block(
             f"kube-noob hook could not check this command ({type(exc).__name__}), so it is blocked. Ask the user "
@@ -188,7 +188,9 @@ def run(
         )
 
 
-def _run(raw: bytes | str, env: Mapping[str, str], deadline: float, options: Options) -> tuple[int, str, str]:
+def _run(
+    raw: bytes | str, env: Mapping[str, str], deadline: float, options: Options, budget: float = BUDGET_SECONDS
+) -> tuple[int, str, str]:
     if str(env.get(OFF_ENV, "")).strip().lower() == "off":
         return _pass()
     data = raw.encode("utf-8", "replace") if isinstance(raw, str) else raw
@@ -215,7 +217,7 @@ def _run(raw: bytes | str, env: Mapping[str, str], deadline: float, options: Opt
     cwd = doc.get("cwd")
     if not isinstance(cwd, str) or not cwd.startswith("/") or not Path(cwd).is_dir():
         return _block("kube-noob hook: the hook input names no working directory that exists; blocked.")
-    return check(command, Path(cwd), deadline, options)
+    return check(command, Path(cwd), deadline, options, budget)
 
 
 _PS_KUBE = re.compile(
@@ -236,7 +238,9 @@ def _powershell(command: str) -> tuple[int, str, str]:
     )
 
 
-def check(command: str, cwd: Path, deadline: float, options: Options | None = None) -> tuple[int, str, str]:
+def check(
+    command: str, cwd: Path, deadline: float, options: Options | None = None, budget: float = BUDGET_SECONDS
+) -> tuple[int, str, str]:
     """Pass a line that starts no cluster change; verify the rest. allow passes silently, deny blocks (exit 2),
     not-determined asks the user."""
     from kube_noob import verify
@@ -253,7 +257,7 @@ def check(command: str, cwd: Path, deadline: float, options: Options | None = No
         plan.sources, command=plan, from_command=True, platform=o.platform, version=o.version, fail_on=o.fail_on
     )
     if time.monotonic() > deadline:
-        return _block(_TIMEOUT_MESSAGE)
+        return _block(_timeout_message(budget))
     if result["verdict"] == "allow":
         return _pass()
     if result["verdict"] == "deny":
@@ -261,10 +265,12 @@ def check(command: str, cwd: Path, deadline: float, options: Options | None = No
     return _ask(verify.hook_message(result, limit=MAX_REASON))
 
 
-_TIMEOUT_MESSAGE = (
-    f"kube-noob hook: the check took longer than its {BUDGET_SECONDS:.0f}-second budget, so the command is blocked. "
-    "Run kube-noob verify --command on it to see why."
-)
+def _timeout_message(budget: float) -> str:
+    """The budget the hook ran with, not the default: the message said "20-second" whatever it was."""
+    return (
+        f"kube-noob hook: the check took longer than its {budget:g}-second budget, so the command is blocked. "
+        "Run kube-noob verify --command on it to see why."
+    )
 
 
 def main(
@@ -291,7 +297,7 @@ def main(
         mode = isolate or ("fork" if hasattr(os, "fork") else "spawn")
         got = _bounded(raw, dict(os.environ if env is None else env), options, limit, mode)
         if got is None:
-            _write(sys.stderr, _TIMEOUT_MESSAGE + "\n")
+            _write(sys.stderr, _timeout_message(limit) + "\n")
             return 2
         code, out, err = got
         if out and not _write(sys.stdout, out):

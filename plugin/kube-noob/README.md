@@ -61,13 +61,14 @@ runs, and that is the right way round for a tool people point at production clus
 `hooks/hooks.json` registers a PreToolUse hook on Bash and PowerShell that is off until you turn on
 `verify_cluster_commands` in `/config`. While it is off, the hook is a POSIX `sh` guard that reads that option from
 the environment Claude Code gives it and exits at once: it starts no program, uv included (about 2 ms). Turned on,
-it runs the bundled `kube-noob verify` through the same `uv run` launcher as the server, which costs about 1 s per
-Bash command with uv's cache warm; a deny is blocked, a change it cannot decide asks you, and when uv is missing or
+it runs the bundled `kube-noob verify` through the same `uv run` launcher as the server, which was measured at
+1.5 s per Bash command with uv's cache warm and 2.7 s on the first, cold call; a deny is blocked, a change it cannot decide asks you, and when uv is missing or
 its run fails the guard itself blocks the command (exit 2, with a one-line reason), on any Claude Code version. The
 check stops itself at 20 seconds, and the guard kills a uv run that has not finished in 45 and blocks, inside Claude
 Code's 60-second timeout (which would let the call through). On Windows
 the guard needs Git Bash: without it, Claude Code runs the hook in PowerShell, where it does not parse, and the check
-does not run at all (nothing is blocked). To have it there, install Git for Windows or use `kube-noob hook install`
+does not run at all (nothing is blocked; this is read from Claude Code's documentation and has not been run on
+Windows). To have it there, install Git for Windows or use `kube-noob hook install`
 from the CLI, which writes a settings entry with `"onFailure": "block"` for you alone.
 
 ### What the vendored copy is

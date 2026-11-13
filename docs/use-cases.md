@@ -1283,7 +1283,8 @@ The same check is the `verify_change` MCP tool, which takes the command and the 
 An agent will not always choose to call a checker, so make the harness do it. In Claude Code, a PreToolUse hook runs
 before every Bash command, passes the ones that change no cluster untouched and the changes verify allows, blocks a
 deny (and its own errors), and asks you, with the reasons, about a change verify could not decide (in a `-p` run,
-where nobody can answer, Claude Code refuses it):
+where nobody can answer, Claude Code refuses it -- Claude Code's own behaviour, from its hooks reference, which
+these tests do not run; the hook's `ask` output is what is tested):
 
 ```bash
 kube-noob hook install --claude-code --project --platform openshift --version 4.20
@@ -1292,12 +1293,14 @@ kube-noob hook install --claude-code --project --platform openshift --version 4.
 
 The first prints the settings to merge into `.claude/settings.json`; the second merges them (existing hooks kept,
 atomic, never through a link). Both set `"onFailure": "block"`, so a hook that cannot start or runs out of time blocks
-rather than passes; that needs Claude Code v2.1.295 or later, and an older version lets the command through. The
+rather than passes; that needs Claude Code v2.1.295 or later, and an older version lets the command through (the
+hooks reference says so; the tests hold the entry's fields, not Claude Code's reading of them). The
 plugin (`kube-noob@kube-noob`) carries the same hook, off until you turn on its `verify_cluster_commands` option in
-`/config`. While it is off the hook is a `sh` guard that starts nothing (about 2 ms); turned on, it runs the bundled
-check with `uv`, which costs about 1 s per Bash command with a warm cache, and blocks the command itself if uv is
-missing or fails. On Windows the guard needs Git Bash; without it the check does not run (see
-[SECURITY.md](../SECURITY.md)), so use `hook install` there. For a harness without hooks, run
+`/config`. While it is off the hook is a `sh` guard that starts nothing (measured at about 2 ms); turned on, it runs
+the bundled check with `uv`, which was measured at 1.5 s per Bash command with uv's cache warm and 2.7 s on the
+first, cold call (2026-11-12, one machine; not a test), and blocks the command itself if uv is missing or fails. On
+Windows the guard needs Git Bash; without it the check does not run (see [SECURITY.md](../SECURITY.md)), so use
+`hook install` there -- stated from Claude Code's documentation, not run here, since CI runs no Windows job for it. For a harness without hooks, run
 `kube-noob verify --command "$CMD"` before executing `$CMD` and refuse on a non-zero exit; for a repository, the
 `kube-noob-verify` pre-commit hook runs `kube-noob verify -f .`. A human who needs to run something the check refuses
 starts Claude Code with `KUBE_NOOB_HOOK=off` in its environment; a command the agent writes cannot set it. A hook on

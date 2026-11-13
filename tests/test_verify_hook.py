@@ -676,14 +676,16 @@ def test_the_budget_message_states_the_budget_the_hook_ran_with(ws: Path, monkey
     def stuck_in_c(*a: object, **k: object) -> None:
         re.match(r"(a+)+$", "a" * 40 + "b")
 
+    # in-process: the deadline is already past, so the check itself (fast) ends in the budget message
+    code, _, err = _hook(_input("kubectl apply -f k8s/good.yaml", ws), {}, budget=-1)
+    assert code == 2 and "-1-second budget" in err
+    assert f"{hook.BUDGET_SECONDS:g}-second budget" in hook._timeout_message(hook.BUDGET_SECONDS)
+    # the child killed at the budget: the parent's own message states that budget
     monkeypatch.setattr(verify, "evaluate", stuck_in_c)
     monkeypatch.setattr(sys, "stderr", io.StringIO())
     stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
     assert hook.main(stdin=stdin, env={}, options=OPTS, budget=0.5, isolate="fork") == 2
     assert "0.5-second budget" in sys.stderr.getvalue()  # type: ignore[attr-defined]
-    code, _, err = _hook(_input("kubectl apply -f k8s/good.yaml", ws), {}, budget=3)
-    assert code == 2 and "3-second budget" in err
-    assert f"{hook.BUDGET_SECONDS:g}-second budget" in hook._timeout_message(hook.BUDGET_SECONDS)
 
 
 def test_a_long_command_that_names_no_kube_tool_passes_the_hook(ws: Path) -> None:
