@@ -447,6 +447,10 @@ def _summary(record: dict[str, Any]) -> dict[str, Any]:
         "byVerdict": s.get("byVerdict"),
         "alertnames": names[:SUMMARY_NAMES],
     }
+    # Reports written before G289 have neither key; a row says so with None rather than inventing a zero.
+    if "truncatedByAlertmanager" in s:
+        out["truncatedByAlertmanager"] = s.get("truncatedByAlertmanager")
+        out["complete"] = s.get("complete")
     if len(names) > SUMMARY_NAMES:
         out["alertnamesNotShown"] = len(names) - SUMMARY_NAMES
     return out

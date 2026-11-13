@@ -342,6 +342,12 @@ class Split:
     alerts: tuple[Alert, ...]
     #: Items of the payload's alert list that are not alerts kube-noob can read, by reason, and alerts past MAX_ALERTS.
     not_read: dict[str, int]
+    #: Alerts Alertmanager left out of this webhook message: the payload's ``truncatedAlerts``, "how many alerts have
+    #: been truncated due to max_alerts" (prometheus/alertmanager docs/configuration.md, webhook_config, retrieved
+    #: 2026-11-13). 0 when the field is absent or 0; None when it is present but not a non-negative integer, with
+    #: ``truncated_unreadable`` saying why -- an unreadable count is not a zero (G289).
+    truncated: int | None = 0
+    truncated_unreadable: str | None = None
 
 
 def split(text: str, transform: Callable[[str], str] | None = None) -> Split | None:
@@ -391,7 +397,21 @@ def split(text: str, transform: Callable[[str], str] | None = None) -> Split | N
                 version_from=found[1] if found else None,
             )
         )
-    return Split(payload, tuple(out), not_read)
+    truncated, unreadable = _truncated(doc)
+    return Split(payload, tuple(out), not_read, truncated, unreadable)
+
+
+def _truncated(doc: Any) -> tuple[int | None, str | None]:
+    """The payload's ``truncatedAlerts``: a non-negative integer, or None with the reason it could not be read."""
+    if not isinstance(doc, dict) or "truncatedAlerts" not in doc:
+        return 0, None
+    value = doc["truncatedAlerts"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 10_000_000:
+        shown = (
+            json.dumps(value, ensure_ascii=False)[:40] if not isinstance(value, dict | list) else type(value).__name__
+        )
+        return None, f"truncatedAlerts is not a non-negative integer ({shown})"
+    return value, None
 
 
 def compact(text: str, limit: int = MAX_TEXT) -> str | None:

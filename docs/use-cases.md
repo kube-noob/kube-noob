@@ -671,7 +671,11 @@ reported OpenShift bugs for the release that alert's `openshift_version` label n
 them), fixes your team approved in its memory repository, and the read-only checks to run first, with the namespace
 and pod taken from the alert's labels. Every section says what it could not determine -- no version label, a release
 outside the ones kube-noob's local issues cover, no playbook, no memory configured or a repository it could not read
--- and an alert kube-noob recognises nothing in says exactly that instead of looking healthy. With
+-- and an alert kube-noob recognises nothing in says exactly that instead of looking healthy. A payload whose
+`truncatedAlerts` says Alertmanager left alerts out of the message (the receiver's `max_alerts`) is reported as
+`1 of 3 alerts in this payload; 2 truncated by Alertmanager (max_alerts)`: the count is in `notIncluded`, in
+`summary.truncatedByAlertmanager` and `summary.alertsInGroup`, the report's `summary.complete` is false with the
+reason, and a count that is not a non-negative integer is "not known", never zero. With
 `alertReports.store` (and, in the chart, `replicaCount: 1`) the server keeps the report, and on-call or a chat bot
 reads it back by id. The same report comes from a payload file with no server at all:
 

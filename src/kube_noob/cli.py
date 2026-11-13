@@ -3592,7 +3592,13 @@ def _alerts(a: argparse.Namespace, kit: Any, fmt: str) -> int:
                     _tprint(f"{row['id']}  unreadable: {row['unreadable']}")
                     continue
                 names = ", ".join(row.get("alertnames") or [])
-                _tprint(f"{row['id']}  {row.get('receivedAt')}  {row.get('alerts')} alert(s)  {names}")
+                truncated = row.get("truncatedByAlertmanager")
+                cut = (
+                    f"  {truncated} truncated by Alertmanager"
+                    if isinstance(truncated, int) and truncated
+                    else ("  truncated: not known" if "truncatedByAlertmanager" in row and truncated is None else "")
+                )
+                _tprint(f"{row['id']}  {row.get('receivedAt')}  {row.get('alerts')} alert(s){cut}  {names}")
             _tprint(f"{len(out['reports'])} of {out['total']} kept" + (f" ({out['note']})" if out.get("note") else ""))
         else:
             _emit(out, fmt)

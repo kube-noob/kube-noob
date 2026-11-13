@@ -474,6 +474,32 @@ def build(
     not_included: list[dict[str, Any]] = [
         {"what": "items of the alert list", "count": n, "why": why} for why, n in sorted(split.not_read.items())
     ]
+    incomplete: list[str] = []
+    if split.not_read:
+        incomplete.append(f"{sum(split.not_read.values())} item(s) of the alert list were not read as alerts")
+    # Alertmanager's own truncation: the alerts past the receiver's max_alerts were never sent, so nothing about
+    # them is known, and a report that said nothing claimed to have seen the whole group (G289).
+    if split.truncated_unreadable is not None:
+        not_included.append(
+            {
+                "what": "alerts truncated by Alertmanager",
+                "count": None,
+                "why": f"{split.truncated_unreadable}: how many alerts Alertmanager left out of this message is not "
+                "known, and is not zero",
+            }
+        )
+        incomplete.append(f"{split.truncated_unreadable}: the number of alerts Alertmanager left out is not known")
+    elif split.truncated:
+        not_included.append(
+            {
+                "what": "alerts truncated by Alertmanager",
+                "count": split.truncated,
+                "why": f"the payload says truncatedAlerts: {split.truncated}; Alertmanager left them out of this "
+                "webhook message because the receiver's max_alerts was reached, so they were never sent and nothing "
+                "about them is known",
+            }
+        )
+        incomplete.append(f"{split.truncated} alert(s) of the group were truncated by Alertmanager (max_alerts)")
     if out_of_time:
         not_included.append(
             {
@@ -492,6 +518,10 @@ def build(
                 "indices": indices,
             }
         )
+    if out_of_time or failed:
+        n = len(out_of_time) + sum(len(v) for v in failed.values())
+        incomplete.append(f"{n} alert(s) were not evaluated (time budget or a failed diagnosis); each keeps its row")
+    in_group = len(split.alerts) + split.truncated if split.truncated is not None else None
     versions = sorted({a.version for a in split.alerts if a.version}, key=_vkey)
     caveats = list(CAVEATS)
     if not versions:
@@ -505,10 +535,26 @@ def build(
         )
     if not memory_configured:
         caveats.append("No team memory repository is configured, so no team fix was searched.")
+    if split.truncated_unreadable is not None:
+        caveats.append(
+            f"The payload's truncatedAlerts could not be read ({split.truncated_unreadable}), so how many alerts of "
+            "the group this message holds is not known."
+        )
+    elif split.truncated:
+        caveats.append(
+            f"{len(split.alerts)} of {in_group} alerts in this payload; {split.truncated} truncated by Alertmanager "
+            "(max_alerts): raise max_alerts on the receiver, or read the group in Alertmanager, to see them."
+        )
     body: dict[str, Any] = {
         "format": FORMAT,
         "summary": {
             "alerts": len(alerts),
+            # The group as Alertmanager saw it: the alerts sent plus the ones it truncated; None when the count
+            # could not be read. `complete` is exactly "incompleteBecause is empty".
+            "alertsInGroup": in_group,
+            "truncatedByAlertmanager": split.truncated,
+            "complete": not incomplete,
+            "incompleteBecause": incomplete,
             "byVerdict": by_verdict,
             "byState": dict(sorted(by_state.items())),
             "alertnames": sorted({a["alertname"] for a in alerts}),
@@ -549,6 +595,16 @@ def render_text(body: dict[str, Any], receipt: dict[str, Any] | None = None) -> 
     raising (the CLI's only other outcome would be a traceback and exit 1)."""
     s = _d(body.get("summary"))
     lines = [f"Alert evidence report: {_str(s.get('alerts', 0))} alert(s)"]
+    truncated = s.get("truncatedByAlertmanager")
+    if "truncatedByAlertmanager" in s and truncated is None:
+        lines.append("alerts in the group: not known (the payload's truncatedAlerts could not be read)")
+    elif isinstance(truncated, int) and truncated > 0:
+        lines.append(
+            f"{_str(s.get('alerts', 0))} of {_str(s.get('alertsInGroup'))} alerts in this payload; {truncated} "
+            "truncated by Alertmanager (max_alerts)"
+        )
+    if s.get("complete") is False:
+        lines.append("incomplete: " + "; ".join(_str(x) for x in _l(s.get("incompleteBecause"))))
     if receipt:
         if receipt.get("stored") is True:
             stored = "stored"
