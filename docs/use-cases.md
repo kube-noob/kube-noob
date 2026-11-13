@@ -1263,7 +1263,16 @@ real apply of the same manifest would be denied, the answer carries a `note` say
 JSON alike. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
 explicit target -- `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on the line -- is not determined,
 because the platform the manifest is judged against is that context's; a day-2 command with no manifest (a scale, a
-restart, deleting a pod by name, a label) is judged the same with or without one. It sees through `sh -c`, `bash -lc`, `eval` of a
+restart, deleting a pod by name, a label) is judged the same with or without one. `--help` or `-h` on any verb
+prints the help and runs nothing, so it is allowed; so are the reads `oc adm node-logs`, `oc adm release info`,
+`oc adm upgrade` with no `--to*`, `channel` or `rollback` (the status), `oc adm must-gather`, `oc registry info`,
+`kubectl krew list|info|search`, `kubectl neat` and `helm diff`. Kept as asks by design, each with its reason:
+`attach` (like `exec`), `oc extract` (writes Secret data to disk), `oc login`, `oc logout` and `oc registry login`
+(credential handling), `kubectl krew install` (code on this machine), `oc adm upgrade --to...`/`channel`, and
+`kubectl config use-context` (changes which cluster every later command hits; `config set-context --current
+--namespace=` only changes the default namespace and is allowed). What arrives on standard input is not seen:
+`helm template ... | kubectl apply -f -` and `... | xargs kubectl delete pod` ask, because the manifest, or the
+names, are not on the line. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).

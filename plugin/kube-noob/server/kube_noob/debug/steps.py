@@ -39,7 +39,13 @@ _KUBE_READ = {
 _KUBE_EXEC = {"rsh", "exec", "debug", "port-forward", "attach", "proxy", "rsync", "cp"}
 # `oc adm policy scc-subject-review` / `scc-review` / `who-can` evaluate policy and never grant anything
 _ADM_POLICY_READ = re.compile(r"\b(scc-subject-review|scc-review|who-can)\b")
-_HELM_READ = {"status", "history", "get", "list", "ls", "show", "template", "lint", "search", "env", "version"}
+#: `diff` is the helm-diff plugin, which renders and compares and changes no release.
+_HELM_READ = {"status", "history", "get", "list", "ls", "show", "template", "lint", "search", "env", "version", "diff"}
+#: krew's subcommands that read the plugin index or the installed list; install, upgrade and uninstall run code.
+_KREW_READ = {"list", "info", "search", "version", "help", ""}
+#: `oc adm upgrade` with nothing but these flags prints the upgrade status; `--to*`, `--clear`, `channel`,
+#: `rollback` and the rest change it (openshift/oc pkg/cli/admin/upgrade, master, read 2026-11-13).
+_ADM_UPGRADE_STATUS_FLAGS = {"-o", "--output", "--include-not-recommended", "-h", "--help"}
 _ROSA_READ = {"describe", "list", "logs", "verify", "whoami", "version"}
 _LOCAL_READ = {"skopeo": {"inspect"}, "roxctl": {"deployment", "image"}}
 _NETWORK_EXEC = {"curl", "wget", "openssl", "dig", "nslookup", "nc", "ping", "getent"}
@@ -256,6 +262,24 @@ def runs_local_code(args: list[str]) -> bool:
     return any(a.split("=", 1)[0] in {"--enable-alpha-plugins", "--enable-exec", "--enable-helm"} for a in args)
 
 
+def _adm_reads(rest: list[str]) -> bool:
+    """`oc adm release info ...` (the only release subcommand that writes nothing) and `oc adm upgrade` as a
+    status read: no positional after `upgrade` (`channel`, `rollback`, `recommend`) and no flag but the output
+    ones -- `--to`, `--to-latest`, `--to-image`, `--to-multi-arch`, `--clear`, `--force` and `--allow-*` change it."""
+    _, nxt, idx = kube_subcommand(rest)
+    after = rest[idx + 2 :] if idx >= 0 else []
+    if nxt == "release":
+        return [a for a in after if not a.startswith("-")][:1] == ["info"]
+    i = 0
+    while i < len(after):
+        t = after[i]
+        name = t.split("=", 1)[0]
+        if not t.startswith("-") or name not in _ADM_UPGRADE_STATUS_FLAGS:
+            return False
+        i += 2 if name in {"-o", "--output"} and "=" not in t else 1
+    return True
+
+
 def _classify_segment(seg: str) -> StepKind:
     toks = seg.split()
     while toks and _ENV_ASSIGN.match(toks[0]):  # KUBECONFIG=... oc delete ...
@@ -308,9 +332,17 @@ def classify_argv(toks: list[str]) -> StepKind:
             return "read" if nxt in {"status", "history"} else "change"
         if sub in _KUBE_EXEC:
             return "exec"
+        if sub == "krew":
+            return "read" if nxt in _KREW_READ else "exec"
+        if sub == "neat":
+            return "read"  # kubectl-neat strips managed fields from what it is given; it sends nothing
+        if sub == "registry":
+            return "read" if nxt == "info" else "change"  # `oc registry login` writes a credential
         if sub == "adm":
             # must-gather creates a namespace and a privileged pod; it changes the cluster.
-            if nxt in {"top", "inspect"} or (nxt == "policy" and _ADM_POLICY_READ.search(seg)):
+            if nxt in {"top", "inspect", "node-logs"} or (nxt == "policy" and _ADM_POLICY_READ.search(seg)):
+                return "read"
+            if nxt in {"release", "upgrade"} and _adm_reads(rest):
                 return "read"
             if nxt == "prune" and not any(
                 t == "--confirm" or (t.startswith("--confirm=") and t.split("=", 1)[1].lower() != "false") for t in rest

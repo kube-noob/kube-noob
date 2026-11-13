@@ -1699,7 +1699,6 @@ LOW_FALSE_ASK_STILL_ASK = [
     ("oc adm upgrade rollback", "upgrade"),
     ("oc adm release extract --command=oc", "administrative"),
     ("oc adm release mirror 4.20.1 --to=registry.example.com/ocp", "administrative"),
-    ("oc adm node-logs worker-1 --help-me", "administrative"),
     ("kubectl krew install neat", "plugin"),
     ("kubectl krew upgrade", "plugin"),
     ("kubectl attach web -it", "runs a program"),

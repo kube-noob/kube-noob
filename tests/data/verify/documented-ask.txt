@@ -42,7 +42,6 @@ oc logout
 oc registry login
 kubectl krew install neat
 helm template web chart | kubectl apply -f -
-helm template web chart | kubectl apply --dry-run=server -f -
 kubectl get pods | grep -v Running | awk '{print $1}' | xargs kubectl delete pod
 kubectl config use-context staging
 kubectl --context=prod apply -f k8s/web.yaml

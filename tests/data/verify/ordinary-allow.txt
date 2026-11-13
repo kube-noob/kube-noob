@@ -255,3 +255,4 @@ kubectl --context=prod scale deploy/web --replicas=2
 kubectl --context prod rollout restart deploy/web
 kubectl --cluster=prod delete pod web-abc
 kubectl --kubeconfig=/tmp/kc label deploy web tier=web
+helm template web chart | kubectl apply --dry-run=server -f -

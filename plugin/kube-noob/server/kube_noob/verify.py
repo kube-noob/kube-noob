@@ -203,6 +203,15 @@ _NO_MANIFEST = {
     "secrets": "links a secret",
     "plugin": "runs a kubectl plugin",
 }
+#: Subcommands whose effect is on this machine or on a credential, not a manifest: each asks, by name, and stays an
+#: ask by design (the fourth review's list, documented in docs/use-cases.md).
+_LOCAL_EFFECT = {
+    "login": "handles a credential and changes which cluster every later command hits",
+    "logout": "deletes the session token from the local kubeconfig",
+    "registry": "logs in to the image registry, which handles a credential",
+    "extract": "writes Secret or ConfigMap data to disk",
+    "krew": "installs or changes a kubectl plugin, which then runs on this machine",
+}
 _DESTRUCTIVE = frozenset({"delete", "drain", "uninstall", "rollback"})
 _EXEC_REASON = "runs a program (in the cluster or on this machine) or opens a connection to the cluster"
 _HELM_DRY_RUN_VERBS = frozenset({"install", "upgrade", "uninstall", "delete", "rollback"})
@@ -428,6 +437,39 @@ def _class_of(kind: str, sub: str, tool: str, args: list[str]) -> str:
     if tool == "kustomize":
         return "local"
     return "changes-state"
+
+
+#: Flags that take no value, so `-h` after one is help and not their value (kubectl's root bool flags, the
+#: optional-value ones, and the common bool flags of its verbs).
+_BOOL_FLAGS = frozenset(
+    {"-A", "--all", "--all-namespaces", "--force", "--now", "--wait", "--overwrite", "-R", "--recursive", "--prune",
+     "--server-side", "--ignore-not-found", "-i", "--stdin", "-t", "--tty", "-w", "--watch", "--previous", "--follow",
+     "--show-labels", "--no-headers", "--help", "-h", "--install", "--atomic", "--create-namespace", "--debug",
+     "--include-not-recommended", "--list", "--timestamps", "--all-containers"}
+) | frozenset({"--validate", "--dry-run", "--cascade"})  # fmt: skip
+
+
+def _asks_help(args: list[str]) -> bool:
+    """`--help` or `-h` before `--`, where it is not the value of the flag before it (`-n -h` is the namespace
+    `-h`, as pflag reads it): cobra prints the help and runs nothing."""
+    from kube_noob.debug.steps import KUBE_GLOBAL_BOOL_FLAGS
+
+    previous = ""
+    for t in args:
+        if t == "--":
+            return False
+        if t in {"-h", "--help"}:
+            bare_value_flag = (
+                previous.startswith("-")
+                and previous != "-"
+                and "=" not in previous
+                and previous not in _BOOL_FLAGS
+                and previous not in KUBE_GLOBAL_BOOL_FLAGS
+            )
+            if not bare_value_flag:
+                return True
+        previous = t
+    return False
 
 
 def _is_dry_run(name: str, sub: str, args: list[str]) -> bool:
@@ -895,6 +937,8 @@ def _kube_command(
     else:
         sub = kube_subcommand(args)[0]
     cls = _class_of(kind, sub, name, args)
+    if _asks_help(args):
+        cls = "read-only"  # the help is printed and nothing runs, whatever the verb
     if name in KUBE_CLIS and sub in _CONNECTS:
         cls = "connects"
     if name in KUBE_CLIS and cls == "destructive" and _day2(cmd, name, sub, args, cls, "", _Read(), probe=True):
@@ -1210,7 +1254,8 @@ def _day2(
     Decided per subcommand: restart, pause, resume, scale and autoscale one workload; label or annotate one object
     that is not a namespace or node with a key that is not a security setting; delete pods by name; create a
     namespace, project, configmap, secret or service account; expose a workload as a ClusterIP Service; set env
-    without a literal credential. Everything wider (selectors, --all, other kinds) stays not determined."""
+    without a literal credential; `oc adm must-gather`. Everything wider (selectors, --all, other kinds) stays not
+    determined."""
     _, _, idx = kube_subcommand(args)
     pos, flags = _targets(args, idx)
     nxt = pos[0] if pos else ""
@@ -1253,6 +1298,8 @@ def _day2(
                 out.undetermined.append(f"{shown}: copies {frame(outside, 60)} from your machine into the cluster")
             return not probe
         ok = len(pos) >= 2 or (nxt == "secret" and len(pos) >= 3)
+    elif name == "oc" and sub == "adm" and nxt == "must-gather":
+        ok = True  # a gather pod in a temporary namespace, removed when it is done; it writes only the local dest-dir
     elif name == "oc" and sub == "new-project":
         if any(a == "--admin" or a.startswith("--admin=") for a in args):
             if not probe:
@@ -1519,6 +1566,15 @@ def _kubectl(
                 f"{shown}: create {frame(args[sub_index + 1], 40)} builds the object from flags. Render it with "
                 "--dry-run=client -o yaml into a file and verify the file"
             )
+        return
+    if sub in _LOCAL_EFFECT:
+        out.undetermined.append(f"{shown}: {_LOCAL_EFFECT[sub]}")
+        return
+    if name == "oc" and sub == "adm" and kube_subcommand(args)[1] == "upgrade":
+        out.undetermined.append(
+            f"{shown}: starts, retargets or rolls back a cluster upgrade; only the status read (no --to*, channel or "
+            "rollback) is allowed"
+        )
         return
     if sub in {"apply", "create", "replace", "patch"} or (sub == "auth" and "reconcile" in args):
         pass
