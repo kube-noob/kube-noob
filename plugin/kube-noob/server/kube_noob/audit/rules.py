@@ -77,9 +77,20 @@ class AuditContext:
     # registries an organisation approved, so KN-S036 declines without it rather than passing every image.
     allowed_registries: tuple[str, ...] = ()
     undecided: set[str] = field(default_factory=set)
+    #: The rule's own reason for declining, in its words, when it gave one (G290): what `gate --require-evaluated`
+    #: prints beside INCOMPLETE. A rule that gave none gets the context's reason (a partial bundle) or a plain one.
+    undecided_why: dict[str, str] = field(default_factory=dict)
 
-    def cannot_decide(self, rule_id: str) -> None:
+    PARTIAL_WHY = (
+        "audited part of a namespace: a rule that fires because another object is absent cannot tell a real gap "
+        "from an object not passed; pass the whole namespace (a directory) to evaluate it"
+    )
+
+    def cannot_decide(self, rule_id: str, why: str | None = None) -> None:
         self.undecided.add(rule_id)
+        if why is None:
+            why = self.PARTIAL_WHY if self.partial_bundle else "the rule declined to decide on this input"
+        self.undecided_why.setdefault(rule_id, why)
 
     @property
     def is_openshift(self) -> bool:
@@ -673,7 +684,11 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             # A component whose pod labels an operator merges in from outside this input might well be selected
             # by this Service. Reporting "no endpoints" there told the reader their working Service was broken
             # (G231), so the rule declines instead.
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id,
+                "a Service's selector matches pod labels an operator merges in from outside this input, so whether "
+                "it has endpoints cannot be decided from these documents",
+            )
             continue
         yield r.finding(
             svc,
@@ -1119,7 +1134,7 @@ _FLATTENED_GROUP_VERSION = "resource.k8s.io/v1beta1"
 def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # a claim that lives in a file you did not pass is not a missing claim (G186)
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "the namespace's ResourceClaims were not passed (partial bundle)")
         return
     present: dict[tuple[str, str], set[str]] = {}
     for kind in _CLAIM_SOURCE_KINDS.values():
@@ -1271,7 +1286,7 @@ def _v022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # The namespace's ResourceQuota and LimitRange were not passed, so their absence here means nothing.
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "the namespace's ResourceQuota and LimitRange were not passed (partial bundle)")
         return
     quota_ns = {ctx.ns(d) for d in ctx.by_kind("ResourceQuota")}
     limit_ns = {ctx.ns(d) for d in ctx.by_kind("LimitRange")}
@@ -1938,7 +1953,11 @@ def _s036(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         # No manifest states which registries an organisation has approved. Reporting every image as fine
         # because no policy was configured is the absence-read-as-pass failure this catalogue is built against,
         # so the rule declines and `run_rules` keeps it out of the evaluated list (G241).
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id,
+            "no registry allow-list is configured (allowedRegistries in kube-noob.yaml): no manifest states which "
+            "registries are approved, so no image can be judged against them",
+        )
         return
     for d, pt in ctx.workloads():
         for c in containers(pt):
@@ -2722,7 +2741,7 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's NetworkPolicies were not passed, so their absence here means nothing
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "the namespace's NetworkPolicies were not passed (partial bundle)")
         return
     netpol_ns = {ctx.ns(d) for d in ctx.by_kind("NetworkPolicy")}
     flagged: set[str] = set()
@@ -3162,7 +3181,11 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if any(v is None for v in verdicts):
             # Same reason as KN-V011: an operator-merged label could be exactly the one this selector asks for,
             # and "this policy protects nothing" is the most alarming thing this rule can say (G231).
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id,
+                "a NetworkPolicy's selector matches pod labels an operator merges in from outside this input, so "
+                "whether it selects anything cannot be decided from these documents",
+            )
             continue
         yield r.finding(
             d,
@@ -3239,7 +3262,9 @@ def _egress_allows_dns(spec: dict[str, Any]) -> bool:
 def _n013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # another policy in the namespace may allow 53, and it was not passed
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id, "another NetworkPolicy of the namespace may allow DNS and was not passed (partial bundle)"
+        )
         return
     by_ns: dict[str, list[dict[str, str]]] = {}
     for d, pt in ctx.workloads():
@@ -3305,19 +3330,25 @@ def _n014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     docs = ctx.by_kind(ADMIN_TIER_KINDS[0], ADMIN_TIER_KINDS[1])
     if not ctx.cni:
         if docs:
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id,
+                "no manifest states which CNI runs the cluster, so whether these admission-tier policies are "
+                "enforced cannot be decided; supply --cni NAME[:VERSION] (calico:3.32, ovn-kubernetes, cilium:1.18)",
+            )
         return  # nothing of this kind is nothing to decide, whatever the CNI
     try:
         name, version = parse_cni(ctx.cni)
     except ValueError:
         if docs:
-            ctx.cannot_decide(r.rule_id)
+            ctx.cannot_decide(
+                r.rule_id, "the --cni value could not be read as NAME or NAME:VERSION, so the CNI is not known"
+            )
         return
     support = admin_tier_support(name, version)
     if support == "enforced" or not docs:
         return
     if support == "unknown":
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, admin_tier_reason(name, version, support))
         return
     reason = admin_tier_reason(name, version, support)
     for d in docs:
@@ -3445,7 +3476,7 @@ def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     # evaluated_rules, so a per-control summary counted it `clean` while the report's own
                     # assumptions said an undeclared StorageClass was not evaluated -- the two halves of one
                     # report disagreeing, with the reassuring half the one a reader sees first.
-                    ctx.cannot_decide(r.rule_id)
+                    ctx.cannot_decide(r.rule_id, "the namespace's StorageClasses were not passed (partial bundle)")
                     continue
                 yield r.finding(
                     d,
@@ -3816,7 +3847,7 @@ def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str]) -> list[Do
 def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's PodDisruptionBudgets were not passed, so no match here means nothing
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(r.rule_id, "the namespace's PodDisruptionBudgets were not passed (partial bundle)")
         return
     for d, pt in ctx.workloads():
         if d.kind in REPLICATED_KINDS and (replicas(d) or 1) >= 2 and not _pdbs_for(ctx, d, pt.labels()):
@@ -4047,7 +4078,10 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     # but a split on the separator is what the data model actually is.
     docs = [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
     if not docs:
-        ctx.cannot_decide(r.rule_id)
+        ctx.cannot_decide(
+            r.rule_id,
+            "no config.openshift.io APIServer object is in the input, so the cluster's audit profile is not known",
+        )
         return
     for d in docs:
         spec = d.data.get("spec") if isinstance(d.data, dict) else None

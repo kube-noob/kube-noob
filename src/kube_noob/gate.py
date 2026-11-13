@@ -304,15 +304,23 @@ def run(
     unknown_builds: list[str] | None = None,
     repo: Path | None = None,
     cni: str | None = None,
+    require_evaluated: list[str] | None = None,
 ) -> dict[str, Any]:
-    """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
+    """``require_evaluated``: rule ids the pipeline relies on having run; each gets a ``requiredEvaluated`` row and
+    one that could not decide is listed in ``incompleteEvaluation`` (the CLI exits 5 on it, G290).
+    ``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
     (shipping is then unknown, which fails like shipped code). ``repo``: the checkout, to tell a SARIF path that is
     no file of the repository (scanned elsewhere) from one no image ships."""
     from kube_noob.audit import exceptions as exc
     from kube_noob.audit.engine import analyze, refuse_if_not_manifests
+    from kube_noob.audit.rules import RULES
     from kube_noob.errors import ConfigError
 
+    required = list(dict.fromkeys(require_evaluated or []))
+    unknown_rules = [r for r in required if r not in RULES]
+    if unknown_rules:
+        raise GateError(f"--require-evaluated names no rule kube-noob has: {', '.join(unknown_rules)}")
     containerfiles = containerfiles or []
     scanner_reports = scanner_reports or []
     sarif_reports = sarif_reports or []
@@ -345,10 +353,12 @@ def run(
     # The gate already runs `analyze`, so it HAS the coverage record; it just never published it, and a
     # compliance document built from the gate could therefore only ever say not-satisfied (G201).
     coverage: dict[str, Any] = {}
+    audit_report = None
+    kept_rules: list[str] = []
+    excepted_rules: list[str] = []
     if sources:
         report = analyze(combined, platform, version, cni=cni)
-        kept_rules: list[str] = []
-        excepted_rules: list[str] = []
+        audit_report = report
         kinds = set(_KIND.findall(combined))
         for f in report.findings:
             if review is not None and exc.match(review, f.rule_id, f.resource) is not None:
@@ -445,6 +455,7 @@ def run(
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
     known, known_verdict, known_note = _known(kinds, platform, version, data_dir)
+    required_rows = _required_evaluated(required, audit_report, kept_rules, excepted_rules) if required else None
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
@@ -468,6 +479,14 @@ def run(
             + (f" --version {version}" if version else "")
             + " --mode enforce",
         },
+        **(
+            {
+                "requiredEvaluated": required_rows,
+                "incompleteEvaluation": [r["rule"] for r in required_rows if not r["evaluated"]],
+            }
+            if required_rows is not None
+            else {}
+        ),
         "knownIssues": known,
         "knownIssuesVerdict": known_verdict,
         "knownIssuesNote": known_note,
@@ -510,6 +529,39 @@ def run(
             *([f"reported issues: {known_note}"] if known_verdict == "not-evaluated" else []),
         ],
     }
+
+
+def _required_evaluated(
+    required: list[str], report: Any, kept_rules: list[str], excepted_rules: list[str]
+) -> list[dict[str, Any]]:
+    """One row per rule the caller requires: whether it was evaluated, how many of its findings were kept and
+    excepted, and why when it could not decide -- the rule's own words (``AuditContext.cannot_decide``), never a
+    sentence written here. A rule that fired has been evaluated, whatever else it declined on (fires wins); a rule
+    whose findings were all excepted was evaluated too. With no manifests nothing ran (G290)."""
+    rows: list[dict[str, Any]] = []
+    for rule in required:
+        fired = kept_rules.count(rule)
+        excepted = excepted_rules.count(rule)
+        if report is None:
+            why = "no manifests were read, so no rule ran: pass them with -f, or render a chart with --chart"
+            evaluated = False
+        elif fired or excepted or rule in report.fired_rules:
+            evaluated = True
+            parts = [f"fired ({fired} finding(s))" if fired else "fired"]
+            if excepted:
+                parts.append(f"{excepted} excepted")
+            why = ", ".join(parts)
+        elif rule in report.undecided:
+            evaluated = False
+            why = sanitize.visible(str(report.undecided[rule]))[:600]
+        elif rule in report.evaluated_rules:
+            evaluated = True
+            why = "evaluated, nothing found"
+        else:
+            evaluated = False
+            why = "the rule did not run on this input (not in the audit's evaluated list and it gave no reason)"
+        rows.append({"rule": rule, "evaluated": evaluated, "fired": fired, "excepted": excepted, "why": why})
+    return rows
 
 
 def _code_findings(
@@ -706,8 +758,9 @@ def _not_run_invocation(report: dict[str, Any]) -> dict[str, Any] | None:
     searched no release-note index wrote the same file as one that searched it and found nothing (G284). The
     reported-issues leg is a warning, like an audit assumption in `sarif_of_audit`; a leg that was not run for want
     of an input is a note."""
-    legs = report.get("notRun")
-    if not legs:
+    legs = report.get("notRun") or []
+    required = report.get("requiredEvaluated")
+    if not legs and required is None:
         return None
     notes = [
         {
@@ -716,7 +769,20 @@ def _not_run_invocation(report: dict[str, Any]) -> dict[str, Any] | None:
         }
         for leg in legs
     ]
-    return {"executionSuccessful": True, "toolExecutionNotifications": notes}
+    # A rule the pipeline required and that could not decide is an error-level notification: the run completed,
+    # and its evidence is incomplete (G290).
+    for row in required or []:
+        if not row["evaluated"]:
+            notes.append(
+                {
+                    "level": "error",
+                    "message": {"text": f"not evaluated: {row['rule']} -- {sanitize.visible(str(row['why']))[:1000]}"},
+                }
+            )
+    out: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
+    if required is not None:
+        out["properties"] = {"requiredEvaluated": required}
+    return out
 
 
 def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1023,6 +1089,14 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         # An empty list is a real zero only when the release was searched; say which it was. `not-evaluated`
         # is under "Not run" below, with the others.
         lines += [f"Reported issues in this release: {_cell(report.get('knownIssuesNote'), 400)}", ""]
+    if report.get("requiredEvaluated") is not None:
+        lines += ["### Required rules", ""]
+        for row in report["requiredEvaluated"]:
+            if row["evaluated"]:
+                lines.append(f"- evaluated {_cell(row['rule'], 40)} -- {_cell(row['why'])}")
+            else:
+                lines.append(f"- INCOMPLETE {_cell(row['rule'], 40)} -- {_cell(row['why'])}")
+        lines.append("")
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]

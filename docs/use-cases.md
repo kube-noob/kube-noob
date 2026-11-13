@@ -776,6 +776,24 @@ OpenShift release that name a kind you deploy -- and it says when it could not l
 checks. It exits 1 at `--fail-on` and writes SARIF (GitHub code scanning), a Markdown summary and GitLab code quality
 JSON. Findings in a rendered chart point at the template file.
 
+The offline gate is preflight; native admission enforces. `kube-noob policy generate --platform openshift
+--version 4.22 --engine vap --mode enforce --rule KN-S001` emits a ValidatingAdmissionPolicy with `failurePolicy:
+Fail` and a binding with `validationActions: [Deny]`, so a privileged container the gate would have failed in CI is
+refused by the API server itself when it reaches the cluster by any other route
+(`tests/test_policy_handoff.py::test_the_documented_enforce_command_emits_fail_and_deny` runs that exact command and
+asserts those two fields).
+
+`--require-evaluated RULE_ID` (repeatable) names a rule the pipeline relies on having run. A rule that could not
+decide -- KN-N014 with no `--cni`, KN-S036 with no registry allow-list -- is printed as `INCOMPLETE KN-N014 -- ...`
+with the rule's own reason, in the summary and on stderr, and the gate exits 5 (evidence incomplete; exit 1 keeps
+its meaning, and a rule that fired has been evaluated). The JSON carries `requiredEvaluated: [{rule, evaluated,
+fired, excepted, why}]` and `incompleteEvaluation`, the SARIF file an invocation property of the same name and an
+error-level notification per incomplete rule, and an id kube-noob has no rule for exits 2 naming it.
+
+```bash
+kube-noob gate -f k8s/ --platform openshift --version 4.22 --require-evaluated KN-N014 --cni ovn-kubernetes
+```
+
 The reported-issues check has three answers, not one list: `knownIssuesVerdict` is `looked-up` when the bundled
 release notes hold the release and were searched (an empty `knownIssues` is then a real zero), `not-evaluated` when
 no search happened -- no `--version`, or a release the index does not cover, with the releases it does cover and
@@ -1277,6 +1295,13 @@ oc apply -f kube-noob-policies.yaml
 kube-noob policy generate --rule KN-S001 --rule KN-S009 --mode enforce --engine vap -o enforce.yaml
 kube-noob policy generate --engine kyverno --exclude-namespace legacy-apps -o kyverno.yaml
 ```
+
+The offline gate is preflight; native admission enforces. `kube-noob policy generate --platform openshift
+--version 4.22 --engine vap --mode enforce --rule KN-S001` emits a ValidatingAdmissionPolicy with `failurePolicy:
+Fail` and a binding with `validationActions: [Deny]`, so a privileged container the gate would have failed in CI is
+refused by the API server itself when it reaches the cluster by any other route
+(`tests/test_policy_handoff.py::test_the_documented_enforce_command_emits_fail_and_deny` runs that exact command and
+asserts those two fields).
 
 Through the MCP or HTTP tool there is no `-o`, so the inline YAML is capped at 128 KiB: every rule on every
 engine renders about 380 KB (~95,000 tokens), which is more than most callers can hold. Over the limit the result

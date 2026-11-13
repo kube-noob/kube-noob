@@ -547,6 +547,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             sarif_reports=[(p, _read(p)) for p in a.sarif_report],
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
+            require_evaluated=list(getattr(a, "require_evaluated", []) or []),
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -574,7 +575,16 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if report.get("unreadable") and not a.skip_unreadable:
         _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
         return 5
-    return 0 if report["passed"] else 1
+    if not report["passed"]:
+        return 1
+    # Findings first (exit 1 keeps its meaning), then the evidence: a required rule that could not decide is
+    # incomplete evidence, which is what 5 already means (G290). Never a new meaning for another code.
+    incomplete = [r for r in report.get("requiredEvaluated") or [] if not r["evaluated"]]
+    if incomplete:
+        for r in incomplete:
+            print(f"INCOMPLETE {r['rule']} -- {r['why']}", file=sys.stderr)
+        return 5
+    return 0
 
 
 def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
@@ -1152,6 +1162,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also print the findings as GitHub Actions workflow commands, so they appear on the pull request "
         "instead of in a log. GitHub shows ten of each kind per step, so the tenth says how many are not shown",
+    )
+    gt.add_argument(
+        "--require-evaluated",
+        action="append",
+        default=[],
+        metavar="RULE_ID",
+        help="a rule the pipeline relies on having run (repeat). When it could not decide -- KN-N014 without --cni, "
+        "KN-S036 without a registry allow-list -- the gate prints INCOMPLETE with the rule's own reason and exits 5 "
+        "(evidence incomplete); a rule that fired has been evaluated and exit 1 keeps its meaning. An id kube-noob "
+        "has no rule for exits 2",
     )
     gt.add_argument(
         "--cni",
