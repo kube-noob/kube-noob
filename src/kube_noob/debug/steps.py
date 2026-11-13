@@ -40,12 +40,16 @@ _KUBE_EXEC = {"rsh", "exec", "debug", "port-forward", "attach", "proxy", "rsync"
 # `oc adm policy scc-subject-review` / `scc-review` / `who-can` evaluate policy and never grant anything
 _ADM_POLICY_READ = re.compile(r"\b(scc-subject-review|scc-review|who-can)\b")
 #: `diff` is the helm-diff plugin, which renders and compares and changes no release.
-_HELM_READ = {"status", "history", "get", "list", "ls", "show", "template", "lint", "search", "env", "version", "diff"}
+_HELM_READ = {
+    "status", "history", "get", "list", "ls", "show", "template", "lint", "search", "env", "version", "diff", "help"
+}  # fmt: skip
 #: krew's subcommands that read the plugin index or the installed list; install, upgrade and uninstall run code.
-_KREW_READ = {"list", "info", "search", "version", "help", ""}
+_KREW_READ = {"list", "info", "search", "version"}
 #: `oc adm upgrade` with nothing but these flags prints the upgrade status; `--to*`, `--clear`, `channel`,
 #: `rollback` and the rest change it (openshift/oc pkg/cli/admin/upgrade, master, read 2026-11-13).
 _ADM_UPGRADE_STATUS_FLAGS = {"-o", "--output", "--include-not-recommended", "-h", "--help"}
+#: `oc adm upgrade status` and `recommend` print; `accept`, `channel`, `rollback` and the rest change the upgrade.
+_ADM_UPGRADE_READ_SUBCOMMANDS = {"status", "recommend"}
 _ROSA_READ = {"describe", "list", "logs", "verify", "whoami", "version"}
 _LOCAL_READ = {"skopeo": {"inspect"}, "roxctl": {"deployment", "image"}}
 _NETWORK_EXEC = {"curl", "wget", "openssl", "dig", "nslookup", "nc", "ping", "getent"}
@@ -193,6 +197,67 @@ KUBE_GLOBAL_BOOL_FLAGS = frozenset(
     {"--insecure-skip-tls-verify", "--disable-compression", "--match-server-version", "--warnings-as-errors", "--help",
      "-h"}
 )  # fmt: skip
+#: Flags of kubectl's verbs that take no value when given bare (bool flags and the optional-value ones with a
+#: NoOptDefVal: --validate, --dry-run, --cascade), read from kubernetes/kubectl pkg/cmd/*/*.go, master,
+#: 2026-11-13. A bare flag not listed here is read as taking the next word, which is pflag's rule for every
+#: non-bool flag; so an unknown flag before `--dry-run` or `-h` fails closed.
+KUBE_BOOL_FLAGS = KUBE_GLOBAL_BOOL_FLAGS | frozenset(
+    {"--validate", "--dry-run", "--cascade", "-A", "--all", "--all-namespaces", "--force", "--now", "--wait",
+     "--overwrite", "-R", "--recursive", "--prune", "--server-side", "--force-conflicts", "--openapi-patch",
+     "--ignore-not-found", "--save-config", "--record", "--show-managed-fields", "--allow-missing-template-keys",
+     "--local", "--list", "-i", "--stdin", "--interactive", "-t", "--tty", "-w", "--watch", "--watch-only",
+     "--previous", "--follow", "--show-labels", "--show-kind", "--no-headers", "--rm", "--attach",
+     "--leave-stdin-open", "-q", "--quiet", "--privileged", "--expose", "--command", "--delete-emptydir-data",
+     "--delete-local-data", "--disable-eviction", "--ignore-daemonsets", "--ignore-errors", "--timestamps",
+     "--all-containers", "--include-not-recommended", "--to-latest", "--clear", "--confirm", "--orphans",
+     "--windows-line-endings", "--resolve-image", "--append-hash", "--disable-filter", "--enable-helm",
+     "--enable-alpha-plugins", "--enable-exec", "--no-wait", "--allow-explicit-upgrade",
+     "--allow-upgrade-with-warnings", "--to-multi-arch", "--pullspecs", "--commits", "--public", "--short"}
+)  # fmt: skip
+#: helm's flags that take no value when given bare (helm/helm cmd/helm/*.go and pkg/action, master, 2026-11-13;
+#: `--dry-run` has a no-option default of "client" since 3.13).
+HELM_BOOL_FLAGS = frozenset(
+    {"--dry-run", "-h", "--help", "--debug", "--install", "-i", "--atomic", "--wait", "--wait-for-jobs",
+     "--create-namespace", "--skip-crds", "--no-hooks", "--keep-history", "--hide-notes", "--render-subchart-notes",
+     "--cleanup-on-fail", "--reset-values", "--reuse-values", "--reset-then-reuse-values", "--dependency-update",
+     "--devel", "--verify", "--generate-name", "-g", "--skip-schema-validation", "--take-ownership",
+     "--disable-openapi-validation", "--insecure-skip-tls-verify", "--kube-insecure-skip-tls-verify", "--plain-http",
+     "--pass-credentials", "--hide-secret", "--rollback-on-failure", "--force", "--replace", "--untar", "--prov",
+     "--strict", "--with-subcharts", "--quiet", "--all", "--all-namespaces", "-A", "--deployed", "--failed",
+     "--pending", "--uninstalled", "--uninstalling", "--superseded", "--short", "-q", "--reverse", "-r", "--date",
+     "-d", "--include-crds", "--is-upgrade", "--validate", "--skip-tests", "--logs", "--fail-on-missing",
+     "--no-update", "--force-update", "--skip-refresh", "--versions", "-l", "--regexp", "--starter"}
+)  # fmt: skip
+#: The verbs each tool itself defines (kubernetes/kubectl pkg/cmd/cmd.go; openshift/oc pkg/cli/cli.go; helm cmd/helm;
+#: master, read 2026-11-13). A word not here is a plugin (`kubectl-<word>` on PATH), which kubectl execs with
+#: the remaining arguments, `--help` included -- so help prints and runs nothing only on a built-in verb.
+KUBECTL_BUILTINS = frozenset(
+    {"", "help", "get", "describe", "logs", "events", "explain", "api-resources", "api-versions", "version", "top",
+     "wait", "cluster-info", "completion", "options", "apply", "create", "delete", "patch", "replace", "scale",
+     "autoscale", "label", "annotate", "set", "edit", "expose", "run", "rollout", "drain", "cordon", "uncordon",
+     "taint", "certificate", "config", "auth", "plugin", "kustomize", "diff", "exec", "attach", "port-forward",
+     "proxy", "cp", "debug", "alpha"}
+)  # fmt: skip
+OC_BUILTINS = KUBECTL_BUILTINS | frozenset(
+    {"adm", "whoami", "projects", "project", "status", "new-project", "new-app", "new-build", "process",
+     "start-build", "cancel-build", "import-image", "tag", "policy", "secrets", "rsh", "rsync", "login", "logout",
+     "registry", "extract", "observe", "idle", "image", "serviceaccounts", "rollback", "get-token", "expose",
+     "env", "volume", "volumes", "build-logs", "deploy"}
+)  # fmt: skip
+HELM_BUILTINS = frozenset(
+    {"", "help", "install", "upgrade", "uninstall", "delete", "del", "un", "rollback", "template", "lint", "list",
+     "ls", "status", "history", "hist", "get", "show", "inspect", "search", "repo", "dependency", "dep", "package",
+     "pull", "fetch", "push", "registry", "plugin", "create", "env", "verify", "version", "completion", "test"}
+)  # fmt: skip
+
+
+def builtin(tool: str, sub: str) -> bool:
+    """Whether ``sub`` is a verb the tool itself defines, not a plugin it would exec."""
+    if tool == "helm":
+        return sub in HELM_BUILTINS
+    if tool == "oc":
+        return sub in OC_BUILTINS
+    return sub in KUBECTL_BUILTINS
 
 
 def kube_root(args: list[str]) -> tuple[str, str, int, list[str]]:
@@ -235,15 +300,52 @@ def kube_subcommand(args: list[str]) -> tuple[str, str, int]:
     return sub, nxt, idx
 
 
-def dry_run(args: list[str]) -> str:
+def takes_value(flag: str, tool: str = "kubectl") -> bool:
+    """Whether a bare flag (no `=`) takes the NEXT word as its value, the way pflag reads it: a bool flag or one
+    with a no-option default (`--validate`, `--dry-run`, `--cascade`) does not; every other flag does, including
+    one this table does not know. `-n --dry-run=client` sets the namespace to "--dry-run=client" and is no dry
+    run; `-h` after `-n` is the namespace `-h`."""
+    if flag == "--" or not flag.startswith("-") or flag == "-" or "=" in flag:
+        return False
+    if not flag.startswith("--") and len(flag) > 2:
+        return False  # `-nx`: the value is attached
+    bools = HELM_BOOL_FLAGS if tool == "helm" else KUBE_BOOL_FLAGS
+    return flag not in bools
+
+
+def positionals(args: list[str], tool: str = "kubectl") -> list[str]:
+    """The words that are not flags and not a flag's value, read with pflag's arity rule; `--` ends the flags."""
+    out: list[str] = []
+    previous = ""
+    for i, t in enumerate(args):
+        if t == "--":
+            out.extend(args[i + 1 :])
+            break
+        if takes_value(previous, tool):
+            previous = ""
+            continue
+        previous = t
+        if not t.startswith("-") or t == "-":
+            out.append(t)
+    return out
+
+
+def dry_run(args: list[str], tool: str = "kubectl") -> str:
     """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server" or "" (none).
 
-    The LAST occurrence wins (pflag sets the flag each time it is seen), nothing after `--` is a flag, and `none`
-    or `false` is no dry run: `delete ns prod --dry-run=client --dry-run=none` deletes."""
+    The LAST occurrence wins (pflag sets the flag each time it is seen), nothing after `--` is a flag, `none` or
+    `false` is no dry run (`delete ns prod --dry-run=client --dry-run=none` deletes), and a `--dry-run` that is
+    the VALUE of the bare flag before it (`-n --dry-run=client`, helm's `--description --dry-run`) is no flag at
+    all (fifth review): the arguments are walked with pflag's arity rule (``takes_value``)."""
     found = ""
+    previous = ""
     for i, t in enumerate(args):
         if t == "--":
             break
+        swallowed = takes_value(previous, tool)
+        previous = t
+        if swallowed:
+            continue  # this word is the value of the flag before it, whatever it looks like
         if t == "--dry-run":
             nxt = args[i + 1] if i + 1 < len(args) else ""
             if nxt in {"client", "server", "none"}:  # helm also takes `--dry-run server`
@@ -263,13 +365,15 @@ def runs_local_code(args: list[str]) -> bool:
 
 
 def _adm_reads(rest: list[str]) -> bool:
-    """`oc adm release info ...` (the only release subcommand that writes nothing) and `oc adm upgrade` as a
-    status read: no positional after `upgrade` (`channel`, `rollback`, `recommend`) and no flag but the output
-    ones -- `--to`, `--to-latest`, `--to-image`, `--to-multi-arch`, `--clear`, `--force` and `--allow-*` change it."""
+    """`oc adm release info ...` (the only release subcommand that writes nothing) and `oc adm upgrade` as a read:
+    `status` or `recommend`, or no positional (`channel`, `rollback`, `accept`) and no flag but the output ones --
+    `--to`, `--to-latest`, `--to-image`, `--to-multi-arch`, `--clear`, `--force` and `--allow-*` change it."""
     _, nxt, idx = kube_subcommand(rest)
     after = rest[idx + 2 :] if idx >= 0 else []
     if nxt == "release":
         return [a for a in after if not a.startswith("-")][:1] == ["info"]
+    if after[:1] and after[0] in _ADM_UPGRADE_READ_SUBCOMMANDS:
+        return not any(t.startswith(("--to", "--clear")) or t == "--force" for t in after)
     i = 0
     while i < len(after):
         t = after[i]
@@ -335,11 +439,16 @@ def classify_argv(toks: list[str]) -> StepKind:
         if sub == "krew":
             return "read" if nxt in _KREW_READ else "exec"
         if sub == "neat":
-            return "read"  # kubectl-neat strips managed fields from what it is given; it sends nothing
+            # kubectl-neat strips managed fields from `get`/`describe` output or a file; given any other first
+            # word it passes it to kubectl, so `neat delete ns prod` deletes.
+            positional = positionals(rest[kube_subcommand(rest)[2] + 1 :])
+            return "read" if not positional or positional[0] in {"get", "describe"} else "change"
         if sub == "registry":
             return "read" if nxt == "info" else "change"  # `oc registry login` writes a credential
         if sub == "adm":
-            # must-gather creates a namespace and a privileged pod; it changes the cluster.
+            # must-gather creates a namespace and a privileged pod; it changes the cluster. `prune` without
+            # --confirm only lists what it would remove (a playbook check); verify still asks about it, since a
+            # word only known at run time can be --confirm.
             if nxt in {"top", "inspect", "node-logs"} or (nxt == "policy" and _ADM_POLICY_READ.search(seg)):
                 return "read"
             if nxt in {"release", "upgrade"} and _adm_reads(rest):
@@ -347,7 +456,7 @@ def classify_argv(toks: list[str]) -> StepKind:
             if nxt == "prune" and not any(
                 t == "--confirm" or (t.startswith("--confirm=") and t.split("=", 1)[1].lower() != "false") for t in rest
             ):
-                return "read"  # without --confirm, oc adm prune only lists what it would remove
+                return "read"
             return "change"
         if sub in DRY_RUN_VERBS and dry_run(rest) == "client":
             return "read"  # apply, create, patch, delete ... --dry-run=client send nothing that is stored
@@ -355,7 +464,7 @@ def classify_argv(toks: list[str]) -> StepKind:
     if tool == "helm":
         if sub == "repo":
             return "read" if nxt == "list" else "change"  # add, update and remove change the local repositories file
-        if sub in {"install", "upgrade"} and dry_run(rest) == "client":
+        if sub in {"install", "upgrade"} and dry_run(rest, "helm") == "client":
             return "read"  # helm renders and prints; nothing is installed
         return "read" if sub in _HELM_READ else "change"
     if tool == "kustomize":

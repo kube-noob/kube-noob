@@ -43,12 +43,13 @@ from kube_noob.debug import shell
 from kube_noob.debug.steps import (
     DRY_RUN_VERBS,
     KUBE_CLIS,
-    KUBE_GLOBAL_VALUE_FLAGS,
+    builtin,
     classify_argv,
     dry_run,
     kube_root,
     kube_subcommand,
     runs_local_code,
+    takes_value,
 )
 from kube_noob.errors import ManifestError
 
@@ -213,6 +214,26 @@ _LOCAL_EFFECT = {
     "krew": "installs or changes a kubectl plugin, which then runs on this machine",
 }
 _DESTRUCTIVE = frozenset({"delete", "drain", "uninstall", "rollback"})
+#: Flags that change WHO the command runs as or WHERE the stored credential is sent: asked about on every command
+#: that changes something, day-2 included (fifth review). `--context`, `--cluster`, `--kubeconfig` and
+#: `KUBECONFIG=` are not here: they pick a context, and a day-2 change is judged the same under any context.
+_IDENTITY_FLAGS = frozenset(
+    {"--as", "--as-group", "--as-uid", "--as-user-extra", "--token", "--username", "--password",
+     "--client-certificate", "--client-key", "--certificate-authority", "--insecure-skip-tls-verify", "-s",
+     "--server", "--user", "--tls-server-name", "--proxy-url",
+     "--kube-token", "--kube-as-user", "--kube-as-group", "--kube-apiserver", "--kube-ca-file",
+     "--kube-insecure-skip-tls-verify", "--kube-tls-server-name"}
+)  # fmt: skip
+#: Flags that make the tool run a program named on the line, on this machine, whatever the verb and before any
+#: dry run or read: asked about first. helm's post-renderer runs during render, `template` and `--dry-run`
+#: included; kustomize's exec plugins and helm chart inflation run during `kubectl kustomize|apply -k|diff -k`.
+_PROGRAM_FLAGS = {
+    "--post-renderer": "runs the post-renderer program named on the line while rendering",
+    "--post-renderer-args": "runs the post-renderer program named on the line while rendering",
+    "--enable-alpha-plugins": "enables kustomize plugins, which run programs on this machine while rendering",
+    "--enable-exec": "enables kustomize exec functions, which run programs on this machine while rendering",
+    "--enable-helm": "makes kustomize run helm on this machine while rendering",
+}
 _EXEC_REASON = "runs a program (in the cluster or on this machine) or opens a connection to the cluster"
 _HELM_DRY_RUN_VERBS = frozenset({"install", "upgrade", "uninstall", "delete", "rollback"})
 #: Subcommands that open a local listening port to the cluster and change nothing in it (class `connects`).
@@ -288,8 +309,11 @@ class _Read:
 
 
 def show(text: Any, limit: int = 200) -> str:
-    """Input-derived text made one printable line (no newline can forge a row, no invisible character survives)."""
-    flat = " ".join(sanitize.visible(str(text)).split())
+    """Input-derived text made one line: whitespace collapsed (no newline can forge a row), and every character
+    that does not print -- a zero-width space, a bidi override, a control character, a surrogate from argv under a
+    C locale -- shown as a marker (`<U+200B>`) by ``sanitize.marked`` rather than dropped, so the person sees the
+    command that runs. The marker is ASCII, so the display is the same bytes under every terminal encoding."""
+    flat = " ".join(sanitize.marked(str(text)).split())
     return flat if len(flat) <= limit else flat[: limit - 3] + "..."
 
 
@@ -439,56 +463,49 @@ def _class_of(kind: str, sub: str, tool: str, args: list[str]) -> str:
     return "changes-state"
 
 
-#: Flags that take no value, so `-h` after one is help and not their value (kubectl's root bool flags, the
-#: optional-value ones, and the common bool flags of its verbs).
-_BOOL_FLAGS = frozenset(
-    {"-A", "--all", "--all-namespaces", "--force", "--now", "--wait", "--overwrite", "-R", "--recursive", "--prune",
-     "--server-side", "--ignore-not-found", "-i", "--stdin", "-t", "--tty", "-w", "--watch", "--previous", "--follow",
-     "--show-labels", "--no-headers", "--help", "-h", "--install", "--atomic", "--create-namespace", "--debug",
-     "--include-not-recommended", "--list", "--timestamps", "--all-containers"}
-) | frozenset({"--validate", "--dry-run", "--cascade"})  # fmt: skip
-
-
-def _asks_help(args: list[str]) -> bool:
+def _asks_help(args: list[str], tool: str = "kubectl") -> bool:
     """`--help` or `-h` before `--`, where it is not the value of the flag before it (`-n -h` is the namespace
-    `-h`, as pflag reads it): cobra prints the help and runs nothing."""
-    from kube_noob.debug.steps import KUBE_GLOBAL_BOOL_FLAGS
-
+    `-h`, as pflag reads it; ``takes_value`` is the one arity rule): cobra prints the help and runs nothing. The
+    caller allows it only on a built-in verb; a plugin is exec'd with `--help` as its argument."""
     previous = ""
     for t in args:
         if t == "--":
             return False
-        if t in {"-h", "--help"}:
-            bare_value_flag = (
-                previous.startswith("-")
-                and previous != "-"
-                and "=" not in previous
-                and previous not in _BOOL_FLAGS
-                and previous not in KUBE_GLOBAL_BOOL_FLAGS
-            )
-            if not bare_value_flag:
-                return True
+        if t in {"-h", "--help"} and not takes_value(previous, tool):
+            return True
         previous = t
     return False
 
 
-def _is_dry_run(name: str, sub: str, args: list[str]) -> bool:
-    """Whether this kubectl/oc or helm command is a dry run: the last `--dry-run` before `--` is client or server
-    (`none`/`false` is no dry run), or the removed `--server-dry-run` is given, on a verb that defines the flag
-    (``DRY_RUN_VERBS``: a client dry run never reaches the API server, a server one runs admission and persists
-    nothing; `exec`, `debug` and a plugin get no dry-run credit, the flag is not theirs)."""
+def _is_dry_run(name: str, sub: str, cmd: shell.Command, args: list[str]) -> tuple[bool, str | None]:
+    """Whether this kubectl/oc or helm command is a dry run, and why it is NOT one when it looks like one.
+
+    The last `--dry-run` before `--` is client or server (`none`/`false` is no dry run), read with pflag's arity
+    rule so a `--dry-run` that is the value of the bare flag before it counts for nothing, on a verb that defines
+    the flag (``DRY_RUN_VERBS``; `exec`, `debug` and a plugin get no dry-run credit). A word after the first
+    `--dry-run` that is only known when the line runs (`$FLAGS`, `"$@"`, a substitution, a glob) can be
+    `--dry-run=none`, since the last one wins: that is not a dry run either, and the reason says so."""
     if name in KUBE_CLIS:
         if sub not in DRY_RUN_VERBS:
-            return False
-        before = args[: args.index("--")] if "--" in args else args
-        server = any(
-            a == "--server-dry-run" or (a.startswith("--server-dry-run=") and a.split("=", 1)[1].lower() != "false")
-            for a in before
-        )
-        return server or dry_run(args) in {"client", "server"}
-    if name == "helm":
-        return sub in _HELM_DRY_RUN_VERBS and dry_run(args) in {"client", "server"}
-    return False
+            return False, None
+        dry = dry_run(args, "kubectl") in {"client", "server"}
+    elif name == "helm":
+        dry = sub in _HELM_DRY_RUN_VERBS and dry_run(args, "helm") in {"client", "server"}
+    else:
+        return False, None
+    if not dry:
+        return False, None
+    first = next((i for i, a in enumerate(args) if a == "--dry-run" or a.startswith("--dry-run=")), len(args))
+    words = cmd.words[1:]
+    for w in words[first + 1 :]:
+        if w.text == "--":
+            break
+        if w.dynamic or w.glob:
+            return False, (
+                f"{frame(w.raw or w.text, 40)} after --dry-run is only known when the line runs, and the last "
+                "--dry-run wins, so it can be --dry-run=none"
+            )
+    return True, None
 
 
 def _exposure(cmd: shell.Command, args: list[str]) -> str | None:
@@ -503,7 +520,7 @@ def _exposure(cmd: shell.Command, args: list[str]) -> str | None:
             return None
         name, eq, value = t.partition("=")
         dynamic = i < len(words) and words[i].dynamic
-        if name in {"--address", "--accept-hosts"} and not eq:
+        if name in {"--address", "--accept-hosts", "--accept-paths", "--reject-paths", "--reject-methods"} and not eq:
             i += 1
             value = args[i] if i < len(args) else ""
             dynamic = i < len(words) and words[i].dynamic
@@ -518,6 +535,12 @@ def _exposure(cmd: shell.Command, args: list[str]) -> str | None:
                     f"exposes a local port to other hosts (--accept-hosts {frame(value, 60)} widens which hosts the "
                     "proxy accepts)"
                 )
+        elif name in {"--accept-paths", "--reject-paths", "--reject-methods"}:
+            # The defaults block /pods/*/exec|attach and non-safe methods; any value given here widens what the
+            # port forwards (kubernetes/kubectl pkg/cmd/proxy/proxy.go: DefaultPathAcceptRE, DefaultPathRejectRE).
+            return (
+                f"exposes a local port to other hosts, in effect: {name} {frame(value, 60)} widens the proxy's filter"
+            )
         elif name == "--disable-filter" and value.lower() != "false":
             return "exposes a local port to other hosts (--disable-filter turns off the proxy's host and path filter)"
         i += 1
@@ -751,17 +774,54 @@ def _base(tree: _Tree, cwd: str | None) -> Path | None:
     return tree.root / cwd if cwd else tree.root
 
 
+#: Flags whose value is a credential: shown as `...` in every form (`--token=V`, `--token V`, `-p V`, `-pV`).
+_CREDENTIAL_FLAGS = frozenset(
+    {"--token", "--password", "--kube-token", "--docker-password", "--client-key-data",
+     "--certificate-authority-data", "--client-certificate-data", "--bearer-token", "--registry-password"}
+)  # fmt: skip
+#: `scheme://user:password@host` anywhere in a word (a DSN given to psql, a URL with userinfo).
+_URL_USERINFO = re.compile(r"(://[^/\s:@]{1,256}:)[^/\s@]{1,256}@")
+
+
 def _redact(cmd: shell.Command) -> str:
-    """The command as shown in output: secret values never appear (`create secret --from-literal=k=v`, a literal
-    credential in `set env`), and every word is one printable line."""
+    """The command as shown in output: a credential's value never appears -- `--token V`, `--password=V`, `-p V`,
+    `-pV`, `--kube-token V`, `--docker-password V`, `--from-literal k=V` and `--env NAME=V` for a credential's
+    name, a `NAME=V` of a credential's name, `://user:pw@` in any word -- and every word is one printable line."""
     out: list[str] = []
-    secretish = cmd.tool in {"kubectl", "oc"} and "secret" in [w.text for w in cmd.words[:4]]
-    for w in cmd.words[:24]:
+    words = cmd.words[:24]
+    login = cmd.tool in {"oc", "kubectl"} and any(w.text in {"login", "registry"} for w in cmd.words[1:3])
+    skip_next = False
+    pending: str | None = None  # what to show instead of the next word
+    for i, w in enumerate(words):
         text = w.raw or w.text
-        if secretish and "=" in text and text.startswith(("--from-literal", "--from-env-file", "--docker-password")):
-            text = text.split("=", 1)[0] + "=..." if text.count("=") == 1 else "=".join(text.split("=")[:2]) + "=..."
-        elif _ENV_SECRET.match(w.text) or _URL_CREDENTIAL.match(w.text) or _credential_assignment(w.text):
-            text = w.text.split("=", 1)[0] + "=..."
+        plain = w.text
+        name, eq, value = plain.partition("=")
+        if skip_next or pending is not None:
+            out.append(show(pending if pending is not None else "...", 120))
+            skip_next, pending = False, None
+            continue
+        if name in _CREDENTIAL_FLAGS or (login and name == "-p"):
+            if eq:
+                text = name + "=..."
+            else:
+                text = name
+                skip_next = i + 1 < len(words)
+        elif login and plain.startswith("-p") and len(plain) > 2 and not plain.startswith("--"):
+            text = "-p..."
+        elif name in {"--from-literal", "--env", "-e", "--set", "--set-string", "--set-literal", "--set-json"}:
+            # the value is an assignment: `k=v` after the flag, or after `=`
+            assignment = value if eq else (words[i + 1].text if i + 1 < len(words) else "")
+            if _credential_assignment(assignment) or _ENV_SECRET.match(assignment):
+                masked = assignment.split("=", 1)[0] + "=..."
+                if eq:
+                    text = name + "=" + masked
+                else:
+                    text = name
+                    pending = masked
+        elif _ENV_SECRET.match(plain) or _URL_CREDENTIAL.match(plain) or _credential_assignment(plain):
+            text = plain.split("=", 1)[0] + "=..."
+        elif _URL_USERINFO.search(plain):
+            text = _URL_USERINFO.sub(r"\1...@", plain)
         out.append(show(text, 120))
     return " ".join(out)
 
@@ -792,14 +852,19 @@ def plan(
     tree = _Tree(cwd, deadline)
     out = _Read()
     if len(line_text) > shell.MAX_CHARS:
-        # The reader's cap is a bound on its own work, not a cluster risk: a line that names no tool verify models
-        # anywhere in it (a long heredoc, a generated script) changes nothing it would check, so it is allowed with
-        # no command recorded; one that names a tool past the cap was not read, and is not determined.
-        if not _names_a_tool(line_text):
-            return out
-        out.undetermined.append(
-            f"the command is longer than {shell.MAX_CHARS:,} characters and names a kube tool, so it was not read"
-        )
+        # The reader's cap is a bound on its own work. Past it only a line that is provably inert is allowed -- one
+        # `echo`/`printf`, or a here-document fed to cat/echo/printf, with no substitution, no second command, no
+        # interpreter, script or pipe anywhere, and no kube tool named anywhere; anything else was not read and
+        # is not determined (the fifth review padded `eval "ku""bectl ..."` past the cap and it was allowed).
+        if _names_a_tool(line_text):
+            out.undetermined.append(
+                f"the command is longer than {shell.MAX_CHARS:,} characters and names a kube tool, so it was not read"
+            )
+        elif not _inert_line(line_text):
+            out.undetermined.append(
+                f"the command is longer than {shell.MAX_CHARS:,} characters and is not a plain echo, printf or "
+                "here-document, so it was not read"
+            )
         return out
 
     def reader(raw: str, cwd_: str | None) -> str | None:
@@ -825,6 +890,40 @@ def plan(
         if why:
             written.append(why)
     return out
+
+
+#: Words that make a long line not inert: a substitution, an interpreter, a shell, a script, a runner, a fetch, a
+#: decode. Built from a list so the pattern's source does not spell a download-and-run shape itself.
+_NOT_INERT_WORDS = (
+    "eval", "exec", "source", "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "perl",
+    "ruby", "node", "deno", "bun", "php", "lua", "make", "npm", "npx", "yarn", "pnpm", "just", "task", "tox", "nox",
+    "base64", "openssl", "xargs", "parallel", "ssh", "sudo", "env", "nohup", "timeout", "wget", "curl",
+)  # fmt: skip
+_NOT_INERT = re.compile(r"\$\(|`|(?<![\w./-])(" + "|".join(_NOT_INERT_WORDS) + r")(?![\w-])|(?<![\w.-])\.{0,2}/[^\s]*")
+
+
+def _inert_line(text: str) -> bool:
+    """A single `echo`/`printf`, or a here-document fed to cat, echo or printf, and nothing else: no second
+    command (`;`, `&&`, `||`, `|`, `&`, a newline outside the here-document body), no redirection, nothing that
+    runs or fetches. Everything else is a line the reader must read, and past its cap it cannot."""
+    first, _, rest = text.partition("\n")
+    body = ""
+    if rest:
+        m = re.match(r"^\s*(cat|echo|printf)\s*<<-?\s*(['\"]?)(\w+)\2\s*$", first)
+        if m is None:
+            return False
+        lines = rest.rstrip("\n").split("\n")
+        if not lines or lines[-1].strip() != m.group(3):
+            return False
+        body = "\n".join(lines[:-1])
+        head = first
+    else:
+        head = text
+        if not re.match(r"^\s*(echo|printf)(\s|$)", head):
+            return False
+    if re.search(r"[;&|<>]", head.split("<<", 1)[0]) or _NOT_INERT.search(head):
+        return False
+    return not re.search(r"\$\(|`", body)
 
 
 def _names_a_tool(text: str) -> bool:
@@ -970,8 +1069,18 @@ def _kube_command(
     else:
         sub = kube_subcommand(args)[0]
     cls = _class_of(kind, sub, name, args)
-    if _asks_help(args):
-        cls = "read-only"  # the help is printed and nothing runs, whatever the verb
+    program = next((a.split("=", 1)[0] for a in args if a.split("=", 1)[0] in _PROGRAM_FLAGS), None)
+    if program is not None and name in KUBE_CLIS | {"helm"}:
+        shown = _entry(out, cmd, name, "runs-code")
+        out.undetermined.append(f"{shown}: {program} {_PROGRAM_FLAGS[program]}")
+        return
+    if name == "oc" and sub == "adm" and kube_subcommand(args)[1] == "prune":
+        # `diagnose` lists `oc adm prune` without --confirm as a preview; a check before an action asks, since a
+        # word only known at run time can be --confirm and every `oc adm` outside the read list asks.
+        cls = "changes-state"
+    help_only = _asks_help(args, "helm" if name == "helm" else "kubectl") and builtin(name, sub)
+    if help_only:
+        cls = "read-only"  # the help of a built-in verb is printed and nothing runs
     if name in KUBE_CLIS and sub in _CONNECTS:
         cls = "connects"
     if name in KUBE_CLIS and cls == "destructive" and _day2(cmd, name, sub, args, cls, "", _Read(), probe=True):
@@ -982,7 +1091,7 @@ def _kube_command(
         cls = "local"  # `oc project [NAME]` shows or switches the current project in the local kubeconfig
     if name in KUBE_CLIS and sub == "config" and _sets_only_namespace(args):
         cls = "local"  # `config set-context --current --namespace=X`: the default namespace, like `kubens X`
-    if name == "helm" and sub == "plugin" and any(a in {"install", "update"} for a in args):
+    if name == "helm" and sub == "plugin" and any(a in {"install", "update"} for a in args) and not help_only:
         shown = _entry(out, cmd, name, "runs-code")
         out.undetermined.append(
             f"{shown}: installs a helm plugin, which runs its install hook on this machine and can run on every "
@@ -990,12 +1099,15 @@ def _kube_command(
         )
         return
     real_cls = cls
-    dry = _is_dry_run(name, sub, args)
+    dry, not_dry_why = (False, None) if help_only else _is_dry_run(name, sub, cmd, args)
     if dry:
         cls = "read-only"  # nothing is stored, like `kubectl diff`; what a real run would do goes in the note
     shown = _entry(out, cmd, name, cls)
     if dry:
         out.commands[-1]["dryRun"] = True
+    if not_dry_why:
+        out.undetermined.append(f"{shown}: {not_dry_why}")
+        return
     if name in KUBE_CLIS and (
         any(a == "--kuberc" or a.startswith("--kuberc=") for a in args) or "KUBERC" in line.assignments
     ):
@@ -1066,6 +1178,28 @@ def _kube_effect(
         return
     granted = _grants(cmd)
     out.deny.extend(f"{shown}: {g}" for g in granted)
+    sub_index = kube_subcommand(args)[2] if name in KUBE_CLIS else -1
+    identity = next(
+        (
+            a.split("=", 1)[0]
+            for i, a in enumerate(_before_dashes(args))
+            if a.split("=", 1)[0] in _IDENTITY_FLAGS
+            # `create rolebinding|clusterrolebinding --user=` is the verb's own subject flag, not the root one
+            and not (
+                a.split("=", 1)[0] == "--user"
+                and sub == "create"
+                and i > sub_index
+                and kube_subcommand(args)[1] in {"rolebinding", "clusterrolebinding"}
+            )
+        ),
+        None,
+    )
+    if identity is not None and name in KUBE_CLIS | {"helm"} and not granted:
+        out.undetermined.append(
+            f"{shown}: {identity} changes who the command runs as or where the stored credential is sent; verify "
+            "cannot tell what that identity or endpoint allows"
+        )
+        return
     reads_files = name == "helm" or sub in {"apply", "create", "replace", "patch"} or tool == "kustomize"
     if reads_files and not _day2(cmd, name, sub, args, cls, shown, _Read(), probe=True):
         out.sends = True
@@ -1087,6 +1221,10 @@ def _kube_effect(
         out.undetermined.append(f"{shown}: kustomize {frame(sub, 20)} changes files verify does not follow")
     if len(out.undetermined) == before and cls == "runs-code" and not out.deny:
         out.undetermined.append(f"{shown}: {_EXEC_REASON}")
+
+
+def _before_dashes(args: list[str]) -> list[str]:
+    return args[: args.index("--")] if "--" in args else args
 
 
 def _sets_only_namespace(args: list[str]) -> bool:
@@ -1142,7 +1280,8 @@ def _grants(cmd: shell.Command) -> list[str]:
 
 
 def _targets(args: list[str], start: int) -> tuple[list[str], set[str]]:
-    """The positional words after the subcommand at args[start] and the flags given, for day-2 commands."""
+    """The positional words after the subcommand at args[start] and the flags given, for day-2 commands, read
+    with pflag's arity rule (``takes_value``): a bare flag that is not a known bool takes the next word."""
     pos: list[str] = []
     flags: set[str] = set()
     i = start + 1
@@ -1152,35 +1291,9 @@ def _targets(args: list[str], start: int) -> tuple[list[str], set[str]]:
             pos.extend(args[i + 1 :])
             break
         if t.startswith("-") and t != "-":
-            name = t.split("=", 1)[0]
-            flags.add(name)
-            if "=" not in t and name in {
-                "-n",
-                "--namespace",
-                "-l",
-                "--selector",
-                "--field-selector",
-                "-o",
-                "--output",
-                "--replicas",
-                "--current-replicas",
-                "--resource-version",
-                "--timeout",
-                "--port",
-                "--target-port",
-                "--type",
-                "--name",
-                "--protocol",
-                "--min",
-                "--max",
-                "--cpu-percent",
-                "--from",
-                "-c",
-                "--containers",
-                "--grace-period",
-                *KUBE_GLOBAL_VALUE_FLAGS,
-            }:
-                i += 1  # --cascade, --validate and --dry-run take a value only with `=`
+            flags.add(t.split("=", 1)[0])
+            if takes_value(t):
+                i += 1
             i += 1
             continue
         pos.append(t)
@@ -1189,8 +1302,11 @@ def _targets(args: list[str], start: int) -> tuple[list[str], set[str]]:
 
 
 def _single(pos: list[str]) -> bool:
-    """One named object: `TYPE NAME` or `TYPE/NAME` (and nothing that widens it)."""
-    return (len(pos) == 1 and "/" in pos[0]) or (len(pos) >= 2 and "/" not in pos[0])
+    """Exactly one named object: `TYPE NAME` or `TYPE/NAME`, with no second name, no `TYPE1,TYPE2` and nothing
+    that widens it (`label pod x y a=b` labels two)."""
+    if len(pos) == 1:
+        return pos[0].count("/") == 1 and "," not in pos[0]
+    return len(pos) == 2 and "/" not in pos[0] and "/" not in pos[1] and "," not in pos[0] and "," not in pos[1]
 
 
 #: Fields a patch may set on a named object without being able to add a finding: counts, pauses and timings of a
@@ -1210,14 +1326,19 @@ _SAFE_PATCH_MAPS = (
 
 
 def _patch_value(args: list[str]) -> str | None:
+    """The patch kubectl applies: the LAST `-p`/`--patch` given, since pflag sets a string flag each time it is
+    seen (`-p '{safe}' -p '{hostPID}'` applied the second and verify had read the first)."""
+    found: str | None = None
     for i, t in enumerate(args):
+        if t == "--":
+            break
         if t in {"-p", "--patch"}:
-            return args[i + 1] if i + 1 < len(args) else None
-        if t.startswith(("--patch=", "-p=")):
-            return t.split("=", 1)[1]
-        if t.startswith("-p") and len(t) > 2 and not t.startswith("--"):
-            return t[2:]
-    return None
+            found = args[i + 1] if i + 1 < len(args) else None
+        elif t.startswith(("--patch=", "-p=")):
+            found = t.split("=", 1)[1]
+        elif t.startswith("-p") and len(t) > 2 and not t.startswith("--"):
+            found = t[2:]
+    return found
 
 
 def _safe_patch(args: list[str]) -> bool:
@@ -1296,9 +1417,9 @@ def _day2(
         return False
     ok = False
     if sub == "rollout" and nxt in {"restart", "pause", "resume"}:
-        ok = _single(pos[1:])
+        ok = _single(pos[1:]) or bool({"-f", "--filename"} & flags)
     elif sub in {"scale", "autoscale"}:
-        ok = _single(pos)
+        ok = _single(pos) or bool({"-f", "--filename"} & flags)
     elif sub in {"label", "annotate"}:
         objects = [p for p in pos if "=" not in p and not p.endswith("-")]
         keys = [p.split("=", 1)[0].rstrip("-") for p in pos if "=" in p or p.endswith("-")]
@@ -1308,14 +1429,36 @@ def _day2(
             if not probe:
                 out.undetermined.append(f"{shown}: {frame(escalation[0], 60)} {escalation[1]}")
             return not probe
-        ok = (_single(objects) or bool({"-f", "--filename"} & flags)) and kind not in _NODE_OR_NS
+        if {"-f", "--filename", "-k", "--kustomize"} & flags:
+            if not probe:
+                out.undetermined.append(
+                    f"{shown}: labels or annotates the objects in a file, whose kinds (a namespace, a node) verify "
+                    "does not read here; name the object instead"
+                )
+            return not probe
+        ok = _single(objects) and kind not in _NODE_OR_NS
     elif sub == "delete":
+        raw = next((a for a in _before_dashes(args) if a == "--raw" or a.startswith("--raw=")), None)
+        if raw is not None:
+            if not probe:
+                out.undetermined.append(
+                    f"{shown}: --raw deletes the API path it names and the positional names are ignored "
+                    "(kubectl pkg/cmd/delete/delete.go: Complete returns on Raw before reading them)"
+                )
+            return not probe
+        if {"-f", "--filename", "-k", "--kustomize"} & flags:
+            return False  # the objects in the file are deleted, not the pod named; delete asks by name below
+        names = pos[1:] if len(pos) >= 2 and "/" not in pos[0] else pos
         ok = (
-            len(pos) >= 2
-            and pos[0].lower() in {"pod", "pods", "po"}
+            bool(pos)
             and not ({"--force", "--now"} & flags)
             and not any(a.startswith("--grace-period=0") for a in args)
-        ) or (len(pos) >= 1 and all(p.lower().startswith(("pod/", "pods/", "po/")) for p in pos))
+            and all("," not in p for p in pos)
+            and (
+                (len(pos) >= 2 and pos[0].lower() in {"pod", "pods", "po"} and all("/" not in n for n in names))
+                or all(p.lower().startswith(("pod/", "pods/", "po/")) and p.count("/") == 1 for p in pos)
+            )
+        )
     elif sub == "create" and nxt in {"namespace", "ns", "configmap", "cm", "secret", "serviceaccount", "sa"}:
         credential = _literal_credential(args)
         if credential:
@@ -1325,6 +1468,17 @@ def _day2(
                     "list keep it (KN-S013: create the Secret from a file or from your secret store)"
                 )
             return not probe
+        if nxt == "secret" and len(pos) > 1 and pos[1] == "docker-registry":
+            if not probe:
+                out.undetermined.append(
+                    f"{shown}: takes registry credentials on the command line or at a prompt (create the Secret "
+                    "from your secret store instead)"
+                )
+            return not probe
+        if any(a.split("=", 1)[-1] == "kubernetes.io/service-account-token" for a in args if a.startswith("--type")):
+            if not probe:
+                out.undetermined.append(f"{shown}: a service-account-token Secret makes the controller mint a token")
+            return not probe
         outside = _from_file_outside(cmd, base)
         if outside:
             if not probe:
@@ -1332,7 +1486,15 @@ def _day2(
             return not probe
         ok = len(pos) >= 2 or (nxt == "secret" and len(pos) >= 3)
     elif name == "oc" and sub == "adm" and nxt == "must-gather":
-        ok = True  # a gather pod in a temporary namespace, removed when it is done; it writes only the local dest-dir
+        custom = next((a for a in args if a.split("=", 1)[0] in {"--image", "--image-stream"}), None)
+        if custom is not None or "--" in args or any(w.dynamic or w.glob for w in cmd.words[2 + idx :]):
+            if not probe:
+                out.undetermined.append(
+                    f"{shown}: runs {frame(custom or 'a gather command', 60)} in a privileged pod on the cluster, "
+                    "which verify does not know; the default gather image is allowed"
+                )
+            return not probe
+        ok = True  # the release's gather pod in a temporary namespace, removed when done; writes the local dest-dir
     elif name == "oc" and sub == "new-project":
         if any(a == "--admin" or a.startswith("--admin=") for a in args):
             if not probe:
@@ -1351,12 +1513,7 @@ def _day2(
             if not probe:
                 out.undetermined.append(f"{shown}: {why}")
             return not probe
-        ok = (
-            _single(pos)
-            and not any(a.split("=", 1)[-1] in {"NodePort", "LoadBalancer"} for a in args if a.startswith("--type"))
-            and "NodePort" not in args
-            and "LoadBalancer" not in args
-        )
+        ok = _single(pos)
     elif sub == "patch" and not ({"-f", "--filename", "-k", "--kustomize", "--patch-file"} & flags):
         escalation = _escalation(_patch_keys(args))
         if escalation:
@@ -1380,13 +1537,34 @@ def _day2(
         if loader:
             if not probe:
                 out.undetermined.append(
-                    f"{shown}: {frame(loader[0].split('=', 1)[0], 40)} makes the container load and run code from a "
-                    "path or option verify does not read"
+                    f"{shown}: {frame(loader[0].split('=', 1)[0], 40)} makes the container load and run code from, "
+                    "send its traffic through, or trust a path, proxy or certificate verify does not read"
                 )
             return not probe
         ok = _single(pos[1:3] if "/" not in (pos[1] if len(pos) > 1 else "") else pos[1:2]) or bool(
             {"-f", "--filename"} & flags
         )
+    if ok:
+        # A word only known when the line runs can be a flag that widens the change (`$FLAGS` as `--all`), a
+        # name, a security key or a credential: no day-2 credit, except a replica count, a number or an error.
+        unread = [
+            w
+            for w in cmd.words[2 + idx :]
+            if (w.dynamic or w.glob) and not w.text.startswith("--replicas") and w.text != "--"
+        ]
+        if unread and sub != "adm":
+            if not probe:
+                out.undetermined.append(
+                    f"{shown}: {frame(unread[0].raw or unread[0].text, 40)} is only known when the line runs"
+                )
+            return not probe
+        # Control-plane namespaces and workloads: a scale, restart, pod delete, label or patch there is cluster
+        # operations, not a day-2 change on an application (fifth review).
+        system = _control_plane(args, pos) if sub != "create" else None
+        if system:
+            if not probe:
+                out.undetermined.append(f"{shown}: {system}")
+            return not probe
     if ok and not probe and cls not in {"read-only"}:
         out.not_evaluated.append(
             {
@@ -1396,6 +1574,33 @@ def _day2(
             }
         )
     return ok
+
+
+#: Namespaces that hold the control plane and the platform's own workloads, and the workloads whose scale or
+#: restart is a cluster operation wherever they are.
+_SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+_SYSTEM_WORKLOADS = ("cluster-version-operator", "etcd", "kube-apiserver")
+
+
+def _control_plane(args: list[str], pos: list[str]) -> str | None:
+    """Why a day-2 change is cluster operations: its namespace (`-n`, `--namespace`) is a system one, or the
+    object it names is a control-plane workload."""
+    namespace = ""
+    before = _before_dashes(args)
+    for i, a in enumerate(before):
+        if a in {"-n", "--namespace"} and i + 1 < len(before):
+            namespace = before[i + 1]
+        elif a.startswith(("-n=", "--namespace=")):
+            namespace = a.split("=", 1)[1]
+        elif a.startswith("-n") and len(a) > 2 and not a.startswith("--"):
+            namespace = a[2:]
+    if namespace in _SYSTEM_NAMESPACES or namespace.startswith("openshift-"):
+        return f"touches the control-plane namespace {frame(namespace, 40)}"
+    names = [p.split("/", 1)[1] if "/" in p else p for p in pos]
+    for n in names:
+        if any(n == w or n.startswith(w + "-") for w in _SYSTEM_WORKLOADS):
+            return f"touches the control-plane workload {frame(n, 40)}"
+    return None
 
 
 def _from_file_outside(cmd: shell.Command, base: Path | None = None) -> str | None:
@@ -1515,13 +1720,23 @@ _CODE_LOADING_ENV = frozenset(
 )  # fmt: skip
 
 
+#: Environment variables that change where a process sends traffic or what it trusts: the proxy variables, the CA
+#: bundle overrides of OpenSSL, Node, Python requests and curl, git's TLS switches, and PATH (fifth review).
+_TRUST_ENV = frozenset(
+    {"PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "FTP_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+     "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "AWS_CA_BUNDLE",
+     "PYTHONHTTPSVERIFY", "GIT_SSL_NO_VERIFY", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "GIT_SSL_CERT", "GIT_SSL_KEY"}
+)  # fmt: skip
+
+
 def _loads_code(name: str) -> bool:
-    return name.upper() in _CODE_LOADING_ENV
+    up = name.upper()
+    return up in _CODE_LOADING_ENV or up in _TRUST_ENV or up.startswith("GIT_SSL_")
 
 
 def _loads_code_prefix(prefix: str) -> bool:
     up = prefix.upper()
-    return bool(up) and any(v.startswith(up) for v in _CODE_LOADING_ENV)
+    return bool(up) and any(v.startswith(up) for v in _CODE_LOADING_ENV | _TRUST_ENV)
 
 
 def _patch_keys(args: list[str]) -> list[str]:
@@ -1560,9 +1775,12 @@ def _patch_keys(args: list[str]) -> list[str]:
 
 
 def _expose_reason(name: str, target: str, args: list[str]) -> str | None:
-    """Why an `expose` is asked about: an address or a name outside the cluster, or a Route."""
+    """Why an `expose` is asked about: a Service type other than ClusterIP (compared ignoring case, as the API
+    server would refuse the rest), an address or a name outside the cluster, or a Route."""
     flags = {a.split("=", 1)[0]: (a.split("=", 1)[1] if "=" in a else "") for a in args if a.startswith("--")}
     kind = (flags.get("--type") or next((args[i + 1] for i, a in enumerate(args[:-1]) if a == "--type"), "")).lower()
+    if kind not in {"", "clusterip"} and kind != "externalname" and "--external-name" not in flags:
+        return f"a {frame(kind, 20)} Service is reachable from outside the cluster or is not a type the API accepts"
     if "--external-ip" in flags:
         return "--external-ip sends traffic for that address to the service (CVE-2020-8554)"
     if "--load-balancer-ip" in flags:

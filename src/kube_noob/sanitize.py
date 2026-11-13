@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import html
 import json
 import re
@@ -180,6 +181,27 @@ def visible(text: str) -> str:
         return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in stripped)
     stripped = _TERMINAL_ESCAPE.sub(" ", text)
     return "".join(" " if unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped)
+
+
+def marked(text: str) -> str:
+    """``text`` with every character that does not print shown as a marker, `<U+200B>`, rather than replaced by a
+    space or dropped: the person then sees the command that runs (`pr<U+200B>od`, not `pr od`). Bytes that
+    reached argv under an ASCII locale (surrogate escapes) are first put back together as the UTF-8 they were, so
+    the display is the same under `LC_ALL=C` as under UTF-8; the marker is ASCII, so it survives every terminal
+    encoding. Plain whitespace stays, for the caller to collapse. The companion of ``visible`` for a display that
+    must not hide anything (verify's command line, G280)."""
+    if any("\udc80" <= ch <= "\udcff" for ch in text):
+        with contextlib.suppress(UnicodeDecodeError):
+            text = text.encode("utf-8", "surrogateescape").decode("utf-8")
+    if text.isprintable():
+        return text
+    out: list[str] = []
+    for ch in text:
+        if ch.isprintable() or ch in " \t\n\r\f\v":
+            out.append(ch)
+        else:
+            out.append(f"<U+{ord(ch):04X}>")
+    return "".join(out)
 
 
 def _chars(*points: int | tuple[int, int]) -> str:

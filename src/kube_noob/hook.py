@@ -221,21 +221,39 @@ def _run(
 
 
 _PS_KUBE = re.compile(
-    r"(?<![\w.-])(kubectl|oc|helm|kustomize|kubecolor|kapp|helmfile|argocd|flux)(?:\.exe)?(?![\w-])", re.I
+    r"(?<![\w.-])(kubectl|oc|helm|kustomize|kubecolor|kapp|helmfile|argocd|flux|k|kc|kctl)(?:\.exe)?(?![\w-])", re.I
+)
+#: PowerShell constructs that build or run a command the text does not spell: the call operator `&`, `iex` /
+#: `Invoke-Expression`, `Start-Process`, `Invoke-Command`, `Get-Command`/`gcm` (resolves a name), a `.ps1`/`.bat`
+#: /`.cmd` script, `wsl`, `cmd /c`, `cmd.exe`, string concatenation or formatting ('ku'+'bectl', -join, -f),
+#: `[Convert]::FromBase64String`, `[Text.Encoding]`, a backtick inside a word, `.Invoke(`, `[scriptblock]`.
+_PS_CONSTRUCT = re.compile(
+    r"(?<![\w])&\s*[(\$'\"]|(?<![\w.-])(iex|invoke-expression|invoke-command|start-process|start-job|gcm|get-command|"
+    r"wsl|cmd|cmd\.exe|powershell|pwsh|bash|sh)(?![\w-])|\.(ps1|bat|cmd)(?![\w])|\[convert\]|\[text\.encoding\]|"
+    r"frombase64string|\.invoke\(|\[scriptblock\]|['\"]\s*\+\s*['\"]|-join|(?<=['\"])\s*-f\s|\w`\w|\$\w+\s*=\s*['\"]",
+    re.I,
 )
 
 
 def _powershell(command: str) -> tuple[int, str, str]:
     """The PowerShell tool's `tool_input.command` (hooks reference: "The fields match the Bash tool"). verify reads
-    POSIX shell, not PowerShell, so a PowerShell command that names a kube tool is not determined and asks; one that
-    names none passes."""
+    POSIX shell, not PowerShell, so a PowerShell command that names a kube tool asks; so does one that builds or
+    runs a command the text does not spell -- `& ('ku'+'bectl')`, `iex`, `gcm kube*`, a `.ps1` script, `wsl -e`,
+    base64 (fifth review) -- since a substring test alone let every built name through. One that does neither
+    passes."""
     m = _PS_KUBE.search(command)
-    if m is None:
-        return _pass()
-    return _ask(
-        f"kube-noob verify does not read PowerShell, and this command names {m.group(1)}. Approve it only if you know "
-        "what it changes in the cluster."
-    )
+    if m is not None:
+        return _ask(
+            f"kube-noob verify does not read PowerShell, and this command names {m.group(1)}. Approve it only if "
+            "you know what it changes in the cluster."
+        )
+    c = _PS_CONSTRUCT.search(command)
+    if c is not None:
+        return _ask(
+            "kube-noob verify does not read PowerShell, and this command builds or runs a command its text does not "
+            f"spell ({c.group(0).strip()[:40]!r}). Approve it only if you know what it runs."
+        )
+    return _pass()
 
 
 def check(
