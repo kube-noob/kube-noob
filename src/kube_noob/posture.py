@@ -21,11 +21,17 @@ def _model_posture(provider: str, base_url: str | None) -> dict[str, Any]:
 
 
 def crypto_posture() -> dict[str, Any]:
-    """FIPS 140 state of the process (SC-13): the kernel flag on RHEL / CoreOS nodes and OpenSSL's FIPS mode.
+    """What `doctor` can observe about FIPS 140 (SC-13), and nothing it cannot.
 
-    kube-noob itself only uses SHA-256 and the system OpenSSL for TLS, so on a FIPS-enabled node with the UBI image
-    every cryptographic operation goes through the FIPS-validated module.
+    Three reads: the kernel flag ``/proc/sys/crypto/fips_enabled`` (``1`` is on; unreadable is None), OpenSSL's own
+    FIPS mode as the ``_hashlib`` module linked against it reports it (``_hashlib.get_fips_mode()``), and the
+    OpenSSL version string Python was built against (``ssl.OPENSSL_VERSION``); plus which SHA-256 this process
+    runs (OpenSSL's through ``_hashlib``, or CPython's own ``_sha2``). The primitives the code calls are listed in
+    ``algorithms``. Whether any of these modules is CMVP-validated: that is a property of the module, its version
+    and its operating environment, which the operator evidences with the module name, version and certificate.
+    This function makes no such claim, and ``fipsMode`` is the flags' reading, not a validation status (G292).
     """
+    import hashlib
     import ssl
 
     kernel: bool | None = None
@@ -54,7 +60,15 @@ def crypto_posture() -> dict[str, Any]:
         "kernelFipsEnabled": kernel,
         "opensslFipsMode": openssl,
         "openssl": ssl.OPENSSL_VERSION,
-        "algorithms": "SHA-256 for integrity checks; TLS through the system OpenSSL; no MD5, SHA-1 or custom crypto",
+        "sha256Backend": (
+            "OpenSSL (_hashlib)" if type(hashlib.sha256()).__module__ == "_hashlib" else "CPython built-in (_sha2)"
+        ),
+        "algorithms": (
+            "SHA-256 (integrity, ids) and PBKDF2-HMAC-SHA256 (sealed Jira snapshot key) through hashlib; "
+            "HMAC constant-time compare of the HTTP bearer token; TLS through Python's ssl module; AES-256-GCM "
+            "for sealing a Jira snapshot through the cryptography package, whose wheel carries its own OpenSSL "
+            "build; no MD5, SHA-1 or custom crypto"
+        ),
         **({"kernelFipsNote": kernel_note} if kernel_note else {}),
     }
 
@@ -182,6 +196,7 @@ def render_text(p: dict[str, Any]) -> str:
         *(["  memory         none (memory.paths)"] if not p.get("memory") else []),
         f"  telemetry      {p['telemetry']}",
         f"  FIPS mode      {p['crypto']['fipsMode']} ({p['crypto']['openssl']})",
+        f"  sha256 backend {p['crypto']['sha256Backend']}",
         f"  config file    {p['configFile'] or 'none (defaults + environment)'}",
     ]
     lines += [f"CONFLICT: {c}" for c in p["conflicts"]]

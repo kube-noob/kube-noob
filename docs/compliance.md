@@ -31,7 +31,7 @@ what kube-noob maps to.
 | Control | Setting |
 |---|---|
 | CM-7, SC-7 | Chart `config.offline=true` (no web, no corpus downloads, local models only); keep the chart's NetworkPolicy (DNS-only egress) and add the EgressFirewall on OVN-Kubernetes |
-| SC-13 | Install OpenShift in FIPS mode and use the UBI-based image: kube-noob uses only SHA-256 and the system OpenSSL, so its crypto runs in the validated module. `kube-noob doctor` must show `FIPS mode on` |
+| SC-13 | What kube-noob can observe, and what it cannot. `kube-noob doctor` reads the kernel flag `/proc/sys/crypto/fips_enabled`, OpenSSL's own FIPS mode as Python's `_hashlib.get_fips_mode()` reports it, and the OpenSSL version string `ssl.OPENSSL_VERSION`, and prints one line: `FIPS mode on` (OpenSSL reports FIPS mode, or the kernel flag is `1` and OpenSSL's mode could not be read), `FIPS mode off` (either read says no) or `FIPS mode unknown` (neither could be read), with the version string beside it; `sha256 backend` says whether this process's SHA-256 is OpenSSL's (`_hashlib`) or CPython's own (`_sha2`); `config_status` over MCP carries the same fields. The primitives the code calls are SHA-256 and PBKDF2-HMAC-SHA256 through `hashlib`, an HMAC constant-time compare of the HTTP bearer token, TLS through Python's `ssl` module (the OpenSSL the interpreter was built against: the system one on the UBI image), and AES-256-GCM for sealing a Jira snapshot through the `cryptography` package, whose wheel carries its own OpenSSL build rather than the system module. CMVP validation is a property of a module, its version and its operating environment: the operator evidences it with the module name, version and certificate number for the OpenSSL that Python and `cryptography` each load. kube-noob makes no validation claim; `FIPS mode on` is a reading of two flags, not a validation status (G292) |
 | AC-3, AC-6 | Live cluster access stays off unless needed; when on it is read-only, namespace-scoped, never reads Secrets and redacts values |
 | IA-2, IA-5, AC-2 | Put the HTTP service behind the OpenShift OAuth proxy backed by your PIV/CAC identity provider instead of relying only on the shared bearer token |
 | AU-2, AU-3, AU-12 | Ship the container's stdout to cluster logging and your SIEM: each tool call logs the tool, argument sizes, outcome and duration, never content |
@@ -57,7 +57,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
   2026-11-02 and it asserted them anyway: there is no separate `FRMR.KSI.key-security-indicators.json` at 25.11C,
   there are ten families and not eleven, indicators are keyed by mnemonic and not by number, and nothing in the
   consolidated dataset is flagged retired -- the seven ids recorded here as `retired: true` no longer exist as ids.
-- FIPS mode is checked by `doctor` but not exercised in CI (no FIPS-mode runner).
+- `doctor` reports the kernel flag and OpenSSL's mode; it validates nothing, and CI has no FIPS-mode runner (G292).
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
 
