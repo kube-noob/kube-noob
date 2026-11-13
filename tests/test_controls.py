@@ -19,7 +19,7 @@ CONTROL_ID = re.compile(r"^(AC|AT|AU|CA|CM|CP|IA|IR|MA|MP|PE|PL|PM|PS|PT|RA|SA|S
 
 def test_every_rule_maps_to_titled_800_53_controls() -> None:
     ids = {r["ruleId"] for r in list_rules()}
-    assert len(ids) == 93 and set(RULE_CONTROLS) == ids
+    assert len(ids) == 98 and set(RULE_CONTROLS) == ids
     for rid, controls in RULE_CONTROLS.items():
         assert controls, rid
         for c in controls:

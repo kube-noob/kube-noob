@@ -15,9 +15,24 @@ from kube_noob.audit.rules import RULES, AuditContext, run_rules
 from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
-from kube_noob.yamlio import Document, load_documents
+from kube_noob.yamlio import Document, is_empty_list, load_documents
 
 ALL_STAGES = frozenset(Stage)
+#: How many reasons one declined rule lists before it says how many more there were.
+MAX_DECLINE_REASONS = 3
+#: How many further declined objects that line names before it gives a count instead.
+MAX_DECLINE_NAMES = 20
+#: How many (object, reason) entries one rule keeps in the report's `declined` map.
+MAX_DECLINED_ENTRIES = 50
+#: How the two assumptions about the version begin. They are the only caveats that are how the audit READ the
+#: input rather than what it did not read, and the gate's Markdown lists exactly these under "Assumptions" (G272).
+ASSUMED_VERSION_PREFIXES = ("No Kubernetes version given", "No OpenShift version given")
+
+
+def _label(d: Document) -> str:
+    """How a caveat names a document: its reference, or its position when it is not a mapping (a sequence of
+    Pods given as one item of a list), which has no kind or name to be called by (G272)."""
+    return d.ref() if isinstance(d.data, dict) else f"document {d.index + 1} (line {d.start_line})"
 
 
 def build_context(
@@ -43,6 +58,7 @@ def build_context(
         # and left in it made KN-S036 report every image against an allowlist of "  " (G245). The settings
         # validator already refuses them; a programmatic caller gets the same treatment.
         allowed_registries=tuple(e.strip() for e in allowed_registries if e.strip()),
+        version_stated=version is not None,
     )
 
 
@@ -63,12 +79,13 @@ def analyze(
         platform=platform,
         kubernetes_version=ctx.k8s_version,
         platform_version=ctx.platform_version,
-        resources=[d.ref() for d in docs],
+        # An empty list wrapper is the record that a kind held nothing, not a resource (G272, seventh review).
+        resources=[d.ref() for d in docs if not is_empty_list(d.data)],
     )
     if platform in OPENSHIFT_FAMILY and version is None:
-        report.assumptions.append(f"No OpenShift version given; assumed Kubernetes {ctx.k8s_version} semantics.")
+        report.assumptions.append(f"{ASSUMED_VERSION_PREFIXES[1]}; assumed Kubernetes {ctx.k8s_version} semantics.")
     if platform == "kubernetes" and version is None:
-        report.assumptions.append(f"No Kubernetes version given; assumed {ctx.k8s_version}.")
+        report.assumptions.append(f"{ASSUMED_VERSION_PREFIXES[0]}; assumed {ctx.k8s_version}.")
     if partial_bundle:
         report.assumptions.append(
             "Audited part of a namespace, so rules that fire because another object is absent "
@@ -80,7 +97,10 @@ def analyze(
     unread: list[str] = []
     for d in docs:
         for path in unread_pod_specs(d):
-            unread.append(f"{d.ref()} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
+            unread.append(f"{_label(d)} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
+            report.not_audited.append(
+                {"object": _label(d), "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}
+            )
     if unread:
         # A pod spec in a kind with no reader used to produce nothing at all -- no finding, no declined rule, no
         # word -- so a privileged container sat inside a document that reported clean. The shape is detectable
@@ -95,6 +115,7 @@ def analyze(
     for d in docs:
         for path in operator_supplied_images(d):
             supplied.append(f"{d.ref()} at {'.'.join(str(x) for x in path)}")
+            report.not_audited.append({"object": d.ref(), "kind": "container image", "why": "supplied by an operator"})
     if supplied:
         # Said, not assumed silently: the container is audited for everything else, and its image -- the one
         # thing a registry allowlist, a digest pin and a scanner all work from -- is in a ServingRuntime this
@@ -111,6 +132,9 @@ def analyze(
             # The object names a kind this reader knows pod specs for, in a group it does not. Not reading it is
             # right -- another project's CRD of the same name has another schema -- but saying nothing about it
             # leaves a privileged container in a document that reported clean (G231).
+            report.not_audited.append(
+                {"object": d.ref(), "kind": "object", "why": "in an API group this reader refuses"}
+            )
             report.assumptions.append(
                 f"{d.ref()} declares API group {group}, which is not where kube-noob knows this kind's pod specs "
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
@@ -123,6 +147,45 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    # Rules that reached no verdict at all, and why: a stage the caller did not ask for, or a decline on every
+    # object the rule looked at (`declined` keeps the per-object detail). A rule with a finding on one object and
+    # a decline on another is partly evaluated, stays in `evaluated_rules`, and is not here (G272).
+    for rid, rule in sorted(RULES.items()):
+        if rule.stage not in rule_stages and rule.stage is not Stage.RED_TEAM:
+            report.not_evaluated[rid] = "stage not requested"
+    fired = {f.rule_id for f in findings}
+    for rid in sorted(ctx.declined):
+        if rid not in evaluated and rid not in fired:
+            n = len(ctx.declined[rid])
+            report.not_evaluated[rid] = f"declined on {n} object{'s' if n != 1 else ''}"
+    # A rule that declined and said why gets one line, sorted by id so the same input gives the same bytes. The
+    # line gives the first few reasons in full and then NAMES every further object, up to a cap, with a count of
+    # the ones it could not name: capping reasons alone left the fourth and fifth declined objects named nowhere
+    # in any format (G272). The JSON carries the bounded map in `declined`.
+    for rid in sorted(ctx.declined):
+        entries = ctx.declined[rid]
+        shown = entries[:MAX_DECLINE_REASONS]
+        named = {res for res, _ in shown if res}
+        rest = list(dict.fromkeys(res for res, _ in entries[MAX_DECLINE_REASONS:] if res and res not in named))
+        unnamed = sum(1 for res, _ in entries[MAX_DECLINE_REASONS:] if not res)
+        tail = f"; also not evaluated: {', '.join(rest[:MAX_DECLINE_NAMES])}" if rest else ""
+        withheld = max(0, len(rest) - MAX_DECLINE_NAMES) + unnamed
+        if withheld:
+            tail += f"; and {withheld} more not named"
+        # How many objects it DID read in full: a partial verdict says "clean or found on N, declined on M"
+        # rather than letting the N decide the rule's word (G272).
+        decided = len(ctx.examined.get(rid, set()) - {res for res, _ in entries})
+        if decided:
+            tail += f"; {decided} other object{'s' if decided != 1 else ''} read in full"
+        report.assumptions.append(
+            f"{rid} was not evaluated in full, so it is not counted as clean: "
+            f"{'; '.join(reason for _, reason in shown)}{tail}."
+        )
+        report.declined[rid] = {
+            "entries": [{"resource": res, "reason": reason} for res, reason in entries[:MAX_DECLINED_ENTRIES]],
+            "withheld": max(0, len(entries) - MAX_DECLINED_ENTRIES),
+            "decided": decided,
+        }
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that
@@ -207,7 +270,22 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
     """
     docs = manifests if isinstance(manifests, list) else load_documents(manifests)
     objects = [d.data for d in docs if isinstance(d.data, dict)]
-    if any("apiVersion" in o and "kind" in o for o in objects):
+    if any("apiVersion" in o and "kind" in o and not is_empty_list(o) for o in objects):
+        return
+    # Only lists that held nothing, in either spelling, at the top or inside a `kind: List` (the seventh review
+    # found a List of empty PodLists scoring 100): nothing to audit, said in those words (G272). An empty list
+    # with a key twice is for KN-V018 to refuse, which is the answer, so it is not refused here.
+    if objects and all(is_empty_list(o) for o in objects) and not any(d.duplicate_keys or d.refused_keys for d in docs):
+        kinds = sorted({str(o.get("kind")) for o in objects})
+        raise ConfigError(
+            f"nothing here is a Kubernetes object: the input is {len(objects)} list{'s' if len(objects) != 1 else ''} "
+            f"({', '.join(kinds)}) that held no items, so there is nothing to audit. Pass the objects themselves, "
+            "or a list with items."
+        )
+    if any(d.from_list for d in docs) or any(d.duplicate_keys or d.refused_keys for d in docs):
+        # The list wrapper had apiVersion and kind; what it held is for the audit to report (KN-V001 on an item
+        # that is not an object, the pods inside a sequence item named as not audited). Refusing it here said
+        # "no document has both apiVersion and kind" about a file whose wrapper and Pods all did (G272).
         return
     keys: set[str] = set()
     for o in objects:

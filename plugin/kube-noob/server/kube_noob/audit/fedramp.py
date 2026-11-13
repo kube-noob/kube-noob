@@ -843,6 +843,7 @@ BY_CONTROL: dict[str, tuple[str, ...]] = {
     "IA-5(7)": ("KSI-PIY-RSD",),
     "SA-22": ("KSI-SCR-MIT",),
     "SC-28": ("KSI-SVC-SIN",),
+    "SC-28(1)": ("KSI-SVC-SIN",),
     "SC-36": (),
     "SC-39": ("KSI-IAM-ELP", "KSI-IAM-JIT", "KSI-SVC-EIS"),
     "SC-4": ("KSI-CNA-ULN", "KSI-IAM-ELP", "KSI-PIY-RSD", "KSI-SVC-PRR", "KSI-SVC-SIN"),
@@ -1245,6 +1246,13 @@ def summary(
                     row["clean"] = sum(1 for r in rest if r not in hidden and r in ran)
                     undecided = [r for r in rest if r not in hidden and r not in ran]
                     row["notEvaluated"] = len(undecided)
+                    partly = [r for r in rules if (r in with_findings or r in hidden) and r not in ran]
+                    if partly:
+                        # Found something here and declined elsewhere (G272): counted under findings or withheld,
+                        # and named, so a declined object never reads as covered by this indicator.
+                        row["partlyEvaluatedRules"] = partly[:MAX_NAMED_RULES]
+                        if len(partly) > MAX_NAMED_RULES:
+                            row["morePartlyEvaluated"] = len(partly) - MAX_NAMED_RULES
                     if undecided:
                         # Naming them matters: a bare notEvaluated: 1 on an AdminNetworkPolicy bundle is the one
                         # rule that knows the policy may be inert (KN-N014), and a caller who cannot see which

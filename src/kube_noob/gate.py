@@ -359,7 +359,17 @@ def run(
                 report.evaluated_rules or None,
                 report.fired_rules or None,
             ),
+            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
+            # API server the audit had declined, and said nothing anywhere (G272).
+            "assumptions": list(report.assumptions),
+            **({"declined": report.declined} if report.declined else {}),
+            **({"notAudited": report.not_audited} if report.not_audited else {}),
+            **({"notEvaluated": report.not_evaluated} if report.not_evaluated else {}),
         }
+        if (undetermined := report.undetermined()) is not None:
+            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh review).
+            coverage["undetermined"] = undetermined
+            failures.append(f"the audit is undetermined: {undetermined}")
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
     for uri, text in containerfiles:
@@ -437,6 +447,9 @@ def run(
         "version": version,
         "failOn": fail_on,
         "passed": not failures,
+        # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
+        # false and the headline says "incomplete", not "failed" (G272).
+        "incomplete": "undetermined" in coverage,
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -767,6 +780,15 @@ def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
     return props
 
 
+def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
+    """The audit's assumptions and the rules that reached no verdict, as SARIF warnings (G269, G272)."""
+    from kube_noob.cli import caveat_lines
+
+    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes += [{"level": "warning", "message": {"text": ln}} for ln in caveat_lines(rep.get("controlSummary") or {})]
+    return notes
+
+
 def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
     """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
 
@@ -792,7 +814,7 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         }
         for f in rep["findings"]
     ]
-    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes = _caveat_notes(rep)
     notes += [
         {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
         for u in rep.get("unreadable") or []
@@ -942,8 +964,15 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     return out
 
 
+def verdict_word(report: dict[str, Any]) -> str:
+    """ "passed", "failed", or "incomplete" while the audit under the gate is undetermined."""
+    if report.get("incomplete"):
+        return "incomplete"
+    return "passed" if report["passed"] else "failed"
+
+
 def markdown(report: dict[str, Any], top: int = 25) -> str:
-    verdict = "passed" if report["passed"] else "failed"
+    verdict = verdict_word(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
         f"## kube-noob gate {verdict}",
@@ -957,7 +986,8 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         "",
     ]
     if report["failures"]:
-        lines += ["### Why it failed", "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
+        why = "### Why it is incomplete" if verdict == "incomplete" else "### Why it failed"
+        lines += [why, "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
     if report["findings"]:
         lines += ["### Findings", "", "| Severity | Rule | Where | Finding | Admission |", "|---|---|---|---|---|"]
         for r in report["findings"][:top]:
@@ -1009,13 +1039,81 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
+    # Two sections, not one: "assumed 1.35" is how the audit read the input, and everything else is something it
+    # did not read. "Assumptions" is an ALLOWLIST -- the assumed-version lines -- because a split by "is this a
+    # declined rule" put a RayCluster's unaudited pods and a kind with no bundled schema under "Assumptions", as if
+    # they had been read (G272).
+    from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
+    from kube_noob.cli import caveat_lines
+
+    caveats = [str(a) for a in report.get("assumptions") or []]
+    assumed = [a for a in caveats if a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps = [a for a in caveats if not a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps += caveat_lines(report.get("controlSummary") or {})
+    for heading, items in (("### Assumptions", assumed), ("### Not evaluated in full", gaps)):
+        if not items:
+            continue
+        shown = items[:MD_CAVEATS]
+        more = [f"- and {len(items) - MD_CAVEATS} more in the JSON report"] if len(items) > MD_CAVEATS else []
+        lines += [heading, "", *[f"- {_cell(a, 1200)}" for a in shown], *more, ""]
     return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
+
+
+#: How many audit caveats the Markdown summary lists before pointing at the JSON report.
+MD_CAVEATS = 20
+
+
+def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
+    """The gate's SARIF: its results, and what the audit under it could not decide, as the audit's SARIF carries.
+
+    The gate runs the same audit and dropped its caveats on the way out: a static pod the audit declined left the
+    gate's SARIF, Markdown and HTML silent, and `passed: true` (G272).
+    """
+    notes = _caveat_notes(report)
+    notes += [
+        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
+        for u in report.get("unreadable") or []
+    ]
+    undetermined = report.get("undetermined")
+    if not notes and not undetermined:
+        return sarif(report)
+    invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
+    if undetermined:
+        # The incomplete state as a property of the invocation AND one note-level result, so a consumer that
+        # reads only results sees it (G272, seventh review).
+        invocation["properties"] = {"incomplete": True, "undetermined": undetermined}
+    out = sarif(report, invocation=invocation)
+    if undetermined:
+        run = out["runs"][0]
+        run["tool"]["driver"].setdefault("rules", []).append(
+            {
+                "id": "kube-noob/undetermined",
+                "name": "AuditUndetermined",
+                "shortDescription": {"text": "The audit reached no verdict on part of the input"},
+                "fullDescription": {
+                    "text": "Something was not read: a rule declined on an object, or an object no rule audited. "
+                    "The gate is incomplete, not passed."
+                },
+                "helpUri": INFO_URI,
+                "defaultConfiguration": {"level": "note"},
+            }
+        )
+        run["results"].append(
+            {
+                "ruleId": "kube-noob/undetermined",
+                "ruleIndex": len(run["tool"]["driver"]["rules"]) - 1,
+                "level": "note",
+                "message": {"text": f"gate incomplete: {undetermined}"},
+            }
+        )
+    return out
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:
     if sarif_path:
-        # json_document: a CI step that prints the file must not run a workflow command from it (G279)
-        Path(sarif_path).write_text(json_document(sarif(report), indent=1) + "\n", encoding="utf-8")
+        # json_document: a CI step that prints the file must not run a workflow command from it (G279); the gate's
+        # SARIF carries the audit's caveats and the undetermined state (G272), and goes through the same boundary.
+        Path(sarif_path).write_text(json_document(sarif_of_gate(report), indent=1) + "\n", encoding="utf-8")
     if summary:
         Path(summary).write_text(markdown(report), encoding="utf-8", errors="replace")
     if quality:

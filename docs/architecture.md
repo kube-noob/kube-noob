@@ -53,6 +53,32 @@ flowchart LR
 7. **Red Team** - nine adversarial scenarios evaluated on the final output; remaining HIGH/CRITICAL findings mark the
    result `blocked`.
 
+## What the audit says when it did not read something
+
+Every reader in the audit engine records a gap in one of five places, and every renderer reads them through one
+predicate, so a gap can neither hide in a format nor read as a pass (G272, seventh review):
+
+1. `AuditContext.cannot_decide(rule_id, why, resource=None)` records that a RULE declined on an OBJECT. `why` is a
+   fixed phrase (never the input's text; the input lives only in `resource`, cleaned), and `Report.declined`
+   carries the per-object detail, bounded, per rule.
+2. `Report.not_audited` is the list of `{object, kind, why}` records that an OBJECT was not audited without a rule
+   declining on it: a pod spec in a kind with no reader, a container image an operator supplies, an object in an
+   API group the reader refuses. `why` is a fixed phrase. JSON key `notAudited`.
+3. `Report.not_evaluated` maps a RULE to why it reached no verdict at all: "stage not requested", or "declined on N
+   objects" (the summary of `declined`). A rule with a finding on one object and a decline on another is partly
+   evaluated, stays in `evaluated_rules`, and is listed in `controlSummary.partlyEvaluatedRules` instead. JSON key
+   `notEvaluated`.
+4. `Report.undetermined()` is the one predicate: not None exactly when `declined` or `not_audited` is non-empty.
+   Then `summary.score` is null with the reason beside it as `summary.scoreWithheld`, `audit` and `gate` exit 1
+   whatever `--fail-on` says, the gate is `incomplete: true` and `passed: false` with the headline "gate
+   incomplete" (JSON, Markdown, HTML, and in the SARIF as an invocation property plus one note-level result), the
+   MCP tools carry the same dictionary, `fix`'s `after` is withheld, and the eval grader marks every
+   finding-derived check (`forbidRules`, `maxSeverity`, `schemaValid`, `minScore`) not evaluated with the reason.
+   A stage the caller did not ask for, and the quiet declines of a partial bundle, are not an unread object.
+5. Every renderer prints it once: the text headline (`score=not determined (...)`), JSON and YAML, the SARIF
+   notifications, the HTML and Markdown "Not evaluated in full" section (the "Assumed" label is an allowlist of
+   the assumed-version lines), the gate's verdict, the MCP results and the grader.
+
 ## Trust boundaries
 
 - MCP clients and model output are untrusted input: every tool validates with Pydantic, YAML is size/alias bounded.
@@ -126,6 +152,14 @@ flowchart LR
   shipped in an image the chart pins by digest. The init container copies the archive into a scratch volume that the
   server mounts read-only; `serve` validates the whole archive and imports it only when it is newer than the copy
   it has. Trust boundary: the image registry and its signature, checked by the operator with `cosign verify`.
+- The control-plane rules (`KN-S037`..`KN-S041`, G272) read only what the manifest states: a static pod's
+  `command`, `args` and literal `env` values, an APIService, and the OpenShift `APIServer` and `OAuth`
+  singletons, whose identity-provider entries name Secrets and ConfigMaps by reference only. They never open a
+  file a flag names (`--authorization-config`, `--authentication-config`, etcd's `--config-file`), never follow
+  `valueFrom` or `envFrom`, expand `$(VAR)` only from a literal `env` value in the same container (as the kubelet
+  does) and never run a shell script; each of those makes the rule
+  decline with the reason, so what was not read is part of the answer rather than a pass. Nothing new is read
+  from a cluster: these kinds reach the audit only when the user passes them.
 - The attack-path scan (`posture scan`, tools `posture_scan` and `cluster_posture_scan`) reads RBAC objects (who may do what, no credentials) and the objects that expose and run pods; Secret objects in a bundle are dropped before analysis, and the live allowlist refuses Secrets. It reports paths and fixes and changes nothing. The blast radius (`posture reach`, tools `posture_reach` and `cluster_posture_reach`) reads the same objects through the same reader and names the Secrets an account may read only by the `resourceNames` and scopes in RBAC rules; its Mermaid output escapes every label and its text output (and the scan's) prints every field on one line, since object names are input that would otherwise reach whatever renders the diagram or forge a row in a terminal; and its result is bounded in bytes (96 KB, diagram included) before it reaches an MCP caller, every list in it included. Of a Secret in the input, the scan keeps only whether its type is `kubernetes.io/service-account-token` and the account its annotation names, so a legacy token mounted by a pod is followed; the Secret's data is never read and the object is then dropped. With cluster access it lists Gateway API HTTPRoutes and GRPCRoutes and Istio VirtualServices (read-only, namespaced) as exposure; a failed list, 404 included, leaves exposure not determined. A route can set or match header values that are credentials (`Authorization`, an API key), so the backend masks every value under a route's header blocks before any reader or MCP caller sees it.
 - Build analytics (`kube_noob.build.analytics`) reads run folders on disk; JUnit XML with a DOCTYPE or entities is refused before parsing, and every file is size-bounded. `kube_noob.build.github_history` is the only code that reads the GitHub token: through `net.Purpose.CI` (on only with `ci.githubEnabled`, GET only, https to the configured API host and port only, no redirects), with a random pause between requests; the Claude plugin does not ship it.
 - The CI gate (`kube_noob.gate`) is offline: it reads the files it is given (and runs `helm template` for `--chart`, with a throwaway Helm home), audits them together so rules that need other objects still work, maps each finding back to its file and line (or chart template), and writes SARIF, Markdown and code quality JSON. The GitHub Action installs kube-noob from its own source with hash-pinned dependencies and a hash-pinned build backend and passes every input through the environment; the Tekton Task mounts the source read-only and passes params through the environment.

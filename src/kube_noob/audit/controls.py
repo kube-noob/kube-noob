@@ -43,6 +43,7 @@ TITLES: dict[str, str] = {
     "SC-8": "Transmission Confidentiality and Integrity",
     "SC-8(1)": "Transmission Confidentiality and Integrity | Cryptographic Protection",
     "SC-28": "Protection of Information at Rest",
+    "SC-28(1)": "Protection of Information at Rest | Cryptographic Protection",
     "SC-36": "Distributed Processing and Storage",
     "SC-39": "Process Isolation",
     "SI-2": "Flaw Remediation",
@@ -151,6 +152,12 @@ RULE_CONTROLS: dict[str, tuple[str, ...]] = {
     "KN-S034": ("CM-3(2)",),  # an operator upgrade nobody reviewed
     "KN-S035": ("AU-2", "AU-12"),  # audit turned off, for everyone or for one group
     "KN-C016": ("SC-5", "SC-6"),  # one namespace can take the cluster's capacity
+    # The control plane and its trust boundaries (G272)
+    "KN-S037": ("SC-8", "SC-8(1)", "CM-6"),  # the aggregator does not authenticate the server it forwards to
+    "KN-S038": ("AC-3", "AC-14", "CM-6"),  # every request authorized, or requests with no identity accepted
+    "KN-S039": ("SC-8", "SC-8(1)", "AC-3"),  # the store of every Secret, reachable in plaintext or by anyone
+    "KN-S040": ("SC-28", "SC-28(1)"),  # Secrets written to etcd as they are
+    "KN-S041": ("SC-8", "SC-8(1)", "IA-5"),  # passwords sent to the directory in plaintext
 }
 
 
@@ -198,18 +205,30 @@ def summary(
             excepted[c] = excepted.get(c, 0) + 1
     clean: dict[str, int] = {}
     unevaluated: dict[str, int] = {}
+    partly: dict[str, int] = {}
     withheld: dict[str, int] = {}
+    not_evaluated_rules: list[str] = []
+    partly_evaluated_rules: list[str] = []
     if evaluated_rule_ids is not None:
         ran = set(evaluated_rule_ids)
         with_findings = set(rule_ids) | set(excepted_rule_ids or ())
         hidden = set(fired_rule_ids or ()) - with_findings
         for rid, cs in RULE_CONTROLS.items():
+            if (rid in with_findings or rid in hidden) and rid not in ran:
+                # It found something AND declined somewhere: the finding counts as a finding, and the rule is
+                # named, because before G272's third review it was named nowhere -- neither clean nor in the
+                # not-evaluated list, so the declined objects read as covered.
+                partly_evaluated_rules.append(rid)
+                for c in cs:
+                    partly[c] = partly.get(c, 0) + 1
             if rid in with_findings:
                 continue  # already counted as a finding or an accepted exception
             if rid in hidden:
                 bucket = withheld  # it ran and it DID find something; this view just does not show it
             else:
                 bucket = clean if rid in ran else unevaluated
+                if rid not in ran:
+                    not_evaluated_rules.append(rid)
             for c in cs:
                 bucket[c] = bucket.get(c, 0) + 1
     ordered = sorted(
@@ -224,10 +243,19 @@ def summary(
         if evaluated_rule_ids is not None:
             entry["clean"] = clean.get(c, 0)
             entry["notEvaluated"] = unevaluated.get(c, 0)
+            if partly.get(c):
+                entry["partlyEvaluated"] = partly[c]
             if fired_rule_ids is not None:
                 entry["withheld"] = withheld.get(c, 0)
         controls.append(entry)
     out: dict[str, Any] = {"catalog": CATALOG, "controls": controls}
+    if evaluated_rule_ids is not None:
+        # The counts said HOW MANY rules of a control did not run; nothing said WHICH, outside the KSI view, so a
+        # rule that declined quietly was invisible in the text view and the SARIF (G272).
+        out["notEvaluatedRules"] = sorted(not_evaluated_rules)
+        # Rules that found something on some objects and declined on others (`declined` names those objects).
+        # Disjoint from notEvaluatedRules, so every rule that was not evaluated in full is in exactly one (G272).
+        out["partlyEvaluatedRules"] = sorted(partly_evaluated_rules)
     note = "Findings are evidence about these controls; an assessment decides whether a control is met."
     if excepted:
         note += (

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: PodList
+items: []
+---
+apiVersion: v1
+kind: ServiceList
+items: []

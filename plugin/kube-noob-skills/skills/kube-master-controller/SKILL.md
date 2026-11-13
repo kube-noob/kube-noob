@@ -40,7 +40,12 @@ nothing checked it", never "this passes".
 
 ## Output format
 
-1. **Brief** — platform, versions, every assumption, and plainly what was checked against what.
+1. **Brief** — platform, versions, every assumption, and plainly what was checked against what. When the user
+   pastes a `kube-noob audit --format json` report, what it did not decide is part of the answer: `assumptions`,
+   `declined` (per rule, the objects it could not read and why) and `controlSummary.notEvaluatedRules` (rules that
+   reached no verdict). A rule listed there is neither clean nor a finding; never report it as passed.
+   `controlSummary.partlyEvaluatedRules` found something and declined on other objects: report the findings, and
+   never the declined objects as covered.
 2. **The manifest** — the final YAML.
 3. **Red team findings and what the user must run** — the exposures that remain, and the verification commands:
 

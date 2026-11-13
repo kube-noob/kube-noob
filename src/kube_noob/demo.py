@@ -56,6 +56,11 @@ def _step(emit: Emit, why: str, command: str) -> None:
     emit(f"$ {command}")
 
 
+def _score(summary: dict[str, Any]) -> str:
+    """The headline score, or "not determined" while the audit withholds it (never `None/100`, G272)."""
+    return "not determined" if summary.get("score") is None else f"{summary['score']}/100"
+
+
 def _audit(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
@@ -67,7 +72,7 @@ def _audit(kit: Any, emit: Emit, work: Path) -> None:
     )
     rep = kit.audit(tk.AuditIn(manifests=text, platform="openshift", version="4.22"))
     c = rep["summary"]["counts"]
-    emit(f"score {rep['summary']['score']}/100 | high={c['high']} medium={c['medium']} low={c['low']}")
+    emit(f"score {_score(rep['summary'])} | high={c['high']} medium={c['medium']} low={c['low']}")
     for f in [f for f in rep["findings"] if f["severity"] in {"critical", "high"}][:3]:
         emit(f"[{f['severity'].upper():8}] {f['ruleId']} line {f['line']}: {f['message']}")
         emit(_wrap(f"fix: {f['remediation']}"))
@@ -77,7 +82,7 @@ def _audit(kit: Any, emit: Emit, work: Path) -> None:
         "kube-noob fix -f examples/insecure-deployment.yaml --platform openshift -o fixed.yaml",
     )
     fixed = kit.fix(tk.FixIn(manifests=text, platform="openshift", version="4.22"))
-    emit(f"{len(fixed['changes'])} changes applied; score {rep['summary']['score']} -> {fixed['after']['score']}")
+    emit(f"{len(fixed['changes'])} changes applied; score {_score(rep['summary'])} -> {_score(fixed['after'])}")
     for ch in fixed["changes"][:4]:
         emit(f"  + {ch['path']}: {ch['reason']}")
     emit("Left for a human (needs app knowledge):")
@@ -128,7 +133,7 @@ def _protocol(kit: Any, emit: Emit, work: Path) -> None:
     brief = out["auditValidationBrief"]
     emit(
         f"status: {out['status']} | {brief['platform']} {brief['platformVersion']} (Kubernetes "
-        f"{brief['kubernetesVersion']}) | score {brief['after']['score']}/100"
+        f"{brief['kubernetesVersion']}) | score {_score(brief['after'])}"
     )
     kinds: dict[str, int] = {}
     for r in brief["resources"]:

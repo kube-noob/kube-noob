@@ -7,7 +7,7 @@ spec:
   homepage: https://github.com/kube-noob/kube-noob
   shortDescription: Audit, debug and learn Kubernetes offline. No AI inside.
   description: |
-    kube-noob audits manifests against 93 deterministic rules, explains why a NetworkPolicy allows or
+    kube-noob audits manifests against 98 deterministic rules, explains why a NetworkPolicy allows or
     denies traffic, diagnoses pasted events and logs, and reads an OpenShift must-gather -- offline, with no
     model and no network. Findings name the NIST SP 800-53 Rev. 5 controls they are evidence for, and a verdict
     it cannot reach is reported as undetermined rather than as a pass.

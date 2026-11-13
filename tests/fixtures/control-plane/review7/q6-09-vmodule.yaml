@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-apiserver
+  namespace: kube-system
+spec:
+  containers:
+  - name: kube-apiserver
+    image: registry.k8s.io/kube-apiserver:v1.30.0
+    command:
+    - kube-apiserver
+    - --etcd-servers=https://e:2379
+    - --authorization-mode=Node,RBAC
+    - --vmodule=a=1

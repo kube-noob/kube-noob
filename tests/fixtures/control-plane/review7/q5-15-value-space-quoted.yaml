@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k3s
+  namespace: kube-system
+spec:
+  containers:
+  - name: k3s
+    image: rancher/k3s:v1.31.0-k3s1
+    command:
+    - k3s
+    - server
+    - '--kube-apiserver-arg=authorization-mode= AlwaysAllow'

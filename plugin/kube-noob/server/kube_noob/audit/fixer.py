@@ -28,7 +28,28 @@ from kube_noob.catalog import (
     PROVISIONERS,
     removed_api,
 )
+from kube_noob.errors import ManifestError
 from kube_noob.yamlio import Document, dump_documents, fmt_path, load_documents
+
+
+class FixRefused(ManifestError):
+    """`fix` will not rewrite this input: a document the API server refuses for a key given twice, or a list
+    wrapper whose `items` occurrences the loader merged or could not read. Writing it back last-wins, or writing
+    the objects of one occurrence as if the file had been read whole, silently dropped a privileged Pod from the
+    file `fix` wrote (G272, seventh review). The duplicate is for the author to fix first."""
+
+
+def _refused(docs: list[Document]) -> str | None:
+    """Why `fix` refuses these documents, or None."""
+    for d in docs:
+        for path, line in d.duplicate_keys:
+            return f"{d.ref()} has the key '{fmt_path(path)}' twice (second occurrence on line {line})"
+        for path, line, wrapper, note in d.wrapper_duplicate_keys:
+            return f"{wrapper} has the key '{fmt_path(path)}' twice (second occurrence on line {line})" + (
+                f"; {note}" if note else ""
+            )
+    return None
+
 
 SIMPLE_RENAMES: dict[tuple[str, str], str] = {
     ("extensions/v1beta1", "Deployment"): "apps/v1",
@@ -511,6 +532,10 @@ def fix_manifests(
     openshift_ids: bool = True,
 ) -> FixResult:
     docs = load_documents(text)
+    if (why := _refused(docs)) is not None:
+        raise FixRefused(
+            f"{why}: the API server refuses this file, so fix is not writing it back; fix the duplicate first"
+        )
     fx = _Fixer(platform, k8s_version, harden, openshift_ids)
     objs = [copy.deepcopy(d.data) for d in docs]
     classes = dict(KNOWN_STORAGE_CLASSES)

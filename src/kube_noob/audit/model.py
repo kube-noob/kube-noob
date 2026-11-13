@@ -117,6 +117,10 @@ class RedTeamScenario:
         }
 
 
+#: How many declined rules the withheld-score reason names before it gives a count.
+MAX_WITHHELD_NAMED = 10
+
+
 @dataclass
 class Report:
     platform: str
@@ -137,6 +141,20 @@ class Report:
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
     detection_coverage: dict[str, Any] | None = None
+    # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
+    # rule declined with a reason, so every result that had none stays byte-identical.
+    declined: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Every object, or part of one, that was NOT audited without a rule declining on it: a pod spec in a kind
+    # with no reader, a container whose image an operator supplies, an object in a group this reader refuses.
+    # Each entry is {"object", "kind", "why"} with `why` a fixed phrase, never input text; `undetermined` reads
+    # it beside `declined`: the sixth review found "containers were NOT audited" printed under `score 100.0`
+    # (G272). Carried in `as_dict` as `notAudited`.
+    not_audited: list[dict[str, str]] = field(default_factory=list)
+    # Rule -> why it reached no verdict at all on this input: "stage not requested" when the caller asked for
+    # other stages, or the summary of `declined` ("declined on N objects"), which keeps the per-object detail.
+    # `partlyEvaluatedRules` (a finding on one object, a decline on another) stay in `evaluated_rules` and are
+    # not here. Carried in `as_dict` as `notEvaluated` (G272, seventh review).
+    not_evaluated: dict[str, str] = field(default_factory=dict)
 
     def max_severity(self) -> Severity | None:
         return max((f.severity for f in self.findings), default=None)
@@ -148,10 +166,55 @@ class Report:
         return out
 
     def score(self) -> float:
-        """0..100 posture score. Deterministic; used by the learning grader and the training reward."""
+        """0..100 posture score over the findings. Deterministic; used by the learning grader and the training
+        reward, which ask for it by name. The REPORT withholds it while anything was not read: see
+        `undetermined`."""
         weights = {Severity.CRITICAL: 25.0, Severity.HIGH: 10.0, Severity.MEDIUM: 4.0, Severity.LOW: 1.0}
         penalty = sum(weights.get(f.severity, 0.0) for f in self.findings)
         return max(0.0, 100.0 - penalty)
+
+    def undetermined(self) -> str | None:
+        """Why this report is not a verdict, or None when it is one: the ONE predicate every renderer reads.
+
+        A score is computed from findings, and a rule that declined on an object (`declined` names it: an API
+        server started through a script it did not read, a partly evaluated rule) found nothing there BECAUSE it
+        did not look. `score=100.0` printed above "KN-S038 was not evaluated in full" was a number beside an
+        unread rule, the one thing the product rule forbids (G272). The same holds for every other record that
+        something was not read (`not_audited`). While this is not None: `score` is null with this text beside
+        it as `scoreWithheld`, `audit` and `gate` exit 1 whatever `--fail-on` says, the gate is `incomplete` and
+        not `passed`, and the eval grader marks every finding-derived check not evaluated (seventh review: an
+        undetermined audit exited 0 and the gate said passed). The quiet declines of a partial bundle (no
+        NetworkPolicy here to judge) and a stage the caller did not ask for are not an unread object, and keep
+        the number.
+
+        The text before the first colon is the short form the text view prints.
+        """
+        if not self.declined and not self.not_audited:
+            return None
+        heads: list[str] = []
+        details: list[str] = []
+        if self.declined:
+            ids = sorted(self.declined)
+            heads.append(f"{len(ids)} rule{'s' if len(ids) != 1 else ''} not evaluated in full")
+            details.append(
+                ", ".join(ids[:MAX_WITHHELD_NAMED])
+                + (f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else "")
+            )
+        if self.not_audited:
+            counts: dict[str, int] = {}
+            for entry in self.not_audited:
+                counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
+            heads.append(
+                " and ".join(f"{n} {what}{'s' if n != 1 else ''}" for what, n in sorted(counts.items()))
+                + " not audited"
+            )
+            names = list(dict.fromkeys(entry["object"] for entry in self.not_audited))
+            details.append(
+                "not read in full: "
+                + ", ".join(names[:MAX_WITHHELD_NAMED])
+                + (f" and {len(names) - MAX_WITHHELD_NAMED} more" if len(names) > MAX_WITHHELD_NAMED else "")
+            )
+        return f"{' and '.join(heads)}: {'; '.join(details)}"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -162,7 +225,10 @@ class Report:
             "summary": {
                 "counts": self.counts(),
                 "maxSeverity": top.name.lower() if (top := self.max_severity()) is not None else None,
-                "score": round(self.score(), 1),
+                # null, with the reason beside it, while a rule declined on an object; a report where none did
+                # stays byte-identical (G272).
+                "score": None if (withheld := self.undetermined()) else round(self.score(), 1),
+                **({"scoreWithheld": withheld} if withheld else {}),
             },
             "assumptions": self.assumptions,
             "findings": [f.as_dict() for f in sorted(self.findings, key=_sort_key)],
@@ -179,6 +245,9 @@ class Report:
             # Only when the bundle carried the cluster audit configuration, so every result that never saw one
             # stays byte-identical (R4, G244).
             **({"detectionCoverage": self.detection_coverage} if self.detection_coverage else {}),
+            **({"declined": self.declined} if self.declined else {}),
+            **({"notAudited": self.not_audited} if self.not_audited else {}),
+            **({"notEvaluated": self.not_evaluated} if self.not_evaluated else {}),
         }
 
 

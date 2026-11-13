@@ -1,0 +1,31 @@
+rule: KN-S041
+# The OAuth config resource only exists on OpenShift; on kubernetes this rule has nothing to read.
+platform: openshift
+version: '4.20'
+good: |
+  apiVersion: config.openshift.io/v1
+  kind: OAuth
+  metadata: {name: cluster}
+  spec:
+    identityProviders:
+    - name: corp
+      type: LDAP
+      mappingMethod: claim
+      ldap:
+        url: ldap://ldap.example.com/ou=users,dc=example,dc=com?uid
+        insecure: false
+        ca: {name: ldap-ca}
+        attributes: {id: [dn], preferredUsername: [uid]}
+bad: |
+  apiVersion: config.openshift.io/v1
+  kind: OAuth
+  metadata: {name: cluster}
+  spec:
+    identityProviders:
+    - name: corp
+      type: LDAP
+      mappingMethod: claim
+      ldap:
+        url: ldap://ldap.example.com/ou=users,dc=example,dc=com?uid
+        insecure: true
+        attributes: {id: [dn], preferredUsername: [uid]}

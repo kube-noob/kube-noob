@@ -77,6 +77,10 @@
       "controlId": "sc-28",
       "objectiveId": "sc-28_obj"
     },
+    "SC-28(1)": {
+      "controlId": "sc-28.1",
+      "objectiveId": "sc-28.1_obj"
+    },
     "SC-36": {
       "controlId": "sc-36",
       "objectiveId": "sc-36_obj"

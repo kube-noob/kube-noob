@@ -1,0 +1,18 @@
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata: {name: cp, namespace: default}
+spec:
+  replicas: 3
+  version: v1.31.0
+  machineTemplate:
+    infrastructureRef: {kind: DockerMachineTemplate, apiVersion: infrastructure.cluster.x-k8s.io/v1beta1, name: cp}
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          authorization-mode: Node,RBAC
+    files:
+    - path: /etc/kubernetes/manifests/kube-apiserver.yaml
+      content: |
+        apiVersion: v1
+        kind: Pod
