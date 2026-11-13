@@ -682,10 +682,11 @@ def test_the_budget_message_states_the_budget_the_hook_ran_with(ws: Path, monkey
     assert f"{hook.BUDGET_SECONDS:g}-second budget" in hook._timeout_message(hook.BUDGET_SECONDS)
     # the child killed at the budget: the parent's own message states that budget
     monkeypatch.setattr(verify, "evaluate", stuck_in_c)
-    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    captured = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", captured)
     stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
     assert hook.main(stdin=stdin, env={}, options=OPTS, budget=0.5, isolate="fork") == 2
-    assert "0.5-second budget" in sys.stderr.getvalue()  # type: ignore[attr-defined]
+    assert "0.5-second budget" in captured.getvalue()
 
 
 def test_a_long_command_that_names_no_kube_tool_passes_the_hook(ws: Path) -> None:
@@ -704,12 +705,20 @@ def test_a_long_command_that_names_no_kube_tool_passes_the_hook(ws: Path) -> Non
 )
 def test_the_hook_answers_under_an_ascii_terminal_encoding(ws: Path, env: dict[str, str]) -> None:
     """A deny's stderr and an ask's stdout carry « »; under an ASCII encoding they must still be written."""
-    full = {k: v for k, v in os.environ.items() if k not in {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}}
+    locale_vars = {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}
+    full = {k: v for k, v in os.environ.items() if k not in locale_vars}
     full.update(env, KUBE_NOOB_HOOK="")
     run = [sys.executable, "-m", "kube_noob", "hook", "claude-code", *CLI_OPTS]
-    denied = subprocess.run(run, input=_input("kubectl apply -f k8s/bad.yaml", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
-    assert denied.returncode == 2 and denied.stdout == "" and "KN-S013" in denied.stderr and "k8s/bad.yaml" in denied.stderr
-    asked = subprocess.run(run, input=_input("kubectl delete ns prod", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
+
+    def call(command: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            run, input=_input(command, ws), capture_output=True, text=True, env=full, timeout=120, check=False
+        )
+
+    denied = call("kubectl apply -f k8s/bad.yaml")
+    assert denied.returncode == 2 and denied.stdout == ""
+    assert "KN-S013" in denied.stderr and "k8s/bad.yaml" in denied.stderr
+    asked = call("kubectl delete ns prod")
     assert asked.returncode == 0 and asked.stderr == "" and "deletes objects" in _asked(asked.stdout)
-    passed = subprocess.run(run, input=_input("kubectl get pods", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
+    passed = call("kubectl get pods")
     assert (passed.returncode, passed.stdout, passed.stderr) == (0, "", "")

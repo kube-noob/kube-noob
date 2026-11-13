@@ -1307,6 +1307,66 @@ starts Claude Code with `KUBE_NOOB_HOOK=off` in its environment; a command the a
 the client is not a security boundary against an agent with a shell (see [SECURITY.md](../SECURITY.md)): the
 [admission webhook](#every-finding-as-a-kubectl-warning-the-admission-webhook) is the control on the server.
 
+#### What verify allows, asks about and denies
+
+The allow set is the shipped contract, so it is listed in full. `tests/test_verify.py` runs every example in this
+table and fails when the code's verdict is not the one written here, so the table and the code cannot drift apart.
+"ask" is `not-determined`: exit 5, and the hook asks you.
+
+| Change | Example | Verdict |
+|---|---|---|
+| A read: `get`, `describe`, `logs`, `top`, `explain`, `wait`, `rollout status` or `history`, `auth can-i`, `config view`, `oc whoami` and the rest, through any pipe or wrapper the reader follows | `kubectl get pods -n shop` | allow |
+| `apply`, `create -f` or `replace -f` of manifests in the tree with no finding at or above `--fail-on` | `kubectl apply -f good/orders-api.yaml` | allow |
+| `apply -k` of a kustomization that lists resources and uses nothing but `namespace`, `images` and `commonAnnotations` | `kubectl apply -k kustom` | allow |
+| `create namespace`, `configmap`, `secret generic`, `secret tls` or `serviceaccount` from literals or files inside the tree, with no credential literal | `kubectl create namespace shop` | allow |
+| `oc new-project NAME` without `--admin` or an empty `--node-selector` | `oc new-project shop` | allow |
+| `expose` a workload as a ClusterIP Service | `kubectl expose deploy web --port=80` | allow |
+| `scale` or `autoscale` one named workload | `kubectl scale deploy/web --replicas=3` | allow |
+| `rollout restart`, `pause` or `resume` of one workload | `kubectl rollout restart deploy/web` | allow |
+| `label` or `annotate` one object that is not a node or namespace, with a key that is not a security, scheduling or cloud-identity setting | `kubectl label deploy web tier=web` | allow |
+| `set env` without a credential, a URL with a password or a code-loading variable (`LD_PRELOAD`, `NODE_OPTIONS` ...) | `kubectl set env deploy/web LOG_LEVEL=debug` | allow |
+| `delete pod NAME` without `--force`, `--now` or `--grace-period=0` | `kubectl delete pod web-abc` | allow |
+| `patch TYPE NAME` touching only replicas, `paused`, timings, or labels and annotations without a security key, in any patch type | `kubectl patch deploy web -p '{"spec":{"replicas":3}}'` | allow |
+| A dry run (`--dry-run=client`, `=server`, `--server-dry-run`) on any verb that defines the flag; a `note` says when a real run would be denied | `kubectl delete deploy web --dry-run=server` | allow |
+| `kubectl diff` (with `KUBECTL_EXTERNAL_DIFF` unset or a known diff program) | `kubectl diff -f bad/deploy.yaml` | allow |
+| `port-forward` or `proxy` on loopback (the default), class `connects` | `kubectl port-forward web 8080:80` | allow |
+| `--help` or `-h` on any verb, where it is not the value of the flag before it | `kubectl exec --help` | allow |
+| `oc adm top`, `inspect`, `node-logs`, `must-gather`, `release info`, `policy scc-subject-review`/`scc-review`/`who-can`, and `oc adm upgrade` with no `--to*`, `channel` or `rollback` (the status) | `oc adm upgrade` | allow |
+| `kubectl krew list`, `info` or `search`, `kubectl neat`, `kubectl plugin list`, `oc registry info` | `kubectl krew list` | allow |
+| `helm list`, `status`, `get`, `history`, `template`, `lint`, `show`, `search`, `diff`, and the local operations `repo`, `dependency`, `package`, `pull`, `env` | `helm diff upgrade web ./chart` | allow |
+| `config set-context --current --namespace=NAME`, `oc project NAME`, `kubectx`, `kubens`: the local default only | `kubectl config set-context --current --namespace=shop` | allow |
+| A day-2 change with `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=`: no manifest, so judged as without | `kubectl --context=prod scale deploy/web --replicas=2` | allow |
+| A command longer than 20,000 characters that names no kube tool, deployer or cloud CLI anywhere | `echo <25,000 characters>` | allow |
+| A line with no kube tool on it | `npm test && git status` | allow |
+| `create` of anything else from flags (`deployment`, `job`, `role`, `clusterrole` ...): render it with `--dry-run=client -o yaml` and verify the file | `kubectl create deployment web --image=nginx` | ask |
+| `run`, `oc new-app`, `oc process`, `start-build`, `import-image`, `tag` | `kubectl run x --image=busybox` | ask |
+| `expose` as NodePort, LoadBalancer or ExternalName, with `--external-ip` or `--load-balancer-ip`; `oc expose svc` (a Route) | `kubectl expose deploy web --type=LoadBalancer --port=80` | ask |
+| `delete` of anything but pods by name (a kind, a selector, `--all`, `-f`), `drain` | `kubectl delete deploy web` | ask |
+| `rollout undo` | `kubectl rollout undo deploy/web` | ask |
+| `label` or `annotate` of a node or namespace, or of a security, scheduling or cloud-identity key | `kubectl label ns shop pod-security.kubernetes.io/enforce=privileged` | ask |
+| `set image`, `resources`, `serviceaccount`, `selector`, `subject`; `set env` of a code-loading variable | `kubectl set image deploy/web web=nginx:2` | ask |
+| `taint`, `cordon`, `uncordon`, `edit`, `certificate`, `auth reconcile`, `oc policy`, `oc secrets` | `kubectl cordon n1` | ask |
+| `apply` or `replace` with `--prune`, `--force` or `--all`; a `patch` of other fields by name | `kubectl apply --prune -l app=web -f good/` | ask |
+| A manifest from a URL, from stdin with nothing to read, outside the working directory, behind a link, or that an earlier command on the line may have written | `kubectl apply -f https://example.com/x.yaml` | ask |
+| A kustomization with patches or another transformer: render it and verify the file | `kubectl apply -k kustom-patch` | ask |
+| A manifest sent to an explicit cluster: `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on `apply`, `create -f`, `replace -f`, `apply -k` or a chart | `kubectl --context=prod apply -f good/orders-api.yaml` | ask |
+| `helm install` or `upgrade` of a local chart is rendered with `helm template` and judged like `apply -f` (allow or deny); a remote chart, a chart that does not render, `helm` not on PATH, `--set-file`, `--post-renderer`; `helm uninstall`, `rollback`, `plugin install` | `helm install web oci://registry.example.com/charts/web` | ask |
+| `exec`, `rsh`, `debug`, `attach`, `cp`, `rsync` | `kubectl exec -it web -- sh` | ask |
+| `port-forward` or `proxy` reachable from other hosts: a non-loopback `--address`, a widened `--accept-hosts`, `--disable-filter` | `kubectl port-forward web 8080:80 --address 0.0.0.0` | ask |
+| `oc adm upgrade --to*`, `channel` or `rollback`, `release extract` or `mirror`, and every other `oc adm` | `oc adm upgrade --to-latest` | ask |
+| `oc login`, `oc logout`, `oc registry login`: credential handling | `oc login https://api.example.com:6443 --token=abc` | ask |
+| `oc extract`: writes Secret or ConfigMap data to disk | `oc extract secret/x --to=-` | ask |
+| `kubectl krew install`, `upgrade` or `uninstall`, and any other kubectl plugin | `kubectl krew install neat` | ask |
+| `config use-context`, `set-cluster`, `set-credentials`, `set-context` of anything but the current namespace: changes which cluster every later command hits | `kubectl config use-context staging` | ask |
+| What arrives on stdin is not seen: `helm template ... \| kubectl apply -f -`, `... \| xargs kubectl delete pod` | `helm template web chart \| kubectl apply -f -` | ask |
+| A command longer than 20,000 characters that names a kube tool | `kubectl get pods <25,000 characters>` | ask |
+| A line the shell reader cannot follow: a command word built at run time, `eval` of a variable, code piped into a shell, a kube command inside a program it does not model | `echo 'kubectl delete ns prod' \| sh` | ask |
+| A manifest with a finding at or above `--fail-on` | `kubectl apply -f bad/deploy.yaml` | deny |
+| `patch -f FILE --type merge` or `json` whose result has one (the file earns no baseline credit) | `kubectl patch -f single/priv.yaml --type merge -p '{"metadata":{"labels":{"a":"b"}}}'` | deny |
+| A credential on the line: `create secret --from-literal=password=...`, `--docker-password`, `set env PASSWORD=...`, a URL or DSN with a password | `kubectl set env deploy/web DB_PASSWORD=hunter2` | deny |
+| cluster-admin, the privileged SCC or wildcard RBAC granted in the command | `kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u` | deny |
+
+
 ## Model builders
 
 Build the corpus, score answers with the deterministic reward and export datasets: see [training](training.md).

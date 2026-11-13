@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import shutil
 from pathlib import Path
 
@@ -1473,10 +1474,12 @@ def _doc_table() -> list[tuple[str, str, str]]:
     section = text.split(heading, 1)[1].split("\n## ", 1)[0]
     rows: list[tuple[str, str, str]] = []
     for line in section.splitlines():
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells = [c.strip().replace("\x00", "|") for c in line.strip().strip("|").replace("\\|", "\x00").split("|")]
         if not line.startswith("| ") or len(cells) != 3 or cells[0] in {"Change", ""} or set(cells[0]) <= {"-"}:
             continue
         example = cells[1].strip("`")
+        # `<25,000 characters>` stands for that many characters: a table cannot hold them, the test can.
+        example = re.sub(r"<([\d,]+) characters>", lambda m: "a" * int(m.group(1).replace(",", "")), example)
         rows.append((cells[0], example, cells[2]))
     return rows
 
@@ -1604,7 +1607,8 @@ def test_a_server_dry_run_of_a_manifest_a_real_apply_would_deny_carries_a_note(
     (note,) = r["note"]
     assert note.startswith("a real apply of this manifest would be denied: ") and "KN-S013" in note
     assert "bad/deploy.yaml" in r["files"]
-    assert any(line.startswith("  note: a real apply of this manifest would be denied") for line in verify.text(r).splitlines())
+    shown = verify.text(r).splitlines()
+    assert any(line.startswith("  note: a real apply of this manifest would be denied") for line in shown)
     clean = _verify("kubectl apply -f good/orders-api.yaml --dry-run=server", ws)
     assert clean["verdict"] == "allow" and clean["note"] == []
     assert "note:" not in verify.text(clean)
@@ -1622,9 +1626,10 @@ def test_a_server_dry_run_of_a_manifest_a_real_apply_would_deny_carries_a_note(
 
 
 def test_a_dry_run_does_not_cover_a_real_run_on_the_same_line_or_a_later_dry_run_none(ws: Path) -> None:
-    assert _verify("kubectl apply -f bad/deploy.yaml --dry-run=server && kubectl apply -f bad/deploy.yaml", ws)[
-        "verdict"
-    ] == "deny"
+    assert (
+        _verify("kubectl apply -f bad/deploy.yaml --dry-run=server && kubectl apply -f bad/deploy.yaml", ws)["verdict"]
+        == "deny"
+    )
     assert _verify("kubectl apply -f bad/deploy.yaml --dry-run=server --dry-run=none", ws)["verdict"] == "deny"
     assert _verify("kubectl delete ns prod --dry-run=server --dry-run=false", ws)["verdict"] == "not-determined"
     # a verb kubectl's own command table does not give --dry-run to (exec, a plugin) gets no dry-run credit
@@ -1633,7 +1638,9 @@ def test_a_dry_run_does_not_cover_a_real_run_on_the_same_line_or_a_later_dry_run
     assert _verify("kubectl delete ns prod -- --dry-run=server", ws)["verdict"] == "not-determined"
 
 
-TARGET_SPELLINGS = ["--context=prod", "--context prod", "--cluster=prod", "--kubeconfig=/tmp/kc", "--kubeconfig /tmp/kc"]
+TARGET_SPELLINGS = [
+    "--context=prod", "--context prod", "--cluster=prod", "--kubeconfig=/tmp/kc", "--kubeconfig /tmp/kc"
+]  # fmt: skip
 DAY2 = [
     "scale deploy/web --replicas=2",
     "rollout restart deploy/web",
@@ -1655,7 +1662,13 @@ def test_a_day2_change_is_judged_the_same_with_or_without_an_explicit_cluster(ws
 
 @pytest.mark.parametrize("target", [*TARGET_SPELLINGS, "KUBECONFIG="])
 @pytest.mark.parametrize(
-    "manifest", ["apply -f good/orders-api.yaml", "create -f good/orders-api.yaml", "replace -f good/orders-api.yaml", "apply -k kustom"]
+    "manifest",
+    [
+        "apply -f good/orders-api.yaml",
+        "create -f good/orders-api.yaml",
+        "replace -f good/orders-api.yaml",
+        "apply -k kustom",
+    ],
 )
 def test_a_manifest_sent_to_an_explicit_cluster_is_not_determined(ws: Path, target: str, manifest: str) -> None:
     """The manifest is judged against a platform; an explicit target means that context's platform, which verify
@@ -1754,6 +1767,9 @@ def test_a_command_over_the_length_cap_is_allowed_only_when_it_names_no_kube_too
     assert _verify("kubectl get pods " + "a" * (shell.MAX_CHARS - 100), ws)["verdict"] == "allow"
 
 
+LOCALE_VARS = {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}
+
+
 @pytest.mark.parametrize(
     "env",
     [{"PYTHONIOENCODING": "ascii"}, {"PYTHONUTF8": "0", "LC_ALL": "POSIX", "LANG": "POSIX", "LC_CTYPE": "POSIX"}],
@@ -1766,7 +1782,7 @@ def test_output_is_written_whatever_the_terminal_encoding(ws: Path, env: dict[st
     import sys
 
     base = [sys.executable, "-m", "kube_noob", "verify", "--platform", "openshift", "--version", "4.20"]
-    full = {k: v for k, v in os.environ.items() if k not in {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}}
+    full = {k: v for k, v in os.environ.items() if k not in LOCALE_VARS}
     full.update(env)
     for command, code, want in (
         ("kubectl get pods", 0, "allow"),
