@@ -63,7 +63,7 @@ def analyze(
         platform=platform,
         kubernetes_version=ctx.k8s_version,
         platform_version=ctx.platform_version,
-        resources=[d.ref() for d in docs if not d.list_wrapper],
+        resources=[d.ref() for d in docs],
     )
     if platform in OPENSHIFT_FAMILY and version is None:
         report.assumptions.append(f"No OpenShift version given; assumed Kubernetes {ctx.k8s_version} semantics.")
