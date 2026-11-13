@@ -221,20 +221,42 @@ def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path |
     """Open reported issues in the target release whose text names a kind these manifests deploy."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
     from kube_noob.known_issues import get_index, vkey
+    from kube_noob.versions import read_version
 
-    if platform not in OPENSHIFT_FAMILY or not version:
+    cv = read_version(version)
+    if platform not in OPENSHIFT_FAMILY or cv is None:
         return []
-    minor = ".".join(version.split(".")[:2])
+    index = get_index(data_dir)
+    # The same reading of the version as the coverage statement beside it (G277): " 4.20.0" once matched nothing
+    # here while the statement said "determined".
+    advise = index.coverage(version)["status"] == "determined"
     out: list[dict[str, Any]] = []
-    for issue in get_index(data_dir).issues:
-        if issue.kind != "known" or issue.minor != minor:
+    for issue in index.issues:
+        if issue.kind != "known" or issue.minor != cv.minor:
             continue
-        if issue.fixed_in and vkey(version) >= vkey(issue.fixed_in):
+        if issue.fixed_in and vkey(cv.numeric) >= vkey(issue.fixed_in):
             continue
         named = sorted(k for k in kinds if _DISTINCT_KIND.match(k) and re.search(rf"\b{k}s?\b", issue.text))
         if named:
-            out.append({**issue.as_dict(version, 1.0), "kinds": named})
+            out.append({**issue.as_dict(cv.numeric, 1.0, advise, cv.shown), "kinds": named})
     return out[:20]
+
+
+def _known_coverage(platform: str, version: str | None, data_dir: Path | None) -> dict[str, Any] | None:
+    """Whether ``_known`` could answer for ``version``; ``None`` for a platform the index does not describe. With an
+    OpenShift platform and no version nothing was looked up, and that is said, not left as an empty list (G277)."""
+    from kube_noob.catalog import OPENSHIFT_FAMILY
+    from kube_noob.known_issues import coverage
+
+    if platform not in OPENSHIFT_FAMILY:
+        return None
+    if not version:
+        return {
+            "status": "not-determined",
+            "why": "No --version was given, so reported issues in the target OpenShift release were not looked up "
+            "(the audit assumed a default release). Give --version to look them up.",
+        }
+    return coverage(version, data_dir)
 
 
 def run(
@@ -408,6 +430,7 @@ def run(
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
     known = _known(kinds, platform, version, data_dir)
+    ki_coverage = _known_coverage(platform, version, data_dir)
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
@@ -432,6 +455,7 @@ def run(
             + " --mode enforce",
         },
         "knownIssues": known,
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
         "notRun": [
@@ -465,6 +489,12 @@ def run(
                     "code checks: pass your SAST tools' SARIF with --sarif-report (Semgrep, Bandit, SpotBugs, ESLint, "
                     "CodeQL)"
                 ]
+            ),
+            # An empty knownIssues for a release the index does not hold is a lookup not made, not "none" (G277).
+            *(
+                [f"reported issues: {ki_coverage['why']}"]
+                if ki_coverage and ki_coverage["status"] == "not-determined"
+                else []
             ),
         ],
     }

@@ -196,8 +196,8 @@
      "version": {
       "anyOf": [
        {
-        "maxLength": 20,
-        "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+        "maxLength": 80,
+        "pattern": "^(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})(\\.(?:0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z._-]{1,64})?$",
         "type": "string"
        },
        {
@@ -259,8 +259,8 @@
      "version": {
       "anyOf": [
        {
-        "maxLength": 20,
-        "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+        "maxLength": 80,
+        "pattern": "^(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})(\\.(?:0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z._-]{1,64})?$",
         "type": "string"
        },
        {
@@ -281,8 +281,8 @@
     "additionalProperties": false,
     "properties": {
      "text": {
-      "description": "An error message, events, logs or a symptom in words.",
-      "maxLength": 100000,
+      "description": "An error message, events, logs or a symptom in words. Past 100,000 characters only the end is matched, and the result says so (inputTruncated).",
+      "maxLength": 400000,
       "minLength": 3,
       "title": "Text",
       "type": "string"
@@ -308,8 +308,8 @@
      "version": {
       "anyOf": [
        {
-        "maxLength": 20,
-        "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+        "maxLength": 80,
+        "pattern": "^(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})(\\.(?:0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z._-]{1,64})?$",
         "type": "string"
        },
        {
@@ -347,8 +347,8 @@
      "version": {
       "anyOf": [
        {
-        "maxLength": 20,
-        "pattern": "^\\d+\\.\\d+(\\.\\d+)?$",
+        "maxLength": 80,
+        "pattern": "^(?:0|[1-9][0-9]{0,2})\\.(?:0|[1-9][0-9]{0,2})(\\.(?:0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z._-]{1,64})?$",
         "type": "string"
        },
        {

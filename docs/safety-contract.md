@@ -304,6 +304,8 @@ Where it is applied (found in the code):
 - `kube_noob/code/ship.py` `_args` calls `sanitize.loads_bounded`
 - `kube_noob/debug/diagnose.py` `_selector` calls `sanitize.loads_bounded`
 - `kube_noob/debug/diagnose.py` `bundle_markdown` calls `sanitize.visible_lines`
+- `kube_noob/debug/diagnose.py` `render_text.shown` calls `sanitize.one_line`
+- `kube_noob/debug/diagnose.py` `render_text.shown` calls `sanitize.visible`
 - `kube_noob/debug/policy.py` `explain` calls `sanitize.visible`
 - `kube_noob/drift.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/evals/problems.py` `parse` calls `sanitize.json_nesting_ok`
@@ -316,6 +318,7 @@ Where it is applied (found in the code):
 - `kube_noob/generate/policies.py` `Generated.yaml` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/generate/policies.py` `Generated.yaml` calls `sanitize.visible`
 - `kube_noob/insight.py` `_json` calls `sanitize.json_nesting_ok`
+- `kube_noob/insight.py` `insight` calls `sanitize.replace_surrogates`
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`
 - `kube_noob/kyverno_migrate.py` `_header` calls `sanitize.visible`
@@ -345,6 +348,7 @@ Where it is applied (found in the code):
 - `kube_noob/tickets.py` `_ticket_shards` calls `sanitize.loads_bounded`
 - `kube_noob/tool_runner.py` `call` calls `sanitize.result`
 - `kube_noob/upgrade_risks.py` `bundled` calls `sanitize.loads_bounded`
+- `kube_noob/versions.py` `shown_version` calls `sanitize.one_line`
 - `kube_noob/vuln/kev.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/reports.py` `_s` calls `sanitize.visible_squeezed`
 - `kube_noob/vuln/reports.py` `parse` calls `sanitize.loads_bounded`

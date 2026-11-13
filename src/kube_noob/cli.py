@@ -307,10 +307,43 @@ def _emit(obj: Any, fmt: str) -> None:
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
 
 
+def _known_issue_line(m: dict[str, Any], width: int = 300) -> str:
+    """One reported issue on one line: the status whole (it carries the version advice and its caveats), the summary
+    cut to what is left of ``width``."""
+    head = f"known issue {m.get('id')} ({m.get('status') or ''})"
+    summary = str(m.get("summary") or "")
+    room = width - len(head) - 2
+    if not summary or room < 8:
+        return head
+    return f"{head}: {summary if len(summary) <= room else summary[: room - 3].rstrip() + '...'}"
+
+
+def _input_cut(total: int, kept: int) -> dict[str, Any] | None:
+    """What a command says when it read only the end of its input: "No playbook matched" for a 1 MB paste was
+    an answer about its last 400,000 characters, and nothing said so (G277)."""
+    if total <= kept:
+        return None
+    return {
+        "characters": total,
+        "read": kept,
+        "why": f"the input is {total:,} characters and only the last {kept:,} were read (failures are usually at "
+        "the end), so nothing before them was diagnosed; pass the part that matters",
+    }
+
+
 def _print_insight(res: dict[str, Any]) -> None:
     _tprint("input: " + "; ".join(f"{k['kind']} ({k['evidence']})" for k in res["kinds"]))
+    if res.get("inputTruncated"):
+        _tprint(f"input cut: {res['inputTruncated']['why']}")
     if res.get("ran"):
         _tprint("ran: " + ", ".join(res["ran"]))
+    from kube_noob.known_issues import coverage_line
+
+    if res.get("versionConflict"):
+        _tprint(f"version conflict: {res['versionConflict']}")
+    listed = any(f.get("source") == "reported-issue" for f in res["findings"])
+    if line := coverage_line(res.get("knownIssuesCoverage"), listed):
+        _tprint(line)
     for f in res["findings"]:
         extra = f.get("verdict") or f.get("severity") or f.get("confidence") or f.get("cite") or ""
         source = "related doc" if f.get("related") else f["source"]
@@ -334,6 +367,22 @@ def _print_insight(res: dict[str, Any]) -> None:
             _tprint(f"  {st.get('command') or st.get('step') or st}")
     for sk in res.get("skipped", []):
         _tprint(f"not analysed ({sk['kind']}): {sk['why']}")
+    if [k["kind"] for k in res["kinds"]] == ["unknown"]:
+        _print_insight_hint()
+
+
+def _print_insight_hint() -> None:
+    """What insight reads, from the router's own table, and one bundled input that works: guessing at text that
+    matched nothing would be a made-up answer, so this says what to paste instead (G277)."""
+    from kube_noob.insight import KIND_DESCRIPTIONS, KINDS, UNRECOGNISED_EXAMPLE
+
+    _tprint()
+    _tprint("kube-noob recognises:")
+    for kind in KINDS:
+        _tprint(f"  {kind:15} {KIND_DESCRIPTIONS[kind]}")
+    _tprint("Try it on a bundled sample:")
+    _tprint("  kube-noob examples copy examples")
+    _tprint(f"  kube-noob insight -f examples/{UNRECOGNISED_EXAMPLE}")
 
 
 def _print_ticket_changes(res: dict[str, Any], opened: dict[str, Any]) -> None:
@@ -470,6 +519,13 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
 
 
 def _print_known_issues(out: dict[str, Any]) -> None:
+    from kube_noob.known_issues import coverage_line
+
+    if out.get("inputTruncated"):
+        _tprint(f"input cut: {out['inputTruncated']['why']}")
+
+    if line := coverage_line(out.get("versionCoverage"), listed=bool(out["matches"])):
+        _tprint(line)
     for m in out["matches"]:
         _tprint(f"{m['id']}  {m['status']}")
         _tprint(f"  {m['summary']}")
@@ -625,6 +681,29 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
+# Commands whose --version is the cluster's OpenShift version: read by kube_noob.versions here, once, so a value is
+# taken or refused the same way on every one of them and by every tool (G277).
+_OCP_VERSION_COMMANDS = frozenset({"known-issues", "diagnose", "insight", "ticket", "gate"})
+
+
+def _takes_ocp_version(a: argparse.Namespace) -> bool:
+    return (
+        a.cmd in _OCP_VERSION_COMMANDS
+        or (a.cmd == "build" and getattr(a, "build_cmd", None) == "diagnose")
+        or (a.cmd == "memory" and getattr(a, "memory_cmd", None) == "match")
+    )
+
+
+def _version_flag(value: str, flag: str = "--version") -> str:
+    """The version as every reader takes it (``kube_noob.versions``), or exit 2 with the one sentence every command
+    and tool uses for a refused version (never a validation dump)."""
+    from kube_noob.versions import is_version, refusal
+
+    if not is_version(value):
+        raise ConfigError(refusal(flag))
+    return value
+
+
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
@@ -731,7 +810,13 @@ def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
             if out["errorTemplate"]:
                 _tprint(f"error template {out['errorTemplate']['id']}: {out['errorTemplate']['text'][:200]}")
             for m in out.get("knownIssues", []):
-                _tprint(f"reported issue {m.get('id')}: {m.get('title')}")
+                _tprint(f"reported issue {m.get('id')}: {m.get('title') or m.get('summary')}")
+                if m.get("status"):
+                    _tprint(f"  {m['status']}")
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(out.get("knownIssuesCoverage"), listed=bool(out.get("knownIssues"))):
+                _tprint(ki_line)
             for m in out.get("memory", []):
                 _tprint(f"team memory {m.get('citation') or m.get('id')}: {m.get('symptom')}")
             for f in out["fix"]:
@@ -2448,6 +2533,26 @@ def build_parser() -> argparse.ArgumentParser:
     dm = sub.add_parser("demo", help="Offline walkthroughs of common use cases (no network, no cluster)")
     dm.add_argument("scenario", nargs="?", help="scenario name or 'all' (see --list)")
     dm.add_argument("--list", action="store_true", dest="list_demos")
+    dm.add_argument(
+        "--keep",
+        metavar="DIR",
+        help="keep what the scenario writes (its sample input, the bundled examples and any report) in DIR, so the "
+        "commands it prints can be rerun there; refuses to overwrite",
+    )
+    exs = sub.add_parser(
+        "examples",
+        help="List the bundled example files, or copy them to a directory so the commands in the README run",
+        description="The README and the docs name files under examples/. They ship inside kube-noob; this writes them "
+        "where a command line can name them. Example: kube-noob examples copy examples",
+    )
+    exs_sub = exs.add_subparsers(dest="examples_cmd", required=True)
+    _patch(exs_sub, common)  # `examples list --format json` takes the common options after the subcommand too
+    exs_sub.add_parser("list", help="Name each bundled example and what it is for")
+    exs_copy = exs_sub.add_parser("copy", help="Write the bundled examples into DIR (created if missing)")
+    exs_copy.add_argument("dir", metavar="DIR", help="where to write them, e.g. examples")
+    exs_copy.add_argument(
+        "--force", action="store_true", help="replace files that already exist (never symbolic links)"
+    )
     return p
 
 
@@ -2615,6 +2720,11 @@ def _main(a: argparse.Namespace) -> int:
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         print(_error_line(f"error: {msg}"), file=sys.stderr)
         return 4
+    except KeyboardInterrupt:
+        # Ctrl-C: whatever was half-written has been rolled back by the code that wrote it (examples copy); one line
+        # and the shell's own code for an interrupt, never a traceback.
+        print("interrupted", file=sys.stderr)
+        return 130
     except BrokenPipeError:
         return _pipe_closed()
 
@@ -2634,6 +2744,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     kit = tk.Toolkit(s)
     fmt = "yaml" if a.format == "text" else a.format
     platform = getattr(a, "platform", None) or s.default_platform
+    if getattr(a, "pversion", None) is not None and _takes_ocp_version(a):
+        a.pversion = _version_flag(a.pversion)
 
     if a.cmd == "completion":
         print(completion.script(a.shell, build_parser()), end="")
@@ -2834,6 +2946,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if len(text.strip()) < 3:
             raise ConfigError("nothing to read: pass the text in quotes, a file with -f, or pipe it in")
         found = kit.insight(tk.InsightIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion))
+        if cut := _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT):
+            found["inputTruncated"] = cut
         if a.format == "text":
             _print_insight(found)
         else:
@@ -2845,23 +2959,40 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
         if len(text.strip()) < 3:
             raise ConfigError("nothing to diagnose: pass the error text in quotes, a file with -f, or pipe it in")
+        cut = None
         if len(text) > tk.MAX_DIAGNOSE_TEXT:  # a long Alertmanager payload keeps every alert's labels and summary
-            text = alertmanager.compact(text) or text[-tk.MAX_DIAGNOSE_TEXT :]
-        _emit(
-            kit.diagnose(
-                tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
-            ),
-            fmt,
+            compacted = alertmanager.compact(text)
+            cut = None if compacted else _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT)
+            text = compacted or text[-tk.MAX_DIAGNOSE_TEXT :]
+        result = kit.diagnose(
+            tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
         )
+        if cut:
+            result["inputTruncated"] = cut
+        if a.format == "text":  # the family's default, as for policy explain, known-issues and insight (G277)
+            from kube_noob.debug.diagnose import render_text as diagnose_text
+
+            _tprint(diagnose_text(result))
+        else:
+            _emit(result, fmt)
         return 0
 
     if a.cmd == "known-issues":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "known-issues")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
-        out = kit.known_issues(tk.KnownIssuesIn(text=text, platform=a.platform, version=a.pversion, limit=a.limit))
+        total = len(text)
+        out = kit.known_issues(
+            tk.KnownIssuesIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion, limit=a.limit)
+        )
+        if total > tk.MAX_DIAGNOSE_TEXT and out.get("inputTruncated"):
+            from kube_noob.known_issues import truncation
+
+            out["inputTruncated"] = truncation(total)
         if a.format == "text":
             _print_known_issues(out)
         else:
@@ -2944,7 +3075,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "signals":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "signals")
         if len(text) > tk.MAX_SIGNAL_TEXT:
             text = alertmanager.compact(text) or text[-tk.MAX_SIGNAL_TEXT :]
         out = kit.extract_signals(tk.SignalsIn(text=text))
@@ -3023,9 +3154,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
-                text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+                text += "\n" + _known_issue_line(m)
             if rep["knownIssuesVerdict"] == "not-determined":
                 text += f"\nknown issues: not determined: {rep['knownIssuesNote']}"
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(rep.get("knownIssuesCoverage"), listed=bool(rep["knownIssues"])):
+                text += f"\n{ki_line}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
@@ -3278,19 +3413,28 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
         if a.list_demos or not a.scenario:
             if a.format == "text":
-                for d in demo.listing():
-                    print(f"{d['name']:10} {d['title']}  [{d['for']}]")
+                rows = demo.listing()
+                aliases = [(old, new) for d in rows for old in d.get("aliases", []) for new in [d["name"]]]
+                width = max(len(n) for n in [*(d["name"] for d in rows), *(o for o, _ in aliases)])
+                for d in rows:
+                    print(f"{d['name']:{width}}  {d['title']}  [{d['for']}]")
+                for old, new in aliases:
+                    print(f"{old:{width}}  old name of `{new}`, kept so scripts and links keep working")
                 print("\nRun: kube-noob demo <name>   or   kube-noob demo all")
             else:
                 _emit(demo.listing(), fmt)
             return 0
+        if a.keep and a.scenario == "all":
+            raise ConfigError("--keep keeps one scenario's files: name one scenario, not 'all'")
         names = list(demo.SCENARIOS) if a.scenario == "all" else [a.scenario]
         for n in names:
-            if n not in demo.SCENARIOS:
+            if demo.resolve(n) not in demo.SCENARIOS:
                 raise KeyError(f"unknown demo {n!r}; choose from {', '.join(demo.SCENARIOS)} or 'all'")
-            demo.run(n, s)
+            demo.run(n, s, keep=Path(a.keep) if a.keep else None)
             print()
         return 0
+    if a.cmd == "examples":
+        return _examples_cmd(a, fmt)
     if a.cmd == "doctor":
         from kube_noob.knowledge_status import line, status
         from kube_noob.posture import posture, render_text
@@ -3444,7 +3588,9 @@ def _policy(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if a.policy_cmd == "explain":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "policy explain")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to explain: pass the denial in quotes, a file with -f, or pipe it in")
         out = kit.explain_denial(tk.PolicyExplainIn(text=text, platform=getattr(a, "platform", None)))
@@ -3581,6 +3727,54 @@ def _print_migrate(report: dict[str, Any], show_files: bool) -> None:
     summary = report["summary"]
     counts = ", ".join(f"{n} {v}" for v, n in summary["verdicts"].items())
     _tprint(f"{summary['policies']} policies, {summary['rules']} rules: {counts}. {report['note']}")
+
+
+def _examples_cmd(a: argparse.Namespace, fmt: str) -> int:
+    from kube_noob import examples
+
+    if a.examples_cmd == "list":
+        rows = examples.listing()
+        if a.format != "text":
+            _emit(rows, fmt)
+            return 0
+        width = max(len(r["name"]) for r in rows)
+        for r in rows:
+            print(f"{r['name']:{width}}  {r['what']}")
+        print("\nWrite them where a command can name them: kube-noob examples copy examples")
+        return 0
+    r = examples.copy_report(Path(a.dir), overwrite=a.force)
+    written, present = [p.name for p in r["written"]], [p.name for p in r["present"]]
+    if a.format != "text":
+        _emit({"directory": a.dir, "written": written, "alreadyPresent": present}, fmt)
+        return 0
+    if written:
+        _tprint(f"wrote {len(written)} files to {a.dir}: {', '.join(written)}")
+    if present:
+        _tprint(f"already in {a.dir}, unchanged: {', '.join(present)}")
+    _tprint("Try:")
+    for line in _example_commands(a.dir):
+        _tprint(f"  {line}")
+    return 0
+
+
+def _example_commands(directory: str) -> list[str]:
+    """The commands `examples copy` suggests, with the directory quoted for a POSIX shell: a name with a space or
+    a quote stays one word, and one that starts with `-` is not read as a flag (G277)."""
+    import shlex
+
+    d = directory.rstrip("/") or "/"
+    if d.startswith("-"):
+        d = f"./{d}"
+
+    def path(name: str) -> str:
+        return shlex.quote(f"{d}/{name}")
+
+    return [
+        "kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f "
+        + path("netpol-admin-tiers.yaml"),
+        f"kube-noob policy explain -f {path('denial-multi.txt')}",
+        f"kube-noob diagnose -f {path('events-scc.txt')}",
+    ]
 
 
 def _write_migration(report: dict[str, Any], out_dir: str) -> int:
@@ -3904,11 +4098,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if issues:
         from kube_noob import operator_issues
 
-        if a.openshift_version is not None and operator_issues.parse_version(a.openshift_version) is None:
-            raise ConfigError(
-                "--openshift-version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, "
-                "no leading zeros)"
-            )
+        if a.openshift_version is not None:
+            _version_flag(a.openshift_version, "--openshift-version")
         if not 1 <= a.issues <= operator_issues.MAX_ISSUES_PER_PACKAGE:
             raise ConfigError(f"--issues must be 1-{operator_issues.MAX_ISSUES_PER_PACKAGE}")
         release = operator_issues.Release()
@@ -4161,7 +4352,9 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if cmd == "match":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "memory match")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
         dirs = a.dirs or [str(d) for d in s.memory.paths]

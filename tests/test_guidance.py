@@ -66,7 +66,7 @@ def test_docs_are_concise_and_linked() -> None:
         assert (ROOT / doc).is_file() and doc in readme, doc
     assert "kube-noob demo" in readme and "kube-noob doctor" in readme
     use_cases = (ROOT / "docs/use-cases.md").read_text()
-    assert all(f"kube-noob demo {d}" in use_cases for d in ("learn", "audit", "diagnose", "posture"))
+    assert all(f"kube-noob demo {d}" in use_cases for d in ("learn", "audit", "diagnose", "doctor"))
     assert "getting_started" in use_cases
 
 

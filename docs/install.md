@@ -73,6 +73,13 @@ which -a kube-noob
 one: remove it with the tool that installed it (`pipx uninstall kube-noob`, `uv tool uninstall kube-noob` or
 `brew uninstall kube-noob`).
 
+The README's first commands name files under `examples/`. They ship inside kube-noob; write them to a folder a
+command line can name, then run the README's commands from the folder that holds it:
+
+```bash
+kube-noob examples copy examples
+```
+
 ## Agent Skill
 
 The same tools as the MCP server, as an [Agent Skill](https://claude.com/docs/skills/how-to): a folder with
