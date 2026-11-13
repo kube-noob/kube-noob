@@ -254,6 +254,8 @@ class AuditContext:
     undecided: set[str] = field(default_factory=set)
     #: Why each rule in `undecided` declined, in the rule's own words, for the coverage record (G281).
     declined: dict[str, str] = field(default_factory=dict)
+    #: The objects a rule declined on, when it named them (`cannot_decide(..., resource=)`), per rule.
+    declined_objects: dict[str, list[str]] = field(default_factory=dict)
     #: Rules whose declared subject was not in the input: nothing to evaluate, so not evaluated, and not
     #: clean. The value is the reason the record shows: "no Service in the input" (G281).
     no_subject: dict[str, str] = field(default_factory=dict)
@@ -263,9 +265,14 @@ class AuditContext:
     partly_declined: dict[str, str] = field(default_factory=dict)
     _has_workloads: bool | None = field(default=None, repr=False)
 
-    def cannot_decide(self, rule_id: str, why: str = "") -> None:
+    def cannot_decide(self, rule_id: str, why: str = "", resource: str | None = None) -> None:
+        """The rule declines on this input. ``why`` is a fixed phrase for the record; ``resource`` names the one
+        object it declined on, when there is one (the shape rules/control-plane keeps per object, so the two
+        branches union: here it is kept beside the reason under `declined_objects`)."""
         self.undecided.add(rule_id)
         self.declined[rule_id] = why or "the rule declined to decide on this input (see the assumptions)"
+        if resource:
+            self.declined_objects.setdefault(rule_id, []).append(resource)
 
     def not_applicable(self, rule_id: str, why: str) -> None:
         """The rule does not apply to this platform or version, so it is not evaluated here: not clean (G281).
