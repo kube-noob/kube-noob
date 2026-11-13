@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from kube_noob import sanitize
 from kube_noob.audit import detection
 from kube_noob.audit.model import Report, Severity, Stage
 from kube_noob.audit.podspec import (
@@ -11,7 +12,7 @@ from kube_noob.audit.podspec import (
     unread_pod_specs,
 )
 from kube_noob.audit.redteam import red_team
-from kube_noob.audit.rules import RULES, AuditContext, run_rules
+from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refused_subject_group, run_rules
 from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
@@ -115,6 +116,16 @@ def analyze(
                 f"{d.ref()} declares API group {group}, which is not where kube-noob knows this kind's pod specs "
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
                 "audited."
+            )
+            continue
+        if refused_subject_group(d) is not None:
+            # The same line for every other kind the rules know: a `Deployment` in `example.com/v1` is not the
+            # rules' Deployment, and until this it was dropped with no finding and no word, while the rules that
+            # conclude from a workload's absence (KN-V011) read the Service beside it (review 3, class 21).
+            known = ", ".join(g or "core" for g in sorted(SUBJECT_GROUPS[d.kind]))
+            report.assumptions.append(
+                f"{d.ref()} declares apiVersion {sanitize.visible(d.api_version)[:80]}, which is not one kube-noob "
+                f"knows {d.kind} under (group {known}); it was not audited."
             )
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")

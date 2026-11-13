@@ -35,17 +35,44 @@
   a posture snapshot's `coverage.notEvaluated` (with the resource named when the cluster refused it), the
   posture report's `controlStanding` in JSON, Markdown and HTML, and the KSI page, which labelled every such
   rule "Declined to decide" and now says "Not evaluated" with the reasons. An OSCAL deliverable now lists under
-  `exclude-controls` every control whose rules only read kinds the input lacks -- 9 of 30 on a Deployment-only
-  directory -- and reports fewer controls `satisfied` (6, where 0.9.2 reported 15). A snapshot from 0.9.2 carries
-  no reasons and keeps its older shape; a diff between one and a new snapshot reports nothing new, fixed or
-  regressed. The exit code is unchanged: an absent kind is not a finding and not unreadable evidence.
+  `exclude-controls` every control whose rules only read kinds the input lacks -- 9 of 30 on a directory holding
+  one Deployment -- and reports fewer controls `satisfied` (7, where 0.9.2 reported 16). A snapshot from 0.9.2
+  carries no reasons and keeps its older shape; a diff between one and a new snapshot reports nothing new, fixed
+  or regressed. The exit code is unchanged: an absent kind is not a finding and not unreadable evidence.
 
-  Measured with the command named, `kube-noob audit -f <file>` (one file, so the partial-bundle guards also
-  apply), rules evaluated before and after: `examples/exercise-answer.yaml` and `insecure-deployment.yaml` 87 to
-  48; `netpol-shop.yaml` 87 to 45; `netpol-admin-tiers.yaml` 86 to 45; `kube-noob-exceptions.yaml` 87 to 9, with
-  all 84 others naming the kind they waited for. (`blueprint.yaml` and `problems.yaml` are not manifests and the
-  command refuses them.) G210's boundary "a bundle with no admin policy is evaluated and clean" is reversed:
-  nothing to decide is not a failure to decide, and it is not a pass either.
+  A third review found the group match drawn too tight, in three ways, each a kind of absence-read-as-pass in
+  the other direction (a real object refused, so the rules about it did not run). An object with NO `apiVersion`
+  was refused as "a kind of another group": the in-cluster backend's list items carry none, so a live posture
+  snapshot or scheduled drift job evaluated 3 rules on a cluster where 0.9.2 fired 19 (KN-S001, S015, N007
+  among them). No group is an unknown, not a contradiction, as `podspec.refused_group` already held; and
+  `collect_live` now records the `apiVersion` the object was listed under, so the stored object says which API
+  it came from, as kubectl's output does, and KN-V001/V002 no longer report a live object as missing it. (A
+  folder of snapshots taken through the in-cluster backend before this release has no `apiVersion` on its
+  objects, so the first diff after upgrading reports that one field changed on each of them, and those two
+  rules fixed; nothing else.) Kubernetes' own retired groups -- `extensions/v1beta1` Deployment, DaemonSet,
+  ReplicaSet, Ingress and NetworkPolicy, `apps/v1beta1`, `apps/v1beta2` -- were refused the same way:
+  `audit -f <legacy dir> --version 1.15 --fail-on high` exited 0 where 0.9.2 exited 1, `tests/fixtures/legacy-bundle.yaml`
+  lost KN-C001/C002/C009/C010/C014/V010 and gained a false KN-V011 ("selects no pod template"), because the
+  Deployment was dropped while the Service beside it was read. `SUBJECT_GROUPS` now holds every group a kind has
+  ever been served under, derived from the removed-API history the version rules read (`REMOVED_APIS`), never
+  hand-listed; reasons still name the group the kind is served in today. The neighbour of that shape -- a
+  `Deployment` in `example.com/v1` beside a real one and a Service -- is refused rightly and now SAID: the
+  report's assumptions name the object as not audited, and KN-V011 and KN-N012 decline for that namespace
+  instead of concluding "selects nothing" from pods they did not read. Four declarations were wider or narrower
+  than their rule: KN-V010 judges only Deployment, StatefulSet, DaemonSet and ReplicaSet and KN-N001 fires only
+  for long-running workloads and Pods, so each was "evaluated and clean" on a CronJob-only or Pod-only input
+  and now names those kinds instead; KN-ST001 reads StorageClass and declares it as context; and the pod-spec
+  kinds are spelled out inside an alternative label too ("no networking.k8s.io Ingress or pod spec in the input
+  (no Pod, Deployment, ...)"). A test now walks every rule body for `by_kind(...)` and fails when the kind is
+  declared as neither subject nor context.
+
+  Measured with the command named, `kube-noob audit -f examples/<file>` (one file, so the partial-bundle guards
+  also apply; the count is the `rules:` line of the text view), rules evaluated before and after:
+  `exercise-answer.yaml` and `insecure-deployment.yaml` 87 to 49; `netpol-shop.yaml` 87 to 46;
+  `netpol-admin-tiers.yaml` 86 to 46; `kube-noob-exceptions.yaml` 87 to 9, with all 84 others naming the kind
+  they waited for. (`blueprint.yaml` and `problems.yaml` are not manifests and the command refuses them.)
+  G210's boundary "a bundle with no admin policy is evaluated and clean" is reversed: nothing to decide is not a
+  failure to decide, and it is not a pass either.
 
 - **Which operators are installed was a question kube-noob could only half answer, and an input it had not fully read would have answered it anyway (E2, G270).** The must-gather analyser kept a name, a namespace and a phase per ClusterServiceVersion and folded every CSV of the same name into one (that summary, `cluster.operators` in `must-gather analyze`, is unchanged), and there was no way to ask a cluster or a set of manifests at all. `kube-noob operators inventory` (`-f`, `--must-gather`, `--live`), the `operator_inventory` and `cluster_operator_inventory` tools, and `operatorInventory` in `must-gather analyze` (text and JSON) and in `analyze_must_gather` now say, per operator: package, version and where the version came from (`spec.version`, the CSV's `olm.package` property, or `derived-from-name`, labelled), catalog, channel, approval mode, namespace, the namespaces it serves, phase (unknown when absent or not one OLM defines, and counted as not Succeeded), a pending upgrade and a Manual approval waiting.
 

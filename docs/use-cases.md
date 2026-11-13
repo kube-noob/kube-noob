@@ -739,7 +739,10 @@ checked or one nothing looked at, and an assessor cannot tell which from a zero.
 `clean` means a rule had something of its kind to look at and found nothing. Every rule declares what it is
 about -- a Service, a Role or ClusterRole, a pod spec, a NetworkPolicy and a pod spec together -- matched with
 its API group, so a Knative `Service` or an ACM `Subscription` is not the subject of a rule written for the
-core or OLM one. A rule whose subject is not in the input does not run and is `notEvaluated`, with the reason
+core or OLM one (an `extensions/v1beta1` Deployment is, because that is a group Kubernetes itself served the
+kind under; an object with no `apiVersion`, as a live cluster lists them, is read; a Deployment in a group the
+rules do not know is named in the assumptions as not audited). A rule whose subject is not in the input does
+not run and is `notEvaluated`, with the reason
 `no Service in the input` (`no operators.coreos.com Subscription in the input` for a kind outside the core
 group) -- a file with one ConfigMap is not "no privileged container, no wildcard RBAC, no NodePort", it is 11
 rules evaluated (the per-document validations and the two ConfigMap rules) and 82 waiting for their kind. The

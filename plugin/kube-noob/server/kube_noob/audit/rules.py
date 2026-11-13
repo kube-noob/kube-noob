@@ -41,6 +41,7 @@ from kube_noob.catalog import (
     OPENSHIFT_FAMILY,
     OPENSHIFT_ONLY_GROUPS,
     PROVISIONERS,
+    REMOVED_APIS,
     ROSA_FAMILY,
     api_group,
     claims_a_known_group,
@@ -80,18 +81,48 @@ _EXTRA_GROUPS: dict[str, frozenset[str]] = {
     "Subscription": frozenset({"operators.coreos.com"}),
     **EMBEDDED_POD_SPEC_GROUPS,
 }
-SUBJECT_GROUPS: dict[str, frozenset[str]] = {
+#: The group each kind is served in TODAY: what a reason names ("no apps Deployment in the input").
+CURRENT_GROUPS: dict[str, frozenset[str]] = {
     **{kind: frozenset(api_group(v) for v in versions) for kind, versions in KIND_API_VERSIONS.items()},
     **_EXTRA_GROUPS,
+}
+#: Every group a kind has EVER been served under: the current one plus the removed-API history the version rules
+#: already read. An `extensions/v1beta1` Deployment is Kubernetes' own Deployment, not a kind of another group;
+#: refusing it dropped the workload while the Service beside it was read, so KN-V011 reported a Service that
+#: selects nothing and KN-S001 said nothing about the privileged container (review 3, N2). Derived, never
+#: hand-listed, so a row added to REMOVED_APIS is known here too.
+SUBJECT_GROUPS: dict[str, frozenset[str]] = {
+    kind: groups | frozenset(api_group(r.group_version) for r in REMOVED_APIS if r.kind == kind)
+    for kind, groups in CURRENT_GROUPS.items()
 }
 
 
 def kind_in_group(doc: Document, kind: str) -> bool:
-    """Whether ``doc`` is a ``kind`` of the group the rules know it in, not merely a document called that."""
+    """Whether ``doc`` is a ``kind`` of a group the rules know it in, not merely a document called that.
+
+    No ``apiVersion`` at all is an unknown, not a contradiction: the in-cluster backend's list items carry none
+    and `drift.collect_live` set only `kind`, so every non-core kind of a live snapshot (Deployment, Role,
+    NetworkPolicy, Ingress, HPA, PDB) was refused and the job evaluated three rules where 0.9.2 fired nineteen
+    (review 3, N1). `podspec.refused_group` draws the same line, for the same reason.
+    """
     groups = SUBJECT_GROUPS.get(kind)
     if groups is None:
         raise ValueError(f"{kind!r} is not a kind the audit rules know the API group of; add it to SUBJECT_GROUPS")
-    return doc.kind == kind and api_group(doc.api_version) in groups
+    return doc.kind == kind and (doc.api_version == "" or api_group(doc.api_version) in groups)
+
+
+def refused_subject_group(doc: Document) -> str | None:
+    """The API group ``doc`` declares when its kind is one the rules know and the group is not one they know it in.
+
+    `None` means the document is read. Returning the group is what lets the engine SAY the object was not
+    audited: a `Deployment` in `example.com/v1` was dropped by every pod-spec rule with no finding and no word,
+    while KN-V011 concluded from its absence that the Service in front of it has no endpoints (class 21).
+    """
+    groups = SUBJECT_GROUPS.get(doc.kind)
+    if groups is None or doc.api_version == "":
+        return None
+    group = api_group(doc.api_version)
+    return None if group in groups else group
 
 
 def _join_or(names: list[str]) -> str:
@@ -108,14 +139,14 @@ def subject_label(subject: tuple[str, ...]) -> str:
     kinds = sorted(subject)
     plain = [k for k in kinds if k not in (WORKLOAD_SUBJECT, ANY_OBJECT)]
     special = [k for k in kinds if k not in plain]
-    groups = {g for k in plain for g in SUBJECT_GROUPS[k]}
+    groups = {g for k in plain for g in CURRENT_GROUPS[k]}
     if not plain:
         return _join_or(special)
     if groups == {""}:
         return _join_or(plain + special)
     if len(groups) == 1:
         return f"{next(iter(groups))} {_join_or(plain)}" + (f" or {_join_or(special)}" if special else "")
-    return _join_or([f"{'/'.join(sorted(SUBJECT_GROUPS[k])) or 'core'} {k}" for k in plain] + special)
+    return _join_or([f"{'/'.join(sorted(CURRENT_GROUPS[k])) or 'core'} {k}" for k in plain] + special)
 
 
 def subject_reason(absent: list[str]) -> str:
@@ -127,7 +158,9 @@ def subject_reason(absent: list[str]) -> str:
     looking for a kind of that name.
     """
     why = "no " + " and no ".join(absent) + " in the input"
-    if WORKLOAD_SUBJECT in absent:
+    # The pod-spec subject may be one alternative inside a label ("networking.k8s.io Ingress or pod spec"), so
+    # the label is split the way `subject_label` joined it, and the whole token compared (review 3, N7).
+    if any(WORKLOAD_SUBJECT in re.split(r", | or ", label) for label in absent):
         why += f" (no {_join_or(list(WORKLOAD_KINDS))})"
     return why
 
@@ -213,9 +246,18 @@ class AuditContext:
         schema is somebody else's (G231, class 3).
         """
         for d in self.docs:
-            if d.kind in SUBJECT_GROUPS and not kind_in_group(d, d.kind):
+            if refused_subject_group(d) is not None:
                 continue
             yield from ((d, pt) for pt in pod_templates(d))
+
+    def refused_workloads(self) -> list[Document]:
+        """Workload-kind documents `workloads` did NOT read because their API group is not one the rules know.
+
+        For the rules that conclude from "no pod template matches" (KN-V011, KN-N012): a namespace holding one
+        of these has pods this input describes and the rules did not read, so that conclusion is not theirs to
+        draw there. The engine names each such document in the report's assumptions.
+        """
+        return [d for d in self.docs if d.kind in WORKLOAD_KINDS and refused_subject_group(d) is not None]
 
     def ns(self, doc: Document) -> str:
         return doc.namespace or "<default>"
@@ -777,6 +819,11 @@ def _v009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             yield r.finding(d, ("metadata", "name"), f"'{name}' is not a valid name for {d.kind} (limit {limit}).")
 
 
+#: The kinds whose selector apps/v1 requires to match their own template: what KN-V010 is about, and all it is
+#: about. Declared as "pod spec" it was evaluated and clean on a CronJob or a Pod it never judged (review 3, N3).
+_APPS_SELECTOR_KINDS: tuple[str, ...] = ("DaemonSet", "Deployment", "ReplicaSet", "StatefulSet")
+
+
 @rule(
     "KN-V010",
     "Workload selector does not match its pod template labels",
@@ -786,11 +833,11 @@ def _v009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Make spec.selector.matchLabels a subset of spec.template.metadata.labels.",
     "apps/v1 rejects workloads whose selector does not select their own template ('selector does not match "
     "template labels').",
-    subjects=(WORKLOAD_SUBJECT,),
+    subjects=(_APPS_SELECTOR_KINDS,),
 )
 def _v010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
-        if d.kind not in {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"}:
+        if d.kind not in _APPS_SELECTOR_KINDS:
             continue
         sel = get_path(d.data, ("spec", "selector"))
         if not isinstance(sel, dict) or not sel:
@@ -802,6 +849,23 @@ def _v010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 ("spec", "selector"),
                 f"Selector {sel.get('matchLabels') or sel} does not match template labels {pt.labels()}.",
             )
+
+
+def _refused_workloads_by_ns(ctx: AuditContext) -> dict[str, list[Document]]:
+    out: dict[str, list[Document]] = {}
+    for d in ctx.refused_workloads():
+        out.setdefault(ctx.ns(d), []).append(d)
+    return out
+
+
+def _unread_workload_reason(docs: list[Document]) -> str:
+    """Why a rule that concludes from "no pod template matches" declined in this namespace: built from the
+    kind and the API group as the rules know them, never from the object's own text (class 7)."""
+    named = sorted({f"{d.kind} in API group {refused_subject_group(d)}" for d in docs})
+    return (
+        f"{_join_or(named)} {'was' if len(named) == 1 else 'were'} not read, because that is not a group the "
+        "rules know the kind in, so whether its pods are the ones selected cannot be decided"
+    )
 
 
 @rule(
@@ -818,6 +882,7 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     workloads = list(ctx.workloads())
     if not workloads:
         return
+    unread = _refused_workloads_by_ns(ctx)
     for svc in ctx.by_kind("Service"):
         sel = get_path(svc.data, ("spec", "selector"))
         if not isinstance(sel, dict) or not sel:
@@ -828,6 +893,11 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             continue
         verdicts = [selector_decides({"matchLabels": sel}, pt) for pt in same_ns]
         if any(v is True for v in verdicts):
+            continue
+        if ns in unread:
+            # A workload of this namespace was not read because its API group is not one the rules know; its
+            # pods may be exactly the ones this Service selects (class 21, review 3).
+            ctx.cannot_decide(r.rule_id, _unread_workload_reason(unread[ns]))
             continue
         if any(v is None for v in verdicts):
             # A component whose pod labels an operator merges in from outside this input might well be selected
@@ -2933,6 +3003,12 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 # =====================================================================================================
 
 
+#: What KN-N001 fires for: the workloads that stay up and reachable, and bare Pods. A Job or a CronJob is not
+#: one, so a namespace holding only those is not this rule's subject -- declared as "pod spec", the rule was
+#: evaluated and clean on it (review 3, N4).
+_N001_KINDS: tuple[str, ...] = tuple(sorted(LONG_RUNNING_KINDS | LONG_RUNNING_EMBEDDED_KINDS | {"Pod"}))
+
+
 @rule(
     "KN-N001",
     "Namespace has workloads but no NetworkPolicy",
@@ -2944,7 +3020,7 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "Without NetworkPolicy every pod in the cluster can reach these pods (lateral movement).",
     ("k8s-networkpolicy",),
     ("Deployments should have at least one ingress Network Policy",),
-    subjects=(WORKLOAD_SUBJECT,),
+    subjects=(_N001_KINDS,),
     context=("NetworkPolicy",),
 )
 def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
@@ -2958,8 +3034,7 @@ def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     flagged: set[str] = set()
     for d, _pt in ctx.workloads():
         ns = ctx.ns(d)
-        long_running = LONG_RUNNING_KINDS | LONG_RUNNING_EMBEDDED_KINDS | {"Pod"}
-        if d.kind in long_running and ns not in netpol_ns and ns not in flagged:
+        if d.kind in _N001_KINDS and ns not in netpol_ns and ns not in flagged:
             flagged.add(ns)
             yield r.finding(d, ("metadata",), f"No NetworkPolicy for namespace {ns} in this bundle.")
 
@@ -3392,6 +3467,7 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     by_ns: dict[str, list[PodTemplate]] = {}
     for d, pt in ctx.workloads():
         by_ns.setdefault(ctx.ns(d), []).append(pt)
+    unread = _refused_workloads_by_ns(ctx)
     for d in ctx.by_kind("NetworkPolicy"):
         sel = get_path(d.data, ("spec", "podSelector"))
         pods = by_ns.get(ctx.ns(d))
@@ -3399,6 +3475,9 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             continue
         verdicts = [selector_decides(sel, pt) for pt in pods]
         if any(v is True for v in verdicts):
+            continue
+        if ctx.ns(d) in unread:
+            ctx.cannot_decide(r.rule_id, _unread_workload_reason(unread[ctx.ns(d)]))
             continue
         if any(v is None for v in verdicts):
             # Same reason as KN-V011: an operator-merged label could be exactly the one this selector asks for,
@@ -3666,6 +3745,7 @@ def _pvc_like(ctx: AuditContext) -> Iterator[tuple[Document, PathT, dict[str, An
     "The provisioner cannot satisfy RWX, so the PVC stays Pending (ProvisioningFailed).",
     ("k8s-pv-access-modes", "aws-ebs-csi", "aws-efs-csi", "odf-access-modes"),
     subjects=(("PersistentVolumeClaim", "StatefulSet"),),
+    context=("StorageClass",),
 )
 def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, path, spec in _pvc_like(ctx):

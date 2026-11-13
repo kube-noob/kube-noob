@@ -572,3 +572,385 @@ def test_a_snapshot_names_the_resource_for_a_grouped_kind_the_cluster_refused() 
     assert reasons["KN-N007"] == (
         "no networking.k8s.io NetworkPolicy in the input (networkpolicies could not be read from the cluster)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review 3: a group the rules did not know, and no group at all (G281)
+# ---------------------------------------------------------------------------
+
+# The shape the in-cluster backend returns: API list items carry NO apiVersion of their own, and `collect_live`
+# sets only `kind`. Refusing these as "a kind of another group" evaluated three rules on a live cluster.
+LIVE_NOAPI: list[dict[str, Any]] = [
+    {
+        "kind": "Deployment",
+        "metadata": {"name": "web", "namespace": "shop"},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "web"}},
+            "template": {
+                "metadata": {"labels": {"app": "web"}},
+                "spec": {"containers": [{"name": "w", "image": "x:latest", "securityContext": {"privileged": True}}]},
+            },
+        },
+    },
+    {
+        "kind": "Role",
+        "metadata": {"name": "r", "namespace": "shop"},
+        "rules": [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["*"]}],
+    },
+    {
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "np", "namespace": "shop"},
+        "spec": {"podSelector": {}, "ingress": [{}]},
+    },
+    {"kind": "Namespace", "metadata": {"name": "shop"}},
+]
+
+# What 0.9.2 reported for LIVE_NOAPI, measured with `kube_noob.drift.snapshot(objs, source="live")` on main.
+LIVE_NOAPI_FIRED = {
+    "KN-C001", "KN-C002", "KN-C004", "KN-C005", "KN-C007", "KN-C016", "KN-N007", "KN-S001", "KN-S002",
+    "KN-S003", "KN-S006", "KN-S007", "KN-S008", "KN-S012", "KN-S014", "KN-S015", "KN-S032", "KN-V001", "KN-V002",
+}  # fmt: skip
+
+
+def test_an_object_with_no_api_version_is_an_unknown_group_not_a_contradiction() -> None:
+    """A live snapshot's objects have no apiVersion; every non-core rule had stopped evaluating them (N1)."""
+    from kube_noob import drift
+    from kube_noob.audit.rules import kind_in_group
+
+    doc = load_documents("kind: Deployment\nmetadata: {name: a, namespace: b}\nspec: {}\n")[0]
+    assert doc.api_version == ""
+    assert kind_in_group(doc, "Deployment")
+    foreign = load_documents("apiVersion: example.com/v1\nkind: Deployment\nmetadata: {name: a}\n")[0]
+    assert not kind_in_group(foreign, "Deployment")
+
+    snap = drift.snapshot(LIVE_NOAPI, source="live")
+    fired = {f["ruleId"] for f in snap["findings"]}
+    assert fired == LIVE_NOAPI_FIRED
+    reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
+    for rid in ("KN-S001", "KN-S015", "KN-N007", "KN-S012", "KN-C007"):
+        assert rid not in reasons, (rid, reasons.get(rid))
+        assert rid in snap["coverage"]["evaluatedRules"]
+
+
+def test_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:
+    """The record is complete on its own: a stored object says which API it came from, as kubectl's output does."""
+    from kube_noob import drift
+    from kube_noob.debug.cluster import ALLOWED_RESOURCES
+
+    class Backend:
+        def get(self, resource: str, namespace: str | None = None) -> dict[str, Any]:
+            if resource == "deployments":
+                return {"items": [{"metadata": {"name": "web", "namespace": namespace}, "spec": {}}]}
+            if resource == "ingresses":
+                # A backend that already says (kubectl fills apiVersion in): its own word is kept.
+                item = {"apiVersion": "extensions/v1beta1", "metadata": {"name": "i", "namespace": namespace}}
+                return {"items": [item]}
+            return {"items": []}
+
+    objects, not_read = drift.collect_live(Backend(), ["shop"])
+    assert not_read == []
+    by_kind = {o["kind"]: o for o in objects}
+    assert by_kind["Deployment"]["apiVersion"] == ALLOWED_RESOURCES["deployments"].group_version == "apps/v1"
+    assert by_kind["Ingress"]["apiVersion"] == "extensions/v1beta1"
+
+
+LEGACY = """
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 1
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: web
+          image: web:latest
+          securityContext: {privileged: true}
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata: {name: web, namespace: shop}
+spec:
+  rules:
+    - host: web.example.com
+      http:
+        paths:
+          - path: /
+            backend: {serviceName: web, servicePort: 80}
+---
+apiVersion: extensions/v1beta1
+kind: NetworkPolicy
+metadata: {name: allow-all, namespace: shop}
+spec:
+  podSelector: {}
+  ingress:
+    - {}
+"""
+
+# `kube-noob audit -f <dir of LEGACY> --version 1.15 --format json` on main: the fired set.
+LEGACY_FIRED_MAIN = {
+    "KN-C001", "KN-C002", "KN-C004", "KN-C005", "KN-C007", "KN-N003", "KN-N007", "KN-S001", "KN-S002", "KN-S003",
+    "KN-S006", "KN-S007", "KN-S008", "KN-S012", "KN-S014", "KN-V006", "KN-V010",
+}  # fmt: skip
+
+
+def test_subject_groups_know_every_group_a_kind_was_ever_served_under() -> None:
+    """Derived from the removed-API history, not hand-listed: `extensions/v1beta1 Deployment` is a Deployment."""
+    from kube_noob.audit.rules import SUBJECT_GROUPS, subject_label
+    from kube_noob.catalog import REMOVED_APIS, api_group
+
+    for removed in REMOVED_APIS:
+        if removed.kind in SUBJECT_GROUPS:
+            assert api_group(removed.group_version) in SUBJECT_GROUPS[removed.kind], removed
+    assert {"apps", "extensions"} <= SUBJECT_GROUPS["Deployment"]
+    assert {"networking.k8s.io", "extensions"} <= SUBJECT_GROUPS["Ingress"]
+    # The label names the group the kind is served in today, not its history.
+    assert subject_label(("Deployment",)) == "apps Deployment"
+    assert subject_label(("NetworkPolicy",)) == "networking.k8s.io NetworkPolicy"
+
+
+def test_a_legacy_group_bundle_is_audited_as_main_audited_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`extensions/v1beta1` is Kubernetes' own history, not somebody else's kind (N2)."""
+    d = tmp_path / "legacy"
+    d.mkdir()
+    (d / "old.yaml").write_text(LEGACY, encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d), "--version", "1.15", "--format", "json")
+    assert code == 1
+    report = json.loads(out)
+    assert {f["ruleId"] for f in report["findings"]} == LEGACY_FIRED_MAIN
+    code, _ = _cli(capsys, "audit", "-f", str(d), "--version", "1.15", "--fail-on", "high")
+    assert code == 1
+
+
+def test_the_legacy_fixture_keeps_its_findings_and_gains_no_false_service_finding() -> None:
+    """Dropping the Deployment while reading the Service made KN-V011 say the Service selects nothing."""
+    text = (ROOT / "tests" / "fixtures" / "legacy-bundle.yaml").read_text(encoding="utf-8")
+    rep = analyze(text, "kubernetes", None)
+    assert {"KN-C001", "KN-C002", "KN-C009", "KN-C010", "KN-C014", "KN-N003", "KN-V010"} <= set(rep.fired_rules)
+    assert "KN-V011" in rep.evaluated_rules and "KN-V011" not in rep.fired_rules
+    assert rep.evaluated_rules.count("KN-V011") == 1
+
+
+FOREIGN_DEPLOYMENT = """
+apiVersion: example.com/v1
+kind: Deployment
+metadata: {name: web, namespace: prod}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: w
+          image: x:latest
+          securityContext: {privileged: true}
+"""
+
+OTHER_DEPLOYMENT = DEPLOYMENT.replace("name: web", "name: other").replace("app: web", "app: other")
+
+
+def test_a_workload_of_a_group_the_rules_do_not_know_is_named_and_decides_nothing_against_it() -> None:
+    """The neighbour of N2 (class 21): a Deployment in `example.com/v1` beside a real one and a Service.
+
+    It is right not to read it (another group's schema is another object), and wrong to say nothing: its
+    privileged container produced no finding and no word, while KN-V011 told the reader the Service it fronts
+    has no endpoints. The subject check and the reader agree; the rule that would conclude from the gap declines.
+    """
+    rep = analyze(FOREIGN_DEPLOYMENT + "---" + OTHER_DEPLOYMENT + "---" + SERVICE, "kubernetes", None)
+    assert "KN-V011" not in rep.fired_rules
+    assert "KN-V011" in rep.not_evaluated and "example.com" in rep.not_evaluated["KN-V011"]
+    assert any("example.com" in a and "Deployment/prod/web" in a and "not audited" in a for a in rep.assumptions), (
+        rep.assumptions
+    )
+    # A NetworkPolicy's "selects nothing" is the same conclusion from the same gap.
+    netpol = (
+        "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: web, namespace: prod}\n"
+        "spec: {podSelector: {matchLabels: {app: web}}, policyTypes: [Ingress]}\n"
+    )
+    rep2 = analyze(FOREIGN_DEPLOYMENT + "---" + OTHER_DEPLOYMENT + "---" + netpol, "kubernetes", None)
+    assert "KN-N012" not in rep2.fired_rules and "KN-N012" in rep2.not_evaluated
+
+
+CRONJOB_ONLY = """
+apiVersion: v1
+kind: Namespace
+metadata: {name: shop}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: cj, namespace: shop}
+spec:
+  schedule: "* * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: c
+              image: registry.example.com/c@sha256:0000000000000000000000000000000000000000000000000000000000000000
+"""
+
+POD_ONLY = """
+apiVersion: v1
+kind: Pod
+metadata: {name: p, namespace: shop}
+spec:
+  containers:
+    - name: c
+      image: registry.example.com/c@sha256:0000000000000000000000000000000000000000000000000000000000000000
+"""
+
+
+def test_v010_declares_the_kinds_it_judges_not_every_pod_spec() -> None:
+    """KN-V010 reads only the four apps/v1 kinds; on a CronJob or a Pod it was evaluated and clean (N3)."""
+    assert RULES["KN-V010"].subjects == (("DaemonSet", "Deployment", "ReplicaSet", "StatefulSet"),)
+    for text in (CRONJOB_ONLY, POD_ONLY):
+        rep = analyze(text, "kubernetes", None, partial_bundle=False)
+        assert "KN-V010" not in rep.evaluated_rules
+        assert rep.not_evaluated["KN-V010"] == "no apps DaemonSet, Deployment, ReplicaSet or StatefulSet in the input"
+
+
+def test_n001_declares_the_long_running_kinds_it_fires_for() -> None:
+    """KN-N001 fires for long-running workloads and Pods only; a CronJob-only namespace was 'evaluated' (N4)."""
+    from kube_noob.audit.podspec import LONG_RUNNING_EMBEDDED_KINDS, LONG_RUNNING_KINDS
+
+    assert RULES["KN-N001"].subjects == (tuple(sorted(LONG_RUNNING_KINDS | LONG_RUNNING_EMBEDDED_KINDS | {"Pod"})),)
+    rep = analyze(CRONJOB_ONLY, "kubernetes", None, partial_bundle=False)
+    assert "KN-N001" not in rep.evaluated_rules and "KN-N001" in rep.not_evaluated
+    assert "no apps DaemonSet" in rep.not_evaluated["KN-N001"] and "Pod" in rep.not_evaluated["KN-N001"]
+    pod = analyze(NAMESPACE + "---" + POD_ONLY.replace("namespace: shop", "namespace: prod"), "kubernetes", None)
+    assert "KN-N001" in pod.fired_rules
+
+
+def test_st001_declares_the_storage_class_it_reads() -> None:
+    assert RULES["KN-ST001"].context == ("StorageClass",)
+
+
+def _by_kind_calls_per_rule() -> dict[str, set[str]]:
+    """Every kind each rule's check (and the helpers it calls, transitively) passes to `by_kind`.
+
+    A literal is taken as written; a starred name (`*REPLICATED_KINDS`) and a loop variable
+    (`for kind in _CLAIM_SOURCE_KINDS.values()`) are resolved against the module's own constants.
+    """
+    import ast
+
+    from kube_noob.audit import rules as rules_module
+
+    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    funcs: dict[str, ast.FunctionDef] = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+    def constant(expr: ast.expr) -> Any:
+        return eval(ast.unparse(expr), vars(rules_module))  # noqa: S307 -- the module's own source, not input
+
+    def loop_values(fn: ast.FunctionDef, name: str) -> set[str]:
+        for loop in ast.walk(fn):
+            if not isinstance(loop, ast.For):
+                continue
+            if isinstance(loop.target, ast.Name) and loop.target.id == name:
+                return {str(v) for v in constant(loop.iter)}
+            if isinstance(loop.target, ast.Tuple):
+                for i, elt in enumerate(loop.target.elts):
+                    if isinstance(elt, ast.Name) and elt.id == name:
+                        return {str(item[i]) for item in constant(loop.iter)}
+        raise AssertionError(f"{fn.name}: by_kind({name}) is not a literal, a starred constant or a loop variable")
+
+    def kinds_in(fn: ast.FunctionDef, seen: set[str]) -> set[str]:
+        if fn.name in seen:
+            return set()
+        seen.add(fn.name)
+        out: set[str] = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "by_kind":
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        out.add(arg.value)
+                    elif isinstance(arg, ast.Starred):
+                        out |= {str(v) for v in constant(arg.value)}
+                    elif isinstance(arg, ast.Name):
+                        out |= loop_values(fn, arg.id)
+                    else:
+                        value = constant(arg)  # `ADMIN_TIER_KINDS[0]`: an index into a module constant
+                        assert isinstance(value, str), f"{fn.name}: by_kind({ast.unparse(arg)}) is not one kind"
+                        out.add(value)
+            elif isinstance(node.func, ast.Name) and node.func.id in funcs:
+                out |= kinds_in(funcs[node.func.id], seen)
+        return out
+
+    by_rule: dict[str, set[str]] = {}
+    for fn in funcs.values():
+        for deco in fn.decorator_list:
+            if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Name) and deco.func.id == "rule":
+                rid = deco.args[0]
+                assert isinstance(rid, ast.Constant)
+                by_rule[str(rid.value)] = kinds_in(fn, set())
+    return by_rule
+
+
+def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_context() -> None:
+    """A rule that reads a kind it did not declare has a half the record cannot name when it is absent (N6)."""
+    from kube_noob.audit.rules import SUBJECT_GROUPS
+
+    by_rule = _by_kind_calls_per_rule()
+    assert by_rule.keys() == RULES.keys()
+    for rid, asked in by_rule.items():
+        r = RULES[rid]
+        declared = {k for sub in r.subjects for k in sub} | set(r.context)
+        for kind in asked:
+            assert kind in SUBJECT_GROUPS, (rid, kind)
+            assert kind in declared, f"{rid} asks by_kind for {kind} and declares it as neither subject nor context"
+
+
+def test_the_pod_spec_kinds_are_spelled_out_inside_an_alternative_label_too() -> None:
+    """ "no networking.k8s.io Ingress or pod spec in the input" sent a reader looking for a kind called pod spec."""
+    from kube_noob.audit.rules import WORKLOAD_SUBJECT, subject_label, subject_reason
+
+    why = subject_reason([subject_label(("Ingress", WORKLOAD_SUBJECT))])
+    assert why.startswith("no networking.k8s.io Ingress or pod spec in the input (no Pod, Deployment")
+    why = subject_reason([subject_label(("Secret",)), subject_label((WORKLOAD_SUBJECT, "ServiceAccount"))])
+    assert "(no Pod, Deployment" in why
+    # A kind whose name merely contains the letters is not expanded.
+    assert "(no Pod" not in subject_reason(["Service"])
+
+
+def test_the_first_diff_after_stamping_names_api_version_as_the_one_changed_field() -> None:
+    """A snapshot the in-cluster backend took before this release has no apiVersion on its objects; the first
+    diff after upgrading reports that field, and only that field, as changed on each of them -- said here so the
+    CHANGELOG sentence about it is held by a test, not a hope."""
+    import datetime as dt
+
+    from kube_noob import drift
+
+    when = dt.datetime(2026, 11, 12, 3, 0, tzinfo=dt.UTC)
+    before = drift.snapshot(LIVE_NOAPI, source="live", taken_at=when)
+    stamped = [{"apiVersion": "apps/v1", **o} if o["kind"] == "Deployment" else o for o in LIVE_NOAPI]
+    after = drift.snapshot(stamped, source="live", taken_at=when + dt.timedelta(days=1))
+    report = drift.diff(before, after)
+    objects, findings = report["objects"], report["findings"]
+    assert [(row["object"], row["fields"]) for row in objects["changed"]] == [("Deployment/shop/web", ["apiVersion"])]
+    assert objects["unchanged"] == len(LIVE_NOAPI) - 1
+    # The only findings that go: "missing apiVersion" (KN-V001/V002), which the stamped record no longer earns.
+    assert findings["new"] == []
+    assert {f["ruleId"] for f in findings["fixed"]} == {"KN-V001", "KN-V002"}
+
+
+def test_the_oscal_numbers_the_changelog_quotes_for_a_deployment_only_directory() -> None:
+    """`kube-noob audit -f <dir holding DEPLOYMENT> --format json --oscal`: 9 of 30 controls excluded, 7 satisfied
+    (0.9.2 excluded none and reported 16 satisfied). The CHANGELOG sentence is measured here, not remembered."""
+    from kube_noob import oscal
+    from kube_noob.audit.controls import RULE_CONTROLS
+
+    rep = analyze(DEPLOYMENT, "kubernetes", None, partial_bundle=False).as_dict()
+    result = oscal.assessment_results(rep)["assessment-results"]["results"][0]
+    selection = result["reviewed-controls"]["control-selections"][0]
+    assert len({c for cs in RULE_CONTROLS.values() for c in cs}) == 30
+    assert len(selection["exclude-controls"]) == 9
+    assert sum(1 for f in result["findings"] if f["target"]["status"]["state"] == "satisfied") == 7

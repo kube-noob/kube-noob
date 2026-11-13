@@ -267,6 +267,7 @@ kube-noob calls no model, but the model that calls kube-noob reads its results, 
 Where it is applied (found in the code):
 
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
+- `kube_noob/audit/engine.py` `analyze` calls `sanitize.visible`
 - `kube_noob/audit/exceptions.py` `review` calls `sanitize.safe_load_bounded`
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
