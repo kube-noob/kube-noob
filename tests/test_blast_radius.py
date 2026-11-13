@@ -1211,7 +1211,7 @@ def test_a_live_list_without_an_items_list_is_not_read_rather_than_empty() -> No
             return {"kind": "List"} if resource == "rolebindings" else super().get(resource, name, namespace, **kw)
 
     inv = ap.collect_live(NoItems([*_web(), *_bound(SECRET_READER)]), [])
-    assert any(n.startswith("rolebindings: the response carried no items list") for n in inv.not_read)
+    assert any(n.startswith("rolebindings: the response held no items list") for n in inv.not_read)
     graph = br.reach(inv, "deployment/web", "shop", live=True)
     assert _leg(graph, "rbac")["status"] == "not determined" and graph["complete"] is False
 
@@ -1238,7 +1238,9 @@ def test_invisible_and_bidirectional_characters_are_removed_from_the_text_views(
     text = br.render_text(graph)
     for ch in (chr(0x202E), chr(0x061C), chr(0x200B)):
         assert ch not in text
-    assert br.flat("a" + chr(0x1B) + "[31mb" + chr(0x2028) + "c") == "a b c"
+    # The escape sequence is gone, and since G279 the escape that sat between two identifier characters leaves a
+    # mark where it was, so a name is never silently spliced into another name.
+    assert br.flat("a" + chr(0x1B) + "[31mb" + chr(0x2028) + "c") == "a<ESC>b c"
 
 
 # --- the second adversarial review (56235e3): fixes that moved a defect instead of closing it ---------------------

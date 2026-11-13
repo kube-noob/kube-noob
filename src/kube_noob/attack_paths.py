@@ -2697,6 +2697,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     without Istio, the same for Gateway API before v1.0.0, and an unavailable openshift-apiserver drops Routes from
     discovery; telling those apart needs API discovery, which kube-noob does not read. Reading any of them as "not
     served" said `exposure none, complete` for a pod behind a VirtualService (third review of G273)."""
+    from kube_noob.debug.cluster import list_items
     from kube_noob.errors import KubeNoobError
 
     inv = Inventory(live=True, namespaces_read=list(namespaces))
@@ -2704,14 +2705,15 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                data = backend.get(resource, namespace=ns)
+                # A response that is not a complete list of this resource is a failed read, not an empty list
+                # (G270's lesson, G279's structural check).
+                items = list_items(backend.get(resource, namespace=ns), resource, ns)
             except KubeNoobError as exc:
-                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {_clip_words(str(exc))}")
-                continue
-            items = data.get("items") if isinstance(data, dict) else None
-            if not isinstance(items, list):
-                # A response with no items list is not an empty list: it read as "no RoleBindings" (G270's lesson).
-                inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: the response carried no items list")
+                where = f"{resource}{' in ' + ns if ns else ''}"
+                why = _clip_words(str(exc))
+                if why.startswith(f"{resource}: "):  # the structural check names the resource itself
+                    why = why[len(resource) + 2 :]
+                inv.not_read.append(f"{where}: {why}")
                 continue
             for item in items:
                 inv.add(item, kind)

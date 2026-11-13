@@ -129,13 +129,6 @@ _SUFFIX = r"(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?"
 _SEMVER = re.compile(rf"^{_CORE}{_SUFFIX}\Z")
 # `<package>.v<semver>`, the naming convention OLM bundles follow; used only when no field states the version
 _NAMED_VERSION = re.compile(rf"\.v({_CORE}{_SUFFIX})\Z")
-_NOT_SERVED = re.compile(
-    r"the server (?:doesn't|does not) have a resource type \"(?P<r>[a-z]+)(?:\.operators\.coreos\.com)?\""
-)
-_IN_CLUSTER_404 = re.compile(
-    r"^Not found: GET /apis/operators\.coreos\.com/v1alpha1/(?:namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?"
-    r"(?P<r>[a-z]+)\Z"
-)
 
 State = Literal[
     "installed",
@@ -512,16 +505,16 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     return from_sources([(label, [d.data for d in load_documents(text)])])
 
 
-def _not_served(resource: str, message: str) -> bool:
-    """A 404 because the API group is not served, recognised only in the exact words the two backends write for
-    it: kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's "Not
-    found" for this group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does
-    not exist -- is a read that failed, which is not determined. (``debug.netpol._tier_absent`` is a looser
-    substring match; this inventory does not use it.)"""
-    if "forbidden" in message.lower():
-        return False
-    m = _NOT_SERVED.search(message) or _IN_CLUSTER_404.match(message.strip())
-    return m is not None and m.group("r") == resource
+def _not_served(resource: str, message: str | BaseException, group: str = GROUP, version: str = "v1alpha1") -> bool:
+    """A 404 because the API is not served, recognised only in the exact words the two backends write for it:
+    kubectl's "the server doesn't have a resource type" for this resource, or the in-cluster backend's 404 for this
+    group's path. Anything else -- an auth plugin "not found", a proxy's 404, a namespace that does not exist, a
+    get by name that 404s -- is a read that failed, which is not determined. ``group`` and ``version`` name the API
+    asked about (the ClusterVersion is ``config.openshift.io/v1``, R5); the shapes live in one place for every live
+    reader, ``debug.cluster.classify_read_failure`` (G279)."""
+    from kube_noob.debug.cluster import classify_read_failure
+
+    return classify_read_failure(resource, message, group=group, version=version) == "not-served"
 
 
 def collect_live(backend: Any, namespaces: list[str]) -> Collected:
@@ -542,7 +535,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Collected:
             try:
                 data = backend.get(resource, namespace=ns, selector=selector)
             except KubeNoobError as exc:
-                if _not_served(resource, str(exc)):
+                if _not_served(resource, exc):  # the exception: its full stderr, not the cut message
                     not_served += 1
                 failures.append(f"{ns + ': ' if ns else ''}{_text(str(exc), 240)}")
                 continue

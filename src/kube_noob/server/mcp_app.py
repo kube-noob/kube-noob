@@ -23,15 +23,15 @@ from pydantic_core import PydanticUndefined
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from kube_noob import __version__, sanitize, tool_runner
+from kube_noob import __version__, alert_report, sanitize, tool_runner
 from kube_noob.audit.engine import list_rules
 from kube_noob.config import Settings
-from kube_noob.errors import KubeNoobError
+from kube_noob.errors import KubeNoobError, ServerBusy, StoredStateError
 from kube_noob.knowledge.store import get_store
 from kube_noob.knowledge_status import line as knowledge_line
 from kube_noob.learn.tutor import curriculum
 from kube_noob.prompts import system_prompt
-from kube_noob.server import metrics
+from kube_noob.server import admission, metrics
 from kube_noob.toolkit import Toolkit, ToolSpec
 
 TOOL_PREFIX = "kubenoob_"
@@ -168,6 +168,17 @@ def run_tool(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str, via: str = 
     except ValidationError as exc:
         outcome = "invalid-arguments"
         raise CallFailed(400, outcome, f"invalid arguments: {str(exc)[:MAX_ERROR_CHARS]}") from None
+    except ServerBusy as exc:
+        # Nothing about the request is wrong and nothing was done: the REST route answers 503 with Retry-After, and
+        # an MCP client sees a tool error that says to retry later.
+        outcome = "busy"
+        if spec.name == "alert_report":
+            metrics.REGISTRY.alert_report_dropped("busy")
+        raise CallFailed(503, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
+    except StoredStateError as exc:
+        # The server's own files, not the caller's input: a 500 with the reason, which names no path.
+        outcome = "error"
+        raise CallFailed(500, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
     except (KubeNoobError, ValueError) as exc:
         outcome = type(exc).__name__
         raise CallFailed(400, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
@@ -200,8 +211,13 @@ def run_tool(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str, via: str = 
         metrics.REGISTRY.record(spec.name, via, outcome, elapsed)
 
 
-def _wrapper(spec: ToolSpec, knowledge: str) -> Any:
-    """Build an async function whose signature mirrors the tool's Pydantic model (flat MCP arguments)."""
+def _wrapper(spec: ToolSpec, knowledge: str, reports: Any = None) -> Any:
+    """Build an async function whose signature mirrors the tool's Pydantic model (flat MCP arguments).
+
+    The tool takes its body here, so its large-body ticket (``admission``) is released here -- except an alert report,
+    which keeps it until it holds one of ``reports.report_slots``. That slot is taken on the event loop before the
+    worker thread starts: waiting for it inside a worker held one of anyio's 40 threads for up to 5 s, and sixty
+    waiting reports pushed a small diagnose from 20 ms to 6.7 s (G274)."""
     model = spec.model
     params: list[inspect.Parameter] = []
     annotations: dict[str, Any] = {}
@@ -218,10 +234,31 @@ def _wrapper(spec: ToolSpec, knowledge: str) -> Any:
         annotations[arg] = ann
 
     async def tool(**kwargs: Any) -> dict[str, Any]:
+        if spec.name != "alert_report" or reports is None:
+            admission.release_current()
+            try:
+                return await anyio.to_thread.run_sync(run_tool, spec, kwargs, knowledge)
+            except CallFailed as exc:
+                raise ToolError(exc.message) from None
+        received = admission.RECEIVED.get()
+        received = received if received is not None else alert_report._now()
+        wait = reports.report_wait_seconds()
+        if not await admission.take_slot(reports.report_slots, wait):
+            admission.release_current()
+            metrics.REGISTRY.alert_report_dropped("busy")
+            raise ToolError(alert_report.busy_message(wait))
+        admission.release_current()
+
+        def admitted() -> dict[str, Any]:
+            with reports.report_admission(received):
+                return run_tool(spec, kwargs, knowledge)
+
         try:
-            return await anyio.to_thread.run_sync(run_tool, spec, kwargs, knowledge)
+            return await anyio.to_thread.run_sync(admitted)
         except CallFailed as exc:
             raise ToolError(exc.message) from None
+        finally:
+            reports.report_slots.release()
 
     tool.__name__ = TOOL_PREFIX + spec.name
     tool.__doc__ = spec.description
@@ -246,16 +283,17 @@ def _forbid_unknown_arguments(mcp: MCPServer, name: str) -> None:
     tool.parameters["additionalProperties"] = False
 
 
-def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) -> MCPServer:
+def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, gate: Any = None) -> MCPServer:
     """``rest``: the HTTP server's TransportSecuritySettings; given, the REST routes (``kube_noob.server.rest``) are
-    added beside MCP with the same Host and Origin checks."""
+    added beside MCP with the same Host and Origin checks. ``gate``: the HTTP server's large-body tickets
+    (``admission.LargeBodies``); given, the MCP alert report takes its report slot on the event loop."""
     toolkit = Toolkit(settings, shared=shared)
     mcp = MCPServer(
         name="kube_noob_mcp",
         title="kube-noob",
         version=__version__,
         instructions=_instructions(settings),
-        website_url="https://github.com/aashishmahajan/kube-noob",
+        website_url="https://github.com/kube-noob/kube-noob",
         icons=_icons(),
     )
     # The SDK logs each failed call's message at INFO, and messages can quote the caller's input (a YAML error shows
@@ -276,7 +314,7 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) 
                 idempotent_hint=spec.read_only,
                 open_world_hint=spec.open_world,
             ),
-        )(_wrapper(spec, knowledge))
+        )(_wrapper(spec, knowledge, toolkit if gate is not None else None))
         _forbid_unknown_arguments(mcp, TOOL_PREFIX + spec.name)
 
     @mcp.prompt(
@@ -388,7 +426,17 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None) 
         from kube_noob.server import rest as rest_routes
 
         specs = toolkit.specs()
-        rest_routes.register(mcp, specs, lambda spec, args: run_tool(spec, args, knowledge, "rest"), rest)
+        from kube_noob.alert_store import Receiver
+
+        rest_routes.register(
+            mcp,
+            specs,
+            lambda spec, args: run_tool(spec, args, knowledge, "rest"),
+            rest,
+            receiver=Receiver.from_settings(settings),
+            reports=toolkit,
+            gate=gate,
+        )
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(_: Request) -> Response:

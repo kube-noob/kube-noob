@@ -6,6 +6,7 @@ Exit codes: 0 ok | 1 findings at/above --fail-on | 2 usage/config error | 3 clar
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -20,6 +21,7 @@ import yaml
 from kube_noob import __version__, completion, sanitize
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
@@ -179,11 +181,42 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+def _raw_stdout() -> Any:
+    """The stream under the text boundary: a document goes here, byte for byte, so `cmd > f` equals `cmd -o f`."""
+    return getattr(sys.stdout, "_inner", sys.stdout)
+
+
+def _write_document(text: str) -> None:
+    """A whole document to stdout, past the text boundary, in 64 KiB pieces and then flushed HERE, inside the
+    command: a reader that went away mid-document (`| head -c 10`) raises BrokenPipeError where `_main` turns it
+    into exit 141. Written in one piece, the rest of it waited in the buffer for the final flush, the error was
+    lost there, and a truncated document exited 0 or 1 (G279, fourth review)."""
+    out = _raw_stdout()
+    for i in range(0, len(text), 65536):
+        out.write(text[i : i + 65536])
+    out.flush()
+
+
+def _workflow_command(line: str) -> None:
+    """A GitHub workflow command kube-noob builds on purpose (``gate --github-annotations``): the one kind of line
+    the output boundary lets through as a command (G279)."""
+    out = sys.stdout
+    if isinstance(out, _VisibleStream):
+        out.workflow_command(line)
+    else:  # called outside main(): no boundary to pass
+        print(line)
+
+
 def _emit(obj: Any, fmt: str) -> None:
+    """A document (JSON or YAML), written past the text sanitiser: JSON escapes every non-ASCII character
+    (``ensure_ascii``), and the YAML dumper escapes any string holding a character that would not print, so both
+    are terminal-safe and load back to exactly the data (G279)."""
+    from kube_noob.yamlio import dump_yaml
+
     if fmt == "json":
-        print(json.dumps(obj, indent=2, default=str))
+        _write_document(json_document(obj, indent=2, default=str) + "\n")
     else:
-        print(yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True), end="")
+        _write_document(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
@@ -257,7 +290,17 @@ def _write_html(path: str | None, report: dict[str, Any]) -> None:
         return
     from kube_noob import report_html
 
-    Path(path).write_text(report_html.render(report), encoding="utf-8", errors="replace")
+    Path(path).write_text(_html_without_commands(report_html.render(report)), encoding="utf-8", errors="replace")
+
+
+#: In HTML, "##[" as "##&#91;" and a line-leading "::" as "&#58;:" render the same and are no workflow command
+#: in a log that prints the file (G279). Entities do not decode inside <style>, which holds only kube-noob's CSS.
+_HTML_COMMAND = re.compile(r"(##[A-Za-z]*)\[|^([^\S\n]*):(?=:)", re.MULTILINE)
+
+
+def _html_without_commands(text: str) -> str:
+    """``##[``, ``##vso[``, ``##teamcity[`` as ``...&#91;`` and a line-leading ``::`` as ``&#58;:``."""
+    return _HTML_COMMAND.sub(lambda m: f"{m.group(1)}&#91;" if m.group(1) else f"{m.group(2)}&#58;", text)
 
 
 def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
@@ -359,6 +402,10 @@ def _print_known_issues(out: dict[str, Any]) -> None:
         _tprint(out["note"])
     k = out["knowledge"]
     print(f"index: release-note issues as of {k['knownIssuesAsOf']} for OpenShift {', '.join(k['openshiftReleases'])}")
+    if k.get("recordsRejected"):
+        print(f"index: {k['recordsRejected']} record(s) left out as unusable: {'; '.join(k['rejectedRecords'])}")
+    if k.get("localCopyNote"):
+        print(f"index: {k['localCopyNote']}")
     jt = k.get("jiraTickets")
     if jt:
         names = ", ".join(jt["projects"][:6]) + ("..." if len(jt["projects"]) > 6 else "")
@@ -550,7 +597,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         # Before the report, and on stdout: Actions reads workflow commands from the step's output, and a caller
         # parsing --format json filters the `::` lines (the test does exactly that).
         for line in gate.github_annotations(report):
-            print(line)
+            _workflow_command(line)
     quiet_pass = getattr(a, "quiet", False) and report["passed"]
     if getattr(a, "oscal", False):
         from kube_noob.oscal import assessment_results, check_import_ap
@@ -948,8 +995,8 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out = admission.review_bytes(_read(a.file).encode("utf-8"), cfg)
         if a.format == "yaml":
             _emit(out, fmt)
-        else:  # the AdmissionReview the API server would receive
-            print(json.dumps(out, indent=1))
+        else:  # the AdmissionReview the API server would receive: a document, so past the text boundary (G279)
+            _write_document(json_document(out, indent=1) + "\n")
         return 0 if out["response"]["allowed"] else 1
     context = None
     if ad.lookups:
@@ -1866,7 +1913,8 @@ def build_parser() -> argparse.ArgumentParser:
         "namespace and the namespaces each serves, phase, a pending upgrade or a Manual approval waiting. It reads "
         "manifests (-f), a must-gather (--must-gather) or the live cluster (--live: ClusterServiceVersions and "
         "Subscriptions only, never Secrets). What it could not read is part of the answer: with no "
-        "ClusterServiceVersions it says not determined, never zero operators. Example: kube-noob operators inventory "
+        "ClusterServiceVersions it says not determined, never zero operators. issues matches the same operators "
+        "against the OpenShift release notes for the cluster's release. Example: kube-noob operators inventory "
         "--must-gather must-gather.tar.gz",
     )
     opsub = opr.add_subparsers(dest="operators_cmd", required=True)
@@ -1888,6 +1936,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit 5 unless every OLM object the answer needs was read, so a gate never reads a blind or partial "
         "inventory as a complete one",
+    )
+    opk = opsub.add_parser(
+        "issues",
+        help="Look the installed operators up in the OpenShift release notes (a lookup, not a vulnerability check "
+        "or a gate), from the same inputs as inventory",
+        description="A release-note lookup, not a vulnerability check: for about a dozen Red Hat-built operators the "
+        "release notes name, it lists the known and fixed issues that use the operator's name, for the cluster's "
+        "release (--openshift-version, and the must-gather's or live ClusterVersion, which is read too). Most "
+        "operators have no table entry and are listed as not matched (no alias), never as clean; a release outside "
+        "the index is not determined; whether an installed operator has a fix is never decided, because the notes "
+        "list fixes by OpenShift release. Example: kube-noob operators issues --must-gather must-gather.tar.gz",
+    )
+    opk.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    opk.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
+    opk.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    opk.add_argument(
+        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+    )
+    opk.add_argument(
+        "--openshift-version",
+        default=None,
+        help="the cluster's OpenShift version (4.21 or 4.21.9); overrides what the must-gather or cluster says",
+    )
+    opk.add_argument("--top", type=int, default=200, help="operators to show (1-500, default 200)")
+    opk.add_argument(
+        "--issues", type=int, default=50, help="issues to show per package (1-200, default 50); the counts are of all"
+    )
+    opk.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless the evidence was complete: the inventory read in full, and the cluster's release known, "
+        "settled (no update in progress), indexed and OpenShift (not OKD, not plain Kubernetes) -- so a cluster the "
+        "release notes do not cover exits 5 too, with the reason. Whether every operator was matched is allMatched "
+        "in the JSON, not an exit code",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -1952,6 +2034,23 @@ def build_parser() -> argparse.ArgumentParser:
     icf.add_argument("incident_id")
     icf.add_argument("--cause", required=True)
     icf.add_argument("--fix", required=True)
+
+    alr = sub.add_parser(
+        "alerts",
+        help="Alertmanager payloads: an evidence report per alert (offline), and the reports a server kept",
+        description="report: one evidence report per alert in an Alertmanager payload file, built offline from the "
+        "payload and local knowledge (signals, diagnosis, reported issues for the version its labels name, team "
+        "memory, read-only next steps), the same report POST /v1/alert-reports returns. list and show read the "
+        "reports `kube-noob serve` kept in <dataDir>/alert-reports. Example: kube-noob alerts report -f payload.json",
+    )
+    asub = alr.add_subparsers(dest="alerts_cmd", required=True)
+    _patch(asub, common)
+    arp = asub.add_parser("report", help="An evidence report per alert in a payload file (nothing is kept)")
+    arp.add_argument("-f", "--file", required=True, help="the payload as JSON: a file, or '-' for stdin")
+    alst = asub.add_parser("list", help="The newest reports the server kept")
+    alst.add_argument("-n", "--limit", type=int, default=20, help="how many (1-200, default 20)")
+    ashw = asub.add_parser("show", help="One kept report by its id")
+    ashw.add_argument("report_id")
 
     dbg = sub.add_parser("debug", help="Collect live read-only evidence for a workload and diagnose it")
     dbg.add_argument("target", help="kind/name, e.g. deployment/orders-api")
@@ -2257,9 +2356,112 @@ def _settings(a: argparse.Namespace) -> Settings:
     return load_settings(a.config, overrides)
 
 
+class _VisibleStream:
+    """stdout or stderr, with every TEXT write passed through ``sanitize.visible_lines`` (G279).
+
+    The boundary kube-noob's own text writers share: the text view, ``--compact``, GitHub workflow commands and
+    every error message. A name from a manifest or a cluster can no longer move the cursor, write the clipboard
+    (OSC 52), hide a link (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate;
+    a hidden character inside a name is shown as ``<U+200B>``. Documents do not go through it: ``_emit`` (JSON,
+    YAML), the manifests ``fix`` and ``generate`` print, ``policy generate`` and ``--format sarif`` write to
+    ``_raw_stdout()``, because their encoders already escape what would not print and the bytes must equal what
+    ``-o`` writes. Argument parsing (help, usage, argparse's colour) happens before the boundary is in place, and
+    the long-running servers (``serve``, ``mcp``, ``admission serve``, ``watch``) are not wrapped at all: their
+    logs are uvicorn's and the MCP transport writes to ``.buffer``. Output with none of these characters is
+    unchanged.
+
+    It also keeps every line from being read as a GitHub Actions workflow command (``sanitize.CommandGuard``:
+    ``##[`` anywhere becomes ``## [``, a line-leading ``::`` becomes ``: :``), always, because a log is replayed.
+    The one deliberate exception is :meth:`workflow_command`, which ``gate --github-annotations`` uses for the
+    annotations it builds and escapes itself."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._guard = sanitize.CommandGuard()
+
+    def write(self, text: str) -> int:
+        self._inner.write(self._guard.feed(sanitize.visible_lines(text, mark=True)))
+        return len(text)
+
+    def workflow_command(self, line: str) -> None:
+        """One workflow command kube-noob wrote on purpose, on a line of its own, past the guard (not past
+        ``visible_lines``)."""
+        held = self._guard.flush()
+        if held:
+            self._inner.write(held)
+        if not self._guard.at_line_start:
+            self._inner.write("\n")
+        self._inner.write(sanitize.visible_lines(line, mark=True) + "\n")
+        self._guard.reset()
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        held = self._guard.flush()  # a line-leading colon held back until the next character was known
+        if held:
+            self._inner.write(held)
+        self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+#: Servers whose stdout is a protocol stream or a server log, not an answer: their streams are left alone, and
+#: each message is made safe where it is built. `watch` prints text views, so it is wrapped (G279, third review).
+_UNWRAPPED = {("serve",), ("mcp",), ("admission", "serve")}
+
+
+def _unexpected(exc: BaseException) -> int:
+    """An error kube-noob did not anticipate: one cleaned line on stderr and exit 4 (a kube-noob error, AGENTS.md),
+    never a raw traceback a pipeline reads as exit 1 (G279, third review). The traceback is printed only with
+    KUBE_NOOB_DEBUG set, and through the same boundary."""
+    import traceback
+
+    if os.environ.get("KUBE_NOOB_DEBUG"):
+        print("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+    msg = sanitize.one_line(str(exc))[:500]
+    print(
+        f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)",
+        file=sys.stderr,
+    )
+    return 4
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    a = parser.parse_args(argv)
+    a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
+    if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
+        try:
+            return _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            out, err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+            try:
+                return _unexpected(exc)
+            finally:
+                sys.stderr.flush()
+                sys.stdout, sys.stderr = out, err
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+    try:
+        try:
+            rc = _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            rc = _unexpected(exc)
+        try:
+            sys.stdout.flush()  # writes a colon held back at the start of a line, and whatever is buffered
+        except BrokenPipeError:
+            return _pipe_closed()  # the reader left: exit 141, never the code of a truncated answer (G279)
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.flush()
+        return rc
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(a: argparse.Namespace) -> int:
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
@@ -2297,10 +2499,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 4
     except BrokenPipeError:
-        # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        return 141
+        return _pipe_closed()
+
+
+def _pipe_closed() -> int:
+    """`kube-noob ... | head`: the reader went away; exit quietly with 141, like other CLI tools. What is still
+    buffered goes to /dev/null, so the interpreter's own flush at exit cannot raise again."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    return 141
 
 
 def _dispatch(a: argparse.Namespace, s: Settings) -> int:
@@ -2362,7 +2569,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
                 # The document carries what was not read and not evaluated as notifications, and the operator
                 # still gets the notice on stderr: a partial audit must not look clean on either channel.
-                print(json.dumps(sarif_of_audit(rep), indent=2))
+                _write_document(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":
@@ -2407,8 +2614,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             )
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
-        else:
-            print(res["manifests"], end="")
+        else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
+            _write_document(res["manifests"])
         print(
             yaml.safe_dump(
                 {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
@@ -2456,7 +2663,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
             else:
-                print(out["manifests"], end="")
+                _write_document(out["manifests"])
             print(
                 yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
                 file=sys.stderr,
@@ -2683,21 +2890,25 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 written = mg_report.write(rep, Path(a.report), draft=a.case_draft)
             except (OSError, ValueError) as exc:
                 raise ConfigError(f"--report {a.report}: {exc}") from exc
-        from kube_noob import operators
+        from kube_noob import operator_issues, operators
         from kube_noob.mustgather import operators as mg_operators
 
-        inventory = operators.inventory(mg_operators.collect(bundle))
+        olm = mg_operators.collect(bundle)
+        inventory = operators.inventory(olm)
+        op_issues = operator_issues.for_must_gather(olm, rep["cluster"], data_dir=s.data_dir)
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
             for m in rep["knownIssues"]:
                 text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+            if rep["knownIssuesVerdict"] == "not-determined":
+                text += f"\nknown issues: not determined: {rep['knownIssuesNote']}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
                 text += f"\nwrote {path}"
-            _tprint(text + "\n" + operators.render_text(inventory))
+            _tprint(text + "\n" + operators.render_text(inventory) + "\n" + operator_issues.render_text(op_issues))
         else:
-            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory}, fmt)
+            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory, "operatorKnownIssues": op_issues}, fmt)
         if analyse.failing(analysis, a.fail_on):
             return 1
         # A gate that passes on evidence nobody could read is a false all-clear, and exit 0 cannot say which one it
@@ -2724,6 +2935,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "incidents":
         return _incidents(a, kit, fmt)
 
+    if a.cmd == "alerts":
+        return _alerts(a, kit, fmt)
+
     if a.cmd == "bundle":
         from kube_noob.debug.diagnose import bundle_markdown
 
@@ -2739,8 +2953,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         )
         bundle_dir = Path(a.out)
         bundle_dir.mkdir(parents=True, exist_ok=True)
-        (bundle_dir / "bundle.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-        (bundle_dir / "bundle.md").write_text(bundle_markdown(result), encoding="utf-8")
+        (bundle_dir / "bundle.json").write_text(json_document(result, indent=2, default=str), encoding="utf-8")
+        (bundle_dir / "bundle.md").write_text(
+            sanitize.defuse_workflow_commands(bundle_markdown(result)), encoding="utf-8"
+        )
         _emit(
             {"bundle": str(bundle_dir), "files": ["bundle.md", "bundle.json"], "diagnoses": len(result["diagnoses"])},
             fmt,
@@ -2910,8 +3126,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.out:
             out_dir = Path(a.out)
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "report.md").write_text(md, encoding="utf-8")
-            (out_dir / "report.json").write_text(json.dumps(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
+            (out_dir / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (out_dir / "report.json").write_text(json_document(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
         if a.format == "text":
             _tprint(md.rstrip())
         else:
@@ -3008,12 +3224,11 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
-_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-
-
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped."""
-    print(_TERMINAL_CONTROL.sub("", text))
+    """Print text that may echo a manifest or a log. It goes to stdout as it is: the output boundary
+    (``_VisibleStream``) cleans and marks it there, once. Cleaning it here first, without marking, removed a
+    character inside a name before the boundary could show it (G279, fourth review)."""
+    print(text)
 
 
 def _print_denials(out: dict[str, Any]) -> None:
@@ -3066,7 +3281,10 @@ def _print_reach(out: dict[str, Any]) -> None:
         # The verdict says UNDETERMINED and the two direction lines can both read "allowed", so without this the
         # terminal shows a conclusion with no reason while the JSON carries both `undeterminedBy` and `summary`.
         # A caveat belongs in the surface that is read, not only in the one that is parsed.
-        _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
+        if out.get("readFrom"):  # live: what decided may be a read that failed, not a kind left unevaluated
+            _tprint(f"  undetermined by: {', '.join(out['undeterminedBy'])} (the summary below says why)")
+        else:
+            _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
     for entry in out.get("inertPolicies", []):
         # The verdict can read ALLOWED while the operator believes an AdminNetworkPolicy is denying it. That gap
         # is the whole finding, so it goes on the line below the verdict, not into the JSON alone.
@@ -3189,7 +3407,7 @@ def _policy_generate(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(body, fmt)
         return 0
     if not a.output:
-        sys.stdout.write(text)
+        _write_document(text)  # the document: its dumper escapes every character that would not print
     rules = sorted({row["ruleId"] for row in g.generated})
     lines = [
         f"{len(g.documents)} policies for {len(rules)} rules ({', '.join(engines)}, mode {a.mode}, {platform})"
@@ -3343,14 +3561,14 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.posture_cmd == "diff":
             rep = drift.diff(drift.load(Path(a.old)), drift.load(Path(a.new)))
             if a.markdown:
-                Path(a.markdown).write_text(drift.markdown(rep), encoding="utf-8")
+                Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
             return 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
-            out.write_text(json.dumps(snap, sort_keys=True), encoding="utf-8")
+            out.write_text(json_document(snap, sort_keys=True), encoding="utf-8")
             out.chmod(0o600)
             summary = {"output": str(out), "objects": len(snap["objects"]), "findings": len(snap["findings"])}
             if a.format == "text":
@@ -3523,23 +3741,60 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         raise ConfigError("pass exactly one of -f manifests, --must-gather PATH or --live (with --cluster-enabled)")
     if a.namespaces and not a.live:
         raise ConfigError("-n works with --live; files and must-gathers are read whole")
+    issues = a.operators_cmd == "issues"
+    if issues:
+        from kube_noob import operator_issues
+
+        if a.openshift_version is not None and operator_issues.parse_version(a.openshift_version) is None:
+            raise ConfigError(
+                "--openshift-version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, "
+                "no leading zeros)"
+            )
+        if not 1 <= a.issues <= operator_issues.MAX_ISSUES_PER_PACKAGE:
+            raise ConfigError(f"--issues must be 1-{operator_issues.MAX_ISSUES_PER_PACKAGE}")
+        release = operator_issues.Release()
     if a.live:
         if not s.cluster.enabled:
             raise ConfigError("--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled")
         from kube_noob.debug.cluster import get_backend
 
-        collected = operators.collect_live(get_backend(s), a.namespaces)
+        backend = get_backend(s)
+        collected = operators.collect_live(backend, a.namespaces)
+        if issues:  # read even when a version is given, so a disagreement is said rather than hidden
+            release = operator_issues.live_release(backend)
     elif a.must_gather:
         from kube_noob.mustgather import ingest
         from kube_noob.mustgather import operators as mg_operators
 
         try:
-            collected = mg_operators.collect(ingest.open_bundle(Path(a.must_gather)))
+            bundle = ingest.open_bundle(Path(a.must_gather))
         except ingest.MustGatherError as exc:
             raise ConfigError(str(exc)) from exc
+        collected = mg_operators.collect(bundle)
+        if issues:  # the ClusterVersion is found by the analysers, which read the whole must-gather to find it
+            from kube_noob.mustgather import analyse
+
+            release = operator_issues.must_gather_release(analyse.analyse(bundle).as_dict()["cluster"])
     else:
         sources, unreadable = _operator_files(a.file)
         collected = operators.from_sources(sources, unreadable)
+    if issues:
+        release.given = a.openshift_version
+        found = operator_issues.assess(
+            collected, release=release, top=a.top, issues_per_package=a.issues, data_dir=s.data_dir
+        )
+        if a.format == "text":
+            _tprint(operator_issues.render_text(found))
+        else:
+            _emit(found, fmt)
+        if a.require_complete and not found["complete"]:
+            print(
+                f"refusing a complete verdict: the answer is {found['verdict']}, incomplete because "
+                f"{'; '.join(found['incompleteBecause'])}",
+                file=sys.stderr,
+            )
+            return 5
+        return 0
     out = operators.inventory(collected, top=a.top)
     if a.format == "text":
         _tprint(operators.render_text(out))
@@ -3590,6 +3845,57 @@ def _watch(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             stop.wait(s.watch.interval_seconds)
     except KeyboardInterrupt:
         return 0
+    return 0
+
+
+def _alerts(a: argparse.Namespace, kit: Any, fmt: str) -> int:
+    """`alerts report|list|show`. The report is the `alert_report` tool's answer; list and show read the server's
+    store and clean what they read, as the GET routes do."""
+    from pydantic import ValidationError
+
+    from kube_noob import sanitize
+    from kube_noob import toolkit as tk
+    from kube_noob.alert_report import render_text
+
+    if a.alerts_cmd == "report":
+        text = _read_text_or_file(a.file, "alerts report -f")
+        try:
+            req = tk.AlertReportIn(payload=text)
+        except ValidationError as exc:
+            raise ConfigError(
+                f"{a.file}: not a payload this command reads (JSON, 2 to {tk.MAX_ALERT_PAYLOAD} characters)"
+            ) from exc
+        out = kit.alert_report(req)
+        if a.format == "text":
+            _tprint(render_text(out["report"]))
+            _tprint(f"\nnot stored: {out['notStoredReason']}")
+        else:
+            _emit(out, fmt)
+        return 0
+    if a.alerts_cmd == "list":
+        if not 1 <= a.limit <= 200:
+            raise ConfigError("--limit must be 1-200")
+        out = sanitize.result(kit.alert_report_list(tk.AlertReportListIn(limit=a.limit)))
+        if a.format == "text":
+            for row in out["reports"]:
+                if row.get("unreadable"):
+                    _tprint(f"{row['id']}  unreadable: {row['unreadable']}")
+                    continue
+                names = ", ".join(row.get("alertnames") or [])
+                _tprint(f"{row['id']}  {row.get('receivedAt')}  {row.get('alerts')} alert(s)  {names}")
+            _tprint(f"{len(out['reports'])} of {out['total']} kept" + (f" ({out['note']})" if out.get("note") else ""))
+        else:
+            _emit(out, fmt)
+        return 0
+    try:
+        req_id = tk.AlertReportGetIn(id=a.report_id)
+    except ValidationError as exc:
+        raise ConfigError(f"{a.report_id[:80]!r} is not a report id") from exc
+    out = sanitize.result(kit.alert_report_get(req_id))
+    if a.format == "text":
+        _tprint(render_text(out["report"], out))
+    else:
+        _emit(out, fmt)
     return 0
 
 
@@ -3773,8 +4079,8 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
         if a.out:
             target = Path(a.out)
             target.mkdir(parents=True, exist_ok=True)
-            (target / "report.md").write_text(md, encoding="utf-8")
-            (target / "report.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+            (target / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (target / "report.json").write_text(json_document(out, indent=2) + "\n", encoding="utf-8")
         if a.format == "text":
             print(md, end="")
         else:
@@ -3955,7 +4261,7 @@ def _corpus(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out_dir = s.data_dir / "known_issues"
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "openshift-release-notes.json"
-        target.write_text(json.dumps(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
+        target.write_text(json_document(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
         _emit({"file": str(target), "issues": len(records), "commits": commits}, fmt)
         return 0
     if cc == "build":
@@ -4185,7 +4491,7 @@ def _train(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
     rep = run_benchmark(s, a.tasks.split(",") if a.tasks else None, use_tools=not a.no_tools)
     if a.out:
-        Path(a.out).write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
+        Path(a.out).write_text(json_document(rep, indent=2, default=str), encoding="utf-8")
     _emit({k: v for k, v in rep.items() if k != "results"} if a.out else rep, fmt)
     return 0
 

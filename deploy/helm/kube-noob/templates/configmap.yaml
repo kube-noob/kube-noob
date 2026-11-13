@@ -35,6 +35,14 @@ data:
         - {{ . | quote }}
         {{- end }}
       {{- end }}
+    {{- with .Values.alertReports }}
+    alertReports:
+      store: {{ .store }}
+      maxReports: {{ int .maxReports }}
+      maxAgeDays: {{ int .maxAgeDays }}
+      maxReportBytes: {{ int .maxReportBytes }}
+      budgetSeconds: {{ int .budgetSeconds }}
+    {{- end }}
     rhacs:
       enabled: {{ .Values.rhacs.enabled }}
       {{- if .Values.rhacs.enabled }}

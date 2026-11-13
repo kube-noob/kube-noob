@@ -32,13 +32,54 @@ Everything lives in the data directory: `~/.local/share/kube-noob` by default, o
 | A Jira snapshot (`kube-noob corpus jira-snapshot -o <file>`, `<dataDir>/seed/*.tgz`) | Only when you make one: the files above in one owner-only archive, for your other installs to import. It holds Red Hat ticket text: keep it inside your organisation (a private image, bucket or volume). The `corpus-refresh` workflow uploads it only encrypted with your `CORPUS_PASSPHRASE` | Delete the file |
 | Your team memory repository (`memory.paths`, chart `memory.source`) | Entries your team wrote and reviewed (`entries/MEM-<n>.yaml`). kube-noob reads it where it runs and writes only on `kube-noob memory init`, `add`, `outcome`, `import` and `migrate-learning`; it never uploads, bundles, publishes or exports it. `memory import` reads a ticket export on your machine and keeps no people: assignee, caller and reporter fields are not read, and emails, account ids, @mentions, phone numbers and named people are removed from the text | It is your repository: remove entries in Git |
 | `incidents.json` | Only when the incident watch runs (`kube-noob watch`, `watch.enabled`): per incident the namespace, workload, signal, redacted event and status lines, the diagnosis ids and steps, rollout changes (image names, environment variable names, resource values), when it opened and resolved, and fixes a person confirmed. Never log lines, object specs or Secret values. Resolved incidents are dropped after `watch.retentionDays` (30) unless a fix was confirmed | Delete the file |
+| `alert-reports/<id>.json`, `alert-reports/<id>.summary.json` | Only on the HTTP server (`kube-noob serve`; in the chart only with `alertReports.store: true`, which needs `replicaCount: 1`), for each Alertmanager payload posted to `POST /v1/alert-reports`, while `alertReports.store` is true: the evidence report. Per alert it keeps the alert's name, state, start time and fingerprint, eight labels (severity, namespace, pod, container, service, instance, node, job), its `summary` (or `message`), and inside the diagnosis evidence up to five lines that can quote its `summary`, `description` and `message` annotations; plus what kube-noob's own knowledge says about it, and the id, when it arrived and how long the report took. Every label and annotation value is redacted for credential shapes (passwords, bearer and basic credentials, API keys, private keys including one cut short, cloud and chat tokens, credentials in URLs) before it is cut to 2,000 characters, and every `scheme://` URL in it is replaced by `[url removed]`. Not kept: any other annotation (`runbook_url` among them), `generatorURL`, `externalURL`, the receiver and group key, request headers, the caller's address and the token. Owner-only (0700 folder, 0600 files). The newest `alertReports.maxReports` (200) are kept, none older than `alertReports.maxAgeDays` (14 days), each at most `alertReports.maxReportBytes` (1 MiB). On the chart's emptyDir (no `persistence.enabled`) they go with the pod. The CLI, the stdio MCP server and the Claude plugin never write it | Delete the folder, or set `alertReports.store: false` |
 | `posture/snapshot-*.json`, `posture/report-*` | Only when you run `kube-noob posture report` or `serve` with `posture.reportEnabled`: per watched object its kind, namespace, name, owner label, a hash of its desired state and a 12-character hash per field; the audit findings (rule, object, severity, owner). Never field values, ConfigMap data or Secrets. The newest `posture.keep` (14) are kept, owner-only (0600). A snapshot also keeps the audit's assumptions, which name kinds and counts, never object contents. A report read back for the trend in the HTML page contributes four values per snapshot -- the timestamp, the open and excepted counts, and whether the read was complete -- and no object name reaches the chart | Delete the folder |
 
-Nothing from a request is kept after it is answered. What is listed above stays until you delete it; the maintainers
+Nothing from a request is kept after it is answered, except the alert reports in the table above, which are kept from the Alertmanager payloads posted to them. What is listed above stays until you delete it; the maintainers
 never receive it.
 
 `kube-noob must-gather analyze --report DIR` writes `report.md`, `report.json` and, with `--case-draft`, `case-draft.md` to the folder you name; they hold redacted findings from the must-gather, never its Secrets, and nothing is sent anywhere. `kube-noob bundle` writes a redacted evidence pack to the folder you name (default `./kube-noob-bundle`). The MCP
 server's log line records each tool name, argument sizes and duration, never argument contents.
+
+## What the redactor removes
+
+One redactor (`kube_noob.debug.cluster.redact_text`) runs on what `diagnose`, `insight`, the must-gather report, build
+logs, the incident watch, the evidence bundle, cluster output and every alert report keep or show, and the learning-note
+filter refuses any text it would change. It replaces with `***` (or a marker such as `***JWT***`):
+
+- `Authorization: Bearer <value>`; a bare `Bearer <value>` of 16 characters or more with letters and digits;
+  `Authorization: Basic <value>` when the value can be base64 credentials (8 characters or more of the base64
+  alphabets, with a digit or both cases), the whole value;
+- `name=value`, `name: value` and `"name": "value"` for `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`
+  (`apikey`, `api-key`) and `access_key`, also with up to four words in front: `client_secret=`,
+  `aws_secret_access_key=`, `DB_PASSWORD=`, `CLIENT_SECRET:`, `X-Auth-Token:`. A reference to a Secret is left as
+  written only where the text proves it is one: `kubectl describe`'s `<set to the key 'password' in secret
+  'orders-db'>`, the same in words (`secret 'orders-db' key 'password'`), and a manifest's `valueFrom`/`secretKeyRef`.
+  A value that merely looks like `<name>/<key>` (`DB_PASSWORD: orders-db/password`) is redacted, because
+  `password=prod-db/secret` has the same shape and is a password: this over-redacts rather than leaks;
+- `apikey <value>` and `access_key <value>` when the value is 16 characters or more with letters and digits (so
+  "rotate the apikey whenever a teammate leaves" stays as written);
+- secrets passed as flags: `--password x`, `--db-password=x`, `--api-key x`, `--client-secret x`, `--token=x`, `--pwd x`,
+  `--access-key x`;
+- JWTs; AWS access key ids; Stripe-style `sk_live_`/`rk_test_` keys of 24 characters or more; Vault, GitHub and Slack
+  tokens; the password in `scheme://user:password@host`;
+- a private key from its `-----BEGIN ... PRIVATE KEY-----` line to its END line; a key cut short (no END after it) loses
+  its base64 body -- lines separated by whitespace, by JSON-escaped `\n`, or by a newline and a log prefix (an RFC 3339
+  timestamp, a CRI `stdout F`, `kubectl logs --prefix`'s `[pod/name/container]`), or the body flattened onto the BEGIN
+  line -- and a BEGIN line with no body after it, which holds no key material, is left as written; the
+  `"private_key": "..."` string of a service-account key file, also when it is cut short before its closing quote.
+
+What it does not catch, so treat any text you hand kube-noob as possibly still holding these:
+
+- `token <value>` or `password <value>` with neither `=` nor `:` nor a leading dash: in prose a value and the next word
+  look the same;
+- a password glued to a short flag, `-p<password>` (MySQL's form);
+- URL-encoded names, such as `password%3D` followed by the value;
+- a private key split across fields or quoted line by line (two labels, a JSON list of `"..."` lines), or whose lines
+  carry a log prefix other than the three above;
+- a bare random string with no name and no known prefix, a Basic value under 8 characters or of one case without a
+  digit, a bare Bearer value under 16 characters or without a digit, an `apikey <value>` under 16 characters or
+  without a digit, and a JWT whose segments are under 8 characters.
 
 ## What it sends, and where
 
@@ -53,6 +94,7 @@ By default, nothing. Each destination below is off until you turn it on.
 | Nowhere: the admission webhook (`kube-noob admission serve`, chart `admission.enabled`) | Running it | It receives the objects your API server sends it (never Secrets or ConfigMaps), answers with warnings or a denial, keeps only request counts and latencies, and sends nothing; `admission.lookups` adds read-only lists of five kinds from your API server, as in the row above |
 | Nowhere: `/metrics` on the HTTP server | Running the HTTP server (the sidecar or the chart) | Whoever can reach the port with the bearer token reads counters only: the tool names this build serves, how many calls each had, their outcomes and durations, the version, and how old the built-in knowledge is. No argument, no resource name, no namespace, no manifest content and no caller address appears in any label, and the label values come from fixed sets so a caller cannot add one. It sends nothing itself; Prometheus scrapes it |
 | Nowhere: `/v1/alerts` on the HTTP server | Running the HTTP server; your Alertmanager configured to post there | It receives the alert payload your Alertmanager sends, reads the signals out of it in memory and answers; nothing is stored and nothing is sent on |
+| Nowhere: `/v1/alert-reports` on the HTTP server | Running the HTTP server; your Alertmanager configured to post there | It receives the alert payload your Alertmanager sends and answers with an evidence report built from the payload and local knowledge alone (no cluster read, no fetch); with `alertReports.store` it keeps that report in the data directory (row above) and sends nothing on. `GET /v1/alert-reports` and `GET /v1/alert-reports/<id>` hand kept reports to whoever holds the bearer token |
 | Your RHACS Central (`rhacs.endpoint`) | `rhacs.enabled: true` (chart `rhacs.enabled`); only `kube-noob rhacs compare --live`, the `rhacs_compare_live` tool and `kube-noob vuln report --rhacs-image`; under the offline lock only an in-cluster `*.svc` Central | HTTPS GET of `/v1/policies` and `/v1/policies/<id>`, and of `/v1/images/<digest>` for the images you name, with your API token; policies and image scans are read in memory and not stored |
 | Your git host (the chart's `memory.git.url`) | `memory.source: git` in the chart; under `config.offline` only an in-cluster `*.svc` host | A shallow `git clone` of your memory repository by the pod's init container at start, through egress opened to `memory.git.egressCIDRs` only; kube-noob itself sends nothing |
 | Red Hat's security data (security.access.redhat.com) | Only `kube-noob corpus advisories --online`; refused under the offline lock (`--from-archive` reads a downloaded file instead) | HTTPS GET of `changes.csv` and the VEX document of each CVE, one request a second plus jitter, within `--max-requests`; nothing about you |
@@ -114,4 +156,4 @@ kube-noob is not directed at children under 18.
 ## Contact
 
 Security reports: [SECURITY.md](SECURITY.md). Anything else:
-[GitHub issues](https://github.com/aashishmahajan/kube-noob/issues).
+[GitHub issues](https://github.com/kube-noob/kube-noob/issues).

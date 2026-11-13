@@ -297,9 +297,12 @@ def counted() -> dict[str, int]:
 
     from kube_noob.audit.controls import TITLES
     from kube_noob.audit.fedramp import BY_CONTROL, INDICATORS, indicator_rules
+
+    # The red team's scenarios, not the demo's: both modules name a tuple SCENARIOS, and this measured the demos, which
+    # happened to number nine as well until a tenth demo turned "9 red-team scenarios" into a wrong 10 (G274).
+    from kube_noob.audit.redteam import SCENARIOS
     from kube_noob.audit.rules import RULES
     from kube_noob.debug.playbooks import PLAYBOOKS
-    from kube_noob.demo import SCENARIOS
     from kube_noob.mustgather import analyse
 
     tracks = yaml.safe_load((ROOT / "src" / "kube_noob" / "data" / "curriculum.yaml").read_text())["tracks"]
