@@ -329,9 +329,24 @@ def run(
             )
         from kube_noob.audit.controls import summary as control_summary
 
+        if report.not_audited:
+            # Objects the rules refused to read (an apiVersion that is not a string, not shaped like an API, or
+            # in a group the kind is not known under): not findings, not absences. A typo in apiVersion turned a
+            # failing gate into a passing one whose every output said no workload was present (review 4, R1).
+            failures.append(
+                f"{len(report.not_audited)} object(s) not audited, so the verdict is undetermined: "
+                + "; ".join(f"{r['object']} ({r['why']})" for r in report.not_audited[:MAX_NOT_AUDITED_NAMED])
+                + (
+                    f"; and {len(report.not_audited) - MAX_NOT_AUDITED_NAMED} more"
+                    if len(report.not_audited) > MAX_NOT_AUDITED_NAMED
+                    else ""
+                )
+            )
         coverage = {
             "kubernetesVersion": report.kubernetes_version,
             "resources": report.resources,
+            "assumptions": list(report.assumptions),
+            "notAudited": [dict(r) for r in report.not_audited],
             "controlSummary": control_summary(
                 kept_rules,
                 excepted_rules or None,
@@ -669,6 +684,41 @@ def _fingerprint(r: dict[str, Any]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
+#: How many refused objects the gate's failure line names before it gives a count.
+MAX_NOT_AUDITED_NAMED = 5
+#: The SARIF rule id under which a refused object is reported: a `note`, not a finding, with no severity score.
+NOT_AUDITED_RULE = "KN-NOT-AUDITED"
+
+
+def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One `note`-level result per object the rules refused to read, so a SARIF consumer sees the object that was
+    not audited beside the findings, and the run's invocation carries the list too (review 4, R1)."""
+    rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    rules[NOT_AUDITED_RULE] = {
+        "id": NOT_AUDITED_RULE,
+        "name": "ObjectNotAudited",
+        "shortDescription": {"text": "Object not audited"},
+        "fullDescription": {"text": "The rules refused to read this object, so the verdict is undetermined."},
+        "help": {"text": "Give the object an apiVersion kube-noob knows this kind under, or remove it from the gate."},
+        "helpUri": INFO_URI,
+        "defaultConfiguration": {"level": "note"},
+        "properties": {"tags": ["kubernetes", "coverage"]},
+    }
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "ruleId": NOT_AUDITED_RULE,
+                "ruleIndex": list(rules).index(NOT_AUDITED_RULE),
+                "level": "note",
+                "message": {"text": f"{r.get('object')}: not audited, {r.get('why')}"},
+            }
+        )
+    return out
+
+
 def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
     rules: dict[str, dict[str, Any]] = {}
     results = []
@@ -699,6 +749,12 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
                 "partialFingerprints": {"kubeNoob/v1": _fingerprint(r)},
             }
         )
+    results += _not_audited_results(report, rules)
+    if report.get("notAudited"):
+        invocation = {
+            **(invocation or {"executionSuccessful": True}),
+            "properties": {**((invocation or {}).get("properties") or {}), "notAudited": list(report["notAudited"])},
+        }
     return {
         "$schema": SARIF_SCHEMA,
         "version": "2.1.0",
@@ -777,7 +833,7 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         for u in rep.get("unreadable") or []
     ]
     return sarif(
-        {"findings": findings, "tool": {"version": __version__}},
+        {"findings": findings, "tool": {"version": __version__}, "notAudited": rep.get("notAudited") or []},
         invocation={"executionSuccessful": True, "toolExecutionNotifications": notes},
     )
 
@@ -935,6 +991,15 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         *[f"| {sev} | {n} |" for sev, n in report["counts"].items()],
         "",
     ]
+    if report.get("notAudited"):
+        lines += [
+            f"### Not passed: {len(report['notAudited'])} object(s) not audited",
+            "",
+            "The rules refused to read these objects, so the verdict is undetermined, not a pass.",
+            "",
+            *[f"- {_cell(str(r.get('object')), 120)}: {_cell(str(r.get('why')), 200)}" for r in report["notAudited"]],
+            "",
+        ]
     if report["failures"]:
         lines += ["### Why it failed", "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
     if report["findings"]:

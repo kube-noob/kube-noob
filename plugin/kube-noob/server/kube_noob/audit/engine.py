@@ -5,15 +5,10 @@ from __future__ import annotations
 from kube_noob import sanitize
 from kube_noob.audit import detection
 from kube_noob.audit.model import Report, Severity, Stage
-from kube_noob.audit.podspec import (
-    EMBEDDED_POD_SPEC_GROUPS,
-    operator_supplied_images,
-    refused_group,
-    unread_pod_specs,
-)
+from kube_noob.audit.podspec import operator_supplied_images, unread_pod_specs
 from kube_noob.audit.redteam import red_team
-from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refused_subject_group, run_rules
-from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
+from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refusal, run_rules
+from kube_noob.catalog import LEGACY_OPENSHIFT_V1, OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
 from kube_noob.yamlio import Document, load_documents
@@ -45,6 +40,14 @@ def build_context(
         # validator already refuses them; a programmatic caller gets the same treatment.
         allowed_registries=tuple(e.strip() for e in allowed_registries if e.strip()),
     )
+
+
+def _group_label(kind: str, group: str) -> str:
+    """A group as the note names it: `apps`, `the legacy ungrouped API (v1)` for an OpenShift 3.x kind, else `core`.
+    Kubernetes' core never served a Route; the "" OpenShift's own kinds carry comes from `LEGACY_OPENSHIFT_V1` (R9)."""
+    if group:
+        return group
+    return "the legacy ungrouped API (v1)" if kind in LEGACY_OPENSHIFT_V1 else "core"
 
 
 def analyze(
@@ -107,26 +110,26 @@ def analyze(
             "that supplies the image decides what actually runs."
         )
     for d in docs:
-        group = refused_group(d)
-        if group is not None:
-            # The object names a kind this reader knows pod specs for, in a group it does not. Not reading it is
-            # right -- another project's CRD of the same name has another schema -- but saying nothing about it
-            # leaves a privileged container in a document that reported clean (G231).
-            report.assumptions.append(
-                f"{d.ref()} declares API group {group}, which is not where kube-noob knows this kind's pod specs "
-                f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
-                "audited."
-            )
+        why = refusal(d)
+        if why is None:
             continue
-        if refused_subject_group(d) is not None:
-            # The same line for every other kind the rules know: a `Deployment` in `example.com/v1` is not the
-            # rules' Deployment, and until this it was dropped with no finding and no word, while the rules that
-            # conclude from a workload's absence (KN-V011) read the Service beside it (review 3, class 21).
-            known = ", ".join(g or "core" for g in sorted(SUBJECT_GROUPS[d.kind]))
-            report.assumptions.append(
-                f"{d.ref()} declares apiVersion {sanitize.visible(d.api_version)[:80]}, which is not one kube-noob "
-                f"knows {d.kind} under (group {known}); it was not audited."
-            )
+        # An object of a kind the rules know, with an apiVersion they refuse: not a string, not shaped like an
+        # API, or a group the kind is not known under (a `Deployment` in `example.com/v1`, a RayCluster outside
+        # ray.io). Not reading it is right -- another project's CRD of the same name has another schema -- and
+        # saying nothing was the absence-read-as-pass this work is about: a privileged container sat in a
+        # document that reported clean while KN-V011 concluded from its absence (G231, review 3). So it is
+        # named here, listed under `notAudited`, and the verdict is undetermined: never a pass (review 4, R1).
+        # The declared value is shown once, here, cleaned and quoted; no reason the record carries holds it.
+        raw = d.data.get("apiVersion") if isinstance(d.data, dict) else None
+        shown = (
+            f'"{sanitize.visible(raw)[:80]}"' if isinstance(raw, str) else f"a non-string value ({type(raw).__name__})"
+        )
+        known = ", ".join(_group_label(d.kind, g) for g in sorted(SUBJECT_GROUPS[d.kind]))
+        report.assumptions.append(
+            f"{d.ref()} declares apiVersion {shown}: {why} (kube-noob knows {d.kind} under {known}); it was not "
+            "audited, so this verdict is undetermined."
+        )
+        report.not_audited.append({"object": d.ref(), "kind": d.kind, "why": why})
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
         return report

@@ -138,7 +138,16 @@ def test_a_kind_of_the_same_name_in_another_group_is_not_the_subject() -> None:
     foreign = "apiVersion: example.com/v1\nkind: APIServer\nmetadata: {name: cluster}\nspec: {}\n"
     rep = analyze(foreign, "openshift", "4.20")
     assert "KN-S035" not in rep.evaluated_rules
-    assert "KN-S035" in rep.not_evaluated and "config.openshift.io" in rep.not_evaluated["KN-S035"]
+    assert rep.not_evaluated["KN-S035"] == (
+        "1 APIServer not audited (apiVersion names a group kube-noob does not know APIServer under)"
+    )
+    assert rep.not_audited == [
+        {
+            "object": "APIServer/cluster",
+            "kind": "APIServer",
+            "why": rep.not_evaluated["KN-S035"][len("1 APIServer not audited (") : -1],
+        }
+    ]
 
 
 def test_the_record_is_the_same_bytes_whatever_the_document_order() -> None:
@@ -324,7 +333,7 @@ def test_a_kind_the_cluster_refused_is_named_as_not_read_in_the_reason() -> None
     )
     reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
     assert reasons["KN-S015"] == (
-        "no rbac.authorization.k8s.io ClusterRole or Role in the input (roles could not be read from the cluster)"
+        "no rbac.authorization.k8s.io ClusterRole or Role (roles could not be read from the cluster)"
     )
 
 
@@ -432,18 +441,19 @@ def test_every_rule_declares_its_subject_and_every_kind_it_asks_for_has_a_group(
             "apiVersion: apps.open-cluster-management.io/v1\nkind: Subscription\nmetadata: {name: a, namespace: a}\n"
             "spec: {channel: x/y}\n",
             "KN-S034",
-            "no operators.coreos.com Subscription in the input",
+            "1 Subscription not audited (apiVersion names a group kube-noob does not know Subscription under)",
         ),
         (
             "apiVersion: example.com/v1\nkind: MachineConfigPool\nmetadata: {name: worker}\nspec: {paused: true}\n",
             "KN-S033",
-            "no machineconfiguration.openshift.io MachineConfigPool in the input",
+            "1 MachineConfigPool not audited "
+            "(apiVersion names a group kube-noob does not know MachineConfigPool under)",
         ),
         (
             "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: s, namespace: a}\n"
             "spec: {template: {spec: {containers: [{image: x}]}}}\n",
             "KN-N004",
-            "no Service in the input",
+            "1 Service not audited (apiVersion names a group kube-noob does not know Service under)",
         ),
     ],
 )
@@ -571,7 +581,7 @@ def test_a_snapshot_names_the_resource_for_a_grouped_kind_the_cluster_refused() 
     )
     reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
     assert reasons["KN-N007"] == (
-        "no networking.k8s.io NetworkPolicy in the input (networkpolicies could not be read from the cluster)"
+        "no networking.k8s.io NetworkPolicy (networkpolicies could not be read from the cluster)"
     )
 
 
@@ -808,10 +818,20 @@ def test_a_workload_of_a_group_the_rules_do_not_know_is_named_and_decides_nothin
     """
     rep = analyze(FOREIGN_DEPLOYMENT + "---" + OTHER_DEPLOYMENT + "---" + SERVICE, "kubernetes", None)
     assert "KN-V011" not in rep.fired_rules
-    assert "KN-V011" in rep.not_evaluated and "example.com" in rep.not_evaluated["KN-V011"]
+    assert rep.not_evaluated["KN-V011"] == (
+        "a Deployment was not audited (apiVersion names a group kube-noob does not know Deployment under), so whether "
+        "its pods are the ones selected cannot be decided"
+    )
     assert any("example.com" in a and "Deployment/prod/web" in a and "not audited" in a for a in rep.assumptions), (
         rep.assumptions
     )
+    assert rep.not_audited == [
+        {
+            "object": "Deployment/prod/web",
+            "kind": "Deployment",
+            "why": "apiVersion names a group kube-noob does not know Deployment under",
+        }
+    ]
     # A NetworkPolicy's "selects nothing" is the same conclusion from the same gap.
     netpol = (
         "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: web, namespace: prod}\n"
@@ -881,7 +901,9 @@ def test_st001_declares_the_storage_class_it_reads() -> None:
 #: (a string, a tuple of strings, or `*` for "every positional argument"). `workloads`, `refused_workloads` and
 #: `refused_subject_group` read pod specs rather than one kind, and count as asking for the pod-spec subject.
 _KIND_READERS: dict[str, int | str] = {"by_kind": "*", "has_subject": 0, "kind_in_group": 1}
-_POD_SPEC_READERS = frozenset({"workloads", "refused_workloads", "refused_subject_group"})
+_POD_SPEC_READERS = frozenset(
+    {"workloads", "refused_workloads", "unread_pod_spec_docs", "refused_subject_group", "refusal"}
+)
 
 
 def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
@@ -947,6 +969,34 @@ def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
                 out.add(WORKLOAD_SUBJECT)
             elif isinstance(node.func, ast.Name) and node.func.id in funcs:
                 out |= kinds_in(funcs[node.func.id], seen)
+            elif any(isinstance(a, ast.Name) and a.id == "ctx" for a in node.args):
+                # A helper outside this module given the context could read any kind: not classified (R7).
+                out.add(f"?{fn.name} passes ctx to {ast.unparse(node.func)}, which this walk does not follow")
+        for node in ast.walk(fn):
+            # A traversal of `ctx.docs` by hand, a `.kind ==` comparison or a `.get("kind")` read selects kinds
+            # this walk cannot name: loud, never an empty set (review 4, R7).
+            if isinstance(node, ast.Attribute) and node.attr == "docs" and ast.unparse(node.value) == "ctx":
+                out.add(f"?{fn.name} walks ctx.docs")
+            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "kind":
+                # `d.kind == "Route"` / `d.kind in KINDS` selects kinds: resolved like a `by_kind` argument, or loud.
+                for side in node.comparators:
+                    try:
+                        out |= kinds_of(fn, side)
+                    except Exception:  # noqa: BLE001 -- the walk reports, the assertion below decides
+                        # A runtime value (`ref.get("kind")`, another object's kind) is a match between two
+                        # objects already read, not a selection; a name or literal that will not resolve is loud.
+                        if not any(isinstance(n, ast.Call) for n in ast.walk(side)):
+                            out.add(f"?{fn.name} compares .kind with {ast.unparse(side)}")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "kind"
+                and ast.unparse(node.func.value).endswith(".data")  # a document's own kind, not a subject's
+            ):
+                out.add(f"?{fn.name} reads .get('kind')")
         return out
 
     return {name: kinds_in(funcs[name], set()) for name in names}
@@ -975,10 +1025,18 @@ def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_contex
 
     by_rule = _by_kind_calls_per_rule()
     assert by_rule.keys() == RULES.keys()
+    from kube_noob.audit.rules import ANY_OBJECT
+
     for rid, asked in by_rule.items():
         r = RULES[rid]
         declared = {k for sub in r.subjects for k in sub} | set(r.context)
+        unknown = sorted(k[1:] for k in asked if k.startswith("?"))
+        if ANY_OBJECT in declared:
+            continue  # it reads every object by declaration; what it compares kinds to is a refinement
+        assert not unknown, f"unknown pattern in {rid}: {'; '.join(unknown)}"
         for kind in asked:
+            if kind.startswith("?"):
+                continue
             if kind == WORKLOAD_SUBJECT:
                 # `workloads()` is the pod-spec subject, or a declared subset of its kinds (KN-V010, KN-N001).
                 assert WORKLOAD_SUBJECT in declared or declared & set(WORKLOAD_KINDS), f"{rid} reads workloads"
@@ -1162,9 +1220,304 @@ def test_a_kind_read_outside_by_kind_is_caught_by_the_declaration_walk() -> None
     tree = ast.parse(src)
     probe = ast.parse(
         "def _probe(ctx, r):\n"
-        "    if ctx.has_subject(('StorageClass',)) and kind_in_group(ctx.docs[0], 'IngressClass'):\n"
-        "        return ctx.by_kind('Route')\n"
+        "    for d in ctx.by_kind('Route'):\n"
+        "        if ctx.has_subject(('StorageClass',)) and kind_in_group(d, 'IngressClass') and d.kind == 'Gateway':\n"
+        "            return d\n"
     ).body[0]
     tree.body.append(probe)
     found = _kinds_asked(tree, ["_probe"])["_probe"]
-    assert found == {"StorageClass", "IngressClass", "Route"}
+    assert found == {"StorageClass", "IngressClass", "Route", "Gateway"}
+    # And every traversal pattern the walk cannot classify is LOUD, never an empty set (review 4, R7).
+    for body in (
+        "    return [d for d in ctx.docs if d.kind == 'Route']\n",
+        "    return list(filter(lambda d: d.kind == 'Route', ctx.docs))\n",
+        "    return [d for d in ctx.by_kind('Route') if d.data.get('kind') == 'Route']\n",
+        "    return other_module_helper(ctx)\n",
+    ):
+        probe = ast.parse("def _probe2(ctx, r):\n" + body).body[0]
+        tree.body.append(probe)
+        found = _kinds_asked(tree, ["_probe2"])["_probe2"]
+        assert any(k.startswith("?") for k in found), (body, found)
+        tree.body.remove(probe)
+
+
+# ---------------------------------------------------------------------------
+# Review 4: a refused object is never a pass (R1), and its neighbours (R3-R12)
+# ---------------------------------------------------------------------------
+
+REFUSED_SHAPES: dict[str, str] = {
+    "v1slash": '"v1/"',
+    "upper": '"APPS/v1"',
+    "lead": '" apps/v1"',
+    "foreign": "example.com/v1",
+    "slashv1": '"/v1"',
+    "appsslash": '"apps/"',
+    "int7": "7",
+    "list": "[apps, v1]",
+}
+
+
+def _refused_bundle(api_version: str, kind: str = "Deployment") -> str:
+    """The reviewer's q1 shape: a privileged workload under a refused apiVersion, beside a Service selecting it."""
+    spec = (
+        "spec:\n  replicas: 1\n  selector: {matchLabels: {app: web}}\n  template:\n    metadata: {labels: {app: web}}\n"
+        "    spec:\n      containers:\n        - name: web\n          image: web:latest\n"
+        "          securityContext: {privileged: true}\n"
+        if kind != "Pod"
+        else "spec:\n  containers:\n    - name: web\n      image: web:latest\n"
+        "      securityContext: {privileged: true}\n"
+    )
+    return (
+        f"apiVersion: {api_version}\nkind: {kind}\nmetadata: {{name: web, namespace: shop}}\n{spec}---\n"
+        "apiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\n"
+        "spec:\n  selector: {app: web}\n  ports: [{port: 80}]\n"
+    )
+
+
+@pytest.mark.parametrize("shape", sorted(REFUSED_SHAPES))
+def test_a_refused_object_is_undetermined_in_every_format_never_a_pass(
+    shape: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo in apiVersion (`v1/`, `APPS/v1`, a leading space) or a foreign group on a known kind turned a failing
+    gate into a passing one whose every output said no workload was present (review 4, R1). Now: `audit` and
+    `gate` exit 1, every format names the object, and "no pod spec in the input" is said nowhere."""
+    from kube_noob import gate, report_html
+
+    text = _refused_bundle(REFUSED_SHAPES[shape])
+    d = tmp_path / shape
+    d.mkdir()
+    (d / "bundle.yaml").write_text(text, encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    assert code == 1
+    rep = json.loads(out)
+    assert [r["object"] for r in rep["notAudited"]] == ["Deployment/shop/web"]
+    assert not any(f["ruleId"] == "KN-V011" for f in rep["findings"]), "the Service was judged against unread pods"
+    assert "no pod spec in the input" not in out
+    assert "Deployment not audited" in _not_evaluated(rep["controlSummary"])["KN-S001"]
+    code, text_view = _cli(capsys, "audit", "-f", str(d))
+    assert code == 1
+    assert "not audited: 1 object(s)" in text_view and "Deployment/shop/web" in text_view
+    assert "undetermined" in text_view and "no pod spec in the input" not in text_view
+    code, _ = _cli(capsys, "audit", "-f", str(d), "--fail-on", "never")
+    assert code == 1, "undetermined is 1 whatever --fail-on says"
+    code, sarif_text = _cli(capsys, "audit", "-f", str(d), "--format", "sarif")
+    assert code == 1 and "no pod spec in the input" not in sarif_text
+    run = json.loads(sarif_text)["runs"][0]
+    assert run["invocations"][0]["properties"]["notAudited"] == rep["notAudited"]
+    assert [r["message"]["text"] for r in run["results"] if r["level"] == "note"] == [
+        f"Deployment/shop/web: not audited, {rep['notAudited'][0]['why']}"
+    ]
+
+    src = gate.Source(uri="bundle.yaml", text=text, lines=text.count("\n"))
+    report = gate.run([src], fail_on="never")
+    assert report["passed"] is False
+    assert report["notAudited"] == rep["notAudited"]
+    assert any("not audited" in f and "Deployment/shop/web" in f for f in report["failures"])
+    md = gate.markdown(report)
+    assert "gate passed" not in md and "Not passed: 1 object(s) not audited" in md and "Deployment/shop/web" in md
+    page = report_html.render(report)
+    assert "The gate passed" not in page and "Not passed: 1 object(s) not audited" in page
+    doc = gate.sarif(report, invocation={"executionSuccessful": True})
+    assert doc["runs"][0]["invocations"][0]["properties"]["notAudited"] == rep["notAudited"]
+    assert any(
+        r["level"] == "note" and "Deployment/shop/web" in r["message"]["text"] for r in doc["runs"][0]["results"]
+    )
+    for blob in (json.dumps(report), md, page, json.dumps(doc)):
+        assert "no pod spec in the input" not in blob
+    code, _ = _cli(capsys, "gate", "-f", str(d), "--fail-on", "never")
+    assert code == 1
+
+
+@pytest.mark.parametrize("api_version", ['"/v1"', "7"])
+def test_slashless_garbage_on_a_core_kind_is_refused_and_named(
+    api_version: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`apiVersion: 7` or `/v1` on a Pod was read as core v1 with only KN-V002 saying anything (review 4, R12)."""
+    d = tmp_path / "pod"
+    d.mkdir()
+    (d / "pod.yaml").write_text(_refused_bundle(api_version, "Pod"), encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    assert code == 1
+    rep = json.loads(out)
+    assert [r["object"] for r in rep["notAudited"]] == ["Pod/shop/web"]
+    assert "KN-S001" not in rep["controlSummary"].get("rulesEvaluated", []) and "None" not in out
+
+
+def test_a_null_api_version_is_a_missing_one_and_a_non_string_is_named_by_shape() -> None:
+    """`apiVersion:` (null) was refused while a missing key was read, and "None" reached the note and KN-V002;
+    `apiVersion: 7` printed Python's "7" (review 4, R6)."""
+    null = _refused_bundle("null")
+    missing = null.replace("apiVersion: null\n", "", 1)
+    a, b = analyze(null, "kubernetes", None), analyze(missing, "kubernetes", None)
+    assert set(a.fired_rules) == set(b.fired_rules) and "KN-S001" in a.fired_rules
+    assert a.not_audited == [] and not any("None" in x for x in a.assumptions)
+    for f in a.findings:
+        assert "None" not in f.message, f
+    seven = analyze(_refused_bundle("7"), "kubernetes", None)
+    assert seven.not_audited[0]["why"] == "apiVersion is not a string"
+    v002 = next(f for f in seven.findings if f.rule_id == "KN-V002")
+    assert v002.message.startswith("Deployment's apiVersion is not a string.")
+    listed = analyze(_refused_bundle("[apps, v1]"), "kubernetes", None)
+    assert listed.not_audited[0]["why"] == "apiVersion is not a string"
+    assert not any("[" in a for a in listed.assumptions if "undetermined" in a)
+
+
+def test_no_input_text_reaches_a_reason_for_a_hostile_api_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bidi override in the apiVersion reached `rulesNotEvaluated[].why` through the group text (review 4, R3).
+    The `why` is built from the kind and fixed phrases; the cleaned value appears in the assumption line only."""
+    hostile = "exam\u202eple.com/v1\u00ad"
+    text = (
+        f'apiVersion: "{hostile}"\nkind: Deployment\nmetadata: {{name: foreign, namespace: shop}}\n'
+        "spec:\n  template:\n    spec:\n      containers:\n        - name: x\n          image: x:latest\n---\n"
+        "apiVersion: v1\nkind: Service\nmetadata: {name: orphan, namespace: shop}\n"
+        "spec:\n  selector: {app: nothing}\n  ports: [{port: 80}]\n---\n" + DEPLOYMENT.replace("prod", "shop")
+    )
+    d = tmp_path / "hostile"
+    d.mkdir()
+    (d / "h.yaml").write_text(text, encoding="utf-8")
+    _, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    rep = json.loads(out)
+    for row in rep["controlSummary"]["rulesNotEvaluated"] + rep["notAudited"]:
+        assert "\u202e" not in row["why"] and "\u00ad" not in row["why"] and "exam" not in row["why"], row
+    assert "\u202e" not in out and "\u00ad" not in out
+    _, text_view = _cli(capsys, "audit", "-f", str(d))
+    assert "\u202e" not in text_view and "\u00ad" not in text_view
+    assert "KN-V011" in _not_evaluated(rep["controlSummary"])
+
+
+def test_a_pod_spec_in_a_kind_with_no_reader_declines_the_selector_rules_too() -> None:
+    """An Argo Rollout and a Knative Service describe pods the rules did not read, exactly as a refused Deployment
+    does; KN-V011 and KN-N012 still concluded "selects nothing" from them (review 4, R4)."""
+    knative = (
+        "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: hello, namespace: shop}\n"
+        "spec:\n  template:\n    metadata: {labels: {app: hello}}\n    spec:\n      containers:\n"
+        "        - image: hello:latest\n"
+    )
+    rollout = (
+        "apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: canary, namespace: shop}\n"
+        "spec:\n  selector: {matchLabels: {app: canary}}\n  template:\n    metadata: {labels: {app: canary}}\n"
+        "    spec:\n      containers:\n        - name: c\n          image: c:latest\n"
+    )
+    svc = (
+        "apiVersion: v1\nkind: Service\nmetadata: {name: %s-svc, namespace: shop}\n"
+        "spec:\n  selector: {app: %s}\n  ports: [{port: 80}]\n"
+    )
+    netpol = (
+        "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: protect-%s, namespace: shop}\n"
+        "spec: {podSelector: {matchLabels: {app: %s}}, policyTypes: [Ingress]}\n"
+    )
+    bundle = "---\n".join(
+        [knative, rollout, svc % ("hello", "hello"), svc % ("canary", "canary"), netpol % ("hello", "hello"),
+         netpol % ("canary", "canary"), DEPLOYMENT.replace("prod", "shop")]
+    )  # fmt: skip
+    rep = analyze(bundle, "kubernetes", None, partial_bundle=False)
+    assert "KN-V011" not in rep.fired_rules and "KN-N012" not in rep.fired_rules
+    assert "no reader for" in rep.not_evaluated["KN-V011"] and "no reader for" in rep.not_evaluated["KN-N012"]
+    assert "canary" not in rep.not_evaluated["KN-V011"]  # the kind's name is input text; the phrase is fixed
+    # The Rollout alone (no refused object) says the same, from the one shared helper.
+    alone = analyze("---\n".join([rollout, svc % ("canary", "canary")]), "kubernetes", None)
+    assert "KN-V011" not in alone.fired_rules
+    assert alone.not_evaluated["KN-V011"] == "1 object not audited (pods are in a kind kube-noob has no reader for)"
+    assert "no pod spec in the input" not in alone.not_evaluated["KN-S001"]
+
+
+OCP3_RBAC = """
+apiVersion: v1
+kind: RoleBinding
+metadata: {name: admin-everyone, namespace: shop}
+groupNames: [system:authenticated]
+userNames: null
+roleRef: {name: cluster-admin}
+subjects: null
+---
+apiVersion: v1
+kind: ClusterRoleBinding
+metadata: {name: cluster-admins-legacy}
+groupNames: [system:unauthenticated]
+userNames: [alice]
+roleRef: {name: cluster-admin}
+---
+apiVersion: authorization.openshift.io/v1
+kind: ClusterRoleBinding
+metadata: {name: cluster-admins-full}
+roleRef: {name: cluster-admin}
+subjects:
+  - {kind: SystemGroup, name: system:authenticated}
+"""
+
+
+def test_openshift_three_bindings_name_who_they_bind() -> None:
+    """A 3.x binding keeps its subjects in `userNames`/`groupNames` or as `SystemGroup`/`SystemUser` subjects;
+    read as a Kubernetes binding it granted cluster-admin "to []" and bound nobody to system:authenticated (R5)."""
+    rep = analyze(OCP3_RBAC, "openshift", "4.20")
+    s016 = {f.resource: f.message for f in rep.findings if f.rule_id == "KN-S016"}
+    assert s016["RoleBinding/shop/admin-everyone"].endswith("to Group/system:authenticated.")
+    assert s016["ClusterRoleBinding/cluster-admins-legacy"].endswith("to User/alice, Group/system:unauthenticated.")
+    assert s016["ClusterRoleBinding/cluster-admins-full"].endswith("to Group/system:authenticated.")
+    assert not any("[]" in m for m in s016.values())
+    s028 = {(f.resource, f.path) for f in rep.findings if f.rule_id == "KN-S028"}
+    assert s028 == {
+        ("RoleBinding/shop/admin-everyone", "groupNames[0]"),
+        ("ClusterRoleBinding/cluster-admins-legacy", "groupNames[0]"),
+        ("ClusterRoleBinding/cluster-admins-full", "subjects[0]"),
+    }
+    # The one conversion the attack-path scan uses: no second copy of the legacy rules (class 9).
+    from kube_noob import attack_paths
+    from kube_noob.audit import rbac_legacy
+
+    assert attack_paths._legacy_rbac is rbac_legacy.legacy_rbac
+
+
+def test_the_openshift_refusal_note_does_not_call_the_legacy_api_core() -> None:
+    """Kubernetes' core never served a Route; the "" an OpenShift kind carries is the legacy ungrouped API (R9)."""
+    rep = analyze(
+        "apiVersion: apps.openshift.io/v1\nkind: Route\nmetadata: {name: r, namespace: a}\nspec: {}\n",
+        "openshift",
+        "4.20",
+    )
+    note = next(a for a in rep.assumptions if "undetermined" in a)
+    assert "the legacy ungrouped API (v1)" in note and "core" not in note
+    dep = analyze("apiVersion: v1\nkind: Deployment\nmetadata: {name: r, namespace: a}\nspec: {}\n", "kubernetes", None)
+    note = next(a for a in dep.assumptions if "undetermined" in a)
+    assert "knows Deployment under apps, extensions" in note
+
+
+def test_live_snapshot_reasons_never_say_in_the_input() -> None:
+    """ "no Secret in the input" told a drift reader the cluster had no Secrets, when a live read never requests them;
+    a live reason says what was read from the cluster and what is never requested (review 4, R10)."""
+    from kube_noob import drift
+
+    snap = drift.snapshot(LIVE_NOAPI, source="live")
+    reasons = {r["ruleId"]: r["why"] for r in snap["coverage"]["notEvaluated"]}
+    assert not any(" in the input" in why for why in reasons.values()), reasons
+    assert reasons["KN-C013"] == (
+        "no Secret read from the cluster; Secret is never requested from a cluster (not on the read-only allowlist)"
+    )
+    assert reasons["KN-N004"] == "no Service read from the cluster"
+    assert reasons["KN-C009"].startswith("no policy PodDisruptionBudget read from the cluster")
+    files = drift.snapshot(LIVE_NOAPI, source="manifests")
+    assert {r["ruleId"]: r["why"] for r in files["coverage"]["notEvaluated"]}["KN-N004"] == "no Service in the input"
+    assert snap["coverage"]["notAudited"] == []
+
+
+def test_duplicate_objects_are_told_apart_by_group() -> None:
+    """A serving.knative.dev/v1 Service and a core v1 Service named alike do not collide on apply (R11)."""
+    text = (
+        "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: hello, namespace: shop}\n"
+        "spec: {template: {spec: {containers: [{image: hello:latest}]}}}\n---\n"
+        "apiVersion: v1\nkind: Service\nmetadata: {name: hello, namespace: shop}\nspec: {selector: {app: hello}}\n"
+    )
+    assert "KN-V014" not in analyze(text, "kubernetes", None).fired_rules
+    same = text.replace("serving.knative.dev/v1", "v1")
+    assert "KN-V014" in analyze(same, "kubernetes", None).fired_rules
+
+
+def test_the_one_intended_fixture_drift_is_the_bad_bundle_route() -> None:
+    """tests/fixtures/bad-bundle.yaml holds an `apps.openshift.io/v1 Route`: 0.9.2 read it as a Route and fired
+    KN-N002; it is now refused (and named, and the verdict undetermined), and KN-V002 still fires on it."""
+    text = (ROOT / "tests" / "fixtures" / "bad-bundle.yaml").read_text(encoding="utf-8")
+    rep = analyze(text, "openshift", "4.20")
+    assert "KN-N002" not in rep.fired_rules and "KN-V002" in rep.fired_rules
+    assert any(r["kind"] == "Route" for r in rep.not_audited)

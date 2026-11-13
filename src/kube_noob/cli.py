@@ -461,6 +461,20 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+def not_audited_lines(rep: dict[str, Any]) -> list[str]:
+    """The text view of `notAudited`: one line per refused object, and the verdict word (review 4, R1)."""
+    rows = [r for r in rep.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    from kube_noob import sanitize
+
+    lines = [f"not audited: {len(rows)} object(s) the rules refused to read; the verdict is undetermined (exit 1)"]
+    lines += [
+        f"  {sanitize.visible(str(r.get('object')))[:120]}: {sanitize.visible(str(r.get('why')))[:200]}" for r in rows
+    ]
+    return lines
+
+
 def _coverage_lines(summary: dict[str, Any]) -> list[str]:
     """The text view of the coverage record: what ran, what did not and why, grouped by reason (G281).
 
@@ -512,6 +526,8 @@ def _print_report(rep: dict[str, Any]) -> None:
     from kube_noob.audit.controls import control_headlines
 
     for line in control_headlines(rep.get("controlSummary") or {}):
+        print(line)
+    for line in not_audited_lines(rep):
         print(line)
     for line in _coverage_lines(rep.get("controlSummary") or {}):
         print(line)
@@ -2617,6 +2633,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             else:
                 _emit(rep, fmt)
             if rep.get("exceptions") and not rep["exceptions"]["gate"]:
+                return 1
+            if rep.get("notAudited"):
+                # An object the rules refused to read is not a pass and not a finding: the verdict is
+                # undetermined, and undetermined is 1, never 0 -- whatever --fail-on says (review 4, R1).
                 return 1
             if a.fail_on == "never":
                 return 0

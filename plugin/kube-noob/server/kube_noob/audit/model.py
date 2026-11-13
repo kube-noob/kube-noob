@@ -139,6 +139,10 @@ class Report:
     not_evaluated: dict[str, str] = field(default_factory=dict)
     # Rules that ran on part of what they read: the kinds they asked for and did not get, per rule.
     absent_subjects: dict[str, list[str]] = field(default_factory=dict)
+    # Objects of a kind the rules know that they REFUSED to read (an apiVersion that is not a string, not shaped
+    # like an API, or in a group the kind is not known under): `{"object", "kind", "why"}` each. Not a finding and
+    # not an absence: the verdict is undetermined while this is non-empty, and `audit` and `gate` exit 1 (R1).
+    not_audited: list[dict[str, str]] = field(default_factory=list)
     # What the cluster's audit configuration can and cannot record, when the bundle carries the object that
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
@@ -171,6 +175,7 @@ class Report:
                 "score": round(self.score(), 1),
             },
             "assumptions": self.assumptions,
+            "notAudited": list(self.not_audited),
             "findings": [f.as_dict() for f in sorted(self.findings, key=_sort_key)],
             "controlSummary": control_summary(
                 [f.rule_id for f in self.findings],

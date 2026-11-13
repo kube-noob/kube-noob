@@ -48,6 +48,8 @@ from kube_noob.audit.podspec import (
     selector_decides,
     selector_matches,
 )
+from kube_noob.audit.rbac_legacy import OPENSHIFT_RBAC_GROUP as _OPENSHIFT_RBAC_GROUP
+from kube_noob.audit.rbac_legacy import legacy_rbac as _legacy_rbac
 from kube_noob.audit.rules import (
     DANGEROUS_CAPS,
     ESCALATION_VERBS,
@@ -352,16 +354,6 @@ _CLUSTER_SCOPED_KINDS = frozenset(
 canonical_form = _canonical_form  # one canonical form of an object, for ordering and for telling duplicates apart
 
 
-#: OpenShift's legacy RBAC group. It serves Role, RoleBinding, ClusterRole and ClusterRoleBinding as proxies of
-#: the rbac.authorization.k8s.io objects (openshift-apiserver pkg/authorization/apiserver/apiserver.go stores all
-#: four through the rbac/v1 client, commit 9fc0918d1c6908e8e8ceb8e215e86bde4aeaabec; the kinds are registered in
-#: openshift/api authorization/v1/register.go, commit 61403fc4e89fad877aba1b000d72a992f388f549). A legacy binding
-#: names its role by `roleRef: {name, namespace}` with no kind -- a namespace means a Role, none a ClusterRole --
-#: and its subjects as ObjectReferences whose kinds include SystemUser and SystemGroup, or as `userNames` and
-#: `groupNames`, which take precedence when set (rbacconversion/conversion.go at the same commit).
-_OPENSHIFT_RBAC_GROUP = "authorization.openshift.io"
-_LEGACY_SUBJECT_KINDS = {"ServiceAccount": "ServiceAccount", "User": "User", "SystemUser": "User", "Group": "Group"}
-_LEGACY_SUBJECT_KINDS["SystemGroup"] = "Group"
 #: Routing objects that can put a workload on a network and that this scan does not read: present in the input,
 #: they make the exposure of the workloads in their namespace not determined rather than "none" (G273).
 UNMODELLED_EXPOSURE: dict[str, frozenset[str]] = {
@@ -379,44 +371,6 @@ _KIND_GROUPS: dict[str, str] = {
     "Route": "route.openshift.io",
 }
 LEGACY_SA_TYPE = "kubernetes.io/service-account-token"
-
-
-def _legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None, str]:
-    """An authorization.openshift.io object in the rbac.authorization.k8s.io shape the rest of this module reads,
-    converted the way openshift-apiserver converts it; or (None, why) when the server would refuse it."""
-    if kind in {"Role", "ClusterRole"}:
-        return {**obj, "apiVersion": f"{_RBAC_GROUP}/v1"}, ""
-    ref = obj.get("roleRef")
-    if not isinstance(ref, dict) or not ref.get("name"):
-        return None, "roleRef does not name a role"
-    ref_ns = str(ref.get("namespace") or "")
-    if kind == "ClusterRoleBinding" and ref_ns:
-        return None, f"a ClusterRoleBinding cannot reference a role in namespace {ref_ns}"
-    if kind == "RoleBinding" and ref_ns and ref_ns != _ns(obj):
-        return None, f"a RoleBinding cannot reference a role in namespace {ref_ns}"
-    users, groups = obj.get("userNames"), obj.get("groupNames")
-    subjects: list[dict[str, Any]] = []
-    if isinstance(users, list) or isinstance(groups, list):
-        subjects += [{"kind": "User", "name": str(u)} for u in _list(users)]
-        subjects += [{"kind": "Group", "name": str(g)} for g in _list(groups)]
-    else:
-        for s in _list(obj.get("subjects")):
-            if not isinstance(s, dict) or s.get("kind") not in _LEGACY_SUBJECT_KINDS:
-                return (
-                    None,
-                    f"subject kind {s.get('kind') if isinstance(s, dict) else s!r} is not one OpenShift accepts",
-                )
-            subject = {"kind": _LEGACY_SUBJECT_KINDS[str(s["kind"])], "name": str(s.get("name") or "")}
-            if subject["kind"] == "ServiceAccount" and s.get("namespace"):
-                subject["namespace"] = str(s["namespace"])
-            subjects.append(subject)
-    converted = {
-        **{k: v for k, v in obj.items() if k not in {"userNames", "groupNames"}},
-        "apiVersion": f"{_RBAC_GROUP}/v1",
-        "subjects": subjects,
-        "roleRef": {"apiGroup": _RBAC_GROUP, "kind": "Role" if ref_ns else "ClusterRole", "name": str(ref["name"])},
-    }
-    return converted, ""
 
 
 def _backend_namespaces(obj: dict[str, Any]) -> set[str]:

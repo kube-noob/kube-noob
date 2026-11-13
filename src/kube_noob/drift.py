@@ -327,7 +327,9 @@ def snapshot(
             # Why each rule that did not run did not: the kind it reads was not in the input, the guard
             # declined, the platform is not its own. A rule about a kind that was absent used to be in
             # `evaluatedRules` and so in `clean` (G281). When the cluster refused the kind, the reason says so.
-            "notEvaluated": _not_evaluated_rows(report.not_evaluated, _kinds_not_read(unread)),
+            "notEvaluated": _not_evaluated_rows(report.not_evaluated, _kinds_not_read(unread), source == "live"),
+            # Objects the rules refused to read: never a pass, named here as in the audit (review 4, R1).
+            "notAudited": [dict(r) for r in report.not_audited],
             "evaluatedWithout": rules_evaluated_without(report.absent_subjects),
         },
         "notRead": unread[:MAX_NOT_READ],
@@ -341,7 +343,7 @@ def snapshot(
     }
 
 
-def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str]) -> list[dict[str, str]]:
+def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str], live: bool = False) -> list[dict[str, str]]:
     """``rulesNotEvaluated`` for the snapshot, with "could not be read" added where the cluster refused the kind.
 
     "no Role in the input" is true of a live snapshot whose `roles` read was forbidden, and it is not the whole
@@ -349,15 +351,35 @@ def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str]) -> list[
     can match the two lines.
     """
     rows = rules_not_evaluated(reasons, list(reasons))
-    if not blind_kinds:
-        return rows
     resources = {**LIVE_RESOURCES, **EXTRA_LIVE}
     refused = {kind: res for res, kind in resources.items() if kind in blind_kinds}
     for row in rows:
         named = [k for k in refused if _names_kind(row["why"], k)]
         if named:
             row["why"] += f" ({', '.join(refused[k] for k in sorted(named))} could not be read from the cluster)"
+        if live:
+            row["why"] = _live_reason(row["why"], set(resources.values()))
     return rows
+
+
+def _live_reason(why: str, requested: set[str]) -> str:
+    """A reason as a live snapshot says it: nothing was "in the input", it was read from a cluster or never asked
+    for. "no Secret in the input" told a drift reader the cluster had no Secrets, when a live read never requests
+    them (review 4, R10)."""
+    if " in the input" not in why:
+        return why
+    head, tail = why.split(" in the input", 1)
+    body = head.removeprefix("no ")
+    kinds = {t.strip().rsplit(" ", 1)[-1] for t in re.split(r",\s*| or | and no ", body)}
+    never = sorted(k for k in kinds if k not in requested and k != "spec")
+    # "(roles could not be read from the cluster)" already says it; otherwise the read happened and found none.
+    out = f"{head}{tail}" if "could not be read from the cluster" in tail else f"{head} read from the cluster{tail}"
+    if never:
+        out += (
+            f"; {', '.join(never)} {'is' if len(never) == 1 else 'are'} never requested from a cluster "
+            "(not on the read-only allowlist)"
+        )
+    return out
 
 
 def _names_kind(why: str, kind: str) -> bool:

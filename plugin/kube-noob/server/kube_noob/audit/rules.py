@@ -32,8 +32,10 @@ from kube_noob.audit.podspec import (
     replicas,
     selector_decides,
     selector_matches,
+    unread_pod_specs,
 )
 from kube_noob.audit.quantity import parse_quantity
+from kube_noob.audit.rbac_legacy import OPENSHIFT_RBAC_GROUP, legacy_rbac
 from kube_noob.catalog import (
     ADDON_GROUPS_ON_VANILLA,
     KIND_API_VERSIONS,
@@ -103,32 +105,52 @@ SUBJECT_GROUPS: dict[str, frozenset[str]] = {
 }
 
 
-def kind_in_group(doc: Document, kind: str) -> bool:
-    """Whether ``doc`` is a ``kind`` of a group the rules know it in, not merely a document called that.
+#: What the API server accepts: a group is a DNS-1123 subdomain, a version a DNS-1035 label. Anything else
+#: (`v1/`, `/v1`, `APPS/v1`, a leading space, a bidi override) is not an API at all, and is refused as such.
+_DNS_1123_LABEL = r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?"
+_DNS_1035_LABEL = r"[a-z](?:[-a-z0-9]*[a-z0-9])?"
+_API_VERSION_SHAPE = re.compile(rf"^(?:{_DNS_1123_LABEL}(?:\.{_DNS_1123_LABEL})*/)?{_DNS_1035_LABEL}\Z")
+REFUSED_NOT_STRING = "apiVersion is not a string"
+UNREAD_POD_SPECS = "pods are in a kind kube-noob has no reader for"
+REFUSED_MALFORMED = "apiVersion is not well-formed (<group>/<version> or <version>)"
 
-    No ``apiVersion`` at all is an unknown, not a contradiction: the in-cluster backend's list items carry none
-    and `drift.collect_live` set only `kind`, so every non-core kind of a live snapshot (Deployment, Role,
-    NetworkPolicy, Ingress, HPA, PDB) was refused and the job evaluated three rules where 0.9.2 fired nineteen
-    (review 3, N1). `podspec.refused_group` draws the same line, for the same reason.
+
+def refusal(doc: Document) -> str | None:
+    """Why the rules do not read ``doc``, in a fixed phrase, or `None` when they do.
+
+    Only a kind the rules know can be refused, and the phrase is built from that kind name (a key of
+    `SUBJECT_GROUPS`, never the input's own text) and nothing else, so it can stand in a reason (class 7). No
+    ``apiVersion`` at all, or a null one, is an unknown and the object is read: the in-cluster backend's list items
+    carry none, and refusing them evaluated three rules on a live cluster (review 3). A value that is not a string,
+    one that is not shaped like an API, and one naming a group the rules do not know this kind under are refused --
+    and a refused object is never a pass: the engine names it, the subject reason names it, and the verdict is
+    undetermined (review 4, R1).
     """
-    groups = SUBJECT_GROUPS.get(kind)
-    if groups is None:
+    groups = SUBJECT_GROUPS.get(doc.kind)
+    if groups is None or not isinstance(doc.data, dict):
+        return None
+    raw = doc.data.get("apiVersion")
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        return REFUSED_NOT_STRING
+    if not _API_VERSION_SHAPE.match(raw):
+        return REFUSED_MALFORMED
+    if api_group(raw) not in groups:
+        return f"apiVersion names a group kube-noob does not know {doc.kind} under"
+    return None
+
+
+def kind_in_group(doc: Document, kind: str) -> bool:
+    """Whether ``doc`` is a ``kind`` the rules read: that kind name, with an apiVersion `refusal` does not refuse."""
+    if kind not in SUBJECT_GROUPS:
         raise ValueError(f"{kind!r} is not a kind the audit rules know the API group of; add it to SUBJECT_GROUPS")
-    return doc.kind == kind and (doc.api_version == "" or api_group(doc.api_version) in groups)
+    return doc.kind == kind and refusal(doc) is None
 
 
 def refused_subject_group(doc: Document) -> str | None:
-    """The API group ``doc`` declares when its kind is one the rules know and the group is not one they know it in.
-
-    `None` means the document is read. Returning the group is what lets the engine SAY the object was not
-    audited: a `Deployment` in `example.com/v1` was dropped by every pod-spec rule with no finding and no word,
-    while KN-V011 concluded from its absence that the Service in front of it has no endpoints (class 21).
-    """
-    groups = SUBJECT_GROUPS.get(doc.kind)
-    if groups is None or doc.api_version == "":
-        return None
-    group = api_group(doc.api_version)
-    return None if group in groups else group
+    """The reason `refusal` gives, kept under the name the engine and the tests used first."""
+    return refusal(doc)
 
 
 def _join_or(names: list[str]) -> str:
@@ -155,20 +177,38 @@ def subject_label(subject: tuple[str, ...]) -> str:
     return _join_or([f"{'/'.join(sorted(CURRENT_GROUPS[k])) or 'core'} {k}" for k in plain] + special)
 
 
-def subject_reason(absent: list[str]) -> str:
+def subject_reason(absent: list[str], refused: list[str] = ()) -> str:  # type: ignore[assignment]
     """The record's reason for a rule whose subject was not in the input: "no Service in the input".
 
-    ``absent`` is one label per missing subject (`subject_label`). Built from the kinds the RULE declared,
-    never from what the input called itself, so an input-derived string cannot forge a reason (class 7). The
-    pod-spec subject spells out the kinds it stands for, because "no pod spec" alone would send a reader
-    looking for a kind of that name.
+    ``absent`` is one label per missing subject (`subject_label`); ``refused`` one sentence per subject that WAS
+    in the input and was refused ("1 Deployment not audited (apiVersion is not well-formed ...)"), which replaces
+    "no ... in the input" for that subject, because that would be false (review 4, R1). Built from the kinds the
+    RULE declared and the fixed refusal phrases, never from what the input called itself, so an input-derived
+    string cannot forge a reason (class 7). The pod-spec subject spells out the kinds it stands for, because "no
+    pod spec" alone would send a reader looking for a kind of that name.
     """
-    why = "no " + " and no ".join(absent) + " in the input"
-    # The pod-spec subject may be one alternative inside a label ("networking.k8s.io Ingress or pod spec"), so
-    # the label is split the way `subject_label` joined it, and the whole token compared (review 3, N7).
-    if any(WORKLOAD_SUBJECT in re.split(r", | or ", label) for label in absent):
-        why += f" (no {_join_or(list(WORKLOAD_KINDS))})"
-    return why
+    parts: list[str] = []
+    if absent:
+        why = "no " + " and no ".join(absent) + " in the input"
+        # The pod-spec subject may be one alternative inside a label ("networking.k8s.io Ingress or pod spec"),
+        # so the label is split the way `subject_label` joined it, and the whole token compared (review 3, N7).
+        if any(WORKLOAD_SUBJECT in re.split(r", | or ", label) for label in absent):
+            why += f" (no {_join_or(list(WORKLOAD_KINDS))})"
+        parts.append(why)
+    parts.extend(refused)
+    return "; ".join(parts)
+
+
+def refused_summary(docs: list[Document]) -> str:
+    """ "1 Deployment not audited (apiVersion is not well-formed ...)", one clause per kind and reason, sorted."""
+    counts: dict[tuple[str, str], int] = {}
+    for d in docs:
+        why = refusal(d)
+        # A kind with no reader is not one the rules know, so its name is the input's own text and stays out of
+        # the reason (class 7): "1 object not audited (pods are in a kind kube-noob has no reader for)".
+        key = (d.kind, why) if why is not None else ("object", UNREAD_POD_SPECS)
+        counts[key] = counts.get(key, 0) + 1
+    return ", ".join(f"{n} {kind} not audited ({why})" for (kind, why), n in sorted(counts.items()))
 
 
 @dataclass
@@ -256,14 +296,34 @@ class AuditContext:
                 continue
             yield from ((d, pt) for pt in pod_templates(d))
 
+    def refused(self) -> list[Document]:
+        """Every document of a kind the rules know that `refusal` refused: named by the engine, never a pass."""
+        return [d for d in self.docs if refusal(d) is not None]
+
+    def refused_of(self, subject: tuple[str, ...]) -> list[Document]:
+        """The documents that would have been this subject had the rules read them: refused ones of its kinds,
+        and, for the pod-spec subject, the documents whose pod specs sit in a kind with no reader."""
+        kinds = {k for k in subject if k not in (ANY_OBJECT, WORKLOAD_SUBJECT)}
+        if WORKLOAD_SUBJECT in subject:
+            kinds |= set(WORKLOAD_KINDS)
+        out = [d for d in self.refused() if d.kind in kinds]
+        if WORKLOAD_SUBJECT in subject:
+            out += [d for d in self.unread_pod_spec_docs() if d not in out]
+        return out
+
+    def unread_pod_spec_docs(self) -> list[Document]:
+        """Documents of a kind with no pod-spec reader that carry a pod-spec-shaped mapping (`unread_pod_specs`):
+        an Argo Rollout, a Knative Service. The engine names them; the pods they describe were not read."""
+        return [d for d in self.docs if d.kind not in WORKLOAD_KINDS and unread_pod_specs(d)]
+
     def refused_workloads(self) -> list[Document]:
-        """Workload-kind documents `workloads` did NOT read because their API group is not one the rules know.
+        """Workload-kind documents `workloads` did NOT read because `refusal` refused them.
 
         For the rules that conclude from "no pod template matches" (KN-V011, KN-N012): a namespace holding one
         of these has pods this input describes and the rules did not read, so that conclusion is not theirs to
         draw there. The engine names each such document in the report's assumptions.
         """
-        return [d for d in self.docs if d.kind in WORKLOAD_KINDS and refused_subject_group(d) is not None]
+        return [d for d in self.refused() if d.kind in WORKLOAD_KINDS]
 
     def ns(self, doc: Document) -> str:
         return doc.namespace or "<default>"
@@ -661,6 +721,11 @@ def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         valid = KIND_API_VERSIONS.get(d.kind)
         if not valid or d.api_version in valid:
             continue
+        raw = d.data.get("apiVersion")
+        if raw is not None and not isinstance(raw, str):
+            # Named by shape, never by Python's repr of it (review 4, R6).
+            yield r.finding(d, ("apiVersion",), f"{d.kind}'s apiVersion is not a string. Use {' or '.join(valid)}.")
+            continue
         if not claims_a_known_group(d.api_version):
             # A kind name is unique only inside its group. `Service` is core v1 AND serving.knative.dev/v1;
             # `Job` is batch/v1 AND batch.volcano.sh/v1alpha1. Firing on the name alone called a correct Knative
@@ -857,21 +922,26 @@ def _v010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             )
 
 
-def _refused_workloads_by_ns(ctx: AuditContext) -> dict[str, list[Document]]:
-    out: dict[str, list[Document]] = {}
+def _unread_workloads_by_ns(ctx: AuditContext) -> dict[str, list[str]]:
+    """Per namespace, why a "no pod template matches" conclusion is not the rules' to draw there.
+
+    Two sources, one helper (review 4, R4): a workload-kind document `refusal` refused, and a document whose pod
+    specs `unread_pod_specs` found in a kind kube-noob has no reader for (an Argo Rollout, a Knative Service). The
+    phrases are built from the kind the rules know and fixed words -- never from the object's own text, so the
+    `why` a record carries holds no input (class 7, R3); the engine's assumption line names the object itself.
+    """
+    out: dict[str, list[str]] = {}
     for d in ctx.refused_workloads():
-        out.setdefault(ctx.ns(d), []).append(d)
-    return out
+        out.setdefault(ctx.ns(d), []).append(f"a {d.kind} was not audited ({refusal(d)})")
+    for d in ctx.unread_pod_spec_docs():
+        why = refusal(d)  # a Knative `Service`: a kind the rules know, in a group they do not, carrying pods
+        phrase = f"a {d.kind} was not audited ({why})" if why else UNREAD_POD_SPECS
+        out.setdefault(ctx.ns(d), []).append(phrase)
+    return {ns: sorted(set(v)) for ns, v in out.items()}
 
 
-def _unread_workload_reason(docs: list[Document]) -> str:
-    """Why a rule that concludes from "no pod template matches" declined in this namespace: built from the
-    kind and the API group as the rules know them, never from the object's own text (class 7)."""
-    named = sorted({f"{d.kind} in API group {refused_subject_group(d)}" for d in docs})
-    return (
-        f"{_join_or(named)} {'was' if len(named) == 1 else 'were'} not read, because that is not a group the "
-        "rules know the kind in, so whether its pods are the ones selected cannot be decided"
-    )
+def _unread_workload_reason(phrases: list[str]) -> str:
+    return f"{_join_or(phrases)}, so whether its pods are the ones selected cannot be decided"
 
 
 @rule(
@@ -888,7 +958,7 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     workloads = list(ctx.workloads())
     if not workloads:
         return
-    unread = _refused_workloads_by_ns(ctx)
+    unread = _unread_workloads_by_ns(ctx)
     for svc in ctx.by_kind("Service"):
         sel = get_path(svc.data, ("spec", "selector"))
         if not isinstance(sel, dict) or not sel:
@@ -1040,15 +1110,17 @@ def _v023(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "schema",
     Severity.HIGH,
     "Remove or rename the duplicate; the later object silently overwrites the earlier one on apply.",
-    "Two objects with the same kind, namespace and name collide.",
+    "Two objects with the same API group, kind, namespace and name collide.",
     subjects=(ANY_OBJECT,),
 )
 def _v014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
-    seen: dict[tuple[str, str, str], Document] = {}
+    seen: dict[tuple[str, str, str, str], Document] = {}
     for d in ctx.docs:
         if not d.kind or not d.name:
             continue
-        key = (d.kind, d.namespace or "", d.name)
+        # The group is part of the identity: a Knative `Service` and a core `Service` of one name do not collide
+        # on apply (review 4, R11).
+        key = (api_group(d.api_version), d.kind, d.namespace or "", d.name)
         if key in seen:
             yield r.finding(d, ("metadata", "name"), f"Duplicates doc[{seen[key].index}] ({d.ref()}).")
         else:
@@ -2452,6 +2524,29 @@ def _s015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 yield r.finding(d, ("rules", i), f"Rule uses '*' in {', '.join(wild)}.")
 
 
+def binding_subjects(d: Document) -> list[tuple[PathT, dict[str, Any]]]:
+    """A binding's subjects with the path each came from, in the rbac.authorization.k8s.io shape.
+
+    An OpenShift 3.x binding (`apiVersion: v1` or `authorization.openshift.io/v1`) names its subjects as
+    `userNames`/`groupNames`, or as subjects of kinds `SystemUser`/`SystemGroup`; read as a Kubernetes binding it
+    granted cluster-admin "to []" and bound nobody to system:authenticated (review 4, R5). Converted through the
+    one shared conversion (`rbac_legacy`), so the scan and the rules read one shape.
+    """
+    if not isinstance(d.data, dict):
+        return []
+    if api_group(d.api_version) in ("", OPENSHIFT_RBAC_GROUP):
+        converted, _why = legacy_rbac(d.data, d.kind)
+        if converted is not None:
+            users, groups = d.data.get("userNames"), d.data.get("groupNames")
+            if isinstance(users, list) or isinstance(groups, list):
+                paths: list[PathT] = [("userNames", i) for i in range(len(users if isinstance(users, list) else []))]
+                paths += [("groupNames", i) for i in range(len(groups if isinstance(groups, list) else []))]
+                return list(zip(paths, converted["subjects"], strict=True))
+            return [(("subjects", i), s) for i, s in enumerate(converted["subjects"])]
+    raw = d.data.get("subjects")
+    return [(("subjects", i), s) for i, s in enumerate(raw if isinstance(raw, list) else []) if isinstance(s, dict)]
+
+
 @rule(
     "KN-S016",
     "Binding to cluster-admin",
@@ -2466,9 +2561,10 @@ def _s015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _s016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind("ClusterRoleBinding", "RoleBinding"):
         if get_path(d.data, ("roleRef", "name")) == "cluster-admin":
-            subjects = [f"{s.get('kind')}/{s.get('name')}" for s in d.data.get("subjects") or [] if isinstance(s, dict)]
+            subjects = [f"{s.get('kind')}/{s.get('name')}" for _p, s in binding_subjects(d)]
             sev = Severity.CRITICAL if d.kind == "ClusterRoleBinding" else Severity.HIGH
-            yield r.finding(d, ("roleRef", "name"), f"{d.kind} grants cluster-admin to {subjects}.", severity=sev)
+            who = ", ".join(subjects) if subjects else "no subject (the binding names nobody)"
+            yield r.finding(d, ("roleRef", "name"), f"{d.kind} grants cluster-admin to {who}.", severity=sev)
 
 
 ESCALATION_VERBS = frozenset({"escalate", "bind", "impersonate"})
@@ -3059,10 +3155,7 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if d.name.startswith("system:") or (isinstance(labels, dict) and labels.get(key) == value):
             continue
         role = get_path(d.data, ("roleRef", "name"))
-        subjects = get_path(d.data, ("subjects",))
-        for i, s in enumerate(subjects if isinstance(subjects, list) else []):
-            if not isinstance(s, dict):
-                continue
+        for path, s in binding_subjects(d):
             hit = EVERYONE_SUBJECTS.get((str(s.get("kind")), str(s.get("name"))))
             if hit is None:
                 continue
@@ -3072,7 +3165,7 @@ def _s028(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             scope = "in every namespace" if d.kind == "ClusterRoleBinding" else f"in namespace {ctx.ns(d)}"
             yield r.finding(
                 d,
-                ("subjects", i),
+                path,
                 f"{d.kind} grants {get_path(d.data, ('roleRef', 'kind')) or 'role'} '{role}' {scope} to "
                 f"{s.get('kind')} {s.get('name')}: {who}.",
                 severity=sev,
@@ -3548,7 +3641,7 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     by_ns: dict[str, list[PodTemplate]] = {}
     for d, pt in ctx.workloads():
         by_ns.setdefault(ctx.ns(d), []).append(pt)
-    unread = _refused_workloads_by_ns(ctx)
+    unread = _unread_workloads_by_ns(ctx)
     for d in ctx.by_kind("NetworkPolicy"):
         sel = get_path(d.data, ("spec", "podSelector"))
         pods = by_ns.get(ctx.ns(d))
@@ -4540,9 +4633,18 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             continue
         # The declared subject first: a rule whose subject is not in the input has nothing to evaluate and does
         # not run, whatever else it could have read (G281). The check runs only over a subject that is there.
-        absent = [subject_label(sub) for sub in r.subjects if not ctx.has_subject(sub)]
-        if absent:
-            ctx.no_subject[r.rule_id] = subject_reason(absent)
+        absent: list[str] = []
+        refused: list[str] = []
+        for sub in r.subjects:
+            if ctx.has_subject(sub):
+                continue
+            # The subject was in the input and refused: say that, never "no Deployment in the input" (R1).
+            refused_docs = ctx.refused_of(sub)
+            (refused if refused_docs else absent).append(
+                refused_summary(refused_docs) if refused_docs else subject_label(sub)
+            )
+        if absent or refused:
+            ctx.no_subject[r.rule_id] = subject_reason(absent, refused)
             continue
         before = len(findings)
         findings.extend(r.check(ctx, r))

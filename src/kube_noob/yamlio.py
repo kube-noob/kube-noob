@@ -52,7 +52,10 @@ class Document:
 
     @property
     def api_version(self) -> str:
-        return str(self.data.get("apiVersion", "")) if isinstance(self.data, dict) else ""
+        """The declared apiVersion, or "" when there is none: a missing key, a null, or a value that is not a string
+        (which the audit refuses by shape; `str(None)` here once put "None" into a finding, review 4, R6)."""
+        value = self.data.get("apiVersion") if isinstance(self.data, dict) else None
+        return value if isinstance(value, str) else ""
 
     @property
     def name(self) -> str:

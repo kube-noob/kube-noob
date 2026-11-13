@@ -296,6 +296,7 @@ Where it is applied (found in the code):
 - `kube_noob/cli.py` `_memory` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/cli.py` `_posture_drift` calls `sanitize.defuse_workflow_commands`
 - `kube_noob/cli.py` `_unexpected` calls `sanitize.one_line`
+- `kube_noob/cli.py` `not_audited_lines` calls `sanitize.visible`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.has_invisible`
 - `kube_noob/code/sarif.py` `_location` calls `sanitize.visible`
 - `kube_noob/code/sarif.py` `_s` calls `sanitize.visible_squeezed`

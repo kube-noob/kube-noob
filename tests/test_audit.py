@@ -43,9 +43,13 @@ def test_bad_bundle_kubernetes_findings() -> None:
     missing = expected - ids(r)
     assert not missing, missing
     # The fixture's Route is in `apps.openshift.io`, which KN-V002 reports; it is not a `route.openshift.io` Route,
-    # so the Route rules have no subject here rather than a finding on a kind of another group (G281, class 3).
+    # so the Route rules have no subject here rather than a finding on a kind of another group (G281, class 3) --
+    # and the refused object is named, never a pass: the verdict is undetermined (review 4, R1).
     assert "KN-N002" not in ids(r)
-    assert r.not_evaluated["KN-N002"] == "no route.openshift.io Route in the input"
+    assert r.not_evaluated["KN-N002"] == (
+        "1 Route not audited (apiVersion names a group kube-noob does not know Route under)"
+    )
+    assert [n["kind"] for n in r.not_audited] == ["Route"]
     assert r.max_severity() is Severity.CRITICAL
     assert r.score() == 0.0
     sock = [f for f in r.findings if f.rule_id == "KN-S010"]

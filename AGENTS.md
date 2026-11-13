@@ -98,7 +98,7 @@ A behaviour change updates, in the same commit:
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | findings at or above `--fail-on` |
+| 1 | findings at or above `--fail-on`, or a verdict that is undetermined (`audit`/`gate`: an object the rules refused to read, `notAudited`; the exceptions gate) -- never 0 for undetermined, whatever `--fail-on` says (G281) |
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |

@@ -323,7 +323,11 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
                 f"{'it' if not_run == 1 else 'them'}: that is not a pass, and section 1 says what "
                 f"{'it' if not_run == 1 else 'they'} would have covered."
             )
-        return Masthead(tiles, "The gate passed." if report.get("passed") else "The gate failed.", lede)
+        if report.get("notAudited"):
+            verdict = f"The gate did not pass: {len(report['notAudited'])} object(s) not audited, verdict undetermined."
+        else:
+            verdict = "The gate passed." if report.get("passed") else "The gate failed."
+        return Masthead(tiles, verdict, lede)
     rows = report.get("indicators")
     if isinstance(rows, list) and rows:
         # A KSI row's `findings` is a COUNT, not a bucket dict -- reading it as one crashed `ksi --html`
@@ -683,6 +687,16 @@ def _caveats(report: dict[str, Any]) -> list[str]:
 
 def _gate_sections(report: dict[str, Any], sec: Sections) -> list[str]:
     out: list[str] = []
+    rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
+    if rows:
+        # Never "passed" with one of these: the rules refused to read the object, so the verdict is undetermined
+        # (review 4, R1). Said before the failures, where a reader looking for the verdict starts.
+        out.append(sec.head(f"Not passed: {len(rows)} object(s) not audited", "not-audited"))
+        out.append(
+            "<ul>"
+            + "".join(f"<li>{_esc(str(r.get('object')))}: {_esc(str(r.get('why')))}</li>" for r in rows)
+            + "</ul>"
+        )
     if report.get("failures"):
         out.append(sec.head("Why the gate failed", "why"))
         out.append("<ul>" + "".join(f"<li>{_esc(f)}</li>" for f in report["failures"]) + "</ul>")

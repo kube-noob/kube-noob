@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 153 795 to
-82 382 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 153 815 to
+82 402 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -854,7 +854,14 @@ namespace was passed, so the namespace's NetworkPolicies were not passed`), each
 under `notEvaluatedRules`, and a rule that reads a kind beside its subject names it when absent under
 `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The text view groups the same list by reason and
 prints the same count, so the two cannot disagree; the SARIF carries one notification per reason, and the gate's
-summary one line. The exit code does not change: an absent kind is not a finding and not an unreadable file.
+summary one line. The exit code does not change for an absent kind: it is not a finding and not an unreadable
+file. An object the rules REFUSED to read is different -- a kind they know under an apiVersion that is not a
+string, not shaped like an API (`v1/`, `APPS/v1`, a leading space) or in a group the kind is not known under
+(a `Deployment` in `example.com/v1`, a Knative `Service`): it is listed under `notAudited` with the object and
+a fixed reason, printed in the text view, carried by the gate's JSON, Markdown, HTML and SARIF (one `note`
+result per object and the list on the invocation), and the verdict is undetermined: `audit` and `gate` exit 1,
+never 0, whatever `--fail-on` says. The subject reason says `1 Deployment not audited (...)` rather than "no
+pod spec in the input", because that would be false.
 
 ```bash
 kube-noob audit -f k8s/ --format json | jq '.controlSummary.rulesNotEvaluated'

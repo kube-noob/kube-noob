@@ -38,7 +38,7 @@
   `exclude-controls` every control whose rules only read kinds the input lacks -- 9 of 30 on a directory holding
   one Deployment -- and reports fewer controls `satisfied` (7, where 0.9.2 reported 16). A snapshot from 0.9.2
   carries no reasons and keeps its older shape; a diff between one and a new snapshot reports nothing new, fixed
-  or regressed. The exit code is unchanged: an absent kind is not a finding and not unreadable evidence.
+  or regressed. The exit code is unchanged for an absent kind: it is not a finding and not unreadable evidence.
 
   A third review found the group match drawn too tight, in three ways, each a kind of absence-read-as-pass in
   the other direction (a real object refused, so the rules about it did not run). An object with NO `apiVersion`
@@ -78,6 +78,44 @@
   that line now names only controls with findings, and a second line, `controls not evaluated, in whole or in
   part: AU-2 (KN-S035), CM-7 (KN-N009, ...; 8 clean), ...`, names every control with a rule not evaluated, with
   the rules and its clean count when it is partly both; the JSON's set and the text's are the same set.
+
+  A fourth review found that a refused object made the GATE pass. A `Deployment` under `apiVersion: v1/`,
+  `APPS/v1`, ` apps/v1` or `example.com/v1` was named in `audit`'s assumptions and nowhere else: `gate` exited
+  0, its Markdown and HTML said "gate passed", its SARIF had no word of it, and the coverage line in all four
+  formats said "no pod spec in the input" of a file holding a Deployment with a privileged container -- a typo
+  in apiVersion turned a failing gate into a passing one. Now a refused object is never a pass: the report
+  carries `notAudited` (object, kind, and a fixed reason: `apiVersion is not a string`, `apiVersion is not
+  well-formed (<group>/<version> or <version>)`, `apiVersion names a group kube-noob does not know Deployment
+  under`), the text view prints it, the gate's JSON carries the list and its `failures` name it, the Markdown
+  and HTML say "Not passed: N object(s) not audited" and never "passed", the SARIF carries the list as an
+  invocation property and one `note`-level result per object, the posture snapshot's coverage carries it, and
+  the verdict is undetermined: `audit` and `gate` exit 1, never 0, whatever `--fail-on` says. The subject reason
+  for a refused kind is `1 Deployment not audited (...)`, never "no pod spec in the input"; a pod spec in a kind
+  with no reader (an Argo Rollout) is `1 object not audited (pods are in a kind kube-noob has no reader for)`.
+  This also means a bundle holding a same-named kind of another API -- a Knative `Service`, an ACM
+  `Subscription`, a Volcano `Job` -- now exits 1 as undetermined where it exited 0 before, because the rules
+  know that kind name and did not read the object; the note names it. `apiVersion: null` is a missing
+  apiVersion (read, with KN-V001), not a refusal, and a non-string one is refused as "not a string" -- Python's
+  `None` and `7` no longer reach a note or KN-V002's message; a slash-less or malformed apiVersion on a core
+  kind (`7`, `/v1` on a Pod) is refused the same way instead of being read as core v1. No input text reaches a
+  reason: the reason a declining rule gives for a refused or unread workload is built from the kind the rules
+  know and fixed phrases (a bidi override in a group name reached `rulesNotEvaluated[].why` in JSON and text),
+  and the cleaned, quoted value appears in the assumption line only. KN-V011 and KN-N012 decline for a
+  namespace holding pods in a kind kube-noob has no reader for (an Argo Rollout, a Knative Service) exactly as
+  for a refused Deployment, through one helper. OpenShift 3.x bindings are read as binding whom they bind:
+  `userNames`/`groupNames` (the deprecated fields openshift/api authorization/v1 types.go keeps "when supporting
+  legacy clients and servers") and the `SystemUser`/`SystemGroup` subject kinds go through the one conversion
+  the attack-path scan already had (`kube_noob.audit.rbac_legacy`, moved there so there is one), so KN-S016
+  names who gets cluster-admin instead of "[]" and KN-S028 reports `system:authenticated` bound through
+  `groupNames`. The declaration walk fails loudly on a traversal it cannot classify (a `ctx.docs` comprehension,
+  a `filter`, a `.data.get("kind")`, a helper from another module given the context) instead of returning an
+  empty set, for every rule that does not declare "any object". The OpenShift refusal note says "the legacy
+  ungrouped API (v1)", not "core"; a live snapshot's reasons say "read from the cluster" and "never requested
+  from a cluster (not on the read-only allowlist)", never "in the input"; KN-V014 tells duplicates apart by API
+  group as well as kind, namespace and name. The apiVersion stamp wins over an empty, null or non-string value
+  in every live collector. One intended fixture drift: `tests/fixtures/bad-bundle.yaml` holds an
+  `apps.openshift.io/v1 Route`, which 0.9.2 read as a Route and reported under KN-N002; it is now refused and
+  named, KN-V002 still fires on it, and the fixture's verdict is undetermined.
 
   Measured with the command named, `kube-noob audit -f examples/<file>` (one file, so the partial-bundle guards
   also apply; the count is the `rules:` line of the text view), rules evaluated before and after:
