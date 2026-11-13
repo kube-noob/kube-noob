@@ -791,6 +791,16 @@ def plan(
     deadline = deadline if deadline is not None else time.monotonic() + 30
     tree = _Tree(cwd, deadline)
     out = _Read()
+    if len(line_text) > shell.MAX_CHARS:
+        # The reader's cap is a bound on its own work, not a cluster risk: a line that names no tool verify models
+        # anywhere in it (a long heredoc, a generated script) changes nothing it would check, so it is allowed with
+        # no command recorded; one that names a tool past the cap was not read, and is not determined.
+        if not _names_a_tool(line_text):
+            return out
+        out.undetermined.append(
+            f"the command is longer than {shell.MAX_CHARS:,} characters and names a kube tool, so it was not read"
+        )
+        return out
 
     def reader(raw: str, cwd_: str | None) -> str | None:
         if inline_files is not None:
@@ -815,6 +825,29 @@ def plan(
         if why:
             written.append(why)
     return out
+
+
+def _names_a_tool(text: str) -> bool:
+    """Whether any program verify models -- a kube tool in any case or version (`KubeCtl`, `helm3`), its aliases,
+    a deployer, a cluster lifecycle tool or a cloud CLI -- is named as a word anywhere in ``text``."""
+    return bool(shell.MENTION.search(text) or _TOOL_WORD.search(text))
+
+
+_TOOL_WORD = re.compile(
+    r"(?<![\w.-])("
+    + "|".join(
+        sorted(
+            re.escape(n)
+            for n in shell.KUBE_TOOLS
+            | shell.KUBECTL_ALIASES
+            | set(shell.DEPLOYERS)
+            | {"gcloud", "aws", "az", "doctl"}
+            | {"kubectx", "kubens"}
+        )
+    )
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
 
 
 #: Cloud CLIs, the words that select their Kubernetes clusters, and the operations that only read or write the local

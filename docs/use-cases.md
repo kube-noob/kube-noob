@@ -1272,7 +1272,9 @@ prints the help and runs nothing, so it is allowed; so are the reads `oc adm nod
 `kubectl config use-context` (changes which cluster every later command hits; `config set-context --current
 --namespace=` only changes the default namespace and is allowed). What arrives on standard input is not seen:
 `helm template ... | kubectl apply -f -` and `... | xargs kubectl delete pod` ask, because the manifest, or the
-names, are not on the line. It sees through `sh -c`, `bash -lc`, `eval` of a
+names, are not on the line. The shell reader reads at most 20,000 characters, a bound on its own work: a longer
+command that names no kube tool, deployer or cloud CLI anywhere in it (a long here-document, a generated script) is
+allowed, class `none`; one that names one past the limit was not read and is not determined. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).
