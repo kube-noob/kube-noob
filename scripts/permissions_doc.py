@@ -87,7 +87,10 @@ def _obj(plural: str, name: str, namespace: str | None, **body: Any) -> dict[str
 def _podspec(sa: str = "web") -> dict[str, Any]:
     return {
         "serviceAccountName": sa,
-        "containers": [{"name": "app", "image": "quay.io/acme/web:1.0", "ports": [{"containerPort": 8080}]}],
+        "containers": [
+            {"name": "app", "image": "quay.io/acme/web:1.0", "ports": [{"containerPort": 8080}]},
+            {"name": "sidecar", "image": "quay.io/acme/sidecar:1.0"},
+        ],
     }
 
 
@@ -100,6 +103,8 @@ class FixtureCluster:
     name = "fixture"
 
     def __init__(self) -> None:
+        # One container crash-loops (so the watch and the debugger read its previous log) and one is stuck pulling
+        # (so the debugger reads the ServiceAccount's pull-secret names): both reads are recorded (G293, review).
         pod_status = {
             "phase": "Running",
             "containerStatuses": [
@@ -107,9 +112,15 @@ class FixtureCluster:
                     "name": "app",
                     "ready": False,
                     "restartCount": 7,
-                    "state": {"waiting": {"reason": "ImagePullBackOff", "message": "Back-off pulling image"}},
+                    "state": {"waiting": {"reason": "CrashLoopBackOff", "message": "back-off 5m0s restarting"}},
                     "lastState": {"terminated": {"reason": "Error", "exitCode": 1}},
-                }
+                },
+                {
+                    "name": "sidecar",
+                    "ready": False,
+                    "restartCount": 0,
+                    "state": {"waiting": {"reason": "ImagePullBackOff", "message": "Back-off pulling image"}},
+                },
             ],
         }
         tmpl = {"metadata": {"labels": {"app": "web"}}, "spec": _podspec()}
@@ -117,8 +128,9 @@ class FixtureCluster:
         self.objects: list[dict[str, Any]] = [
             _obj("namespaces", NS, None, metadata_labels={"team": "shop"}),
             _obj("deployments", "web", NS, spec={"replicas": 1, "selector": sel, "template": tmpl}),
-            _obj("replicasets", "web-6d4", NS, spec={"replicas": 1, "selector": sel, "template": tmpl}),
-            _obj("pods", "web-6d4-x1", NS, spec=_podspec(), status=pod_status),
+            _obj("replicasets", "web-6d4", NS, spec={"replicas": 1, "selector": sel, "template": tmpl},
+                 metadata_labels={"app": "web"}),
+            _obj("pods", "web-6d4-x1", NS, spec=_podspec(), status=pod_status, metadata_labels={"app": "web"}),
             _obj("statefulsets", "db", NS, spec={"replicas": 1, "selector": sel, "template": tmpl}),
             _obj("daemonsets", "agent", NS, spec={"selector": sel, "template": tmpl}),
             _obj("jobs", "migrate", NS, spec={"selector": sel, "template": tmpl}),
@@ -232,85 +244,84 @@ class Row:
 def _settings(data_dir: Path) -> Any:
     from kube_noob.config import load_settings
 
-    s = load_settings()
-    s = s.model_copy(update={"data_dir": data_dir}) if hasattr(s, "model_copy") else s
-    s.cluster.enabled = True
-    return s
+    # The ledger and the learning file live in the scratch directory: a recording must never touch the user's data
+    # directory, and a poll against a ledger that already holds the incident would skip the log read (review).
+    return load_settings(overrides={"dataDir": str(data_dir), "cluster": {"enabled": True}})
 
 
-def _run_posture_scan(b: RecordingBackend, _: Path) -> None:
+def _run_posture_scan(b: RecordingBackend, _: Path) -> Any:
     from kube_noob import attack_paths
 
-    attack_paths.scan(attack_paths.collect_live(b, [NS]), top=5)
+    return attack_paths.scan(attack_paths.collect_live(b, [NS]), top=5)
 
 
-def _run_posture_reach(b: RecordingBackend, _: Path) -> None:
+def _run_posture_reach(b: RecordingBackend, _: Path) -> Any:
     from kube_noob import attack_paths, blast_radius
 
     inv = attack_paths.collect_live(b, [NS])
-    blast_radius.reach_result(inv, "deployment/web", NS, live=True, namespaces_read=[NS])
+    return blast_radius.reach_result(inv, "deployment/web", NS, live=True, namespaces_read=[NS])
 
 
-def _run_operator_inventory(b: RecordingBackend, _: Path) -> None:
+def _run_operator_inventory(b: RecordingBackend, _: Path) -> Any:
     from kube_noob import operators
 
-    operators.inventory(operators.collect_live(b, [NS]), top=5)
+    return operators.inventory(operators.collect_live(b, [NS]), top=5)
 
 
-def _run_operator_known_issues(b: RecordingBackend, data_dir: Path) -> None:
+def _run_operator_known_issues(b: RecordingBackend, data_dir: Path) -> Any:
     from kube_noob import operator_issues, operators
 
     collected = operators.collect_live(b, [NS])
     release = operator_issues.live_release(b)
-    operator_issues.assess(collected, release=release, surface="mcp", top=5, issues_per_package=3, data_dir=data_dir)
+    return operator_issues.assess(
+        collected, release=release, surface="mcp", top=5, issues_per_package=3, data_dir=data_dir
+    )
 
 
-def _run_check_traffic(b: RecordingBackend, _: Path) -> None:
+def _run_check_traffic(b: RecordingBackend, _: Path) -> Any:
     from kube_noob.debug.netpol import check_reachability, inventory_from_cluster
 
+    out = []
     for src, dst, cni in ((f"{NS}/web", f"{NS}/db", None), (f"{NS}/pod/web-6d4-x1", f"{NS}/db", "calico:3.32")):
         inv = inventory_from_cluster(b, src, dst, cni)
-        check_reachability(inv, src, dst, 5432)
+        out.append(check_reachability(inv, src, dst, 5432))
+    return out
 
 
-def _run_check_namespace(b: RecordingBackend, data_dir: Path) -> None:
+def _run_check_namespace(b: RecordingBackend, data_dir: Path) -> Any:
     from kube_noob.watch import Watcher
 
-    Watcher(_settings(data_dir), b, [NS]).poll()
+    return Watcher(_settings(data_dir), b, [NS]).poll()
 
 
-def _run_debug(b: RecordingBackend, data_dir: Path) -> None:
+def _run_debug(b: RecordingBackend, data_dir: Path) -> Any:
     from kube_noob.debug.diagnose import debug_workload
 
-    for kind, name in (
-        ("deployment", "web"),
-        ("statefulset", "db"),
-        ("daemonset", "agent"),
-        ("job", "migrate"),
-        ("pod", "web-6d4-x1"),
-    ):
-        debug_workload(b, NS, kind, name, None, 50, data_dir)  # fmt: skip
+    targets = (("deployment", "web"), ("statefulset", "db"), ("daemonset", "agent"), ("job", "migrate"))
+    targets += (("pod", "web-6d4-x1"),)
+    return [debug_workload(b, NS, kind, name, None, 50, data_dir) for kind, name in targets]
 
 
-def _run_version(b: RecordingBackend, _: Path) -> None:
+def _run_version(b: RecordingBackend, _: Path) -> Any:
     from kube_noob.debug.cluster import cluster_info
 
-    cluster_info(b)
+    return cluster_info(b)
 
 
-def _run_drift(b: RecordingBackend, _: Path) -> None:
+def _run_drift(b: RecordingBackend, _: Path) -> Any:
     from kube_noob import drift
 
     objects, not_read = drift.collect_live(b, [NS])
-    drift.snapshot(objects, source="live", platform="openshift", not_read=not_read)
+    return drift.snapshot(objects, source="live", platform="openshift", not_read=not_read)
 
 
-def _run_admission(b: RecordingBackend, _: Path) -> None:
+def _run_admission(b: RecordingBackend, _: Path) -> Any:
     from kube_noob.admission import Lookups
 
     lookups = Lookups(b, sleep=lambda _s: None)
     lookups(NS)
     lookups.refresh()
+    return {"unread": lookups.unread(NS), "stale": lookups.stale(NS), "errors": lookups.errors}
 
 
 RUNNERS: list[tuple[str, str, Any]] = [
@@ -363,6 +374,29 @@ RUNNERS: list[tuple[str, str, Any]] = [
         _run_admission,
     ),
 ]
+
+
+#: Allowlisted (and granted by the chart) resources that no capability other than `cluster_get` reads. Named here
+#: so the document's section and tests/test_permissions_doc.py fail the day the set drifts in either direction:
+#: a capability that starts reading one of these, or one that stops reading something else (G293, review).
+CLUSTER_GET_ONLY: frozenset[Grant] = frozenset(
+    {
+        ("", "endpoints"),
+        ("", "limitranges"),
+        ("", "nodes"),
+        ("", "persistentvolumes"),
+        ("", "resourcequotas"),
+        ("config.openshift.io", "apiservers"),
+        ("config.openshift.io", "clusteroperators"),
+        ("platform.stackrox.io", "centrals"),
+        ("platform.stackrox.io", "securedclusters"),
+    }
+)
+
+
+def recorded_union(rows: list[Row]) -> set[Grant]:
+    """Everything the recorded capabilities read, `cluster_get` (the allowlist itself) left out."""
+    return set().union(*(r.reads for r in rows if r.recorded))
 
 
 def matrix() -> list[Row]:
@@ -429,8 +463,14 @@ def render() -> str:
     rows = matrix()
     code_cluster, code_ns = code_grants()
     chart_cluster, chart_ns = chart_grants()
-    union = set().union(*(r.reads for r in rows if r.recorded))
+    union = recorded_union(rows)
     only_get = sorted(code_cluster - union - {("", "pods/log")})
+    if set(only_get) != set(CLUSTER_GET_ONLY):
+        extra, gone = sorted(set(only_get) - CLUSTER_GET_ONLY), sorted(CLUSTER_GET_ONLY - set(only_get))
+        raise SystemExit(
+            f"CLUSTER_GET_ONLY drifted from what the capabilities read: now read by nothing {extra}, now read by a "
+            f"capability {gone}; fix the set and the document together"
+        )
     reaches = sorted(
         str(p.relative_to(ROOT / "src"))
         for p in (ROOT / "src" / "kube_noob").rglob("*.py")
@@ -449,8 +489,10 @@ def render() -> str:
         "capability was run against a recording backend over a fixture cluster (one namespace with a crashing "
         "Deployment behind a Service and a Route, its RBAC, a NetworkPolicy, an OLM operator, a ClusterVersion) and "
         "the row lists exactly the resources it asked for and with which verb. A read the fixture does not provoke "
-        "is not listed, and a forbidden list is reported by the capability as not read, naming the resource, never "
-        "as an empty namespace (`tests/test_permissions_doc.py`).",
+        "is not listed. A forbidden read is reported by the capability that asked, naming the resource -- in its "
+        "`notRead`, `errors`, `unread` or evidence list and in its text view -- never as an empty namespace or a "
+        "silent None; `tests/test_permissions_doc.py` forbids every recorded read of every row, one at a time, and "
+        "holds that.",
         "",
         "## Per capability",
         "",
@@ -500,8 +542,9 @@ def render() -> str:
         "## Narrowing",
         "",
         "To grant one capability only, copy its row into a Role (namespaced resources) or ClusterRole "
-        "(cluster-scoped ones) with `verbs: [get, list]`. The capability then reports every list it cannot read, by "
-        "name, in `notRead` and in its text view, and nothing it could not read counts as clean.",
+        "(cluster-scoped ones) with `verbs: [get, list]`. The capability then reports every read it could not make, "
+        "by resource name, in its result and its text view, and nothing it could not read counts as clean: the "
+        "attack-path scan's headline reads `not determined: N resource list(s) not read (...)` before its counts.",
         "",
     ]
     return "\n".join(lines)

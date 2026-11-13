@@ -87,11 +87,17 @@ def test_the_chart_grants_exactly_what_the_code_can_read() -> None:
     assert ("", "pods/log") in code_ns
     assert not any(plural.split("/")[0] == "secrets" for _, plural in chart_cluster | chart_ns)
     assert pd.chart_verbs() == {("get", "list")}
-    union = set().union(*(row.reads for row in pd.matrix()))
-    assert union == code_cluster, {
-        "allowlisted but read by nothing": code_cluster - union,
-        "read but not allowlisted": union - code_cluster,
+    # Both ways, over the recorded rows only (`cluster_get` IS the allowlist, so it would prove nothing): what the
+    # capabilities read is the allowlist minus the named set read only through `cluster_get`, and that set is held
+    # exactly, so a drift in either direction -- a capability that starts reading `nodes`, or one that stops reading
+    # `routes` -- fails here and in `--check` (review finding 4).
+    union = pd.recorded_union(pd.matrix())
+    assert union - code_cluster == set(), "read but not allowlisted"
+    assert code_cluster - union - {("", "pods/log")} == set(pd.CLUSTER_GET_ONLY), {
+        "read by nothing, not listed": code_cluster - union - {("", "pods/log")} - pd.CLUSTER_GET_ONLY,
+        "listed, but read by a capability": pd.CLUSTER_GET_ONLY & union,
     }
+    assert ("", "pods/log") in union, "the watch and the debugger read logs"
 
 
 def test_a_capability_that_reads_only_a_few_resources_says_so() -> None:
@@ -102,32 +108,65 @@ def test_a_capability_that_reads_only_a_few_resources_says_so() -> None:
     assert version.reads == {("config.openshift.io", "clusterversions")} and version.endpoints == {"/version"}
     debug = next(r for name, r in rows.items() if "cluster_debug" in name)
     assert ("", "pods/log") in debug.reads and ("", "serviceaccounts") in debug.reads
+    watch = next(r for name, r in rows.items() if "cluster_check_namespace" in name)
+    assert ("", "pods/log") in watch.reads, "the prose says it reads the crashing container's log, so the row must"
 
 
-class _ForbiddingBackend:
-    """A FakeBackend whose list of one resource is forbidden (RBAC 403), as a narrower Role would answer."""
-
-    name = "fake"
+class _ForbiddingBackend(pd.RecordingBackend):
+    """The recording backend with one read forbidden (RBAC 403), as a Role narrower than the chart's answers;
+    `pods/log` forbids the log subresource."""
 
     def __init__(self, forbidden: str) -> None:
+        super().__init__()
         self.forbidden = forbidden
-        self.fixture = pd.FixtureCluster()
 
-    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
+    def _refuse(self, plural: str, namespace: str | None) -> None:
         from kube_noob.errors import ClusterAccessError
 
-        if resource == self.forbidden:
-            raise ClusterAccessError(
-                f"Forbidden: GET /apis/apps/v1/namespaces/{namespace}/{resource}: {resource} is forbidden: "
-                f'User "system:serviceaccount:kube-noob:kn" cannot list resource "{resource}" (status 403)'
-            )
-        return self.fixture.get(resource, name=name, namespace=namespace, **kw)
+        raise ClusterAccessError(
+            f"Forbidden: GET /api/v1/namespaces/{namespace or ''}/{plural}: {plural} is forbidden: "
+            f'User "system:serviceaccount:kube-noob:kn" cannot list resource "{plural}" (status 403)'
+        )
 
-    def logs(self, *a: Any, **kw: Any) -> str:
-        return self.fixture.logs(*a, **kw)
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
+        from kube_noob.debug.cluster import resolve_resource
 
-    def version(self) -> dict[str, Any]:
-        return self.fixture.version()
+        plural, _ = resolve_resource(resource)
+        if plural == self.forbidden:
+            self._refuse(plural, namespace)
+        return super().get(resource, name=name, namespace=namespace, **kw)
+
+    def logs(self, namespace: str, pod: str, container: str | None, tail: int, previous: bool) -> str:
+        if self.forbidden == "pods/log":
+            self._refuse("pods/log", namespace)
+        return super().logs(namespace, pod, container, tail, previous)
+
+
+REFUSAL_WORDS = ("not read", "forbidden", "unread", "could not be read", "not determined")
+
+
+def _every_recorded_read() -> list[tuple[str, str]]:
+    return sorted({(row.capability, plural) for row in pd.matrix() if row.recorded for _g, plural in row.reads})
+
+
+@pytest.mark.parametrize(("capability", "forbidden"), _every_recorded_read())
+def test_every_read_of_every_row_names_itself_when_forbidden(capability: str, forbidden: str, tmp_path: Path) -> None:
+    """Review finding 3, as a sweep over the whole matrix: forbid each recorded read of each capability, one at a
+    time, and the capability's own result must name that resource beside a refusal word -- never a silent drop
+    (the watch's log and ClusterVersion, the debugger's ServiceAccount were) and never an answer as if the list
+    were empty."""
+    from kube_noob.errors import KubeNoobError
+
+    run = next(fn for cap, _what, fn in pd.RUNNERS if cap == capability)
+    try:
+        blob = json.dumps(run(_ForbiddingBackend(forbidden), tmp_path), default=str)
+    except Exception as exc:  # the object asked about could not be read: a refusal that names it is an answer
+        if not isinstance(exc, KubeNoobError) and not type(exc).__module__.startswith("kube_noob"):
+            raise
+        blob = f"RAISED: {exc}"
+    assert forbidden in blob, (capability, forbidden, blob[:600])
+    low = blob.lower()
+    assert any(w in low for w in REFUSAL_WORDS), (capability, forbidden, blob[:600])
 
 
 @pytest.mark.parametrize("forbidden", ["pods", "rolebindings", "deployments"])
@@ -145,7 +184,42 @@ def test_a_forbidden_list_is_reported_as_not_read_naming_the_resource_never_as_n
     text = capsys.readouterr().out
     line = next((x for x in text.splitlines() if x.startswith("not read: ")), "")
     assert f"{forbidden} in shop: " in line and "orbidden" in line, text
+    assert text.startswith("not determined: 1 resource list(s) not read ("), text.splitlines()[0]
     assert main(["--format", "json", "posture", "scan", "--live", "--cluster-enabled", "-n", "shop"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert any(n.startswith(f"{forbidden} in shop: ") and "orbidden" in n for n in out["notRead"]), out["notRead"]
+    assert (
+        out["summary"].startswith("not determined: 1 resource list(s) not read (") and "attack paths" in out["summary"]
+    )
     assert out["notRead"], "a refused list is never an empty list"
+
+
+def test_the_watch_and_the_debugger_name_their_bonus_reads_when_forbidden(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The log a crash-looping container's diagnosis would have used, the ClusterVersion the known-issue match
+    would have used, the ServiceAccount a stuck pull would have named: each refused read is a line in the text
+    view and an entry in the JSON, never a diagnosis that silently ran without it (review finding 3)."""
+    from kube_noob import toolkit
+    from kube_noob.cli import main
+    from kube_noob.debug import cluster
+
+    watch = ["watch", "--once", "--cluster-enabled", "-n", "shop"]
+    debug = ["--cluster-enabled", "debug", "deployment/web", "-n", "shop"]
+    for n, (forbidden, args, phrase) in enumerate(
+        (
+            ("pods/log", watch, "read failed: shop/pods/log web-6d4-x1/app: not read ("),
+            ("clusterversions", watch, "read failed: clusterversions: not read ("),
+            ("serviceaccounts", debug, "serviceaccounts/web: not read ("),
+        )
+    ):
+        monkeypatch.setattr(cluster, "get_backend", lambda _s, f=forbidden: _ForbiddingBackend(f))
+        monkeypatch.setattr(toolkit, "get_backend", lambda _s, f=forbidden: _ForbiddingBackend(f))  # debug: the kit
+        monkeypatch.setenv("KUBE_NOOB_DATA_DIR", str(tmp_path / f"text{n}"))  # a fresh ledger: the incident is new
+        assert main(args) == 0
+        text = capsys.readouterr().out
+        assert phrase in text and "orbidden" in text, (forbidden, text)
+        monkeypatch.setenv("KUBE_NOOB_DATA_DIR", str(tmp_path / f"json{n}"))
+        assert main(["--format", "json", *args]) == 0
+        blob = capsys.readouterr().out
+        assert forbidden in blob and "not read (" in blob, (forbidden, blob[:800])

@@ -586,8 +586,11 @@ def _service_account_pull_secrets(backend: Backend, namespace: str, pods: list[d
     for sa in accounts[:3]:
         try:
             obj = backend.get("serviceaccounts", name=sa, namespace=namespace)
-        except ClusterAccessError:
-            continue  # the ServiceAccount is a bonus; the events already name the missing secret
+        except ClusterAccessError as exc:
+            # The events already name the missing pull secret; the reader is still told this read did not happen,
+            # rather than seeing nothing where a line would be (G293, review).
+            out.append(f"serviceaccounts/{sa}: not read ({str(exc)[:300]})")
+            continue
         names = [str(s.get("name")) for s in obj.get("imagePullSecrets") or [] if isinstance(s, dict)]
         out.append(f"serviceaccount/{sa} imagePullSecrets={names}")
     return out

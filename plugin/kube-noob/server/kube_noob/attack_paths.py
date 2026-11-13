@@ -451,6 +451,9 @@ def _backend_namespaces(obj: dict[str, Any]) -> set[str]:
 class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
+    #: The live lists that failed (a 403, a 404, a malformed answer), as `collect_live` records them: the scan's
+    #: headline is "not determined" while this is non-empty, because the counts are then a lower bound (G293).
+    lists_not_read: list[str] = field(default_factory=list)
     dropped_unread: int = 0
     #: RBAC objects (or lists of them) in the input that could not be read: each one opens the RBAC leg (G273).
     rbac_unread: list[str] = field(default_factory=list)
@@ -2654,6 +2657,15 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
             "do IS listed here, but no path is scored for them. Scan the Deployments and Services the operator "
             "created alongside them -- `--live` reads those -- to complete the picture."
         )
+    not_read = sorted(
+        set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
+    )
+    counts = f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}"
+    # A list that was not read (a forbidden `pods`, a namespace not asked for) means the count is a lower bound and
+    # "no path" is not a verdict: the headline says so first, and the counts follow it (G293, review).
+    refused = inv.lists_not_read
+    shown = "; ".join(_clip_words(n, 120) for n in refused[:3]) + ("; ..." if len(refused) > 3 else "")
+    summary = f"not determined: {len(refused)} resource list(s) not read ({shown}); {counts}" if refused else counts
     return {
         "paths": out_paths,
         "total": len(paths),
@@ -2661,12 +2673,10 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         # Workload objects scored, not pod specs: one RayCluster with three worker groups is one workload here
         # and four pod specs in the paths (G229).
         "workloads": len({id(site.obj) for site in sites}),
-        "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
+        "summary": summary,
         # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
         # Service is not in the input: each is something the paths above could not account for (G273).
-        "notRead": sorted(
-            set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
-        )[:50],
+        "notRead": not_read[:50],
         "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
@@ -2714,6 +2724,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
                 if why.startswith(f"{resource}: "):  # the structural check names the resource itself
                     why = why[len(resource) + 2 :]
                 inv.not_read.append(f"{where}: {why}")
+                inv.lists_not_read.append(f"{where}: {why}")
                 continue
             for item in items:
                 inv.add(item, kind)
