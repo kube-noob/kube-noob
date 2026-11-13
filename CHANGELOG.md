@@ -34,6 +34,7 @@
   - The script's Homebrew hint names the documented tap.
   - The manifest on `main` describes an archive the next release builds; `krew/SUBMIT.md` has the owner's steps for after that release.
 
+- **The defect classes adversarial review keeps finding are now a document in the repository, and AGENTS.md sends every author to it before they push (G296).** Eleven branches went through about thirty read-only review rounds this week; every one had passed the gate with tests, and about three hundred confirmed defects fell into twenty-six recurring classes -- a skipped input read as complete, a refusal read one layer up as an absence, the container's own metadata dropped while its contents were checked, a fix applied to one surface and not its siblings, a cap set above the resource it protects. The brief the reviewers worked from lived in a chat session and would have vanished with it. `docs/review-classes.md` keeps each class with the shape it took and the test shape that holds it; the numbers are stable (append, never renumber) and a test keeps the table gapless and the count in AGENTS.md true. Nothing in the code changes.
 - **The first five minutes: four things a new user hit before any feature mattered (G277).** A version outside the
   known-issue index read as "no known issue": `known-issues 'etcd leader changed' --version 4.16.20` exited 0 with
   `"matches": []` and a note naming the releases the index holds, and nothing a program reads said 4.16 was not one of
