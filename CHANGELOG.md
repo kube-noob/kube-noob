@@ -45,17 +45,25 @@
   was refused as "a kind of another group": the in-cluster backend's list items carry none, so a live posture
   snapshot or scheduled drift job evaluated 3 rules on a cluster where 0.9.2 fired 19 (KN-S001, S015, N007
   among them). No group is an unknown, not a contradiction, as `podspec.refused_group` already held; and
-  `collect_live` now records the `apiVersion` the object was listed under, so the stored object says which API
-  it came from, as kubectl's output does, and KN-V001/V002 no longer report a live object as missing it. (A
-  folder of snapshots taken through the in-cluster backend before this release has no `apiVersion` on its
-  objects, so the first diff after upgrading reports that one field changed on each of them, and those two
-  rules fixed; nothing else.) Kubernetes' own retired groups -- `extensions/v1beta1` Deployment, DaemonSet,
+  every live collector -- the posture snapshot's, the attack-path scan's and the operator inventory's, through
+  one helper -- now records the `apiVersion` the object was listed under, so the stored object says which API
+  it came from, as kubectl's output does, and KN-V001/V002 no longer report a live object as missing it. (The
+  one visible consequence, for users of the in-cluster backend only: a folder of posture snapshots taken before
+  this release has no `apiVersion` on its objects, so the first `posture diff` after upgrading reports that one
+  field changed on each of them, and those two rules fixed; nothing else, and the scan and the inventory keep
+  no history to diff.) Kubernetes' own retired groups -- `extensions/v1beta1` Deployment, DaemonSet,
   ReplicaSet, Ingress and NetworkPolicy, `apps/v1beta1`, `apps/v1beta2` -- were refused the same way:
   `audit -f <legacy dir> --version 1.15 --fail-on high` exited 0 where 0.9.2 exited 1, `tests/fixtures/legacy-bundle.yaml`
   lost KN-C001/C002/C009/C010/C014/V010 and gained a false KN-V011 ("selects no pod template"), because the
   Deployment was dropped while the Service beside it was read. `SUBJECT_GROUPS` now holds every group a kind has
   ever been served under, derived from the removed-API history the version rules read (`REMOVED_APIS`), never
-  hand-listed; reasons still name the group the kind is served in today. The neighbour of that shape -- a
+  hand-listed; reasons still name the group the kind is served in today. OpenShift 3.x's ungrouped `v1` is
+  OpenShift's own history the same way: `oc get -o yaml` on 3.x wrote `apiVersion: v1` for DeploymentConfig,
+  Route, BuildConfig, Build, ImageStream, ImageStreamTag, Template, Project, SecurityContextConstraints,
+  ClusterResourceQuota and the authorization kinds, so those are read as the kinds they are (KN-V002 still
+  says the API is gone), from `LEGACY_OPENSHIFT_V1`, kind to the group it moved to, cited to openshift/api
+  release-3.11 `<group>/v1/legacy.go`; `v1` is accepted for exactly those kinds, so a core `v1 Deployment` is
+  still not a Deployment. The neighbour of that shape -- a
   `Deployment` in `example.com/v1` beside a real one and a Service -- is refused rightly and now SAID: the
   report's assumptions name the object as not audited, and KN-V011 and KN-N012 decline for that namespace
   instead of concluding "selects nothing" from pods they did not read. Four declarations were wider or narrower

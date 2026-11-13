@@ -702,6 +702,39 @@ class RemovedAPI:
     notes: str = ""
 
 
+#: OpenShift 3.x served its own kinds under the ungrouped legacy API (`/oapi`, `apiVersion: v1`, group "") as well
+#: as under `<group>.openshift.io/v1`, and `oc get -o yaml` on 3.x wrote the legacy form, so it is the most common
+#: shape in old OpenShift repositories. Kind -> the group it moved to. Source: openshift/api, branch release-3.11,
+#: `<group>/v1/legacy.go` in apps, authorization, build, image, project, quota, route, security and template, each
+#: declaring `legacyGroupVersion = schema.GroupVersion{Group: "", Version: "v1"}` and the kinds below (list, log,
+#: options and review kinds left out), and openshift/origin v3.11.0 `pkg/api/legacy` (`RESTPrefix = "/oapi"`,
+#: `GroupName = ""`), both read 2026-11-13. The audit rules accept `v1` for exactly these kinds, so a 3.x manifest
+#: is read (and KN-V002 still says the API is gone); a core `v1 Deployment` is not a Deployment.
+LEGACY_OPENSHIFT_V1: dict[str, str] = {
+    "DeploymentConfig": "apps.openshift.io",
+    "Role": "authorization.openshift.io",
+    "RoleBinding": "authorization.openshift.io",
+    "ClusterRole": "authorization.openshift.io",
+    "ClusterRoleBinding": "authorization.openshift.io",
+    "RoleBindingRestriction": "authorization.openshift.io",
+    "Build": "build.openshift.io",
+    "BuildConfig": "build.openshift.io",
+    "Image": "image.openshift.io",
+    "ImageSignature": "image.openshift.io",
+    "ImageStream": "image.openshift.io",
+    "ImageStreamImage": "image.openshift.io",
+    "ImageStreamImport": "image.openshift.io",
+    "ImageStreamMapping": "image.openshift.io",
+    "ImageStreamTag": "image.openshift.io",
+    "Project": "project.openshift.io",
+    "ProjectRequest": "project.openshift.io",
+    "AppliedClusterResourceQuota": "quota.openshift.io",
+    "ClusterResourceQuota": "quota.openshift.io",
+    "Route": "route.openshift.io",
+    "SecurityContextConstraints": "security.openshift.io",
+    "Template": "template.openshift.io",
+}
+
 # The Kubernetes minor this table was read at. The guide lists no removals after v1.32, so for any target up to
 # here an empty result is complete. Past here nobody has looked, and an empty result would be a verdict earned by
 # absence (G163) -- `beyond_checked` exists so that the answer can say so instead. Raise it only after re-reading

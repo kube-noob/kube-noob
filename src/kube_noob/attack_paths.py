@@ -1050,6 +1050,7 @@ def scan_manifests(text: str, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     """Read the inventory from the cluster through the read-only backend: never Secrets (not in its allowlist)."""
+    from kube_noob.debug.cluster import stamp_api_version
     from kube_noob.errors import KubeNoobError
 
     inv = Inventory()
@@ -1062,5 +1063,5 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
                 inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue
             for item in _list(data.get("items")) if isinstance(data, dict) else []:
-                inv.add(item, kind)
+                inv.add(stamp_api_version(resource, item) if isinstance(item, dict) else item, kind)
     return inv

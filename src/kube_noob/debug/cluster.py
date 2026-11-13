@@ -287,6 +287,18 @@ def _list_hint(data: Any, plural: str) -> str | None:
     return kind
 
 
+def stamp_api_version(resource: str, item: dict[str, Any]) -> dict[str, Any]:
+    """``item`` with the ``apiVersion`` it was listed under, when it carries none of its own.
+
+    API list items carry no apiVersion (kubectl fills it in; the in-cluster backend does not), so an object a
+    live collector stored said nothing about which API it came from, and the audit rules, which match a kind
+    WITH its group, refused every non-core one (G281, review 3). The backend's own word, when it has one, is kept.
+    """
+    if isinstance(item.get("apiVersion"), str) and item["apiVersion"]:
+        return item
+    return {"apiVersion": resolve_resource(resource)[1].group_version, **item}
+
+
 def resolve_resource(resource: str) -> tuple[str, ResourceDef]:
     r = resource.strip().lower()
     if r in {"secret", "secrets"}:

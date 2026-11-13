@@ -38,6 +38,7 @@ from kube_noob.catalog import (
     ADDON_GROUPS_ON_VANILLA,
     KIND_API_VERSIONS,
     KNOWN_STORAGE_CLASSES,
+    LEGACY_OPENSHIFT_V1,
     OPENSHIFT_FAMILY,
     OPENSHIFT_ONLY_GROUPS,
     PROVISIONERS,
@@ -91,8 +92,13 @@ CURRENT_GROUPS: dict[str, frozenset[str]] = {
 #: refusing it dropped the workload while the Service beside it was read, so KN-V011 reported a Service that
 #: selects nothing and KN-S001 said nothing about the privileged container (review 3, N2). Derived, never
 #: hand-listed, so a row added to REMOVED_APIS is known here too.
+#: ... and OpenShift 3.x's ungrouped `v1` (`LEGACY_OPENSHIFT_V1`): `apiVersion: v1` DeploymentConfig, Route,
+#: BuildConfig, SecurityContextConstraints and the rest are read as the kinds they are, as 0.9.2 read them, and the
+#: group they moved to with them. Only for the kinds in that table: a core `v1 Deployment` stays refused.
 SUBJECT_GROUPS: dict[str, frozenset[str]] = {
-    kind: groups | frozenset(api_group(r.group_version) for r in REMOVED_APIS if r.kind == kind)
+    kind: groups
+    | frozenset(api_group(r.group_version) for r in REMOVED_APIS if r.kind == kind)
+    | (frozenset({"", LEGACY_OPENSHIFT_V1[kind]}) if kind in LEGACY_OPENSHIFT_V1 else frozenset())
     for kind, groups in CURRENT_GROUPS.items()
 }
 

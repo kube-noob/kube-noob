@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ import yaml
 from kube_noob.audit.controls import RULE_CONTROLS
 from kube_noob.audit.engine import analyze, build_context
 from kube_noob.audit.model import Stage
-from kube_noob.audit.rules import RULES, run_rules
+from kube_noob.audit.rules import RULES, WORKLOAD_SUBJECT, run_rules
 from kube_noob.yamlio import load_documents
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -832,18 +833,25 @@ def test_st001_declares_the_storage_class_it_reads() -> None:
     assert RULES["KN-ST001"].context == ("StorageClass",)
 
 
-def _by_kind_calls_per_rule() -> dict[str, set[str]]:
-    """Every kind each rule's check (and the helpers it calls, transitively) passes to `by_kind`.
+#: Calls inside a rule body that read a kind: the method or function name, and which argument carries the kind
+#: (a string, a tuple of strings, or `*` for "every positional argument"). `workloads`, `refused_workloads` and
+#: `refused_subject_group` read pod specs rather than one kind, and count as asking for the pod-spec subject.
+_KIND_READERS: dict[str, int | str] = {"by_kind": "*", "has_subject": 0, "kind_in_group": 1}
+_POD_SPEC_READERS = frozenset({"workloads", "refused_workloads", "refused_subject_group"})
 
-    A literal is taken as written; a starred name (`*REPLICATED_KINDS`) and a loop variable
-    (`for kind in _CLAIM_SOURCE_KINDS.values()`) are resolved against the module's own constants.
+
+def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
+    """Every kind each named module-level function reads (through the helpers it calls, transitively).
+
+    A literal is taken as written; a starred name (`*REPLICATED_KINDS`), an indexed constant (`ADMIN_TIER_KINDS[0]`)
+    and a loop variable (`for kind in _CLAIM_SOURCE_KINDS.values()`) are resolved against the module's own
+    constants. Reads through `has_subject((k, ...))` and `kind_in_group(d, k)` count like `by_kind(k)`, so a helper
+    that sidesteps `by_kind` cannot read an undeclared kind unnoticed.
     """
     import ast
 
     from kube_noob.audit import rules as rules_module
 
-    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
     funcs: dict[str, ast.FunctionDef] = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
     def constant(expr: ast.expr) -> Any:
@@ -859,7 +867,23 @@ def _by_kind_calls_per_rule() -> dict[str, set[str]]:
                 for i, elt in enumerate(loop.target.elts):
                     if isinstance(elt, ast.Name) and elt.id == name:
                         return {str(item[i]) for item in constant(loop.iter)}
-        raise AssertionError(f"{fn.name}: by_kind({name}) is not a literal, a starred constant or a loop variable")
+        raise AssertionError(f"{fn.name}: {name} is not a literal, a starred constant or a loop variable")
+
+    def kinds_of(fn: ast.FunctionDef, arg: ast.expr) -> set[str]:
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return {arg.value}
+        if isinstance(arg, ast.Tuple | ast.List | ast.Set):
+            return {k for elt in arg.elts for k in kinds_of(fn, elt)}
+        if isinstance(arg, ast.Starred):
+            return {str(v) for v in constant(arg.value)}
+        if isinstance(arg, ast.Name) and arg.id in vars(rules_module):
+            value = constant(arg)
+            return {value} if isinstance(value, str) else {str(v) for v in value}
+        if isinstance(arg, ast.Name):
+            return loop_values(fn, arg.id)
+        value = constant(arg)  # `ADMIN_TIER_KINDS[0]`: an index into a module constant
+        assert isinstance(value, str), f"{fn.name}: {ast.unparse(arg)} is not one kind"
+        return {value}
 
     def kinds_in(fn: ast.FunctionDef, seen: set[str]) -> set[str]:
         if fn.name in seen:
@@ -869,35 +893,41 @@ def _by_kind_calls_per_rule() -> dict[str, set[str]]:
         for node in ast.walk(fn):
             if not isinstance(node, ast.Call):
                 continue
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "by_kind":
-                for arg in node.args:
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        out.add(arg.value)
-                    elif isinstance(arg, ast.Starred):
-                        out |= {str(v) for v in constant(arg.value)}
-                    elif isinstance(arg, ast.Name):
-                        out |= loop_values(fn, arg.id)
-                    else:
-                        value = constant(arg)  # `ADMIN_TIER_KINDS[0]`: an index into a module constant
-                        assert isinstance(value, str), f"{fn.name}: by_kind({ast.unparse(arg)}) is not one kind"
-                        out.add(value)
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in _KIND_READERS:
+                which = _KIND_READERS[name]
+                args = node.args if which == "*" else node.args[int(which) : int(which) + 1]
+                for arg in args:
+                    out |= kinds_of(fn, arg)
+            elif name in _POD_SPEC_READERS:
+                out.add(WORKLOAD_SUBJECT)
             elif isinstance(node.func, ast.Name) and node.func.id in funcs:
                 out |= kinds_in(funcs[node.func.id], seen)
         return out
 
-    by_rule: dict[str, set[str]] = {}
-    for fn in funcs.values():
+    return {name: kinds_in(funcs[name], set()) for name in names}
+
+
+def _by_kind_calls_per_rule() -> dict[str, set[str]]:
+    """Every kind each rule's check reads, by rule id (see `_kinds_asked`)."""
+    import ast
+
+    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    checks: dict[str, str] = {}
+    for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
         for deco in fn.decorator_list:
             if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Name) and deco.func.id == "rule":
                 rid = deco.args[0]
                 assert isinstance(rid, ast.Constant)
-                by_rule[str(rid.value)] = kinds_in(fn, set())
-    return by_rule
+                checks[str(rid.value)] = fn.name
+    asked = _kinds_asked(tree, checks.values())
+    return {rid: asked[name] for rid, name in checks.items()}
 
 
 def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_context() -> None:
     """A rule that reads a kind it did not declare has a half the record cannot name when it is absent (N6)."""
-    from kube_noob.audit.rules import SUBJECT_GROUPS
+    from kube_noob.audit.rules import SUBJECT_GROUPS, WORKLOAD_KINDS
 
     by_rule = _by_kind_calls_per_rule()
     assert by_rule.keys() == RULES.keys()
@@ -905,8 +935,12 @@ def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_contex
         r = RULES[rid]
         declared = {k for sub in r.subjects for k in sub} | set(r.context)
         for kind in asked:
+            if kind == WORKLOAD_SUBJECT:
+                # `workloads()` is the pod-spec subject, or a declared subset of its kinds (KN-V010, KN-N001).
+                assert WORKLOAD_SUBJECT in declared or declared & set(WORKLOAD_KINDS), f"{rid} reads workloads"
+                continue
             assert kind in SUBJECT_GROUPS, (rid, kind)
-            assert kind in declared, f"{rid} asks by_kind for {kind} and declares it as neither subject nor context"
+            assert kind in declared, f"{rid} reads {kind} and declares it as neither subject nor context"
 
 
 def test_the_pod_spec_kinds_are_spelled_out_inside_an_alternative_label_too() -> None:
@@ -985,3 +1019,118 @@ def test_the_text_headline_names_only_controls_with_findings_and_lists_the_uneva
         if c.get("clean"):
             assert f"{c['clean']} clean" in not_evaluated_line, cid  # partly clean, partly unevaluated: both said
     assert "AU-2 (KN-S035" in not_evaluated_line
+
+
+# ---------------------------------------------------------------------------
+# Review 4 preparation: OpenShift 3.x legacy `v1`, apiVersion stamping everywhere, the AST test widened
+# ---------------------------------------------------------------------------
+
+OCP3 = """
+apiVersion: v1
+kind: Route
+metadata: {name: web, namespace: shop}
+spec:
+  to: {kind: Service, name: web}
+---
+apiVersion: v1
+kind: DeploymentConfig
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 1
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: web
+          image: web:latest
+          securityContext: {privileged: true}
+"""
+
+# `analyze(OCP3, "openshift", "4.20", partial_bundle=False)` on main: the fired set.
+OCP3_FIRED_MAIN = {
+    "KN-C001", "KN-C002", "KN-C004", "KN-C005", "KN-C007", "KN-N001", "KN-N002", "KN-S001", "KN-S002", "KN-S003",
+    "KN-S006", "KN-S007", "KN-S008", "KN-S012", "KN-S014", "KN-V002", "KN-V008",
+}  # fmt: skip
+
+
+def test_openshift_three_legacy_v1_kinds_are_read_not_refused() -> None:
+    """`oc get -o yaml` on OpenShift 3.x wrote `apiVersion: v1` for DeploymentConfig, Route, BuildConfig, ...: that
+    is OpenShift's own history (openshift/api release-3.11 <group>/v1/legacy.go), not a kind of another group.
+    Refused-with-a-note was a coverage regression on the most common shape in old OpenShift repositories."""
+    from kube_noob.audit.rules import CURRENT_GROUPS, SUBJECT_GROUPS, kind_in_group
+    from kube_noob.catalog import LEGACY_OPENSHIFT_V1
+
+    for kind, group in LEGACY_OPENSHIFT_V1.items():
+        assert group.endswith(".openshift.io"), (kind, group)
+        if kind in CURRENT_GROUPS:
+            assert "" in SUBJECT_GROUPS[kind] and group in SUBJECT_GROUPS[kind], kind
+    for kind in ("DeploymentConfig", "Route", "BuildConfig", "Build", "ImageStream", "ImageStreamTag", "Template",
+                 "Project", "SecurityContextConstraints", "ClusterResourceQuota"):  # fmt: skip
+        assert kind in LEGACY_OPENSHIFT_V1, kind
+        assert "" in SUBJECT_GROUPS[kind], kind
+    # Exactly those kinds, and no others: a core `v1 Deployment` is still not a Deployment.
+    assert "" not in SUBJECT_GROUPS["Deployment"] and "" not in SUBJECT_GROUPS["Ingress"]
+    v1_dep = load_documents("apiVersion: v1\nkind: Deployment\nmetadata: {name: a, namespace: b}\nspec: {}\n")[0]
+    assert not kind_in_group(v1_dep, "Deployment")
+
+    rep = analyze(OCP3, "openshift", "4.20", partial_bundle=False)
+    assert set(rep.fired_rules) == OCP3_FIRED_MAIN
+    assert "KN-V002" in rep.fired_rules  # the API is still the removed one: say so, and read the object
+    assert not any("not audited" in a for a in rep.assumptions), rep.assumptions
+    # The reason label still names today's group, never the input's apiVersion.
+    rep_route_only = analyze(OCP3.split("---", maxsplit=1)[0], "openshift", "4.20")
+    assert rep_route_only.not_evaluated["KN-S001"].startswith("no pod spec in the input")
+
+
+class _NoApiVersionBackend:
+    """The in-cluster backend's shape: list items with no apiVersion, except one kubectl-like resource."""
+
+    def __init__(self, items: dict[str, list[dict[str, Any]]]) -> None:
+        self.items = items
+
+    def get(self, resource: str, namespace: str | None = None, selector: str | None = None) -> dict[str, Any]:
+        return {"items": [dict(i) for i in self.items.get(resource, [])]}
+
+
+def test_attack_paths_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:
+    from kube_noob import attack_paths as ap
+
+    backend = _NoApiVersionBackend(
+        {
+            "pods": [{"metadata": {"name": "p", "namespace": "shop"}, "spec": {"containers": [{"name": "c"}]}}],
+            "roles": [{"apiVersion": "authorization.openshift.io/v1", "metadata": {"name": "r", "namespace": "shop"}}],
+        }
+    )
+    inv = ap.collect_live(backend, ["shop"])
+    assert inv.of("Pod")[0]["apiVersion"] == "v1"
+    assert inv.of("Role")[0]["apiVersion"] == "authorization.openshift.io/v1"  # the backend's own word is kept
+
+
+def test_operators_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:
+    from kube_noob import operators
+
+    csv = {"metadata": {"name": "etcd.v1", "namespace": "shop"}, "spec": {"version": "1.0.0"}, "status": {}}
+    sub = {"apiVersion": "operators.coreos.com/v1alpha1", "metadata": {"name": "etcd", "namespace": "shop"}, "spec": {}}
+    c = operators.collect_live(
+        _NoApiVersionBackend({"clusterserviceversions": [csv], "subscriptions": [sub]}), ["shop"]
+    )
+    assert c.objects["clusterserviceversions"][0].doc["apiVersion"] == "operators.coreos.com/v1alpha1"
+    assert c.objects["subscriptions"][0].doc["apiVersion"] == "operators.coreos.com/v1alpha1"
+    assert not c.foreign
+
+
+def test_a_kind_read_outside_by_kind_is_caught_by_the_declaration_walk() -> None:
+    """`has_subject((k,))`, `kind_in_group(d, k)` and `refused_subject_group` reads inside a rule body count as the
+    rule asking for that kind, so a helper that sidesteps `by_kind` cannot read an undeclared kind unnoticed."""
+    import ast
+
+    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    probe = ast.parse(
+        "def _probe(ctx, r):\n"
+        "    if ctx.has_subject(('StorageClass',)) and kind_in_group(ctx.docs[0], 'IngressClass'):\n"
+        "        return ctx.by_kind('Route')\n"
+    ).body[0]
+    tree.body.append(probe)
+    found = _kinds_asked(tree, ["_probe"])["_probe"]
+    assert found == {"StorageClass", "IngressClass", "Route"}

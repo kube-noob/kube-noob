@@ -713,7 +713,7 @@ def load(path: Path) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     """Objects for a live snapshot through the read-only backend (never Secrets), and what could not be read."""
-    from kube_noob.debug.cluster import resolve_resource
+    from kube_noob.debug.cluster import stamp_api_version
     from kube_noob.errors import KubeNoobError
 
     objects: list[dict[str, Any]] = []
@@ -722,10 +722,6 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
     for resource, kind in resources.items():
         cluster = resource in CLUSTER_SCOPED_LIVE
         scopes: list[str | None] = [None] if cluster or not namespaces else list(namespaces)
-        # API list items carry no apiVersion of their own (kubectl fills it in; the in-cluster backend does
-        # not), so the record says which API the object was listed under, as a manifest would. The backend's
-        # own word, when it has one, is kept (review 3, N1).
-        api_version = resolve_resource(resource)[1].group_version
         for ns in scopes:
             try:
                 data = backend.get(resource, namespace=ns)
@@ -734,7 +730,8 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
                 continue
             for item in data.get("items") or [] if isinstance(data, dict) else []:
                 if isinstance(item, dict):
-                    objects.append({"apiVersion": api_version, **item, "kind": kind})
+                    # The record says which API the object was listed under, as a manifest would (review 3, N1).
+                    objects.append({**stamp_api_version(resource, item), "kind": kind})
     if namespaces:
         wanted = set(namespaces)
         objects = [o for o in objects if o["kind"] != "Namespace" or (o.get("metadata") or {}).get("name") in wanted]

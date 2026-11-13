@@ -530,6 +530,7 @@ def collect_live(backend: Any, namespaces: list[str]) -> Collected:
     namespaces an operator serves come from its ``olm.targetNamespaces`` annotation; per namespace, copies are read,
     because a copy is how a namespace shows which operators manage it. A response without an ``items`` list is a
     failed read, not zero objects."""
+    from kube_noob.debug.cluster import stamp_api_version
     from kube_noob.errors import KubeNoobError
 
     c = Collected("live", namespaces=frozenset(namespaces) if namespaces else None)
@@ -551,7 +552,8 @@ def collect_live(backend: Any, namespaces: list[str]) -> Collected:
                 failures.append(f"{ns + ': ' if ns else ''}the response held no items list")
                 continue
             for item in items[:MAX_ITEMS]:
-                c.add(item, f"live {resource}", ns or "", expect=RESOURCE_TO_KIND[resource])
+                stamped = stamp_api_version(resource, item) if isinstance(item, dict) else item
+                c.add(stamped, f"live {resource}", ns or "", expect=RESOURCE_TO_KIND[resource])
             c.overflow(resource, len(items) - MAX_ITEMS)
         read_any = len(failures) < len(scopes)
         kept = len(c.objects[resource])
