@@ -201,8 +201,9 @@ def test_nothing_the_directory_shows_names_the_account_the_project_moved_out_of(
     """The listing renders plugin.json's fields and the plugin folder's README, and both named the old account for
     three releases after the move, because the test that should have caught it pinned the old owner as a literal.
 
-    The generated server copy under plugin/kube-noob/server is excluded: those URLs come from src/ and redirect, and
-    G266 left redirecting forms alone on purpose. The directory does not render them.
+    The generated server copy under plugin/kube-noob/server is not rendered by the directory, so it is not listed
+    here; it is held, with every other tracked file, by
+    test_distribution.py::test_no_tracked_file_names_the_owner_the_project_moved_out_of (G275).
     """
     shown: list[Path] = []
     for plugin in (FULL, LITE):
@@ -389,6 +390,7 @@ _TOOL_COMMANDS: dict[str, str] = {
     "learn_quiz": "learn quiz",
     "policy_generate": "policy generate",
     "posture_scan": "posture scan",
+    "posture_reach": "posture reach",
     "rhacs_compare": "rhacs compare",
     "build_diagnose": "build diagnose",
     "vuln_report": "vuln report",
@@ -746,6 +748,7 @@ def _fixture_argv(command: str, tmp: Path) -> list[str]:
         "learn quiz": ["learn", "quiz", "k8s-q-exit137"],
         "policy generate": ["policy", "generate", "--mode", "audit", "-o", str(tmp / "p.yaml")],
         "posture scan": ["posture", "scan", "-f", ex],
+        "posture reach": ["posture", "reach", "deployment/orders-api", "-n", "shop", "-f", ex],
         "rhacs compare": ["rhacs", "compare", "-f", str(fx / "rhacs" / "default-policies-export.json")],
         "build diagnose": ["build", "diagnose", "-f", str(fx / "build_logs" / "03-github-actions-compile.log")],
         "build audit": [

@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/aashishmahajan/kube-noob/main/docs/brand/social-preview.png" alt="kube-noob - No AI inside. Works with yours." width="720">
+  <img src="https://raw.githubusercontent.com/kube-noob/kube-noob/main/docs/brand/social-preview.png" alt="kube-noob - No AI inside. Works with yours." width="720">
 </p>
 
 # kube-noob
 
 <!-- mcp-name: io.github.kube-noob/kube-noob -->
 
-[![ci](https://github.com/aashishmahajan/kube-noob/actions/workflows/ci.yml/badge.svg)](https://github.com/aashishmahajan/kube-noob/actions/workflows/ci.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/aashishmahajan/kube-noob/badge)](https://securityscorecards.dev/viewer/?uri=github.com/aashishmahajan/kube-noob)
+[![ci](https://github.com/kube-noob/kube-noob/actions/workflows/ci.yml/badge.svg)](https://github.com/kube-noob/kube-noob/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/kube-noob/kube-noob/badge)](https://securityscorecards.dev/viewer/?uri=github.com/kube-noob/kube-noob)
 [![PyPI](https://img.shields.io/pypi/v/kube-noob)](https://pypi.org/project/kube-noob/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/aashishmahajan/kube-noob/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/kube-noob/kube-noob/blob/main/LICENSE)
 
 **No AI inside. Works with yours.** kube-noob is a Kubernetes, OpenShift, ROSA HCP, Helm and RHACS/StackRox expert
 in a box: audit rules, read-only-first playbooks, cited docs and graded exercises. Claude, OpenShift Lightspeed or any
@@ -46,7 +46,7 @@ Generate, Red Team). Answers cite local knowledge as `[kn:<doc>#<n>]`. All of it
 ## Quick start
 
 ```bash
-brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob
+brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob
 brew trust --formula kube-noob/kube-noob/kube-noob
 brew install kube-noob
 kube-noob demo --list
@@ -55,18 +55,18 @@ kube-noob insight 'paste anything'
 kube-noob doctor
 ```
 
-No Homebrew: `uv tool install kube-noob` (Python 3.11.4+); [install help](https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md).
+No Homebrew: `uv tool install kube-noob` (Python 3.11.4+); [install help](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md).
 
 ## Use with Claude or any MCP client
 
 Claude plugin, in Claude Code (needs [uv](https://docs.astral.sh/uv/)):
 
 ```
-/plugin marketplace add aashishmahajan/kube-noob
+/plugin marketplace add kube-noob/kube-noob
 /plugin install kube-noob@kube-noob
 ```
 
-Desktop, claude.ai, the plugin directory, Agent Skill: [install.md](https://github.com/aashishmahajan/kube-noob/blob/main/docs/install.md). Any MCP client:
+Desktop, claude.ai, the plugin directory, Agent Skill: [install.md](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md). Any MCP client:
 
 ```json
 {"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.9.2", "kube-noob", "mcp"]}}}
@@ -75,7 +75,7 @@ Desktop, claude.ai, the plugin directory, Agent Skill: [install.md](https://gith
 ## Run on OpenShift
 
 As a token-protected service, loopback-only sidecar or Lightspeed tool:
-[docs/openshift.md](https://github.com/aashishmahajan/kube-noob/blob/main/docs/openshift.md). The chart ships
+[docs/openshift.md](https://github.com/kube-noob/kube-noob/blob/main/docs/openshift.md). The chart ships
 NetworkPolicies, written for `restricted-v2`.
 
 ## Safe by default
@@ -83,19 +83,19 @@ NetworkPolicies, written for `restricted-v2`.
 Off until you turn it on: web lookups, live cluster access (read-only, never Secrets), and any model at all. An
 admin `offline: true` lock overrides every one of them and nothing later in the config chain can lift it. Config
 never comes from the current directory. `kube-noob doctor` shows what the process can reach and exits 1 if the
-configuration contradicts the lock; every key is in [kube-noob.example.yaml](https://github.com/aashishmahajan/kube-noob/blob/main/kube-noob.example.yaml), and the
-generated [safety contract](https://github.com/aashishmahajan/kube-noob/blob/main/docs/safety-contract.md) lists what each capability tier can do.
+configuration contradicts the lock; every key is in [kube-noob.example.yaml](https://github.com/kube-noob/kube-noob/blob/main/kube-noob.example.yaml), and the
+generated [safety contract](https://github.com/kube-noob/kube-noob/blob/main/docs/safety-contract.md) lists what each capability tier can do.
 
 ## Docs
 
-Everything is at **[kube-noob.com](https://kube-noob.com)**, and in [docs/](https://github.com/aashishmahajan/kube-noob/blob/main/docs/): [use cases](https://github.com/aashishmahajan/kube-noob/blob/main/docs/use-cases.md),
-[architecture](https://github.com/aashishmahajan/kube-noob/blob/main/docs/architecture.md), [accuracy](https://github.com/aashishmahajan/kube-noob/blob/main/docs/evals/supported-technologies.md),
-[guidance](https://github.com/aashishmahajan/kube-noob/blob/main/docs/guidance.md), [learning](https://github.com/aashishmahajan/kube-noob/blob/main/docs/learning.md), [privacy](https://github.com/aashishmahajan/kube-noob/blob/main/PRIVACY.md), [security](https://github.com/aashishmahajan/kube-noob/blob/main/SECURITY.md),
-[contributing](https://github.com/aashishmahajan/kube-noob/blob/main/CONTRIBUTING.md), [limits](https://github.com/aashishmahajan/kube-noob/blob/main/docs/limits.md), [roadmap](https://github.com/aashishmahajan/kube-noob/blob/main/docs/roadmap.md), [maintenance](https://github.com/aashishmahajan/kube-noob/blob/main/MAINTENANCE.md), [governance](https://github.com/aashishmahajan/kube-noob/blob/main/GOVERNANCE.md).
+Everything is at **[kube-noob.com](https://kube-noob.com)**, and in [docs/](https://github.com/kube-noob/kube-noob/blob/main/docs/): [use cases](https://github.com/kube-noob/kube-noob/blob/main/docs/use-cases.md),
+[architecture](https://github.com/kube-noob/kube-noob/blob/main/docs/architecture.md), [accuracy](https://github.com/kube-noob/kube-noob/blob/main/docs/evals/supported-technologies.md),
+[guidance](https://github.com/kube-noob/kube-noob/blob/main/docs/guidance.md), [learning](https://github.com/kube-noob/kube-noob/blob/main/docs/learning.md), [privacy](https://github.com/kube-noob/kube-noob/blob/main/PRIVACY.md), [security](https://github.com/kube-noob/kube-noob/blob/main/SECURITY.md),
+[contributing](https://github.com/kube-noob/kube-noob/blob/main/CONTRIBUTING.md), [limits](https://github.com/kube-noob/kube-noob/blob/main/docs/limits.md), [roadmap](https://github.com/kube-noob/kube-noob/blob/main/docs/roadmap.md), [maintenance](https://github.com/kube-noob/kube-noob/blob/main/MAINTENANCE.md), [governance](https://github.com/kube-noob/kube-noob/blob/main/GOVERNANCE.md).
 
 
 ## Credits
 
-Notices: [THIRD_PARTY_NOTICES.md](https://github.com/aashishmahajan/kube-noob/blob/main/THIRD_PARTY_NOTICES.md). Kubernetes, Helm, OpenShift, ROSA, RHACS, StackRox,
+Notices: [THIRD_PARTY_NOTICES.md](https://github.com/kube-noob/kube-noob/blob/main/THIRD_PARTY_NOTICES.md). Kubernetes, Helm, OpenShift, ROSA, RHACS, StackRox,
 OpenShift Lightspeed, Claude, Anthropic, GitHub and AWS are trademarks of their respective owners; kube-noob is
-independent and not endorsed by them. License: [Apache-2.0](https://github.com/aashishmahajan/kube-noob/blob/main/LICENSE).
+independent and not endorsed by them. License: [Apache-2.0](https://github.com/kube-noob/kube-noob/blob/main/LICENSE).

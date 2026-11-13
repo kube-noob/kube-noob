@@ -105,9 +105,14 @@ A behaviour change updates, in the same commit:
 | 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
 | 141 | the output pipe closed |
 
+An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line
+on stderr with exit 4, never a raw traceback that exits 1; set `KUBE_NOOB_DEBUG=1` to print the traceback too,
+through the same output boundary (G279).
+
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
-that as policy violations. For the same reason an exception nothing else caught exits 4 with one `error: internal
-error (...)` line, never Python's default 1 (`KUBE_NOOB_DEBUG=1` re-raises it for the traceback; G276).
+that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
+Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
+shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
 
 ## Versions
 

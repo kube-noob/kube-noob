@@ -29,8 +29,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from kube_noob import shape
-from kube_noob.attack_paths import Inventory, Reach, workload_reach
+from kube_noob import sanitize, shape
+from kube_noob.attack_paths import Inventory, Reach, ambiguous_notes, workload_reach
+from kube_noob.sanitize import visible
 from kube_noob.vuln import attack
 
 _STRIDE = {
@@ -379,8 +380,8 @@ def _workload_threats(
     if store:
         ev = _sorted(f for f in audit.by_namespace.get(r.namespace, []) if f["rule"] in TEMPLATES["TM-I01"].rules)
         out.append(Threat(TEMPLATES["TM-I01"], el, _status(ev), ev))
-    if r.token is not None:
-        sa, how = r.token
+    # Every token of every object of this name: two different Deployments of one name are both modelled (G273).
+    for sa, how in [t for t in (r.token,) if t is not None]:
         ev = _evidence(audit, [r.ref], TEMPLATES["TM-S02"].rules)
         out.append(
             Threat(TEMPLATES["TM-S02"], Element("identity", sa), "open", ev or [{"token": how}], f"mounted in {r.ref}")
@@ -408,6 +409,7 @@ def model(
     platform: str = "kubernetes",
     version: str | None = None,
     vulnerable_images: dict[str, str] | None = None,
+    default_namespace: str | None = None,
 ) -> dict[str, Any]:
     """The threat model of every application in ``text`` (YAML manifests). ``vulnerable_images`` maps a workload ref
     to a one-line vulnerability summary (from ``kube-noob vuln report``), or to ``""`` when its report shows nothing
@@ -417,7 +419,7 @@ def model(
     from kube_noob.yamlio import load_documents
 
     docs = load_documents(text)
-    inv = Inventory.from_documents(d.data for d in docs)
+    inv = Inventory.from_documents((d.data for d in docs), default_namespace=default_namespace)
     reach = workload_reach(inv)
     audit = _audit(docs, platform, version)
     policies = _generated_policies(platform, version)
@@ -486,9 +488,11 @@ def model(
         out_apps.append(
             {
                 "application": app,
-                "workloads": refs,
+                # Each copy of an ambiguous name is its own reach (keyed `ref#2`...); listed by its reference once.
+                "workloads": list(dict.fromkeys(reach[ref].ref for ref in refs)),
                 "entryPoints": [{"ref": k, "exposure": v} for k, v in sorted(entry_points.items())],
-                "dataStores": stores,
+                "dataStores": list(dict.fromkeys(reach[ref].ref for ref in stores)),
+                # The one place a union is honest: every identity any copy holds.
                 "identities": sorted({tok[0] for ref in refs if (tok := reach[ref].token)}),
                 "threats": rows,
                 "counts": {s: sum(1 for x in rows if x["status"] == s) for s in ("open", "mitigated", "not assessed")},
@@ -500,9 +504,15 @@ def model(
         "applications": out_apps,
         "attackVersion": attack.VERSION,
         "attribution": attack.ATTRIBUTION,
-        "secretsIgnored": inv.dropped_secrets,
+        "secretsIgnored": inv.dropped_unread,
         # Only when something could not be read, so a model with nothing to say keeps its shape (G276).
         **({"notRead": sorted(set(not_read + inv.not_read))} if not_read or inv.not_read else {}),
+        # A name carried by different objects: which one runs is not known, so every one is modelled (G273).
+        "ambiguous": ambiguous_notes(reach)
+        + [
+            f"{n} has no namespace: it is modelled in default; pass -n as kubectl apply -n would"
+            for n in sorted(inv.unplaced)
+        ],
         "statuses": {
             "open": "a mitigating rule fails on the element, or the right exists",
             "mitigated": "every mitigating rule passes on the element",
@@ -520,6 +530,8 @@ def _dedupe(threats: list[Threat]) -> list[Threat]:
 
 def render_markdown(out: dict[str, Any]) -> str:
     lines = [f"# Threat model ({out['platform']}{' ' + out['version'] if out.get('version') else ''})", ""]
+    for note in out.get("ambiguous") or []:
+        lines += [f"> {visible(note)}", ""]
     for app in out["applications"]:
         c = app["counts"]
         lines += [
@@ -540,4 +552,4 @@ def render_markdown(out: dict[str, Any]) -> str:
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
     lines.append(out["attribution"])
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)

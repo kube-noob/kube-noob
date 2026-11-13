@@ -1509,7 +1509,75 @@ PSS_RESTRICTED_ALLOWED_ADD = frozenset({"NET_BIND_SERVICE"})
 SENSITIVE_ENV = re.compile(
     r"(PASS(WORD|WD)?|SECRET|TOKEN|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|ACCESS[_-]?KEY)", re.IGNORECASE
 )
-RUNTIME_SOCKETS = ("docker.sock", "containerd.sock", "crio.sock", "cri-dockerd.sock")
+#: Container runtime sockets: whoever reaches one starts privileged containers on the node. Matched as the last
+#: path component, wherever it is mounted from (/run, /var/run, /run/containerd, ...).
+RUNTIME_SOCKETS = (
+    "docker.sock",
+    "containerd.sock",
+    "crio.sock",
+    "cri-dockerd.sock",
+    "podman.sock",
+    "dockershim.sock",
+)
+#: KN-S010 is critical for these paths exactly: the whole host (`/`), its configuration and processes as a whole
+#: (`/etc`, `/proc`) and the kubelet's state directory itself. Not for what is under `/etc` or `/proc` in general:
+#: kube-proxy, CNI plugins, CA bundles and the time zone mount paths there on nearly every cluster, and a subtree
+#: rule made `gate --fail-on critical` fail on all of them (G273, third review).
+NODE_TAKEOVER_EXACT = ("/", "/etc", "/proc", "/var/lib/kubelet")
+#: ... and for these and anything under them: the cluster's PKI and kubeconfigs (/etc/kubernetes), the kubelet's
+#: client certificates and every pod's volumes, Secrets included (/var/lib/kubelet/pki, /var/lib/kubelet/pods),
+#: root's home (credentials, SSH keys) and etcd's data (every Secret of the cluster).
+NODE_TAKEOVER_TREES = ("/etc/kubernetes", "/var/lib/kubelet/pki", "/var/lib/kubelet/pods", "/root", "/var/lib/etcd")
+#: Directories under those trees that hold no credential and that well-known charts mount, carved out exactly (and
+#: what is under them), as `/etc/cni/net.d` is not `/etc`: node-feature-discovery's feature files (the NFD worker
+#: chart, the OpenShift NFD operator) and the secrets-store CSI provider socket directory (the GCP provider).
+NODE_TAKEOVER_CARVED = ("/etc/kubernetes/node-feature-discovery", "/etc/kubernetes/secrets-store-csi-providers")
+
+
+def takes_over_node(path: str) -> bool:
+    """True when a hostPath at `path` gives the container the node's credentials or its API: one of
+    NODE_TAKEOVER_EXACT, one of NODE_TAKEOVER_TREES or anything under it, or a container runtime socket. `//`, a
+    trailing `/` and `.` or `..` segments are what they resolve to; a relative path is never critical. One function
+    for the audit's KN-S010 and the attack-path scan's "node takeover", so the two cannot disagree."""
+    import posixpath
+
+    text = str(path)
+    if not text.startswith("/"):
+        return False
+    norm = "/" + posixpath.normpath(text).lstrip("/")
+    # /proc/<pid>/root is that process's root directory: /proc/1/root is the host's `/` (proc(5)).
+    proc_root = _PROC_ROOT.match(norm)
+    if proc_root:
+        norm = "/" + (proc_root.group(1) or "").lstrip("/")
+    if norm in (*NODE_TAKEOVER_EXACT, *RUNTIME_SOCKET_DIRS) or norm.rsplit("/", 1)[-1] in RUNTIME_SOCKETS:
+        return True
+    if any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_CARVED):
+        return False
+    if any(norm == d or norm.startswith(d + "/") for d in NODE_TAKEOVER_TREES):
+        return True
+    # A directory that holds a critical path holds it too: `/var` holds /var/lib/kubelet and /var/run, `/run`
+    # every runtime socket (fourth review of G273).
+    return any(p.startswith(norm + "/") for p in (*NODE_TAKEOVER_EXACT, *NODE_TAKEOVER_TREES, *RUNTIME_SOCKET_DIRS))
+
+
+#: The directories container runtimes put their sockets in.
+RUNTIME_SOCKET_DIRS = (
+    "/run",
+    "/var/run",
+    "/run/containerd",
+    "/var/run/containerd",
+    "/run/crio",
+    "/var/run/crio",
+    "/run/podman",
+    "/var/run/podman",
+    "/run/docker",
+    "/var/run/docker",
+    "/run/cri-dockerd",
+    "/var/run/cri-dockerd",
+)
+_PROC_ROOT = re.compile(r"^/proc/(?:\d+|self|thread-self)/root(/.*)?\Z")
+
+
 # --password=x / --token x / password=x style arguments (group 1: dashes, group 3: inline value). CREDENTIAL_FLAG_NAME
 # and EMBEDDED_CREDENTIAL are written for RE2 too: kube_noob.generate.policies puts them into admission CEL.
 CREDENTIAL_FLAG_NAME = r"[a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|credentials?)"
@@ -1823,8 +1891,15 @@ def _s009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "security",
     Severity.HIGH,
     "Replace hostPath with a PVC, emptyDir, ConfigMap/Secret or a CSI ephemeral volume.",
-    "hostPath mounts let a container read or modify the node filesystem; container runtime sockets give full "
-    "node takeover.",
+    "hostPath mounts let a container read or modify the node filesystem. Critical where the path hands over the "
+    "node's credentials or API: `/`, `/etc`, `/proc` or `/var/lib/kubelet` themselves; `/etc/kubernetes`, "
+    "`/var/lib/kubelet/pki`, `/var/lib/kubelet/pods`, `/root` or `/var/lib/etcd` and anything under them; or a "
+    "container runtime socket (docker, containerd, cri-o, cri-dockerd, podman, dockershim) wherever it is mounted "
+    "from, or a runtime's socket directory (`/run`, `/var/run`, `/run/containerd`, ...); or a directory holding any "
+    "of those (`/var`, `/var/lib`); `/proc/<pid>/root` is read as the path under it. Other host paths, such as CNI "
+    "state, CA bundles or kube-proxy's xtables lock, are high, and so are `/etc/kubernetes/node-feature-discovery` "
+    "and `/etc/kubernetes/secrets-store-csi-providers`, which hold no credential. A readOnly mount is not "
+    "downgraded: read-only access to `/var` still reads the kubelet's credentials and every pod's Secrets.",
     ("k8s-pss",),
     ("Mounting Sensitive Host Directories", "Mount Container Runtime Socket"),
 )
@@ -1834,7 +1909,7 @@ def _s010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             if not isinstance(v, dict) or not isinstance(v.get("hostPath"), dict):
                 continue
             p = str(v["hostPath"].get("path", ""))
-            crit = p in {"/", "/etc", "/var/lib/kubelet", "/proc"} or any(p.endswith(s) for s in RUNTIME_SOCKETS)
+            crit = takes_over_node(p)
             yield r.finding(
                 d,
                 (*pt.path, "volumes", i, "hostPath"),

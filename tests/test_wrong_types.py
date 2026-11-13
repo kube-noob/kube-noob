@@ -106,11 +106,13 @@ def test_an_unexpected_error_exits_4_with_one_line_and_never_1(monkeypatch: pyte
     monkeypatch.setattr(cli, "_dispatch", boom)
     rc, out, err = _run(["audit", "-f", str(ROOT / "examples" / "insecure-deployment.yaml"), "--format", "json"])
     assert rc == 4 and out == ""
-    assert err.startswith("error: internal error (TypeError)") and "Traceback" not in err
+    assert err.startswith("error: unexpected TypeError") and "Traceback" not in err
     assert len(err.strip().splitlines()) == 1
+    # With KUBE_NOOB_DEBUG the traceback is printed through the output boundary and the exit stays 4 (G279): a test
+    # or a fuzz tells a crash from a refusal by the traceback, not by an exception escaping `main`.
     monkeypatch.setenv("KUBE_NOOB_DEBUG", "1")
-    with pytest.raises(TypeError):
-        _run(["audit", "-f", str(ROOT / "examples" / "insecure-deployment.yaml")])
+    rc, _out, err = _run(["audit", "-f", str(ROOT / "examples" / "insecure-deployment.yaml")])
+    assert rc == 4 and "Traceback" in err and "TypeError" in err
 
 
 def _argv(command: str, path: Path, tmp: Path) -> list[str]:
@@ -128,8 +130,9 @@ def _argv(command: str, path: Path, tmp: Path) -> list[str]:
 def test_wrong_typed_fields_never_exit_1_without_a_json_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """KUBE_NOOB_DEBUG makes `main` re-raise anything that is not a deliberate refusal, so a crash -- including a bare
-    KeyError or ValueError, which the CLI cannot tell from a refusal -- fails here instead of becoming exit 4."""
+    """Under KUBE_NOOB_DEBUG anything that is not a deliberate refusal -- including a bare KeyError or ValueError, which
+    the CLI cannot tell from a refusal -- reaches the entry point and is printed with its traceback (exit 4, G279), so
+    a crash fails here by that traceback instead of passing as a refusal."""
     monkeypatch.setenv("KUBE_NOOB_DEBUG", "1")
     f = tmp_path / "m.yaml"
     others = ["redteam", "validate", "vuln threat", "posture scan", "fix", "protocol"]
@@ -143,11 +146,14 @@ def test_wrong_typed_fields_never_exit_1_without_a_json_document(
         for command in commands:
             cases += 1
             try:
-                rc, out, _ = _run(_argv(command, f, tmp_path))
+                rc, out, err = _run(_argv(command, f, tmp_path))
             except Exception as exc:  # noqa: BLE001 -- the point: anything that escapes is a crash
                 bad.append(f"{command} {label}: {type(exc).__name__}: {str(exc)[:120]}")
                 continue
-            if rc not in (0, 1, 2, 3, 4, 5):
+            if rc == 4 and "Traceback" in err:
+                crash = next((line for line in reversed(err.strip().splitlines()) if "Error" in line), err[-120:])
+                bad.append(f"{command} {label}: crash: {crash[:160]}")
+            elif rc not in (0, 1, 2, 3, 4, 5):
                 bad.append(f"{command} {label}: exit {rc}")
             elif rc in (0, 1):
                 try:
@@ -331,8 +337,8 @@ def test_the_second_reviews_residual_sites_answer_instead_of_crashing(
     f = tmp_path / "in.yaml"
     f.write_text(text)
     extra = ["-o", str(tmp_path / "o.yaml")] if argv == ["fix"] else []
-    rc, out, _ = _run([*argv, "-f", str(f), *extra, "--format", "json"])
-    assert rc in (0, 1) and json.loads(out)
+    rc, out, err = _run([*argv, "-f", str(f), *extra, "--format", "json"])
+    assert rc in (0, 1) and "Traceback" not in err and json.loads(out)
 
 
 def test_a_document_whose_kind_is_not_a_string_is_not_audited_as_clean(tmp_path: Path) -> None:

@@ -143,6 +143,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `diagnose` | always 0, even with denials found | `diagnoses`, `knownIssues` | `notes` |
 | `policy generate` | always 0 | `generated`, `documents` | `skipped` |
 | `posture scan` | 0; with `--fail-above`, 1 when a path scores above it and 5 when an object or a read was refused | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
+| `posture reach` | 0; 2 when the workload matches nothing in the files; with `--require-complete`, 5 unless every leg is determined and nothing is under `notRead` | `summary`, `legs`, `complete`, `nodes`, `edges` | `notDetermined`, `notRead`, `refused`, `limitations` |
 | `rhacs compare` | always 0 | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
 | `build diagnose` | always 0 | `cause`, `fix`, `failingStep` | |
 | `build audit` | 1 = a finding at or above `--fail-on` (default high), so a medium finding exits 0 | `findings`, `counts` | `notChecked`, `notes` |
@@ -172,6 +173,16 @@ ServiceAccount rights. Lead with rank 1, its evidence and its fix, and repeat `l
 
 ```bash
 kube-noob posture scan -f "$KN/app.yaml" --format json
+```
+
+"If this pod is compromised, what can it reach?": one workload (`deployment/<name>`, `pod/<name>`, `cronjob/<name>`)
+and its namespace, answered as a graph: its ServiceAccount, the bindings that name it, what they grant, the Secrets
+it can read (names only), node escape, and how it is exposed. Report every leg in `legs` that is `not determined`
+with the reason in `notDetermined`: it means the files lacked that object, not that nothing is there. The answer is
+never `complete` from files unless `--whole-bundle` asserts the files are everything that applies:
+
+```bash
+kube-noob posture reach deployment/<name> -n <ns> -f "$KN/app.yaml" --format json
 ```
 
 With an RHACS policy export: which policies kube-noob's rules also check, which differ, and what kube-noob has no rule

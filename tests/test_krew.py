@@ -124,7 +124,9 @@ def test_the_install_hints_name_only_documented_install_routes() -> None:
     )
     assert "kube-noob/tap" not in out.stderr and "kube-noob/tap" not in km.MANIFEST.read_text(encoding="utf-8")
     assert "brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob" in out.stderr
-    assert "aashishmahajan" not in km.SCRIPT.read_text(encoding="utf-8"), "the org moved; G275 repoints every link"
+    from tests.test_distribution import OLD_OWNER
+
+    assert OLD_OWNER not in km.SCRIPT.read_text(encoding="utf-8"), "the org moved; G275 repoints every link"
     assert "brew trust --formula kube-noob/kube-noob/kube-noob" in out.stderr
 
 
