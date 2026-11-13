@@ -37,6 +37,12 @@ class Document:
     #: A reader that counts what a typed list held (the operators inventory) needs to know which list an item
     #: that was not an object came from (G272).
     from_list: str = field(default="", repr=False, compare=False)
+    #: Duplicate keys of the LIST WRAPPER this document was opened out of (`items` twice, `kind` twice), carried
+    #: by the first document opened from it so `KN-V018` still fires with the wrapper's line. PyYAML keeps the
+    #: last value silently and the API server's strict decoder refuses the file, so dropping these records with
+    #: the wrapper audited a different object than kubectl would, which is what the record exists to prevent
+    #: (G272, sixth review).
+    wrapper_duplicate_keys: list[tuple[PathT, int]] = field(default_factory=list, repr=False, compare=False)
 
     def line_for(self, path: PathT) -> int:
         """Best line for a path: exact match, else nearest existing ancestor, else doc start."""
@@ -128,6 +134,7 @@ def load_documents(text: str) -> list[Document]:
                 continue
             if len(docs) >= MAX_DOCUMENTS:
                 raise ManifestError(f"More than {MAX_DOCUMENTS} YAML documents; split the input.")
+            _keep_every_items(node, data, lines, dups, loader, budget)
             docs.append(
                 Document(
                     index=len(docs),
@@ -146,6 +153,61 @@ def load_documents(text: str) -> list[Document]:
     return _flatten_lists(docs)
 
 
+def _keep_every_items(
+    node: yaml.Node,
+    data: Any,
+    lines: dict[PathT, int],
+    dups: list[tuple[PathT, int]],
+    loader: yaml.SafeLoader,
+    budget: list[int],
+    prefix: PathT = (),
+) -> None:
+    """A list wrapper with `items` given twice holds every object under every `items`, in place -- at the top
+    of a document and in every list wrapper nested in one.
+
+    PyYAML keeps the last `items` and drops the rest, so a privileged Pod under the first `items:` vanished from
+    a file that `KN-V018` then did not even report (the wrapper's duplicate record went with the wrapper when the
+    list was opened). The API server's strict decoder refuses the file; what kube-noob can say truthfully is
+    that it is refused (`KN-V018`, with the wrapper's line) AND what every `items` held, so nothing in the file
+    goes unaudited. The line map is rebuilt for the joined list, each occurrence walked at its offset (G272).
+    """
+    if not isinstance(node, yaml.MappingNode) or not is_list_kind(data):
+        return
+    value_nodes = [v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == "items"]
+    if not all(isinstance(v, yaml.SequenceNode) for v in value_nodes):
+        return  # an occurrence that is not a sequence: the wrapper stays as PyYAML read it, and KN-V018 reports it
+    items_path: PathT = (*prefix, "items")
+    if len(value_nodes) > 1:
+        joined: list[Any] = []
+        for value_node in value_nodes:
+            value = loader.construct_object(value_node, deep=True)
+            joined.extend(value if isinstance(value, list) else [value])
+        depth = len(items_path)
+        for key in [k for k in lines if len(k) > depth and k[:depth] == items_path]:
+            del lines[key]
+        dups[:] = [(key, line) for key, line in dups if not (len(key) > depth and key[:depth] == items_path)]
+        offset = 0
+        for value_node in value_nodes:
+            part: dict[PathT, int] = {}
+            part_dups: list[tuple[PathT, int]] = []
+            _walk(value_node, items_path, part, budget, None, part_dups)
+            for key, line in part.items():
+                if len(key) > depth and isinstance(index := key[depth], int):
+                    lines.setdefault((*items_path, index + offset, *key[depth + 1 :]), line)
+            for key, line in part_dups:
+                if len(key) > depth and isinstance(index := key[depth], int):
+                    dups.append(((*items_path, index + offset, *key[depth + 1 :]), line))
+            offset += len(value_node.value)
+        data["items"] = joined
+    items = data["items"]
+    if not isinstance(items, list):
+        return
+    children = [child for value_node in value_nodes for child in value_node.value]
+    for i, child in enumerate(children[: len(items)]):
+        if isinstance(child, yaml.MappingNode) and isinstance(items[i], dict):
+            _keep_every_items(child, items[i], lines, dups, loader, budget, (*items_path, i))
+
+
 def is_list_kind(data: object) -> bool:
     """`List`, or a typed list (`PodList`, `DeploymentList`) as `kubectl get -o yaml` and must-gathers write it:
     a kind ending in `List` with `items` and no `spec`. Only `List` was unwrapped before G272, so the pods in a
@@ -156,6 +218,12 @@ def is_list_kind(data: object) -> bool:
     return isinstance(kind, str) and kind.endswith("List") and "items" in data and "spec" not in data
 
 
+def is_empty_list(data: object) -> bool:
+    """A list wrapper that held nothing: the one list shape `load_documents` leaves in its output. It is the
+    record that the kind was read and held no items, not an object, so no object rule applies to it."""
+    return is_list_kind(data) and isinstance(data, dict) and isinstance(data.get("items"), list) and not data["items"]
+
+
 def _open_list(d: Document, first_index: int) -> list[Document]:
     """One document per item of a list document, each with its own slice of the line map.
 
@@ -163,8 +231,10 @@ def _open_list(d: Document, first_index: int) -> list[Document]:
     9,000 dictionaries and not 9,000 scans of the whole map (G272's fifth review found the per-item rescan
     took minutes). An item that is not a mapping -- a trailing null, a string, a number -- is its own document
     too: `KN-V001` reports it, and dropping it, or leaving the list unopened because of it, hid every other item
-    from every rule. An item of a typed list with no `kind` or `apiVersion` takes the list's, set in place so the
-    fixer still writes to the same dict.
+    from every rule. An item of a typed list with no `kind` or `apiVersion`, or with a null or empty one (the
+    zero value the API's decoder reads them as), takes the list's, set in place so the fixer still writes to
+    the same dict. The wrapper's OWN duplicate keys go to the first opened document, so `KN-V018` still fires
+    with the wrapper's line (G272, sixth review).
     """
     if not isinstance(d.data, dict):
         return [d]
@@ -177,15 +247,19 @@ def _open_list(d: Document, first_index: int) -> list[Document]:
         if len(key) >= 2 and key[0] == "items" and isinstance(key[1], int):
             by_item.setdefault(key[1], {})[key[2:]] = line
     dups_by_item: dict[int, list[tuple[PathT, int]]] = {}
+    wrapper_dups = list(d.wrapper_duplicate_keys)
     for key, line in d.duplicate_keys:
         if len(key) >= 2 and key[0] == "items" and isinstance(key[1], int):
             dups_by_item.setdefault(key[1], []).append((key[2:], line))
+        else:
+            wrapper_dups.append((key, line))
     out: list[Document] = []
     for i, item in enumerate(items):
         if element and isinstance(item, dict):
-            item.setdefault("kind", element)
-            if isinstance(api_version, str):
-                item.setdefault("apiVersion", api_version)
+            if item.get("kind") in (None, ""):
+                item["kind"] = element
+            if isinstance(api_version, str) and item.get("apiVersion") in (None, ""):
+                item["apiVersion"] = api_version
         out.append(
             Document(
                 index=first_index + len(out),
@@ -194,6 +268,7 @@ def _open_list(d: Document, first_index: int) -> list[Document]:
                 start_line=d.line_for(("items", i)),
                 duplicate_keys=dups_by_item.get(i, []),
                 from_list=kind,
+                wrapper_duplicate_keys=wrapper_dups if not out else [],
             )
         )
     return out
@@ -202,9 +277,11 @@ def _open_list(d: Document, first_index: int) -> list[Document]:
 def _flatten_lists(docs: list[Document]) -> list[Document]:
     """Open every list kind whose `items` is a list, nested lists included, into one document per item.
 
-    A list whose `items` is not a list stays as it is, and the control-plane rules decline it; an EMPTY typed list
-    (`kubectl get pods -o yaml` with no pods) stays too, as the record that the kind was read and held nothing,
-    which an opened-into-nothing list could not say. The document cap
+    A list whose `items` is not a list stays as it is, and the control-plane rules decline it; an EMPTY list of
+    either spelling (`kubectl get pods -o yaml` with no pods, or a `kind: List` with no items) stays too, as the
+    record that the kind was read and held nothing, which an opened-into-nothing list could not say -- the
+    audit refuses a bundle that is only such records with one message for both spellings, and `KN-V001` does not
+    treat the wrapper as an object (G272, sixth review). The document cap
     is applied to what comes OUT, so a 1,500-item `PodList` is refused exactly as 1,500 documents are, by every
     command alike (G272): before this the audit opened it, produced 17 MB of JSON, and `fix` refused the same
     file with exit 4.
@@ -217,7 +294,7 @@ def _flatten_lists(docs: list[Document]) -> list[Document]:
             is_list_kind(d.data)
             and isinstance(d.data, dict)
             and isinstance(d.data.get("items"), list)
-            and (d.data["items"] or d.data.get("kind") == "List")
+            and d.data["items"]
         ):
             opened = _open_list(d, len(out))
             if len(out) + len(opened) > MAX_DOCUMENTS:

@@ -1,0 +1,17 @@
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata: {name: cp, namespace: default}
+spec:
+  replicas: 3
+  version: v1.31.0
+  machineTemplate:
+    infrastructureRef: {kind: DockerMachineTemplate, apiVersion: infrastructure.cluster.x-k8s.io/v1beta1, name: cp}
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          authorization-mode: Node,RBAC
+    preKubeadmCommands:
+    - sed -i 's/Node,RBAC/AlwaysAllow/' /etc/kubeadm.yaml
+    postKubeadmCommands:
+    - sed -i 's/--authorization-mode=Node,RBAC/--authorization-mode=AlwaysAllow/' /etc/kubernetes/manifests/kube-apiserver.yaml

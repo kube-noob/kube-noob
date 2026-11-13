@@ -15,7 +15,7 @@ from kube_noob.audit.rules import RULES, AuditContext, run_rules
 from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
-from kube_noob.yamlio import Document, load_documents
+from kube_noob.yamlio import Document, is_empty_list, load_documents
 
 ALL_STAGES = frozenset(Stage)
 #: How many reasons one declined rule lists before it says how many more there were.
@@ -27,6 +27,12 @@ MAX_DECLINED_ENTRIES = 50
 #: How the two assumptions about the version begin. They are the only caveats that are how the audit READ the
 #: input rather than what it did not read, and the gate's Markdown lists exactly these under "Assumptions" (G272).
 ASSUMED_VERSION_PREFIXES = ("No Kubernetes version given", "No OpenShift version given")
+
+
+def _label(d: Document) -> str:
+    """How a caveat names a document: its reference, or its position when it is not a mapping (a sequence of
+    Pods given as one item of a list), which has no kind or name to be called by (G272)."""
+    return d.ref() if isinstance(d.data, dict) else f"document {d.index + 1} (line {d.start_line})"
 
 
 def build_context(
@@ -90,7 +96,8 @@ def analyze(
     unread: list[str] = []
     for d in docs:
         for path in unread_pod_specs(d):
-            unread.append(f"{d.ref()} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
+            unread.append(f"{_label(d)} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
+            report.unread.append(("pod spec", _label(d)))
     if unread:
         # A pod spec in a kind with no reader used to produce nothing at all -- no finding, no declined rule, no
         # word -- so a privileged container sat inside a document that reported clean. The shape is detectable
@@ -105,6 +112,7 @@ def analyze(
     for d in docs:
         for path in operator_supplied_images(d):
             supplied.append(f"{d.ref()} at {'.'.join(str(x) for x in path)}")
+            report.unread.append(("container image", d.ref()))
     if supplied:
         # Said, not assumed silently: the container is audited for everything else, and its image -- the one
         # thing a registry allowlist, a digest pin and a scanner all work from -- is in a ServingRuntime this
@@ -121,6 +129,7 @@ def analyze(
             # The object names a kind this reader knows pod specs for, in a group it does not. Not reading it is
             # right -- another project's CRD of the same name has another schema -- but saying nothing about it
             # leaves a privileged container in a document that reported clean (G231).
+            report.unread.append(("object", d.ref()))
             report.assumptions.append(
                 f"{d.ref()} declares API group {group}, which is not where kube-noob knows this kind's pod specs "
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
@@ -245,8 +254,23 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
     """
     docs = manifests if isinstance(manifests, list) else load_documents(manifests)
     objects = [d.data for d in docs if isinstance(d.data, dict)]
-    if any("apiVersion" in o and "kind" in o for o in objects):
+    if any("apiVersion" in o and "kind" in o and not is_empty_list(o) for o in objects):
         return
+    if any(d.from_list for d in docs):
+        # The list wrapper had apiVersion and kind; what it held is for the audit to report (KN-V001 on an item
+        # that is not an object, the pods inside a sequence item named as not audited). Refusing it here said
+        # "no document has both apiVersion and kind" about a file whose wrapper and Pods all did (G272).
+        return
+    if objects and all(is_empty_list(o) for o in objects):
+        if any(d.duplicate_keys for d in docs):
+            return  # an empty list with a key twice: KN-V018 refuses it, which is the answer
+        # Only lists that held nothing, in either spelling: nothing to audit, said in those words (G272).
+        kinds = sorted({str(o.get("kind")) for o in objects})
+        raise ConfigError(
+            f"nothing here is a Kubernetes object: the input is {len(objects)} list{'s' if len(objects) != 1 else ''} "
+            f"({', '.join(kinds)}) that held no items, so there is nothing to audit. Pass the objects themselves, "
+            "or a list with items."
+        )
     keys: set[str] = set()
     for o in objects:
         keys |= {k for k in o if isinstance(k, str)}

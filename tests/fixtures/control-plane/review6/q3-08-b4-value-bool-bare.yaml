@@ -1,0 +1,7 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.31.0
+apiServer:
+  extraArgs:
+  - name: anonymous-auth
+    value: true

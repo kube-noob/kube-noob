@@ -43,6 +43,7 @@ from kube_noob.audit.podspec import (
     replicas,
     selector_decides,
     selector_matches,
+    unread_pod_specs,
 )
 from kube_noob.audit.quantity import parse_quantity
 from kube_noob.catalog import (
@@ -469,13 +470,29 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
     "kubectl/oc reject objects without these identity fields.",
 )
 def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    from kube_noob.yamlio import is_empty_list
+
     for d in ctx.docs:
         if not isinstance(d.data, dict):
             yield r.finding(
                 d, (), "Document is not a mapping; it cannot be a Kubernetes object.", resource=f"doc[{d.index}]"
             )
             continue
+        if is_empty_list(d.data):
+            continue  # the record that a list held nothing is not an object (G272)
         missing = [k for k in ("apiVersion", "kind") if not d.data.get(k)]
+        # A `kind: 7` or `kind: [List]` is truthy, so it was never "missing", and once the schema lookup for it
+        # failed nothing else looked: a PodList item with `kind: 7` and a privileged container scored 100 with
+        # exit 0 (G272, sixth review). The API server refuses a non-string identity field outright.
+        for k in ("apiVersion", "kind"):
+            value = d.data.get(k)
+            if value and not isinstance(value, str):
+                yield r.finding(
+                    d,
+                    (k,),
+                    f"{k} is not a string ({_quoted(value, 60)}); the API server refuses it.",
+                    resource=f"doc[{d.index}]",
+                )
         meta = d.data.get("metadata")
         if not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
@@ -943,6 +960,19 @@ def _v018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
         for path, line in d.duplicate_keys:
             f = r.finding(d, path, f"Duplicate key '{fmt_path(path)}' (second occurrence on line {line}).")
+            f.line = line
+            yield f
+        # The wrapper this object was opened out of had the key twice (`items` twice, `kind` twice): the loader
+        # kept every object under every `items`, and the record travels with the first of them, because the API
+        # server's strict decoder refuses the whole file and the wrapper itself is no longer a document (G272).
+        for path, line in d.wrapper_duplicate_keys:
+            f = r.finding(
+                d,
+                path,
+                f"Duplicate key '{fmt_path(path)}' in the {d.from_list} that holds this object (second occurrence "
+                f"on line {line}); the API server refuses the whole list.",
+                resource=f"{d.from_list}/<wrapper>",
+            )
             f.line = line
             yield f
 
@@ -4427,9 +4457,10 @@ def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, la
 
 
 def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
-    """What the loader could not open, declined: a list kind still in the input (its `items` is not a list), and a
-    document that is not a mapping at all (a list item that was a string or null, or a bare scalar document) --
-    either may hold a pod these rules cannot read. Never the opened part read as the whole (G272)."""
+    """What the loader could not open, declined: a list kind still in the input (its `items` is not a list), a
+    document that is not a mapping at all (a list item that was a string or null, or a bare scalar document), and
+    any document holding a pod spec no reader looks at (`items` under `spec`, `kind: podlist`, a sequence of Pods
+    as one item) -- each may hold a pod these rules cannot read. Never the opened part read as the whole (G272)."""
     from kube_noob.yamlio import is_list_kind
 
     seen = False
@@ -4439,6 +4470,20 @@ def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
             ref = _shown(d.ref(), 160)
             ctx.cannot_decide(
                 r.rule_id, f"{ref} is a list whose items are not a list, so what it holds was not read", ref
+            )
+            continue
+        unread = unread_pod_specs(d)
+        if unread:
+            seen = True
+            ref = _shown(d.ref(), 160) if isinstance(d.data, dict) else f"document {d.index + 1} (line {d.start_line})"
+            where = (
+                "in a kind kube-noob has no reader for" if isinstance(d.data, dict) else "in a sequence, not an object"
+            )
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{ref} holds {len(unread)} pod spec(s) {where}, which may run a control-plane binary, so they were "
+                "not read",
+                ref,
             )
         elif not isinstance(d.data, dict):
             seen = True

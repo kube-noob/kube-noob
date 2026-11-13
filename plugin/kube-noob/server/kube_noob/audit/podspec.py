@@ -374,10 +374,15 @@ def unread_pod_specs(doc: Document) -> list[PathT]:
     somewhere else in such an object is far more likely to be a template for something else than a pod kube-noob
     missed. For those kinds the registry is the claim, and extending it is how a new path gets read.
     """
-    if not isinstance(doc.data, dict) or doc.kind in POD_SPEC_PATHS or doc.kind in EMBEDDED_POD_SPEC_PATHS:
+    if isinstance(doc.data, dict):
+        if doc.kind in POD_SPEC_PATHS or doc.kind in EMBEDDED_POD_SPEC_PATHS:
+            return []
+        if refused_group(doc) is not None:
+            return []  # already reported as a kind read from the wrong group; one message is enough
+    elif not isinstance(doc.data, list):
         return []
-    if refused_group(doc) is not None:
-        return []  # already reported as a kind read from the wrong group; one message is enough
+    # A document that is a sequence (one item of a `kind: List` that was itself a list of Pods) is walked too:
+    # the Pods inside it are read by no rule, and the sixth review found them vanishing behind "not a mapping".
     out: list[PathT] = []
     seen = 0
     stack: list[tuple[Any, PathT, int]] = [(doc.data, (), 0)]

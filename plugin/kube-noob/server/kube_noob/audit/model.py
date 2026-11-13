@@ -144,6 +144,11 @@ class Report:
     # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
     # rule declined with a reason, so every result that had none stays byte-identical.
     declined: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Every object, or part of one, the engine recorded as NOT audited without a rule declining on it: a pod spec
+    # in a kind with no reader, a container whose image an operator supplies, an object in a group this reader
+    # refuses. Each entry is (what it is, the object), and `score_withheld` reads it beside `declined`: the
+    # sixth review found "containers were NOT audited" printed under `score 100.0` (G272).
+    unread: list[tuple[str, str]] = field(default_factory=list)
 
     def max_severity(self) -> Severity | None:
         return max((f.severity for f in self.findings), default=None)
@@ -168,16 +173,41 @@ class Report:
         A score is computed from findings, and a rule that declined on an object (`declined` names it: an API
         server started through a script it did not read, a partly evaluated rule) found nothing there BECAUSE it
         did not look. `score=100.0` printed above "KN-S038 was not evaluated in full" was a number beside an
-        unread rule, the one thing the product rule forbids (G272). The quiet declines of a partial bundle (no
-        NetworkPolicy here to judge) are not a rule declining on an object, and keep the number.
+        unread rule, the one thing the product rule forbids (G272). The same holds for every other record that
+        something was not read (`unread`: a pod spec in a kind with no reader, an operator-supplied image, a
+        refused group), which the sixth review found still carried a number. This is the ONE predicate every
+        renderer reads -- text, JSON, YAML, HTML, Markdown, the gate, MCP, `fix`, the eval grader. The quiet
+        declines of a partial bundle (no NetworkPolicy here to judge) are not a rule declining on an object, and
+        keep the number.
+
+        The text before the first colon is the short form the text view prints.
         """
-        if not self.declined:
+        if not self.declined and not self.unread:
             return None
-        ids = sorted(self.declined)
-        shown = ", ".join(ids[:MAX_WITHHELD_NAMED]) + (
-            f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else ""
-        )
-        return f"{len(ids)} rule{'s' if len(ids) != 1 else ''} not evaluated in full: {shown}"
+        heads: list[str] = []
+        details: list[str] = []
+        if self.declined:
+            ids = sorted(self.declined)
+            heads.append(f"{len(ids)} rule{'s' if len(ids) != 1 else ''} not evaluated in full")
+            details.append(
+                ", ".join(ids[:MAX_WITHHELD_NAMED])
+                + (f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else "")
+            )
+        if self.unread:
+            counts: dict[str, int] = {}
+            for what, _ in self.unread:
+                counts[what] = counts.get(what, 0) + 1
+            heads.append(
+                " and ".join(f"{n} {what}{'s' if n != 1 else ''}" for what, n in sorted(counts.items()))
+                + " not audited"
+            )
+            names = list(dict.fromkeys(obj for _, obj in self.unread))
+            details.append(
+                "not read in full: "
+                + ", ".join(names[:MAX_WITHHELD_NAMED])
+                + (f" and {len(names) - MAX_WITHHELD_NAMED} more" if len(names) > MAX_WITHHELD_NAMED else "")
+            )
+        return f"{' and '.join(heads)}: {'; '.join(details)}"
 
     def as_dict(self) -> dict[str, Any]:
         return {

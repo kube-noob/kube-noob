@@ -300,11 +300,15 @@ def evaluate(answer: str, spec: dict[str, Any]) -> Evaluation:
             )
         )
     if "minScore" in spec:
+        # The one consumer that read `score()` by name: a report whose score the product withholds (a rule
+        # declined on an object, a pod spec not read) passed `minScore: 80` at "score 100" while `audit` printed
+        # "not determined" for the same input (G272, sixth review). Withheld is not a pass.
+        withheld = report.score_withheld()
         outcomes.append(
             CheckOutcome(
                 f"posture score >= {spec['minScore']}",
-                report.score() >= float(spec["minScore"]),
-                f"score {report.score():.0f}",
+                withheld is None and report.score() >= float(spec["minScore"]),
+                f"score not determined ({withheld})" if withheld else f"score {report.score():.0f}",
                 weight=1.5,
             )
         )

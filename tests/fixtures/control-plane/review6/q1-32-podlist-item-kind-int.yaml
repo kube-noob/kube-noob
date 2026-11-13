@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: PodList
+items:
+- kind: 7
+  metadata: {name: q}
+  spec:
+    containers:
+    - name: c
+      image: nginx:1.27
+      securityContext: {privileged: true}
