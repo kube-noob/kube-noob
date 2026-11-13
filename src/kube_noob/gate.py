@@ -219,60 +219,37 @@ def _admission_text(rule: str, severity: str, enforced: dict[str, str], not_gene
     return "refused in enforce mode" + (f" (partly: {enforced[rule]})" if enforced[rule] else "")
 
 
-#: The three answers the reported-issues check can give, the vocabulary `must-gather analyze` uses for the same
-#: field. `looked-up`: the index held the release and was searched, so an empty list is a real zero. `not-evaluated`:
-#: no search happened, and the note says why. `not-applicable`: the question does not arise (not OpenShift).
-KNOWN_ISSUES_VERDICTS = ("looked-up", "not-evaluated", "not-applicable")
-
-
 def _known(
-    kinds: set[str], platform: str, version: str | None, data_dir: Path | None
+    kinds: set[str], platform: str, version: str | None, data_dir: Path | None, manifests: bool = True
 ) -> tuple[list[dict[str, Any]], str, str]:
     """Open reported issues in the target release whose text names a kind these manifests deploy, with the verdict
     and its note.
 
     `[]` used to be the whole answer for a Kubernetes platform, for OpenShift with no version, for a release the
     bundled index does not cover, and for a real search that matched nothing -- the same bytes for four different
-    facts, and a pipeline read all four as "no reported issue" (G284)."""
-    from kube_noob.catalog import OPENSHIFT_FAMILY
-    from kube_noob.known_issues import get_index, vkey
+    facts, and a pipeline read all four as "no reported issue" (G284). The verdict is `known_issues.release_coverage`,
+    the one function `must-gather analyze` reads too; `manifests=False` (a Containerfile- or report-only gate) has
+    no kind to look up and says so."""
+    from kube_noob.known_issues import get_index, release_coverage, vkey
 
-    if platform not in OPENSHIFT_FAMILY:
+    verdict, note, minor = release_coverage(platform, version, data_dir, hint="pass --version")
+    if verdict != "looked-up" or minor is None:
+        return [], verdict, note
+    if not manifests:
         return (
             [],
             "not-applicable",
-            f"the index holds OpenShift release-note issues; they do not apply to {sanitize.visible(platform)[:40]}",
-        )
-    index = get_index(data_dir)
-    knowledge = index.knowledge()
-    releases = ", ".join(knowledge["openshiftReleases"]) or "no release"
-    as_of = knowledge.get("knownIssuesAsOf") or "an unknown date"
-    coverage = f"the index covers OpenShift {releases} as of {as_of}"
-    if not version:
-        return (
-            [],
-            "not-evaluated",
-            f"no --version was given, so the OpenShift release notes were not searched; pass --version "
-            f"{knowledge['openshiftReleases'][-1] if knowledge['openshiftReleases'] else '4.20'} ({coverage})",
-        )
-    minor = ".".join(version.split(".")[:2])
-    shown = sanitize.visible(version)[:40]
-    if minor not in knowledge["openshiftReleases"]:
-        return (
-            [],
-            "not-evaluated",
-            f"OpenShift {shown} is outside the indexed release notes ({coverage}), so reported issues were not "
-            "looked up; a release the index does not cover is not determined, never none",
+            "no manifests were read, so there is no deployed kind to look up reported issues for",
         )
     out: list[dict[str, Any]] = []
-    for issue in index.issues:
+    for issue in get_index(data_dir).issues:
         if issue.kind != "known" or issue.minor != minor:
             continue
-        if issue.fixed_in and vkey(version) >= vkey(issue.fixed_in):
+        if issue.fixed_in and vkey(str(version)) >= vkey(issue.fixed_in):
             continue
         named = sorted(k for k in kinds if _DISTINCT_KIND.match(k) and re.search(rf"\b{k}s?\b", issue.text))
         if named:
-            out.append({**issue.as_dict(version, 1.0), "kinds": named})
+            out.append({**issue.as_dict(str(version), 1.0), "kinds": named})
     total = len(out)
     out = out[:20]
     if total:
@@ -280,8 +257,7 @@ def _known(
         what = f"{shown_n} open issue(s) name a kind these manifests deploy"
     else:
         what = "no open reported issue names a kind these manifests deploy"
-    note = f"OpenShift {minor} was searched ({coverage}); {what}"
-    return out, "looked-up", note
+    return out, "looked-up", f"{note}; {what}"
 
 
 def run(
@@ -454,7 +430,7 @@ def run(
             r["failsGate"] = True
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
-    known, known_verdict, known_note = _known(kinds, platform, version, data_dir)
+    known, known_verdict, known_note = _known(kinds, platform, version, data_dir, manifests=bool(sources))
     required_rows = _required_evaluated(required, audit_report, kept_rules, excepted_rules) if required else None
     return {
         "tool": {"name": "kube-noob", "version": __version__},

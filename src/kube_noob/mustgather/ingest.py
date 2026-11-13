@@ -49,6 +49,8 @@ _NESTED = re.compile(r"\.(?:gz|tgz|tar|zip|xz|bz2|zst|7z|rar)$", re.I)
 _LOG = re.compile(r"\.log$|/logs/(?:rotated/)?[^/]+$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 GATHER_DIRS = ("cluster-scoped-resources", "namespaces")
+#: The one reason ingest gives for the files it never opens by design (Secrets); completeness imports it.
+NEVER_READ_REASON = "Secret data (never read)"
 
 
 class MustGatherError(ValueError):
@@ -268,7 +270,7 @@ def _visit(bundle: Bundle, path: str, size: int) -> str | None:
         bundle.skip("control characters in the name (not read)", path)
         return None
     if secret_like(path):
-        bundle.skip("Secret data (never read)", path)
+        bundle.skip(NEVER_READ_REASON, path)
         return None
     kind = classify(path)
     _note(bundle, path, kind)

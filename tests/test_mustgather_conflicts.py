@@ -166,7 +166,7 @@ def test_identical_duplicates_are_noted_in_the_objects_leg_and_stay_complete(tmp
     legs = {leg["leg"]: leg for leg in rep["completeness"]["legs"]}
     assert legs["objects"]["state"] == "complete" and "identical" in legs["objects"]["why"]
     assert rep["duplicates"][0]["kind"] == "Node"
-    assert rep["completeness"]["partialLegs"] == ["operator inventory", "operator known issues"]
+    assert rep["completeness"]["partialLegs"] == ["operator inventory", "operator known issues", "release notes"]
 
 
 def test_the_shipped_sample_has_no_conflict_and_no_duplicate(tmp_path: Path) -> None:

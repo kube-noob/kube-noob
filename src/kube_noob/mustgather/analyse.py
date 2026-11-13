@@ -1296,7 +1296,15 @@ def analyse(bundle: Bundle) -> Analysis:
         if dropped[a]:
             entry["notShown"] = dropped[a]
         if not files.get(a):
-            entry["note"] = f"not in this must-gather ({_COLLECTED_BY[a]})"
+            skipped_here = [
+                (p, r) for p, r in bundle.skipped_paths if (routed := _route(p)) is not None and routed[1] == a
+            ]
+            if skipped_here:
+                # Present and not opened is not absent: a link or a device where the file would be (round 1, 8).
+                shown = "; ".join(f"{_text(p, 200)} ({r})" for p, r in skipped_here[:3])
+                entry["note"] = f"present but skipped ({shown}): not read"
+            else:
+                entry["note"] = f"not in this must-gather ({_COLLECTED_BY[a]})"
         analysis.coverage[a] = entry
     analysis.signals = _merge_all(analysis.findings)
     return analysis

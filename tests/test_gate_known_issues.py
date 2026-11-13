@@ -46,7 +46,7 @@ def test_gate_on_openshift_without_a_version_says_known_issues_were_not_evaluate
 # 4.23 is in the catalog (admission policies generate for it) and not in the release-note index: the two tables
 # are not the same table, and the gate must read the one it searched. A version the catalog refuses outright
 # ("4", "3.11", "4.9") never reaches this check: it is refused, which is not a pass either.
-@pytest.mark.parametrize("version", ["4.14", "4.12.5", "4.23", "4.19", "v4.20", "4.20-rc.1"])
+@pytest.mark.parametrize("version", ["4.14", "4.12.5", "4.23", "4.19"])
 def test_gate_on_a_release_outside_the_index_is_not_evaluated_not_none(version: str) -> None:
     rep = gate.run([CM], platform="openshift", version=version)
     assert rep["knownIssues"] == []
@@ -92,9 +92,36 @@ def test_every_openshift_family_platform_looks_the_release_up(platform: str) -> 
     assert gate.run([CM], platform=platform, version=None)["knownIssuesVerdict"] == "not-evaluated"
 
 
-@pytest.mark.parametrize("version", ["4.20.0.1", "4.20.3", "4.22"])
+@pytest.mark.parametrize(
+    "version", ["4.20.0.1", "4.20.3", "4.22", "v4.20", "04.20", "4.20 ", "4.20-rc.1", "4.20.0-0.nightly-2025-10-01-1"]
+)
 def test_a_patch_or_build_suffix_still_resolves_to_its_minor(version: str) -> None:
-    assert gate.run([CM], platform="openshift", version=version)["knownIssuesVerdict"] == "looked-up"
+    """The minor comes from `catalog.parse_minor`, the parser the audit and the admission policies use, so a version
+    the audit resolves to 4.20 is 4.20 here too (a second parser read `v4.20` as outside the index; round 1, 9)."""
+    rep = gate.run([CM], platform="openshift", version=version)
+    assert rep["knownIssuesVerdict"] == "looked-up"
+    assert (
+        "OpenShift 4.20 was searched" in rep["knownIssuesNote"]
+        or "OpenShift 4.22 was searched" in rep["knownIssuesNote"]
+    )
+
+
+def test_a_containerfile_only_gate_has_no_manifests_to_look_up() -> None:
+    cf = ROOT / "tests" / "fixtures" / "containerfile" / "KN-B005.bad.Containerfile"
+    rep = gate.run(
+        [], containerfiles=[("Containerfile", cf.read_text(encoding="utf-8"))], platform="openshift", version="4.20"
+    )
+    assert rep["knownIssuesVerdict"] == "not-applicable" and "no manifests were read" in rep["knownIssuesNote"]
+    assert "no open reported issue" not in gate.markdown(rep)
+
+
+def test_the_gate_and_the_must_gather_report_share_one_coverage_verdict() -> None:
+    from kube_noob.known_issues import release_coverage
+
+    assert release_coverage("openshift", "4.14", None)[0] == "not-evaluated"
+    assert release_coverage("openshift", "v4.20", None)[0] == "looked-up"
+    assert release_coverage("kubernetes", "1.33", None)[0] == "not-applicable"
+    assert release_coverage("openshift", None, None)[0] == "not-evaluated"
 
 
 def test_a_looked_up_result_is_byte_for_byte_what_it_was() -> None:

@@ -394,7 +394,7 @@ oc describe pod -n shop web-7d9f
 
 - Skipped 2: Secret data (never read)
 - Skipped 1: nested archive (not opened)
-- Evidence is partial: operator inventory: 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator; 1 operator state(s) not determined; operator known issues: the inventory is partial; the cluster is updating to 4.20.4
+- Evidence is partial: operator inventory: 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator; 1 operator state(s) not determined; operator known issues: the inventory is partial; the cluster is updating to 4.20.4; release notes: OpenShift 4.20 was searched (the index covers OpenShift 4.20, 4.21, 4.22 as of 2026-10-27); the running release 4.20.3 was searched and the update target 4.20.4 was not
 
 ## Signals
 

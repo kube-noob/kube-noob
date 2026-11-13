@@ -577,6 +577,60 @@ def bundled() -> tuple[list[Issue], dict[str, Any]]:
     return _read_parts([f for f in root.iterdir() if f.name.endswith(".json")])
 
 
+COVERAGE_VERDICTS = ("looked-up", "not-evaluated", "not-applicable")
+
+
+def release_coverage(
+    platform: str | None, version: str | None, data_dir: Path | None = None, *, hint: str = "pass --version"
+) -> tuple[str, str, str | None]:
+    """Whether the bundled release notes can be searched for this platform and version: the one verdict `gate`
+    and `must-gather analyze` share (G284, G285; round 1, 2 and 9). Returns ``(verdict, note, minor)``.
+
+    ``looked-up``: the index holds the minor (parsed with ``catalog.parse_minor``, the audit's own parser, so
+    ``v4.20``, ``04.20`` and ``4.20-rc.1`` are 4.20 here as they are there) and a search is a real search.
+    ``not-evaluated``: no version, a version the parser refuses, or a minor outside the index -- the note says
+    which and what the index covers. ``not-applicable``: the platform is not OpenShift."""
+    from kube_noob.catalog import OPENSHIFT_FAMILY, parse_minor
+
+    if platform not in OPENSHIFT_FAMILY:
+        shown = sanitize.visible(str(platform or "unknown"))[:40]
+        return (
+            "not-applicable",
+            f"the index holds OpenShift release-note issues; they do not apply to {shown}",
+            None,
+        )
+    knowledge = get_index(data_dir).knowledge()
+    releases: list[str] = list(knowledge["openshiftReleases"])
+    as_of = knowledge.get("knownIssuesAsOf") or "an unknown date"
+    coverage = f"the index covers OpenShift {', '.join(releases) or 'no release'} as of {as_of}"
+    if not version:
+        newest = releases[-1] if releases else "4.20"
+        return (
+            "not-evaluated",
+            f"no version was given, so the OpenShift release notes were not searched; {hint} {newest} ({coverage})",
+            None,
+        )
+    shown = sanitize.visible(str(version))[:40]
+    try:
+        major, minor_n = parse_minor(str(version))
+    except ValueError:
+        return (
+            "not-evaluated",
+            f"{shown!r} is not a version the audit can read (expected 4.20 or 4.20.8), so the release notes were "
+            f"not searched ({coverage})",
+            None,
+        )
+    minor = f"{major}.{minor_n}"
+    if minor not in releases:
+        return (
+            "not-evaluated",
+            f"OpenShift {shown} is outside the indexed release notes ({coverage}), so reported issues were not "
+            "looked up; a release the index does not cover is not determined, never none",
+            minor,
+        )
+    return "looked-up", f"OpenShift {minor} was searched ({coverage})", minor
+
+
 def get_index(data_dir: Path | None = None) -> Index:
     """The bundled snapshot, or a newer one in ``<dataDir>/known_issues`` (from ``corpus known-issues``)."""
     key = str(data_dir) if data_dir else ""

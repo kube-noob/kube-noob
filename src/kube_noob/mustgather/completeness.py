@@ -14,11 +14,12 @@ The headline ``complete`` is true exactly when no leg is ``partial``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from kube_noob import sanitize
 from kube_noob.mustgather.analyse import Analysis
-from kube_noob.mustgather.ingest import Bundle, root_of
+from kube_noob.mustgather.ingest import NEVER_READ_REASON, Bundle, root_of
 
 #: Every leg, in the order it is reported; a consumer can key on the names because they are always all present.
 LEGS = (
@@ -32,35 +33,34 @@ LEGS = (
     "release notes",
 )
 STATES = ("complete", "partial", "not-applicable")
-NEVER_READ = "Secret data (never read)"  # ingest's reason for the files it opens by design never
+NEVER_READ = NEVER_READ_REASON  # ingest's own literal: one reason, not two spellings of it (round 1, 15)
 MAX_WHY = 600
-#: The resources under ``cluster-scoped-resources/<group>/<resource>`` an analyser reads.
-_CLUSTER_SCOPED = frozenset(
-    {
-        ("config.openshift.io", "clusterversions"),
-        ("config.openshift.io", "clusteroperators"),
-        ("config.openshift.io", "infrastructures"),
-        ("core", "nodes"),
-        ("machineconfiguration.openshift.io", "machineconfigpools"),
-    }
-)
-#: Under ``namespaces/<ns>/``: pods and their logs, core (events), and the OLM group the inventory reads.
-_NAMESPACED = frozenset({"pods", "core", "operators.coreos.com"})
+_ARCHIVE_SUFFIX = re.compile(r"\.(?:gz|tgz|tar|zip|xz|bz2|zst|7z|rar)$", re.I)
 
 
 def read_by_an_analyser(path: str) -> bool:
     """Would an analyser (or the operator inventory) have opened a file at this path, had it been a plain file?
 
-    Decides whether a skipped path is a gap in the answer or a noted skip. It errs towards the gap: any file under
-    ``namespaces/<ns>/core/`` counts, because ``events.yaml`` lives there, although most of its siblings are not
-    read."""
+    Decided by the analysers' own routing (``analyse._route``, ``mustgather.operators._route``) rather than by a
+    second table of paths, so the list form ``core/nodes.yaml``, a link there and an archive where a resource file
+    would be are gaps (round 1, 8). A pod's log directory counts too: the pod analyser reads the logs there, and a
+    rotated ``.gz`` is the tail it would have read."""
+    from kube_noob.mustgather import operators as mg_operators
+    from kube_noob.mustgather.analyse import _route
+
+    candidates = [path]
+    plain = _ARCHIVE_SUFFIX.sub("", path)
+    if plain != path:
+        # `events.yaml.gz` is where `events.yaml` would be; `nodes.tar` is where `nodes.yaml` would be
+        candidates += [plain, plain if plain.endswith((".yaml", ".yml", ".json")) else plain + ".yaml"]
+    for candidate in candidates:
+        if _route(candidate) is not None or mg_operators._route(candidate) is not None:
+            return True
     found = root_of(path)
     if found is None:
         return False
     rest = found[1]
-    if rest[0] == "cluster-scoped-resources":
-        return len(rest) >= 4 and (rest[1], rest[2]) in _CLUSTER_SCOPED
-    return len(rest) >= 4 and rest[2] in _NAMESPACED
+    return len(rest) >= 7 and rest[0] == "namespaces" and rest[2] == "pods" and rest[6] == "logs"
 
 
 def _why(text: str) -> str:
@@ -170,19 +170,17 @@ def _operator_issues_leg(issues: dict[str, Any]) -> dict[str, str]:
 
 
 def _release_notes_leg(report: dict[str, Any]) -> dict[str, str]:
+    """The verdict is the report's `knownIssuesVerdict`, which is `known_issues.release_coverage` (the gate's own):
+    `looked-up` is complete unless the note says an update target was not searched (G278 calls that incomplete);
+    `not-evaluated` and OKD's `not-determined` are partial with the reason; `not-applicable` is not OpenShift."""
     verdict = report.get("knownIssuesVerdict")
     note = str(report.get("knownIssuesNote") or "")
-    version = (report.get("cluster") or {}).get("version")
     if verdict == "not-applicable":
         return _leg("release notes", "not-applicable", note or "not OpenShift")
-    if verdict == "looked-up" and version:
-        return _leg("release notes", "complete", f"findings were matched against the release notes for {version}")
     if verdict == "looked-up":
-        return _leg(
-            "release notes",
-            "partial",
-            "the cluster's OpenShift version is not known, so matches were not narrowed to a release",
-        )
+        if "was not" in note:
+            return _leg("release notes", "partial", note)
+        return _leg("release notes", "complete", note or "the release notes were searched")
     return _leg("release notes", "partial", f"{verdict}: {note}" if note else str(verdict))
 
 

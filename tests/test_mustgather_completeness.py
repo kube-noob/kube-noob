@@ -27,6 +27,8 @@ ETCD_LOGS = f"{IMAGE}/namespaces/openshift-etcd/pods/etcd-master-0/etcd/etcd/log
 SETTLED_CV = sample.FILES[f"{IMAGE}/cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml"]
 assert "4.20.4" in SETTLED_CV
 OLM_NS = f"{IMAGE}/namespaces/openshift-operator-lifecycle-manager"
+NODE_W = f"{IMAGE}/cluster-scoped-resources/core/nodes/worker-1.yaml"
+NODE_M = f"{IMAGE}/cluster-scoped-resources/core/nodes/master-0.yaml"
 EMPTY_LIST = json.dumps({"apiVersion": "v1", "kind": "List", "items": []})
 
 
@@ -128,7 +130,7 @@ def test_the_legs_of_the_shipped_sample(tmp_path: Path) -> None:
     assert "no analyser reads" in legs["skipped files"]["why"]
     # Secret data is never read by design; the leg says so instead of counting it as missing
     assert legs["secrets"]["state"] == "not-applicable" and "never read" in legs["secrets"]["why"]
-    assert c["partialLegs"] == ["operator inventory", "operator known issues"]
+    assert c["partialLegs"] == ["operator inventory", "operator known issues", "release notes"]
     # the keys the analyser-level fold always had are still there, unchanged in meaning
     assert c["analysersRead"] == c["analysersExpected"] == 8 and c["unreadableFiles"] == 0 and c["notCollected"] == []
     # every leg is named every time, so a consumer can key on them
@@ -273,7 +275,7 @@ def test_the_mcp_result_carries_the_legs(tmp_path: Path) -> None:
     out = kit.analyze_must_gather(tk.MustGatherIn(path=str(tgz)))
     assert out["completeness"]["complete"] is False
     assert [leg["leg"] for leg in out["completeness"]["legs"]] == list(completeness.LEGS)
-    assert out["completeness"]["partialLegs"] == ["operator inventory", "operator known issues"]
+    assert out["completeness"]["partialLegs"] == ["operator inventory", "operator known issues", "release notes"]
 
 
 def test_fail_on_never_does_not_outrank_require_complete(tmp_path: Path) -> None:
@@ -305,3 +307,120 @@ def test_the_analyser_legs_still_count(tmp_path: Path) -> None:
     assert legs["analysers"]["state"] == "partial" and "machineconfigpools" in legs["analysers"]["why"]
     assert legs["files"]["state"] == "partial" and "1 file" in legs["files"]["why"]
     assert rep["completeness"]["partialLegs"][:2] == ["analysers", "files"]
+
+
+# -- the release-notes leg takes its verdict from the one coverage function the gate uses (round 1, 2) ----------
+
+
+def test_a_release_outside_the_index_is_not_evaluated_in_the_report_and_partial_in_the_leg(tmp_path: Path) -> None:
+    cv = SETTLED_CV.replace("4.20.4", "4.14.9").replace("4.20.3", "4.14.8").replace("stable-4.20", "stable-4.14")
+    files = _settled(**{f"{IMAGE}/cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml": cv})
+    rep = _report(ingest.open_bundle(_tar(tmp_path / "414.tgz", files)))
+    assert rep["cluster"]["version"] == "4.14.8" and rep["cluster"]["desiredVersion"] == "4.14.9"
+    assert rep["knownIssuesVerdict"] == "not-evaluated" and "4.14" in rep["knownIssuesNote"]
+    assert rep["knownIssues"] == []
+    leg = _legs(rep)["release notes"]
+    assert leg["state"] == "partial" and "4.14" in leg["why"] and "4.20, 4.21, 4.22" in leg["why"]
+    assert rep["completeness"]["complete"] is False
+
+
+def test_mid_update_the_leg_says_which_release_was_searched_and_that_the_target_was_not(tmp_path: Path) -> None:
+    rep = _report(ingest.open_bundle(sample.write(tmp_path)))
+    assert rep["cluster"]["version"] == "4.20.3" and rep["cluster"]["desiredVersion"] == "4.20.4"
+    assert rep["knownIssuesVerdict"] == "looked-up"
+    assert "4.20.3" in rep["knownIssuesNote"] and "4.20.4" in rep["knownIssuesNote"]
+    leg = _legs(rep)["release notes"]
+    assert leg["state"] == "partial" and "4.20.4" in leg["why"] and "not" in leg["why"]
+    assert "release notes" in rep["completeness"]["partialLegs"]
+
+
+def test_a_settled_release_inside_the_index_is_a_complete_leg(tmp_path: Path) -> None:
+    rep = _report(ingest.open_bundle(_tar(tmp_path / "s.tgz", _settled())))
+    leg = _legs(rep)["release notes"]
+    assert leg["state"] == "complete" and "4.20" in leg["why"]
+    assert rep["knownIssuesVerdict"] == "looked-up"
+
+
+def test_the_leg_never_reads_looked_up_by_default(tmp_path: Path) -> None:
+    """The verdict is `known_issues.release_coverage` -- the gate's -- not a default the report sets."""
+    from kube_noob.known_issues import release_coverage
+
+    cv = SETTLED_CV.replace("4.20.4", "4.23.0").replace("4.20.3", "4.23.0")
+    files = _settled(**{f"{IMAGE}/cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml": cv})
+    rep = _report(ingest.open_bundle(_tar(tmp_path / "423.tgz", files)))
+    expected = release_coverage("openshift", "4.23.0", None)
+    assert rep["knownIssuesVerdict"] == expected[0] == "not-evaluated"
+    assert _legs(rep)["release notes"]["state"] == "partial"
+
+
+# -- skipped files are judged by the analysers' own routing (round 1, 8) -----------------------------------------
+
+
+def _with_link(tmp_path: Path, files: dict[str, str | bytes], link_rel: str, target: str) -> Path:
+    """The sample as a directory plus one symbolic link inside it (ingest never follows links)."""
+    root = tmp_path / "mg"
+    for rel, data in files.items():
+        p = root / TOP / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, str):
+            p.write_text(data, encoding="utf-8")
+        else:
+            p.write_bytes(data)
+    away = tmp_path / "nodes-away.yaml"
+    away.write_text(target, encoding="utf-8")
+    link = root / TOP / link_rel
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(away)
+    return root
+
+
+def test_a_linked_list_file_where_an_analyser_reads_is_a_gap(tmp_path: Path) -> None:
+    """`core/nodes.yaml` (the list form) is a path the nodes analyser routes; a link there was not followed, and the
+    leg used to say "no analyser reads those directories" because it checked the path depth, not the route."""
+    root = _with_link(
+        tmp_path,
+        _settled(),
+        f"{IMAGE}/cluster-scoped-resources/core/nodes.yaml",
+        "apiVersion: v1\nkind: List\nitems: []\n",
+    )
+    rep = _report(ingest.open_bundle(root))
+    leg = _legs(rep)["skipped files"]
+    assert leg["state"] == "partial" and "link" in leg["why"] and "core/nodes.yaml" in leg["why"]
+
+
+def test_a_linked_list_file_with_no_other_node_file_is_present_but_skipped_not_absent(tmp_path: Path) -> None:
+    files = _settled(**{NODE_W: None, NODE_M: None})
+    root = _with_link(tmp_path, files, f"{IMAGE}/cluster-scoped-resources/core/nodes.yaml", "kind: List\nitems: []\n")
+    rep = _report(ingest.open_bundle(root))
+    cov = next(c for c in rep["coverage"] if c["analyser"] == "nodes")
+    assert "skipped" in cov["note"] and "link" in cov["note"] and "not in this must-gather" not in cov["note"]
+    assert _legs(rep)["analysers"]["state"] == "partial"
+
+
+def test_read_by_an_analyser_follows_the_analysers_routes() -> None:
+    read = completeness.read_by_an_analyser
+    assert read(f"{TOP}/{IMAGE}/cluster-scoped-resources/core/nodes.yaml")
+    assert read(f"{TOP}/{IMAGE}/cluster-scoped-resources/core/nodes/worker-1.yaml")
+    assert read(f"{TOP}/{IMAGE}/cluster-scoped-resources/core/nodes.tar")
+    assert read(f"{TOP}/{IMAGE}/namespaces/shop/core/events.yaml.gz")
+    assert read(f"{TOP}/{IMAGE}/namespaces/shop/pods/web-7d9f/web-7d9f.yaml")
+    assert read(f"{TOP}/{IMAGE}/namespaces/shop/pods/web-7d9f/web/web/logs/rotated/0.log.gz")
+    assert read(f"{TOP}/{IMAGE}/namespaces/shop/operators.coreos.com/subscriptions.yaml")
+    assert not read(f"{TOP}/{IMAGE}/audit_logs/kube-apiserver/x.log.gz")
+    assert not read(f"{TOP}/{IMAGE}/namespaces/shop/core/configmaps.yaml")
+    assert not read(f"{TOP}/{IMAGE}/cluster-scoped-resources/storage.k8s.io/storageclasses.yaml")
+
+
+def test_the_secret_skip_reason_is_ingests_own_literal() -> None:
+    from kube_noob.mustgather.ingest import NEVER_READ_REASON
+
+    assert completeness.NEVER_READ is NEVER_READ_REASON
+
+
+def test_a_complete_report_lists_the_legs_that_read_apart_from_the_ones_not_applicable(tmp_path: Path) -> None:
+    rep = _report(ingest.open_bundle(_tar(tmp_path / "s.tgz", _settled())))
+    md = mg_report.markdown(rep)
+    line = next(x for x in md.splitlines() if x.startswith("- Evidence is complete"))
+    read, _, apart = line.partition("; not applicable here: ")
+    assert "secrets" not in read and "secrets" in apart and "skipped files" in apart
+    assert "analysers" in read and "release notes" in read

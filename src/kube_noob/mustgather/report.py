@@ -84,6 +84,7 @@ def build(
     # a ClusterVersion makes it OpenShift even when none is named version or none holds a readable version; an OKD
     # one makes it OKD, decided as `operators issues --must-gather` decides it
     platform = "okd" if okd else "openshift" if cluster.get("version") or has_clusterversion(cluster) else "kubernetes"
+    note: str | None
     if okd:
         verdict, note = "not-determined", f"{okd_note(okd)}, so no finding was matched against them"
     elif platform == "kubernetes":
@@ -92,13 +93,25 @@ def build(
             "the index holds OpenShift release-note issues; they do not apply to plain Kubernetes",
         )
     else:
-        verdict, note = "looked-up", None
+        # The one coverage verdict the gate uses (G284): a release the index does not cover is not-evaluated,
+        # never looked-up by default (round 1, 2). Mid-update, the running release is what is searched and the
+        # note says the target was not, which the completeness leg reads as partial.
+        from kube_noob.known_issues import release_coverage
+
+        verdict, note, _minor = release_coverage(
+            "openshift", version, data_dir, hint="the must-gather's ClusterVersion names none; the newest indexed is"
+        )
+        desired = cluster.get("desiredVersion")
+        if verdict == "looked-up" and desired and version and desired != version:
+            note = f"{note}; the running release {version} was searched and the update target {desired} was not"
     operators = [o["name"] for o in cluster.get("operators", [])]
     roots = bundle.as_dict()["gatherRoots"]
     findings = [{"rank": n, **f} for n, f in enumerate(a["findings"], start=1)]
 
     def known(text: str) -> dict[str, Any]:
-        if okd:  # the notes do not describe OKD's builds: what the index is, but nothing matched against it
+        if okd or verdict == "not-evaluated":
+            # the notes do not describe OKD's builds, or the release is outside the index: what the index is, but
+            # nothing matched against it (a match across every release would be a search of the wrong release)
             return {"knowledge": _known("", "openshift", None, data_dir)["knowledge"] if match_known is None else {}}
         if match_known is not None:
             return match_known(text, platform, version)
@@ -362,11 +375,16 @@ def markdown(r: dict[str, Any]) -> str:
                 "- Evidence is partial: " + "; ".join(f"{_md(leg['leg'])}: {_md(leg['why'])}" for leg in partial)
             )
         else:
-            extra.append(
+            read = [leg["leg"] for leg in c["legs"] if leg["state"] == "complete"]
+            apart = [leg["leg"] for leg in c["legs"] if leg["state"] == "not-applicable"]
+            line = (
                 "- Evidence is complete: every leg read what it set out to read ("
-                + ", ".join(f"{_md(leg['leg'])} {_md(leg['state'])}" for leg in c["legs"])
+                + ", ".join(_md(x) for x in read)
                 + ")"
             )
+            if apart:
+                line += "; not applicable here: " + ", ".join(_md(x) for x in apart)
+            extra.append(line)
     if extra:
         lines += ["", *extra]
     if r["signals"]:
