@@ -987,13 +987,17 @@ def _kube_effect(
     if base is None:
         out.undetermined.append(f"{shown}: the line changes directory in a way verify cannot follow")
         return
-    if "KUBECONFIG" in line.assignments or "KUBECONFIG" in cmd.assignments:
-        out.undetermined.append(f"{shown}: KUBECONFIG is set on the line, which picks the cluster")
     granted = _grants(cmd)
     out.deny.extend(f"{shown}: {g}" for g in granted)
     reads_files = name == "helm" or sub in {"apply", "create", "replace", "patch"} or tool == "kustomize"
     if reads_files and not _day2(cmd, name, sub, args, cls, shown, _Read(), probe=True):
         out.sends = True
+        # One rule for `--context`, `--cluster`, `--kubeconfig` (read below, per flag) and `KUBECONFIG=`: a command
+        # that carries a manifest is judged against a platform, and an explicit target means that context's
+        # platform, which verify does not know. A day-2 command carries no manifest, so it is judged the same with
+        # or without one.
+        if "KUBECONFIG" in line.assignments or "KUBECONFIG" in cmd.assignments:
+            out.undetermined.append(f"{shown}: KUBECONFIG is set on the line, which picks the cluster")
     if reads_files and written and not _day2(cmd, name, sub, args, cls, shown, out, probe=True):
         out.undetermined.append(f"{shown}: an earlier command on this line may write the files it sends ({written[0]})")
         return

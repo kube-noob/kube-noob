@@ -1250,7 +1250,7 @@ kube-noob demo verify
 A deny lists the findings the change adds at or above `--fail-on`, each with its file and line, the rule, a one-line
 fix and whether the generated admission policy would refuse it in enforce mode, and the `kube-noob fix` command when
 the mechanical fixer clears a failing rule (it runs the fixer to find out). `not-determined` is never an allow: a URL,
-`-f -` with nothing on stdin, `exec`, a delete other than pods by name, a strategic-merge patch, `--context`, a flag
+`-f -` with nothing on stdin, `exec`, a delete other than pods by name, a strategic-merge patch, a flag
 or wrapper verify does not model, a file outside the working directory or behind a link, a file an earlier command on
 the same line may have written, a deployer it does not model (`helmfile`, `argocd`, `terraform` ...). A day-2 change
 that cannot add a manifest finding -- a restart, a scale, a label, deleting pods by name -- is allowed. `port-forward`
@@ -1260,7 +1260,10 @@ off, which exposes the port to other hosts; `attach` runs in the container and a
 (`--dry-run=client` or `=server`, `--server-dry-run`) on any verb that defines the flag -- `apply`, `create`,
 `delete`, `patch`, `scale`, `helm uninstall` ... -- is allowed, like `kubectl diff`, because nothing persists; when a
 real apply of the same manifest would be denied, the answer carries a `note` saying so, with the rules, in text and
-JSON alike. It sees through `sh -c`, `bash -lc`, `eval` of a
+JSON alike. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
+explicit target -- `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on the line -- is not determined,
+because the platform the manifest is judged against is that context's; a day-2 command with no manifest (a scale, a
+restart, deleting a pod by name, a label) is judged the same with or without one. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).
