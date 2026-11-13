@@ -126,7 +126,7 @@ def _fix_verdict_line(res: dict[str, Any]) -> str:
     here, because both verdicts share the audit's assumptions; G286)."""
 
     def part(view: dict[str, Any]) -> str:
-        s = view["summary"]
+        s = view
         counts = " ".join(f"{k}={v}" for k, v in s["counts"].items() if v and k != "info")
         return f"score={s['score']}" + (f" | {counts}" if counts else " | no findings")
 

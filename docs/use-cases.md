@@ -52,7 +52,7 @@ To gate pull requests, run `kube-noob audit -f k8s/ --fail-on high` in CI. It ex
 `fix` judges its own output the way `audit` would judge the file it writes: the one-line summary on stderr is the
 audit's verdict before and after, under the same assumptions `audit -f` makes for the same input (one file or stdin
 is part of a namespace; a directory is the whole of it), and the YAML block below it carries `before`, `after` (each
-with the audit's `summary`, `assumptions` and `controlSummary`) and a `delta` of the rules fixed, still open and
+with the audit's `score`, `counts` and `maxSeverity`, its `assumptions` and its `controlSummary`) and a `delta` of the rules fixed, still open and
 introduced by the fix. `kube-noob audit -f fixed.yaml` prints the same score and counts as `after`.
 
 ```console

@@ -36,7 +36,7 @@ def _fix(text: str, **kw: Any) -> dict[str, Any]:
 
 def _same_verdict(view: dict[str, Any], audit: dict[str, Any]) -> None:
     for key in COMPARED:
-        assert view["summary"][key] == audit["summary"][key], key
+        assert view[key] == audit["summary"][key], key
     assert view["assumptions"] == audit["assumptions"]
     assert view["controlSummary"] == audit["controlSummary"]
 
@@ -68,7 +68,7 @@ def test_fix_after_equals_audit_on_the_fixed_bytes_for_a_single_file(partial: bo
     res = _fix(text, partial_bundle=partial)
     _same_verdict(res["after"], _audit(res["manifests"], partial_bundle=partial))
     _same_verdict(res["before"], _audit(text, partial_bundle=partial))
-    assert res["after"]["summary"]["score"] >= res["before"]["summary"]["score"]
+    assert res["after"]["score"] >= res["before"]["score"]
 
 
 def test_fix_in_takes_partial_bundle_with_the_audits_default() -> None:
@@ -100,7 +100,9 @@ def test_after_carries_assumptions_and_the_control_summary() -> None:
 
 def test_the_existing_fields_are_where_they_were() -> None:
     res = _fix(INSECURE.read_text(encoding="utf-8"))
-    assert set(res["after"]["summary"]) == {"counts", "maxSeverity", "score"}
+    # `after` was the summary itself and callers read `after.score`: those keys stay at the top, joined by the rest
+    assert {"counts", "maxSeverity", "score", "assumptions", "controlSummary"} == set(res["after"])
+    assert res["after"]["score"] == _audit(res["manifests"])["summary"]["score"]
     assert isinstance(res["changes"], list) and isinstance(res["manualFollowUps"], list)
 
 
@@ -146,11 +148,11 @@ def test_the_cli_after_line_equals_audit_on_the_written_file(
     out, summary = _cli_fix(tmp_path, capsys, "-f", str(EXERCISE))
     audit = _cli_audit(out, capsys)
     for key in COMPARED:
-        assert summary["after"]["summary"][key] == audit["summary"][key], key
+        assert summary["after"][key] == audit["summary"][key], key
     assert summary["after"]["assumptions"] == audit["assumptions"]
     before = _cli_audit(EXERCISE, capsys)
     for key in COMPARED:
-        assert summary["before"]["summary"][key] == before["summary"][key], key
+        assert summary["before"][key] == before["summary"][key], key
     assert summary["delta"]["fixed"]
 
 
@@ -171,12 +173,12 @@ def test_a_directory_is_audited_whole_in_fix_as_in_audit(tmp_path: Path, capsys:
     assert not any("part of a namespace" in a for a in summary["before"]["assumptions"])
     before = _cli_audit(d, capsys)
     for key in COMPARED:
-        assert summary["before"]["summary"][key] == before["summary"][key], key
+        assert summary["before"][key] == before["summary"][key], key
     # the written stream is one file: audited as one file it is partial, and `after` was computed whole, so the
     # comparison that holds is against a whole-namespace audit of the same bytes
     whole = _audit(out.read_text(encoding="utf-8"), partial_bundle=False)
     for key in COMPARED:
-        assert summary["after"]["summary"][key] == whole["summary"][key], key
+        assert summary["after"][key] == whole["summary"][key], key
 
 
 def test_stdin_is_partial_in_fix_as_in_audit(
@@ -191,17 +193,14 @@ def test_stdin_is_partial_in_fix_as_in_audit(
     summary = _summary(capsys.readouterr().err)
     assert any("part of a namespace" in a for a in summary["after"]["assumptions"])
     for key in COMPARED:
-        assert (
-            summary["after"]["summary"][key]
-            == _audit(out.read_text(encoding="utf-8"), partial_bundle=True)["summary"][key]
-        )
+        assert summary["after"][key] == _audit(out.read_text(encoding="utf-8"), partial_bundle=True)["summary"][key]
 
 
 def test_platform_flags_reach_the_cli_verdicts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     out, summary = _cli_fix(tmp_path, capsys, "-f", str(INSECURE), "--platform", "openshift", "--version", "4.20")
     audit = _cli_audit(out, capsys, "--platform", "openshift", "--version", "4.20")
     for key in COMPARED:
-        assert summary["after"]["summary"][key] == audit["summary"][key], key
+        assert summary["after"][key] == audit["summary"][key], key
     assert summary["after"]["assumptions"] == audit["assumptions"]
 
 

@@ -1259,7 +1259,9 @@ class Toolkit:
             allowed_registries=self._allowed_registries(),
         )
         d = r.as_dict()
-        view = {"summary": d["summary"], "assumptions": d["assumptions"], "controlSummary": d["controlSummary"]}
+        # `after` has always been the summary itself (`counts`, `maxSeverity`, `score`), and callers read
+        # `after.score`; the audit's assumptions and control summary sit beside those keys, not above them.
+        view = {**d["summary"], "assumptions": d["assumptions"], "controlSummary": d["controlSummary"]}
         return view, {str(f["ruleId"]) for f in d["findings"]}, len(d["findings"])
 
     def fix(self, p: FixIn) -> dict[str, Any]:
