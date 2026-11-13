@@ -318,7 +318,7 @@ Where it is applied (found in the code):
 - `kube_noob/verify.py` `_safe_patch` calls `sanitize.loads_bounded`
 - `kube_noob/verify.py` `_transform` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/verify.py` `hook_message` calls `sanitize.clean`
-- `kube_noob/verify.py` `show` calls `sanitize.visible`
+- `kube_noob/verify.py` `show` calls `sanitize.marked`
 - `kube_noob/vuln/kev.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/reports.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/vuln/vex.py` `_corpus_records` calls `sanitize.loads_bounded`

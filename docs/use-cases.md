@@ -1257,24 +1257,37 @@ that cannot add a manifest finding -- a restart, a scale, a label, deleting pods
 and `proxy` open a local port and change nothing in the cluster, so they are allowed (class `connects`) unless
 `--address` names an address other than loopback, or the proxy's `--accept-hosts` is widened or its filter turned
 off, which exposes the port to other hosts; `attach` runs in the container and asks like `exec`. A dry run
-(`--dry-run=client` or `=server`, `--server-dry-run`) on any verb that defines the flag -- `apply`, `create`,
-`delete`, `patch`, `scale`, `helm uninstall` ... -- is allowed, like `kubectl diff`, because nothing persists; when a
-real apply of the same manifest would be denied, the answer carries a `note` saying so, with the rules, in text and
-JSON alike. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
+(`--dry-run=client` or `=server`) on any verb that defines the flag -- `apply`, `create`, `delete`, `patch`,
+`scale`, `helm uninstall` ... -- is allowed, like `kubectl diff`, because nothing persists; when a real apply of the
+same manifest would be denied, the answer carries a `note` saying so, with the rules, in text and JSON alike (the
+hook passes such an allow silently: the note is in `kube-noob verify`'s own output). The flag is read the way pflag
+reads it: a `--dry-run` that is the value of the bare flag before it (`-n --dry-run=client`) is no dry run, and a
+word after it that is only known when the line runs (`$FLAGS`, `"$@"`) can be `--dry-run=none`, so that asks. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
 explicit target -- `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on the line -- is not determined,
 because the platform the manifest is judged against is that context's; a day-2 command with no manifest (a scale, a
-restart, deleting a pod by name, a label) is judged the same with or without one. `--help` or `-h` on any verb
-prints the help and runs nothing, so it is allowed; so are the reads `oc adm node-logs`, `oc adm release info`,
-`oc adm upgrade` with no `--to*`, `channel` or `rollback` (the status), `oc adm must-gather`, `oc registry info`,
-`kubectl krew list|info|search`, `kubectl neat` and `helm diff`. Kept as asks by design, each with its reason:
+restart, deleting a pod by name, a label) is judged the same with or without one. `--help` or `-h` on a verb
+the tool itself defines prints the help and runs nothing, so it is allowed; on any other word kubectl execs the
+plugin `kubectl-<word>` with `--help` as its argument, so that asks. Allowed reads: `oc adm node-logs`, `oc adm
+release info`, `oc adm upgrade` with no `--to*`, `channel` or `rollback` (and its `status` and `recommend`),
+`oc adm must-gather` with the default image, `oc registry info`, `kubectl krew list|info|search`, `kubectl neat`
+on `get`/`describe` output or `-f`, and `helm diff`; every other `oc adm` (`prune` included) asks. A flag that runs
+a program on this machine -- helm's `--post-renderer`, kustomize's `--enable-exec`, `--enable-alpha-plugins`,
+`--enable-helm` -- asks on every verb, `template`, `diff` and a dry run included. A flag that changes who the
+command runs as or where the stored credential is sent (`--as`, `--as-group`, `--token`, `--username`,
+`--password`, `--server`, `--user`, the client certificate and CA flags, `--insecure-skip-tls-verify`) asks on every
+command that changes something, day-2 included. A scale, restart, pod delete, label, patch or `set env` in
+`kube-system`, `kube-public`, `kube-node-lease` or an `openshift-*` namespace, or of `etcd`, `kube-apiserver` or
+`cluster-version-operator`, is cluster operations and asks. Kept as asks by design, each with its reason:
 `attach` (like `exec`), `oc extract` (writes Secret data to disk), `oc login`, `oc logout` and `oc registry login`
 (credential handling), `kubectl krew install` (code on this machine), `oc adm upgrade --to...`/`channel`, and
 `kubectl config use-context` (changes which cluster every later command hits; `config set-context --current
 --namespace=` only changes the default namespace and is allowed). What arrives on standard input is not seen:
 `helm template ... | kubectl apply -f -` and `... | xargs kubectl delete pod` ask, because the manifest, or the
 names, are not on the line. The shell reader reads at most 20,000 characters, a bound on its own work: a longer
-command that names no kube tool, deployer or cloud CLI anywhere in it (a long here-document, a generated script) is
-allowed, class `none`; one that names one past the limit was not read and is not determined. It sees through `sh -c`, `bash -lc`, `eval` of a
+command is allowed only when it is provably inert -- one `echo` or `printf`, or a here-document fed to `cat`,
+`echo` or `printf`, with no substitution, second command, pipe, redirection, interpreter or script, and no kube
+tool, deployer or cloud CLI named anywhere in it -- class `none`; anything else past the limit was not read and is
+not determined. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).
@@ -1324,42 +1337,50 @@ table and fails when the code's verdict is not the one written here, so the tabl
 | `scale` or `autoscale` one named workload | `kubectl scale deploy/web --replicas=3` | allow |
 | `rollout restart`, `pause` or `resume` of one workload | `kubectl rollout restart deploy/web` | allow |
 | `label` or `annotate` one object that is not a node or namespace, with a key that is not a security, scheduling or cloud-identity setting | `kubectl label deploy web tier=web` | allow |
-| `set env` without a credential, a URL with a password or a code-loading variable (`LD_PRELOAD`, `NODE_OPTIONS` ...) | `kubectl set env deploy/web LOG_LEVEL=debug` | allow |
-| `delete pod NAME` without `--force`, `--now` or `--grace-period=0` | `kubectl delete pod web-abc` | allow |
+| `set env` without a credential, a URL with a password, a code-loading variable (`LD_PRELOAD`, `NODE_OPTIONS` ...) or a trust or egress variable (`PATH`, `HTTP(S)_PROXY`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` ...) | `kubectl set env deploy/web LOG_LEVEL=debug` | allow |
+| `delete pod NAME...` without `--force`, `--now`, `--grace-period=0`, `--raw`, `-f` or a second kind | `kubectl delete pod web-abc` | allow |
 | `patch TYPE NAME` touching only replicas, `paused`, timings, or labels and annotations without a security key, in any patch type | `kubectl patch deploy web -p '{"spec":{"replicas":3}}'` | allow |
-| A dry run (`--dry-run=client`, `=server`, `--server-dry-run`) on any verb that defines the flag; a `note` says when a real run would be denied | `kubectl delete deploy web --dry-run=server` | allow |
+| A dry run (`--dry-run=client` or `=server`) on any verb that defines the flag, read with pflag's arity rule; a `note` says when a real run would be denied | `kubectl delete deploy web --dry-run=server` | allow |
 | `kubectl diff` (with `KUBECTL_EXTERNAL_DIFF` unset or a known diff program) | `kubectl diff -f bad/deploy.yaml` | allow |
-| `port-forward` or `proxy` on loopback (the default), class `connects` | `kubectl port-forward web 8080:80` | allow |
-| `--help` or `-h` on any verb, where it is not the value of the flag before it | `kubectl exec --help` | allow |
-| `oc adm top`, `inspect`, `node-logs`, `must-gather`, `release info`, `policy scc-subject-review`/`scc-review`/`who-can`, and `oc adm upgrade` with no `--to*`, `channel` or `rollback` (the status) | `oc adm upgrade` | allow |
-| `kubectl krew list`, `info` or `search`, `kubectl neat`, `kubectl plugin list`, `oc registry info` | `kubectl krew list` | allow |
+| `port-forward` or `proxy` on loopback (the default) with the proxy's filters as they are, class `connects` | `kubectl port-forward web 8080:80` | allow |
+| `--help` or `-h` on a verb the tool itself defines, where it is not the value of the flag before it | `kubectl exec --help` | allow |
+| `oc adm top`, `inspect`, `node-logs`, `must-gather` with the default gather image, `release info`, `policy scc-subject-review`/`scc-review`/`who-can`, and `oc adm upgrade` with no `--to*`, `channel` or `rollback` (the status), `upgrade status`, `upgrade recommend` | `oc adm upgrade` | allow |
+| `kubectl krew list`, `info` or `search`, `kubectl neat` on `get`/`describe` output or `-f`, `kubectl plugin list`, `oc registry info` | `kubectl krew list` | allow |
 | `helm list`, `status`, `get`, `history`, `template`, `lint`, `show`, `search`, `diff`, and the local operations `repo`, `dependency`, `package`, `pull`, `env` | `helm diff upgrade web ./chart` | allow |
 | `config set-context --current --namespace=NAME`, `oc project NAME`, `kubectx`, `kubens`: the local default only | `kubectl config set-context --current --namespace=shop` | allow |
 | A day-2 change with `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=`: no manifest, so judged as without | `kubectl --context=prod scale deploy/web --replicas=2` | allow |
-| A command longer than 20,000 characters that names no kube tool, deployer or cloud CLI anywhere | `echo <25,000 characters>` | allow |
+| A command longer than 20,000 characters that is one `echo`, `printf` or here-document with no substitution, pipe, redirection or script, and names no kube tool, deployer or cloud CLI anywhere | `echo <25,000 characters>` | allow |
 | A line with no kube tool on it | `npm test && git status` | allow |
 | `create` of anything else from flags (`deployment`, `job`, `role`, `clusterrole` ...): render it with `--dry-run=client -o yaml` and verify the file | `kubectl create deployment web --image=nginx` | ask |
 | `run`, `oc new-app`, `oc process`, `start-build`, `import-image`, `tag` | `kubectl run x --image=busybox` | ask |
-| `expose` as NodePort, LoadBalancer or ExternalName, with `--external-ip` or `--load-balancer-ip`; `oc expose svc` (a Route) | `kubectl expose deploy web --type=LoadBalancer --port=80` | ask |
-| `delete` of anything but pods by name (a kind, a selector, `--all`, `-f`), `drain` | `kubectl delete deploy web` | ask |
+| `expose` with a `--type` that is not a literal ClusterIP (NodePort, LoadBalancer, ExternalName, a run-time value), with `--external-ip` or `--load-balancer-ip`; `oc expose svc` (a Route) | `kubectl expose deploy web --type=LoadBalancer --port=80` | ask |
+| `delete` of anything but pods by name (a kind, a selector, `--all`, `-f`, `--raw`, a pod and another kind), `drain` | `kubectl delete deploy web` | ask |
+| A dry run whose `--dry-run` is the value of the bare flag before it (`-n --dry-run=client` runs for real), or followed by a word only known at run time | `kubectl delete ns prod -n --dry-run=client` | ask |
 | `rollout undo` | `kubectl rollout undo deploy/web` | ask |
-| `label` or `annotate` of a node or namespace, or of a security, scheduling or cloud-identity key | `kubectl label ns shop pod-security.kubernetes.io/enforce=privileged` | ask |
-| `set image`, `resources`, `serviceaccount`, `selector`, `subject`; `set env` of a code-loading variable | `kubectl set image deploy/web web=nginx:2` | ask |
+| `label` or `annotate` of a node or namespace, of more than one object, of the objects in a file (`-f`), or of a security, scheduling or cloud-identity key | `kubectl label ns shop pod-security.kubernetes.io/enforce=privileged` | ask |
+| A day-2 word only known when the line runs (`$POD`, `$KEY=v`, `$FLAGS`, a glob), except a replica count | `kubectl delete pod $POD` | ask |
+| A scale, restart, pod delete, label, patch or `set env` in `kube-system`, `kube-public`, `kube-node-lease` or an `openshift-*` namespace, or of `etcd`, `kube-apiserver` or `cluster-version-operator` | `kubectl scale deploy/coredns --replicas=0 -n kube-system` | ask |
+| `--as`, `--as-group`, `--as-uid`, `--token`, `--username`, `--password`, `--server`/`-s`, `--user`, `--client-certificate`, `--client-key`, `--certificate-authority`, `--insecure-skip-tls-verify`, `--tls-server-name` on any command that changes something | `kubectl --as=system:admin scale deploy/web --replicas=3` | ask |
+| `create secret docker-registry` (registry credentials on the line or at a prompt), a `kubernetes.io/service-account-token` Secret | `kubectl create secret docker-registry s --docker-server=x --docker-username=u` | ask |
+| `set image`, `resources`, `serviceaccount`, `selector`, `subject`; `set env` of a code-loading, trust or egress variable | `kubectl set image deploy/web web=nginx:2` | ask |
 | `taint`, `cordon`, `uncordon`, `edit`, `certificate`, `auth reconcile`, `oc policy`, `oc secrets` | `kubectl cordon n1` | ask |
 | `apply` or `replace` with `--prune`, `--force` or `--all`; a `patch` of other fields by name | `kubectl apply --prune -l app=web -f good/` | ask |
 | A manifest from a URL, from stdin with nothing to read, outside the working directory, behind a link, or that an earlier command on the line may have written | `kubectl apply -f https://example.com/x.yaml` | ask |
 | A kustomization with patches or another transformer: render it and verify the file | `kubectl apply -k kustom-patch` | ask |
 | A manifest sent to an explicit cluster: `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on `apply`, `create -f`, `replace -f`, `apply -k` or a chart | `kubectl --context=prod apply -f good/orders-api.yaml` | ask |
-| `helm install` or `upgrade` of a local chart is rendered with `helm template` and judged like `apply -f` (allow or deny); a remote chart, a chart that does not render, `helm` not on PATH, `--set-file`, `--post-renderer`; `helm uninstall`, `rollback`, `plugin install` | `helm install web oci://registry.example.com/charts/web` | ask |
+| `helm install` or `upgrade` of a local chart is rendered with `helm template` and judged like `apply -f` (allow or deny); a remote chart, a chart that does not render, `helm` not on PATH, `--set-file`; `helm uninstall`, `rollback`, `plugin install` | `helm install web oci://registry.example.com/charts/web` | ask |
+| A flag that runs a program on this machine, on every verb and before any dry run or read: helm's `--post-renderer`, kustomize's `--enable-exec`, `--enable-alpha-plugins`, `--enable-helm` | `helm template web ./chart --post-renderer ./x.sh` | ask |
 | `exec`, `rsh`, `debug`, `attach`, `cp`, `rsync` | `kubectl exec -it web -- sh` | ask |
-| `port-forward` or `proxy` reachable from other hosts: a non-loopback `--address`, a widened `--accept-hosts`, `--disable-filter` | `kubectl port-forward web 8080:80 --address 0.0.0.0` | ask |
-| `oc adm upgrade --to*`, `channel` or `rollback`, `release extract` or `mirror`, and every other `oc adm` | `oc adm upgrade --to-latest` | ask |
+| `port-forward` or `proxy` reachable from other hosts or with a widened filter: a non-loopback `--address`, `--accept-hosts`, `--accept-paths`, `--reject-paths`, `--reject-methods`, `--disable-filter` | `kubectl port-forward web 8080:80 --address 0.0.0.0` | ask |
+| `oc adm must-gather` with `--image`, `--image-stream` or a gather command: an arbitrary image in a privileged pod | `oc adm must-gather --image=registry.example.com/gather:1` | ask |
+| `oc adm upgrade --to*`, `channel`, `rollback` or `accept`, `release extract` or `mirror`, `prune`, and every other `oc adm` | `oc adm upgrade --to-latest` | ask |
 | `oc login`, `oc logout`, `oc registry login`: credential handling | `oc login https://api.example.com:6443 --token=abc` | ask |
 | `oc extract`: writes Secret or ConfigMap data to disk | `oc extract secret/x --to=-` | ask |
-| `kubectl krew install`, `upgrade` or `uninstall`, and any other kubectl plugin | `kubectl krew install neat` | ask |
+| `kubectl krew install`, `upgrade` or `uninstall`, any other kubectl plugin, and `--help` on a word that is not a built-in verb (the plugin runs) | `kubectl krew install neat` | ask |
+| `kubectl neat` with anything but `get`/`describe` output or `-f` (it passes the rest to kubectl) | `kubectl neat delete ns prod` | ask |
 | `config use-context`, `set-cluster`, `set-credentials`, `set-context` of anything but the current namespace: changes which cluster every later command hits | `kubectl config use-context staging` | ask |
 | What arrives on stdin is not seen: `helm template ... \| kubectl apply -f -`, `... \| xargs kubectl delete pod` | `helm template web chart \| kubectl apply -f -` | ask |
-| A command longer than 20,000 characters that names a kube tool | `kubectl get pods <25,000 characters>` | ask |
+| A command longer than 20,000 characters that names a kube tool, or is anything but one inert `echo`, `printf` or here-document | `kubectl get pods <25,000 characters>` | ask |
 | A line the shell reader cannot follow: a command word built at run time, `eval` of a variable, code piped into a shell, a kube command inside a program it does not model | `echo 'kubectl delete ns prod' \| sh` | ask |
 | A manifest with a finding at or above `--fail-on` | `kubectl apply -f bad/deploy.yaml` | deny |
 | `patch -f FILE --type merge` or `json` whose result has one (the file earns no baseline credit) | `kubectl patch -f single/priv.yaml --type merge -p '{"metadata":{"labels":{"a":"b"}}}'` | deny |
