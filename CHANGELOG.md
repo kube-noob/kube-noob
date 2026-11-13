@@ -64,7 +64,12 @@
   and now names those kinds instead; KN-ST001 reads StorageClass and declares it as context; and the pod-spec
   kinds are spelled out inside an alternative label too ("no networking.k8s.io Ingress or pod spec in the input
   (no Pod, Deployment, ...)"). A test now walks every rule body for `by_kind(...)` and fails when the kind is
-  declared as neither subject nor context.
+  declared as neither subject nor context. And the text view's one line a reader scans, `NIST SP 800-53
+  controls with findings: CM-7 (5), ... AU-2 (0)`, listed every touched control with its count, so a control
+  whose only rule was not evaluated read as checked-and-zero while the JSON beside it said `notEvaluated: 1`:
+  that line now names only controls with findings, and a second line, `controls not evaluated, in whole or in
+  part: AU-2 (KN-S035), CM-7 (KN-N009, ...; 8 clean), ...`, names every control with a rule not evaluated, with
+  the rules and its clean count when it is partly both; the JSON's set and the text's are the same set.
 
   Measured with the command named, `kube-noob audit -f examples/<file>` (one file, so the partial-bundle guards
   also apply; the count is the `rules:` line of the text view), rules evaluated before and after:

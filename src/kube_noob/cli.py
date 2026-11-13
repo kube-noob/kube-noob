@@ -450,9 +450,10 @@ def _print_report(rep: dict[str, Any]) -> None:
         print(f"           fix: {f['remediation']}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
-    touched = (rep.get("controlSummary") or {}).get("controls") or []
-    if touched:
-        print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
+    from kube_noob.audit.controls import control_headlines
+
+    for line in control_headlines(rep.get("controlSummary") or {}):
+        print(line)
     for line in _coverage_lines(rep.get("controlSummary") or {}):
         print(line)
     if cov := rep.get("detectionCoverage"):

@@ -57,6 +57,38 @@ def coverage_line(summary: Mapping[str, Any], top: int = 3) -> str:
     return f"{head}: {shown}" + (f"; and {rest} more reason(s)" if rest > 0 else "") + "."
 
 
+def control_headlines(summary: Mapping[str, Any]) -> list[str]:
+    """The one or two lines a reader scans: controls WITH findings, then controls with a rule not evaluated.
+
+    The first version printed every touched control under "controls with findings" with its count, so a control
+    whose only rule was not evaluated read as checked-and-zero (`AU-2 (0)`) in the headline while the JSON said
+    `notEvaluated: 1` (class 6/13). A control with findings is named on the first line; a control with a rule
+    not evaluated is named on the second with those rules, and with its clean count when it is partly both; a
+    control that is both is on both lines, honestly. Shared, so every text view prints the same lists.
+    """
+    controls = [c for c in summary.get("controls") or [] if isinstance(c, dict) and c.get("id")]
+    lines: list[str] = []
+    found = [c for c in controls if int(c.get("findings") or 0) > 0]
+    if found:
+        lines.append(
+            "NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in found)
+        )
+    skipped = [c for c in controls if int(c.get("notEvaluated") or 0) > 0]
+    if skipped:
+        parts = []
+        for c in sorted(skipped, key=lambda c: str(c["id"])):
+            names = [str(r) for r in c.get("notEvaluatedRules") or []]
+            more = int(c.get("moreNotEvaluated") or 0)
+            inner = ", ".join(names) if names else f"{c['notEvaluated']} rule(s)"
+            if more:
+                inner += f" and {more} more"
+            if int(c.get("clean") or 0):
+                inner += f"; {c['clean']} clean"
+            parts.append(f"{c['id']} ({inner})")
+        lines.append("controls not evaluated, in whole or in part: " + ", ".join(parts))
+    return lines
+
+
 def rules_evaluated_without(absent: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
     """Rules that ran on part of what they read, with the kinds they asked for and did not get."""
     return [{"ruleId": rid, "absent": sorted(absent[rid])} for rid in sorted(absent) if absent[rid]]

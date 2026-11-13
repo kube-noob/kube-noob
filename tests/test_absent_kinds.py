@@ -954,3 +954,34 @@ def test_the_oscal_numbers_the_changelog_quotes_for_a_deployment_only_directory(
     assert len({c for cs in RULE_CONTROLS.values() for c in cs}) == 30
     assert len(selection["exclude-controls"]) == 9
     assert sum(1 for f in result["findings"] if f["target"]["status"]["state"] == "satisfied") == 7
+
+
+def test_the_text_headline_names_only_controls_with_findings_and_lists_the_unevaluated_apart(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`NIST SP 800-53 controls with findings: CM-7 (5), ... AU-2 (0)` listed every touched control with its count,
+    so a control whose only rule was not evaluated read as checked-and-zero in the one line a reader scans, while
+    the JSON said notEvaluated: 1 (class 6/13, review 3)."""
+    import re
+
+    _, out = _cli(capsys, "audit", "-f", str(ROOT / "examples" / "insecure-deployment.yaml"), "--format", "json")
+    controls = json.loads(out)["controlSummary"]["controls"]
+    _, text = _cli(capsys, "audit", "-f", str(ROOT / "examples" / "insecure-deployment.yaml"))
+    headline = next(line for line in text.splitlines() if line.startswith("NIST SP 800-53 controls with findings:"))
+    named = set(re.findall(r"([A-Z]{2}-\d+(?:\(\d+\))?) \(", headline))
+    assert named == {c["id"] for c in controls if c["findings"] > 0}
+    assert "(0)" not in headline
+    not_evaluated_line = next(line for line in text.splitlines() if line.startswith("controls not evaluated"))
+    # A ConfigMap alone has no finding at all: no headline, and the not-evaluated line still names the controls.
+    cm = tmp_path / "cm.yaml"
+    cm.write_text(CONFIGMAP, encoding="utf-8")
+    _, quiet = _cli(capsys, "audit", "-f", str(cm))
+    assert "controls with findings" not in quiet and "controls not evaluated" in quiet
+    with_unevaluated = {c["id"]: c for c in controls if c.get("notEvaluated")}
+    assert set(re.findall(r"([A-Z]{2}-\d+(?:\(\d+\))?) \(", not_evaluated_line)) == set(with_unevaluated)
+    for cid, c in with_unevaluated.items():
+        for rid in c["notEvaluatedRules"]:
+            assert rid in not_evaluated_line, (cid, rid)
+        if c.get("clean"):
+            assert f"{c['clean']} clean" in not_evaluated_line, cid  # partly clean, partly unevaluated: both said
+    assert "AU-2 (KN-S035" in not_evaluated_line
