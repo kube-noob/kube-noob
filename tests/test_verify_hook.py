@@ -722,3 +722,66 @@ def test_the_hook_answers_under_an_ascii_terminal_encoding(ws: Path, env: dict[s
     assert asked.returncode == 0 and asked.stderr == "" and "deletes objects" in _asked(asked.stdout)
     passed = call("kubectl get pods")
     assert (passed.returncode, passed.stdout, passed.stderr) == (0, "", "")
+
+
+# -- review 5 (G280) ---------------------------------------------------------------------------------------------
+
+PS_BUILT = [
+    "& ('ku'+'bectl') delete ns prod",
+    '$x="kub"+"ectl"; & $x delete ns prod',
+    "iex ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('a3ViZWN0bA==')))",
+    "Invoke-Expression 'kube' + 'ctl delete ns prod'",
+    "& (gcm kube*) delete ns prod",
+    "& (Get-Command kube*) delete ns prod",
+    "./deploy.ps1",
+    ".\\deploy.ps1 -Env prod",
+    "ku`bectl delete ns prod",
+    "wsl -e sh -c 'kubectl delete ns prod'",
+    "cmd /c deploy.bat",
+    "Start-Process kubectl -ArgumentList 'delete ns prod'",
+    "k delete ns prod",
+    "$cmd = 'kubectl'; & $cmd delete ns prod",
+]
+PS_PLAIN = [
+    "Get-ChildItem -Recurse",
+    "Get-Process | Where-Object CPU -gt 1",
+    "dir",
+    "echo hello",
+    "Set-Location C:/src",
+]
+
+
+@pytest.mark.parametrize("cmd", PS_BUILT)
+def test_a_powershell_command_that_builds_or_runs_a_command_asks(ws: Path, cmd: str) -> None:
+    """Fifth review, finding 10: a substring test for the tool names let every built or indirect name through."""
+    code, out, _ = _hook(_input(cmd, ws, tool_name="PowerShell"), {})
+    assert code == 0 and "does not read PowerShell" in _asked(out), cmd
+
+
+@pytest.mark.parametrize("cmd", PS_PLAIN)
+def test_a_plain_powershell_command_passes(ws: Path, cmd: str) -> None:
+    assert _hook(_input(cmd, ws, tool_name="PowerShell"), {}) == (0, "", ""), cmd
+
+
+def test_an_allow_with_a_note_is_silent_in_the_hook(ws: Path) -> None:
+    """Finding 16: the note that a real apply would be denied is in the CLI's output; the hook passes an allow
+    silently, by design, since any stdout from it other than an `ask` is refused."""
+    assert _hook(_input("kubectl apply -f k8s/bad.yaml --dry-run=server", ws), {}) == (0, "", "")
+
+
+@pytest.mark.parametrize(
+    ("cmd", "secret"),
+    [
+        ("oc login --token sk-abc123456789012345", "sk-abc123456789012345"),
+        ("oc login -u u -p hunter2", "hunter2"),
+        ("kubectl --token sk-abc123456789012345 delete ns prod", "sk-abc123456789012345"),
+        ("helm uninstall web --kube-token sk-abc123456789012345", "sk-abc123456789012345"),
+        ("kubectl exec p -- psql postgres://u:hunter2@h/db", "hunter2"),
+        ("kubectl run x --image=y --env=PASSWORD=hunter2", "hunter2"),
+    ],
+)
+def test_the_hooks_ask_reason_never_carries_a_credential_value(ws: Path, cmd: str, secret: str) -> None:
+    """Finding 8, on the hook's own path: the reason Claude Code shows the user is redacted like the CLI text."""
+    code, out, err = _hook(_input(cmd, ws), {})
+    assert code == 0 and err == ""
+    assert secret not in _asked(out), cmd

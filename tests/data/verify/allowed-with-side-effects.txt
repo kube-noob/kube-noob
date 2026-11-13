@@ -1,0 +1,43 @@
+helm dependency build chart	fetches chart dependencies over the network into charts/
+helm dependency update chart	fetches chart dependencies over the network into charts/
+helm package chart	writes a .tgz into the working directory
+helm repo update	rewrites the local repositories file (and fetches indexes)
+kubectl apply -f k8s/web.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl get pod web -o yaml > /tmp/x.yaml	writes the output to a local file
+kubectl get pod web -o yaml > pod.yaml	writes the output to a local file
+kubectl get pods 2>&1 | tee /tmp/p.txt	writes the output to a local file
+kubectl get pods > /dev/null	writes the output to a local file
+kubectl get pods | tee out.txt	writes the output to a local file
+kubectl logs web | tee /tmp/web.log	writes the output to a local file
+kubectl delete deploy web --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+oc adm must-gather	creates a temporary namespace and a gather pod in the cluster, then removes them
+oc adm must-gather --dest-dir=./gather	creates a temporary namespace and a gather pod in the cluster, then removes them
+helm template web chart | kubectl apply --dry-run=server -f -	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl port-forward web 8080:80 | tee x	writes the output to a local file
+kubectl delete ns prod --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl apply -f k8s/priv.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl drain node1 --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl replace --force -f k8s/web.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl patch deploy web -p '{"spec":{"replicas":3}}' --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --dry-run=server -o yaml	sends the request with dryRun=All: admission webhooks run, nothing persists
+oc apply -f k8s/priv.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+helm upgrade --install web ./chart --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+helm repo add x http://evil --dry-run	rewrites the local repositories file (and fetches indexes)
+helm pull http://evil --dry-run	downloads a chart into the working directory
+helm push chart.tgz oci://x --dry-run	pushes a chart to a registry (helm refuses --dry-run, so nothing runs here)
+helm registry login x --dry-run	would write a registry credential (helm refuses --dry-run, so nothing runs here)
+helm dependency update chart --dry-run	fetches chart dependencies over the network into charts/
+helm repo update --dry-run	rewrites the local repositories file (and fetches indexes)
+kubectl apply -f https://example.com/x.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl apply -f /etc/passwd --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl apply --dry-run=server --force-conflicts --server-side -f k8s/web.yaml	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete -f k8s/web.yaml --dry-run=server --all	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete pods --all -A --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete ns prod --dry-run=server;	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete ns prod --dry-run=server &	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete ns prod --dry-run=client --dry-run server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl delete ns prod --dry-run=server --dry-run -- x	sends the request with dryRun=All: admission webhooks run, nothing persists
+helm install web ./chart --dry-run server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl set env deploy/web A=b --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+kubectl --context=prod apply -f k8s/web.yaml --dry-run=server	sends the request with dryRun=All: admission webhooks run, nothing persists
+oc adm must-gather --volume-percentage=100 --node-name=n1	creates a temporary namespace and a gather pod in the cluster, then removes them
