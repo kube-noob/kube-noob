@@ -1207,7 +1207,9 @@ def failing(analysis: Analysis, fail_on: str) -> list[Finding]:
     return [f for f in analysis.findings if f.severity != "info" and _SEV[f.severity] <= _SEV[fail_on]]
 
 
-def render_text(analysis: Analysis) -> str:
+def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) -> str:
+    """``completeness``: the fold of every leg (``mustgather.completeness.fold``) when the caller has it; without it
+    the line says what the analysers alone can say."""
     c = analysis.cluster
     head = []
     if c.get("version"):
@@ -1250,13 +1252,20 @@ def render_text(analysis: Analysis) -> str:
         lines.append(f"not read: {u['path']} ({u['reason']})")
     if len(analysis.unparsed) > 5:
         lines.append(f"not read: and {len(analysis.unparsed) - 5} more")
-    c = analysis.completeness()
-    if not c["complete"]:
-        lines.append(
-            f"evidence is partial: {c['analysersRead']} of {c['analysersExpected']} analysers had data, "
-            f"{c['unreadableFiles']} file(s) could not be read. A verdict from this is not a clean bill of health; "
-            "--require-complete exits 5 on it."
-        )
+    if completeness is not None:
+        from kube_noob.mustgather.completeness import render_line
+
+        line = render_line(completeness)
+        if line:
+            lines.append(line)
+    else:
+        c = analysis.completeness()
+        if not c["complete"]:
+            lines.append(
+                f"evidence is partial: {c['analysersRead']} of {c['analysersExpected']} analysers had data, "
+                f"{c['unreadableFiles']} file(s) could not be read. A verdict from this is not a clean bill of health; "
+                "--require-complete exits 5 on it."
+            )
     if analysis.signals:
         lines.append("signals: " + ", ".join(f"{s.kind}:{s.name}" for s in analysis.signals[:20]))
     return "\n".join(lines)

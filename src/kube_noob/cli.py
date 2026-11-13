@@ -1441,8 +1441,10 @@ def build_parser() -> argparse.ArgumentParser:
     mga.add_argument(
         "--require-complete",
         action="store_true",
-        help="exit 5 when the must-gather was missing analysers or held files that could not be read, so a gate "
-        "never reads a blind run as a clean one (exit 1 stays findings at or above --fail-on)",
+        help="exit 5 when any leg reported itself partial: an analyser with no data, a file that could not be read, "
+        "a skipped file in a directory an analyser reads, a partial operator inventory, an operator release-note "
+        "lookup or release-note search that did not cover the release; so a gate never reads a blind run as a "
+        "clean one (exit 1 stays findings at or above --fail-on)",
     )
     mga.add_argument(
         "--report",
@@ -2611,6 +2613,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.case_draft and not a.report:
             raise ConfigError("--case-draft needs --report DIR")
         analysis = analyse.analyse(bundle)
+        # The report computes the operator inventory and the operator release-note lookup itself: completeness is
+        # the fold of every leg, and report.json has to carry the legs it folds (G285).
         rep = mg_report.build(
             bundle, analysis, data_dir=s.data_dir, memory_dirs=[Path(m) for m in s.memory.paths] or None
         )
@@ -2621,13 +2625,12 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             except (OSError, ValueError) as exc:
                 raise ConfigError(f"--report {a.report}: {exc}") from exc
         from kube_noob import operator_issues, operators
-        from kube_noob.mustgather import operators as mg_operators
 
-        olm = mg_operators.collect(bundle)
-        inventory = operators.inventory(olm)
-        op_issues = operator_issues.for_must_gather(olm, rep["cluster"], data_dir=s.data_dir)
+        inventory = rep["operatorInventory"]
+        op_issues = rep["operatorKnownIssues"]
+        completeness = rep["completeness"]
         if a.format == "text":
-            text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis)
+            text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis, completeness=completeness)
             for m in rep["knownIssues"]:
                 text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
             if rep["knownIssuesVerdict"] == "not-determined":
@@ -2638,17 +2641,18 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 text += f"\nwrote {path}"
             _tprint(text + "\n" + operators.render_text(inventory) + "\n" + operator_issues.render_text(op_issues))
         else:
-            _emit({**bundle.as_dict(), **rep, "operatorInventory": inventory, "operatorKnownIssues": op_issues}, fmt)
+            _emit({**bundle.as_dict(), **rep}, fmt)
         if analyse.failing(analysis, a.fail_on):
             return 1
         # A gate that passes on evidence nobody could read is a false all-clear, and exit 0 cannot say which one it
         # was. 5 rather than 2: 1 is findings at or above --fail-on, and 2, 3 and 4 already mean a config or missing
         # file, a clarification, and a refused input. 5 means the run itself is not trustworthy enough to act on.
-        if getattr(a, "require_complete", False) and not analysis.completeness()["complete"]:
-            c = analysis.completeness()
+        # "Complete" is every leg (G285): the analysers, the files, the skipped files, the operator inventory, the
+        # operator release-note lookup and the finding-level release-note search, each with its reason.
+        if getattr(a, "require_complete", False) and not completeness["complete"]:
+            partial = [leg for leg in completeness["legs"] if leg["state"] == "partial"]
             print(
-                f"refusing a clean verdict: {c['analysersRead']} of {c['analysersExpected']} analysers had data and "
-                f"{c['unreadableFiles']} file(s) could not be read",
+                "refusing a clean verdict: " + "; ".join(f"{leg['leg']}: {leg['why']}" for leg in partial),
                 file=sys.stderr,
             )
             return 5

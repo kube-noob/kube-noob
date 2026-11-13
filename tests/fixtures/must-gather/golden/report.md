@@ -394,6 +394,7 @@ oc describe pod -n shop web-7d9f
 
 - Skipped 2: Secret data (never read)
 - Skipped 1: nested archive (not opened)
+- Evidence is partial: operator inventory: 1 operator from OLM data; Subscriptions were not read, so catalog, channel and approval are not determined for every operator; 1 operator state(s) not determined; operator known issues: the inventory is partial; the cluster is updating to 4.20.4
 
 ## Signals
 

@@ -1858,11 +1858,14 @@ class Toolkit:
         except ingest.MustGatherError as exc:
             raise ValueError(str(exc)) from exc
         analysis = analyse.analyse(bundle)
+        # The report carries the operator inventory, the operator release-note lookup and `completeness`, the fold
+        # of every leg (G285); `surface` words the lookup's hints for a tool caller.
         rep = mg_report.build(
             bundle,
             analysis,
             data_dir=self.settings.data_dir,
             memory_dirs=list(self.settings.memory.paths) or None,
+            surface="mcp",
         )
         out: dict[str, Any] = {k: v for k, v in bundle.as_dict().items() if k != "source"}
         out.update(rep)
@@ -1870,14 +1873,6 @@ class Toolkit:
         out["findings"] = rep["findings"][: p.top]
         if p.case_draft:
             out["caseDraft"] = mg_report.case_draft(rep)
-        from kube_noob import operator_issues, operators
-        from kube_noob.mustgather import operators as mg_operators
-
-        olm = mg_operators.collect(bundle)
-        out["operatorInventory"] = operators.inventory(olm)
-        out["operatorKnownIssues"] = operator_issues.for_must_gather(
-            olm, rep["cluster"], surface="mcp", data_dir=self.settings.data_dir
-        )
         self._observe([f"signal:{s['kind']}:{s['name']}" for s in rep["signals"][:20]])
         return out
 
@@ -2790,7 +2785,9 @@ class Toolkit:
                     "OLM operators, pods, warning events and etcd log hints, and an installed-operator inventory. Each "
                     "finding has its evidence file, its "
                     "signals, read-only commands to confirm it, and the known OpenShift bugs and team memory entries "
-                    "that match it for the version the cluster runs. Nothing is extracted or run and Secrets are "
+                    "that match it for the version the cluster runs. completeness.legs says what each leg of the "
+                    "run could read (analysers, files, skipped files, operator inventory, release-note lookups); "
+                    "complete is true only when no leg is partial. Nothing is extracted or run and Secrets are "
                     "never read."
                     + (
                         f" Paths must be inside {self.settings.must_gather.allowed_dir}."

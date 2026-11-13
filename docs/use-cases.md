@@ -403,6 +403,19 @@ kube-noob must-gather analyze must-gather.tar.gz --report case-01 --case-draft
 kube-noob demo must-gather
 ```
 
+`completeness` is the fold of every leg the command runs, not the analysers alone: `legs[]` names each one -- the
+analysers, the files none could read, the files ingest skipped, the Secrets it never reads, the operator inventory,
+the operator release-note lookup and the finding-level release-note search -- with a state (`complete`, `partial`,
+`not-applicable`) and its reason, and `complete` is true only when no leg is `partial`. `--require-complete` exits 5
+on any partial leg, so an inventory that could not read Subscriptions, a release the update in progress kept from
+being searched, or a rotated `.gz` log in a directory an analyser reads no longer passes as a clean run; a nested
+archive under `audit_logs/`, which no analyser reads, is a noted skip, and Secret data is a deliberate one. The text
+view's `evidence is partial:` line, the JSON, the MCP result and `report.json` carry the same legs.
+
+```bash
+kube-noob must-gather analyze must-gather.tar.gz --require-complete; echo $?
+```
+
 From an MCP client, `kubenoob_analyze_must_gather` takes the must-gather's path. The local server reads any path
 you give it; a shared server on OpenShift reads only the must-gathers on the claim you mount
 (`mustGather.pvc.claimName`).

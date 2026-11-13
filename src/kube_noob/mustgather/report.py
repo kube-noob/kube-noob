@@ -21,6 +21,7 @@ from kube_noob import __version__
 from kube_noob.debug.cluster import redact_text
 from kube_noob.mustgather.analyse import SEVERITIES, Analysis, has_clusterversion
 from kube_noob.mustgather.ingest import GATHER_DIRS, Bundle
+from kube_noob.operator_issues import Surface
 
 MAX_MATCHED_FINDINGS = 20  # findings sent to known-issue and memory matching (the most severe first)
 MAX_NEXT_STEPS = 15
@@ -67,8 +68,15 @@ def build(
     match_known: MatchKnown | None = None,
     match_memory: MatchMemory | None = None,
     generated_by: str = f"kube-noob {__version__}",
+    surface: Surface = "must-gather",
+    inventory: dict[str, Any] | None = None,
+    operator_issues: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The report as a dict (``report.json``)."""
+    """The report as a dict (``report.json``).
+
+    The operator inventory and the operator release-note lookup are computed here when not given, because
+    ``completeness`` is the fold of every leg (G285) and the report has to carry the legs it folds; ``surface`` words
+    their hints for where they are read (``operator_issues.Surface``)."""
     a = analysis.as_dict()
     cluster = a["cluster"]
     version = cluster.get("version") or None
@@ -128,6 +136,23 @@ def build(
             if c not in seen and len(steps) < MAX_NEXT_STEPS:
                 seen.add(c)
                 steps.append({"command": c, "label": "read-only", "for": f["rank"]})
+    if inventory is None or operator_issues is None:
+        from kube_noob import operator_issues as op_issues_mod
+        from kube_noob import operators as ops_mod
+        from kube_noob.mustgather import operators as mg_operators
+
+        olm = mg_operators.collect(bundle)
+        if inventory is None:
+            inventory = ops_mod.inventory(olm)
+        if operator_issues is None:
+            operator_issues = op_issues_mod.for_must_gather(olm, cluster, surface=surface, data_dir=data_dir)
+    from kube_noob.mustgather import completeness as mg_completeness
+
+    head: dict[str, Any] = {
+        "knownIssuesVerdict": verdict,
+        "knownIssuesNote": note,
+        "cluster": cluster,
+    }
     return {
         "generatedBy": generated_by,
         "source": posixpath.basename(bundle.source.rstrip("/")) or "must-gather",
@@ -144,10 +169,13 @@ def build(
         "memoryNotes": list(dict.fromkeys(memory_notes)),
         "nextSteps": steps,
         "coverage": a["coverage"],
+        "completeness": mg_completeness.fold(analysis, bundle, inventory, operator_issues, head),
         "unparsed": a["unparsed"],
         "skipped": bundle.as_dict()["skipped"],
         "signals": a["signals"],
         "knowledge": knowledge,
+        "operatorInventory": inventory,
+        "operatorKnownIssues": operator_issues,
     }
 
 
@@ -307,6 +335,21 @@ def markdown(r: dict[str, Any]) -> str:
         lines.append(f"| {cov['analyser']} | {cov['files']} | {cov['objects']} | {cov['findings']} | {_md(note)} |")
     extra = [f"- Skipped {s['count']}: {_md(s['reason'])}" for s in r["skipped"]]
     extra += [f"- Not read: `{_md(u['path'])}` ({_md(u['reason'])})" for u in r["unparsed"][:20]]
+    c = r.get("completeness") or {}
+    if c.get("legs"):
+        # One line, every leg: the table above is the analysers' view only, and "complete" has to mean every leg
+        # (the operator inventory, the release-note lookups and the skipped files included), as the exit code does.
+        partial = [leg for leg in c["legs"] if leg["state"] == "partial"]
+        if partial:
+            extra.append(
+                "- Evidence is partial: " + "; ".join(f"{_md(leg['leg'])}: {_md(leg['why'])}" for leg in partial)
+            )
+        else:
+            extra.append(
+                "- Evidence is complete: every leg read what it set out to read ("
+                + ", ".join(f"{_md(leg['leg'])} {_md(leg['state'])}" for leg in c["legs"])
+                + ")"
+            )
     if extra:
         lines += ["", *extra]
     if r["signals"]:
