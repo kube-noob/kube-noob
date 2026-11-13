@@ -22,6 +22,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { notrun+=("$2 -- $1 is not installe
 # ---- ci/plugin: the generated copies and documents match the code they are generated from.
 "$py" scripts/sync_plugin_server.py --check
 "$py" scripts/ci_wrappers.py --check
+"$py" scripts/permissions_doc.py --check
 "$py" scripts/build_skill.py --check
 "$py" scripts/safety_contract.py --check
 "$py" scripts/compliance_doc.py --check

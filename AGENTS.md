@@ -41,6 +41,7 @@ python scripts/sync_plugin_server.py
 python scripts/safety_contract.py --check
 python scripts/compliance_doc.py --check
 python scripts/doc_numbers.py --check
+python scripts/permissions_doc.py --check
 ```
 
 `src/` is the only source of truth. `plugin/kube-noob/server/kube_noob/` is a **generated copy** — never edit it, and
@@ -58,6 +59,11 @@ rewrites only those three regions and leaves the prose alone, and it REFUSES rat
 whose shape has changed. A control the document evidences through posture rather than through a rule (`SC-13`,
 via `kube-noob doctor`) lives in `POSTURE_CONTROLS` in that script, because generating from `RULE_CONTROLS` alone
 would delete it.
+
+`scripts/permissions_doc.py` regenerates `docs/permissions.md`: which API resources each live capability reads,
+recorded by running it against a fixture cluster, and what the chart's read-only Role and ClusterRole grant. After a
+change to a live reader or to `ALLOWED_RESOURCES`, regenerate it; `tests/test_permissions_doc.py` holds the chart to
+the allowlist in both directions (G293).
 
 `scripts/doc_numbers.py` does the same for the measured numbers in `docs/limits.md` (how many rules generate an
 admission policy per platform) and `docs/use-cases.md` (the compaction measurement). Both are measured by running

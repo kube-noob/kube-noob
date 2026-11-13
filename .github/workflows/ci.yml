@@ -178,6 +178,8 @@ jobs:
         run: python scripts/sync_plugin_server.py --check
       - name: Tekton Task and GitLab template carry scripts/ci/gate.sh verbatim
         run: python scripts/ci_wrappers.py --check
+      - name: Permission matrix matches what the live capabilities read and what the chart grants
+        run: python scripts/permissions_doc.py --check
       - name: Safety contract matches the code and its invariants hold
         run: python scripts/safety_contract.py --check
       - name: Agent Skill is valid and its tool reference matches the code

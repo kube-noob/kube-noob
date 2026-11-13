@@ -1005,6 +1005,11 @@ kube-noob posture scan -f k8s/ --fail-above 17
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
 ```
 
+What `--live` reads, per command and MCP tool -- API group, resource and verb, recorded from the code rather than
+written down -- and that the chart's read-only Role and ClusterRole grant exactly that set and no Secret, is
+[docs/permissions.md](permissions.md). An operator who grants less than the chart (one capability's row) gets every
+list that was refused named as not read, in the text view and in `notRead`; nothing refused reads as clean.
+
 ### What can this pod reach if it is compromised? Blast radius
 
 `posture scan` starts at what is exposed. `posture reach` starts at the other end: the one workload a scanner just
