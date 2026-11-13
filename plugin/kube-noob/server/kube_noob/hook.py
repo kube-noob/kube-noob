@@ -284,6 +284,9 @@ def main(
     fork) or "thread" (tests only: not bounded against C code)."""
     limit = BUDGET_SECONDS + 1.0 if budget is None else budget
     try:
+        from kube_noob.cli import tolerant_streams
+
+        tolerant_streams()  # the deny's stderr and the ask's reason carry « »; an ASCII terminal still gets them
         raw = (stdin or sys.stdin.buffer).read(MAX_INPUT + 1)
         mode = isolate or ("fork" if hasattr(os, "fork") else "spawn")
         got = _bounded(raw, dict(os.environ if env is None else env), options, limit, mode)
