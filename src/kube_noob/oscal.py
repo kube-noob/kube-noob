@@ -354,6 +354,12 @@ def assessment_results(
     if oscal_findings:
         result["findings"] = oscal_findings
     remarks = [str(a) for a in report.get("assumptions") or []]
+    for row in report.get("requiredEvaluated") or []:
+        if isinstance(row, dict) and not row.get("evaluated"):
+            remarks.append(
+                f"Gate incomplete: required rule {row.get('rule')} was not evaluated ({row.get('why')}); no "
+                "objective it evidences is satisfied by this document."
+            )
     unreadable = [u for u in report.get("unreadable") or [] if isinstance(u, dict)]
     if unreadable:
         # `--skip-unreadable` promises the skipped files are listed "so a gate never reads a partial audit as a

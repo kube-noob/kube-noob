@@ -321,7 +321,13 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
                 f"{'it' if not_run == 1 else 'them'}: that is not a pass, and section 1 says what "
                 f"{'it' if not_run == 1 else 'they'} would have covered."
             )
-        return Masthead(tiles, "The gate passed." if report.get("passed") else "The gate failed.", lede)
+        from kube_noob.gate import headline
+
+        word = headline(report)
+        heads = {"passed": "The gate passed.", "failed": "The gate failed.", "incomplete": "The gate is incomplete."}
+        if word == "incomplete":
+            lede += " A rule the pipeline requires could not decide: section 1 names it and why."
+        return Masthead(tiles, heads[word], lede)
     rows = report.get("indicators")
     if isinstance(rows, list) and rows:
         # A KSI row's `findings` is a COUNT, not a bucket dict -- reading it as one crashed `ksi --html`
@@ -475,6 +481,9 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
         )
     # A check nobody ran is the plainest limit there is, and the masthead counts them in the absence tile --
     # so leaving them out of this section made that tile point at a section that did not mention them.
+    for row in report.get("requiredEvaluated") or []:
+        if isinstance(row, dict) and not row.get("evaluated"):
+            items.append(("Required rule", _esc(f"INCOMPLETE {row.get('rule')}"), _esc(str(row.get("why") or ""))))
     for entry in report.get("notRun") or []:
         text = str(entry)
         head, _, why = text.partition(":")

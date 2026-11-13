@@ -123,6 +123,7 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    report.undecided_on = {k: list(v) for k, v in sorted(ctx.undecided_on.items())}
     report.undecided = {
         rid: ctx.undecided_why.get(rid, "the rule declined to decide on this input") for rid in sorted(ctx.undecided)
     }

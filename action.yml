@@ -75,6 +75,18 @@ inputs:
     description: Where to write the SARIF file (upload it with github/codeql-action/upload-sarif).
     required: false
     default: kube-noob.sarif
+  require-evaluated:
+    description: >-
+      Rule ids the pipeline relies on having run, separated by spaces (kube-noob gate --require-evaluated). A rule
+      that could not decide -- KN-N014 without cni -- makes the result "incomplete" and the step exit 5, with the
+      rule's own reason in the summary and as an error annotation. A rule whose subject is absent from the input
+      counts as evaluated today; G281 changes that to not evaluated.
+    required: false
+    default: ""
+  cni:
+    description: The cluster's CNI as NAME or NAME:VERSION (calico:3.32, ovn-kubernetes, cilium:1.18), for KN-N014.
+    required: false
+    default: ""
   annotations:
     description: >-
       "true" (the default) also prints the findings as workflow commands, so they appear as annotations on the
@@ -84,7 +96,7 @@ inputs:
     default: "true"
 outputs:
   result:
-    description: passed or failed.
+    description: passed, failed or incomplete (a required rule could not decide; exit 5).
     value: ${{ steps.gate.outputs.result }}
   sarif:
     description: The SARIF file written.
@@ -127,6 +139,8 @@ runs:
         KN_FAIL_ON: ${{ inputs.fail-on }}
         KN_SARIF: ${{ inputs.sarif }}
         KN_ANNOTATIONS: ${{ inputs.annotations }}
+        KN_REQUIRE_EVALUATED: ${{ inputs.require-evaluated }}
+        KN_CNI: ${{ inputs.cni }}
       run: |
         set -euo pipefail
         args=(--platform "$KN_PLATFORM" --fail-on "$KN_FAIL_ON" --namespace "$KN_NAMESPACE")
@@ -142,6 +156,8 @@ runs:
         if [ -n "$KN_VERSION" ]; then args+=(--version "$KN_VERSION"); fi
         if [ -n "$KN_EXCEPTIONS" ]; then args+=(--exceptions "$KN_EXCEPTIONS"); fi
         if [ "$KN_ANNOTATIONS" != "false" ]; then args+=(--github-annotations); fi
+        for r in $KN_REQUIRE_EVALUATED; do args+=(--require-evaluated "$r"); done
+        if [ -n "$KN_CNI" ]; then args+=(--cni "$KN_CNI"); fi
         rc=0
         # Workflow commands and the JSON report both come out on stdout, so the stream is captured once and split:
         # the `::` lines are echoed to the log, where Actions turns them into annotations, and the rest is the
@@ -155,5 +171,5 @@ runs:
         # as exit 1, and the summary and the result output were skipped.
         grep -v '^::' "$raw" > "$RUNNER_TEMP/kube-noob-gate.json" || true
         if [ -f "$RUNNER_TEMP/kube-noob-summary.md" ]; then cat "$RUNNER_TEMP/kube-noob-summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
-        if [ "$rc" = 0 ]; then echo "result=passed" >> "$GITHUB_OUTPUT"; elif [ "$rc" = 1 ]; then echo "result=failed" >> "$GITHUB_OUTPUT"; fi
+        if [ "$rc" = 0 ]; then echo "result=passed" >> "$GITHUB_OUTPUT"; elif [ "$rc" = 1 ]; then echo "result=failed" >> "$GITHUB_OUTPUT"; elif [ "$rc" = 5 ]; then echo "result=incomplete" >> "$GITHUB_OUTPUT"; fi
         exit "$rc"

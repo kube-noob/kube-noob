@@ -136,6 +136,8 @@ class Report:
     #: Rules that declined to decide, each with its own reason (``AuditContext.undecided_why``); read by
     #: ``gate --require-evaluated``. Not in ``as_dict`` here: the audit's own not-evaluated record is G281's.
     undecided: dict[str, str] = field(default_factory=dict)
+    #: Per object, for rules that declined on one object while deciding on others (G290 round 1, 5).
+    undecided_on: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
     # What the cluster's audit configuration can and cannot record, when the bundle carries the object that
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).

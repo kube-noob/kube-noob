@@ -86,11 +86,18 @@ class AuditContext:
         "from an object not passed; pass the whole namespace (a directory) to evaluate it"
     )
 
-    def cannot_decide(self, rule_id: str, why: str | None = None) -> None:
+    #: Per object, when the rule declined on one object and may well have decided on others (G290 round 1, 5).
+    undecided_on: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+
+    def cannot_decide(self, rule_id: str, why: str | None = None, obj: str | None = None) -> None:
         self.undecided.add(rule_id)
         if why is None:
             why = self.PARTIAL_WHY if self.partial_bundle else "the rule declined to decide on this input"
         self.undecided_why.setdefault(rule_id, why)
+        if obj is not None:
+            rows = self.undecided_on.setdefault(rule_id, [])
+            if (obj, why) not in rows and len(rows) < 50:
+                rows.append((obj, why))
 
     @property
     def is_openshift(self) -> bool:
@@ -688,6 +695,7 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 r.rule_id,
                 "a Service's selector matches pod labels an operator merges in from outside this input, so whether "
                 "it has endpoints cannot be decided from these documents",
+                obj=svc.ref(),
             )
             continue
         yield r.finding(
@@ -3185,6 +3193,7 @@ def _n012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 r.rule_id,
                 "a NetworkPolicy's selector matches pod labels an operator merges in from outside this input, so "
                 "whether it selects anything cannot be decided from these documents",
+                obj=d.ref(),
             )
             continue
         yield r.finding(

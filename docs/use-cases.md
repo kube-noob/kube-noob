@@ -783,16 +783,25 @@ JSON. Findings in a rendered chart point at the template file.
 The offline gate is preflight; native admission enforces. `kube-noob policy generate --platform openshift
 --version 4.22 --engine vap --mode enforce --rule KN-S001` emits a ValidatingAdmissionPolicy with `failurePolicy:
 Fail` and a binding with `validationActions: [Deny]`, so a privileged container the gate would have failed in CI is
-refused by the API server itself when it reaches the cluster by any other route
+refused by the API server itself when it reaches the cluster by another route -- in the namespaces the policy
+covers: the generated policy exempts the platform's own, `openshift` and `openshift-*` and requests from
+`system:serviceaccount:openshift-*`, and its match constraints leave out `kube-system`, `kube-public` and `kube-node-lease`,
+so an object there is not refused by it
 (`tests/test_policy_handoff.py::test_the_documented_enforce_command_emits_fail_and_deny` runs that exact command and
-asserts those two fields).
+asserts those fields).
 
 `--require-evaluated RULE_ID` (repeatable) names a rule the pipeline relies on having run. A rule that could not
 decide -- KN-N014 with no `--cni`, KN-S036 with no registry allow-list -- is printed as `INCOMPLETE KN-N014 -- ...`
 with the rule's own reason, in the summary and on stderr, and the gate exits 5 (evidence incomplete; exit 1 keeps
 its meaning, and a rule that fired has been evaluated). The JSON carries `requiredEvaluated: [{rule, evaluated,
 fired, excepted, why}]` and `incompleteEvaluation`, the SARIF file an invocation property of the same name and an
-error-level notification per incomplete rule, and an id kube-noob has no rule for exits 2 naming it.
+error-level notification per incomplete rule, and an id kube-noob has no rule for exits 2 naming it. The headline
+is one word computed once -- `passed`, `failed` or `incomplete` -- and every output carries it (the Markdown
+heading, `verdict`/`passed`/`incomplete` in the JSON, the HTML masthead, a `::error` annotation per incomplete rule,
+a remark in the OSCAL document); the gate audits one `-f` file as part of a namespace exactly as `audit -f` does,
+so a rule that needs the whole namespace is `INCOMPLETE` there rather than "evaluated, nothing found", and a rule
+that fired on one object and declined on another says both (`declinedOn`). A rule whose subject is absent from the
+input counts as evaluated today; G281 changes that to not evaluated.
 
 ```bash
 kube-noob gate -f k8s/ --platform openshift --version 4.22 --require-evaluated KN-N014 --cni ovn-kubernetes
@@ -822,7 +831,13 @@ GitHub Actions (add `github/codeql-action/upload-sarif` after it to see findings
     containerfiles: Containerfile
     platform: openshift
     version: "4.20"
+    require-evaluated: KN-N014
+    cni: ovn-kubernetes
 ```
+
+`require-evaluated` and `cni` pass through to `--require-evaluated` and `--cni`; the action's `result` output is
+`passed`, `failed` or `incomplete` (exit 5: a required rule could not decide, named in the job summary and as an
+error annotation).
 
 The action also prints the findings as annotations, so they appear on the pull request instead of only in the log
 (`--github-annotations` does the same from the CLI; `annotations: "false"` turns it off). Findings at or above
@@ -1303,9 +1318,12 @@ kube-noob policy generate --engine kyverno --exclude-namespace legacy-apps -o ky
 The offline gate is preflight; native admission enforces. `kube-noob policy generate --platform openshift
 --version 4.22 --engine vap --mode enforce --rule KN-S001` emits a ValidatingAdmissionPolicy with `failurePolicy:
 Fail` and a binding with `validationActions: [Deny]`, so a privileged container the gate would have failed in CI is
-refused by the API server itself when it reaches the cluster by any other route
+refused by the API server itself when it reaches the cluster by another route -- in the namespaces the policy
+covers: the generated policy exempts the platform's own, `openshift` and `openshift-*` and requests from
+`system:serviceaccount:openshift-*`, and its match constraints leave out `kube-system`, `kube-public` and `kube-node-lease`,
+so an object there is not refused by it
 (`tests/test_policy_handoff.py::test_the_documented_enforce_command_emits_fail_and_deny` runs that exact command and
-asserts those two fields).
+asserts those fields).
 
 Through the MCP or HTTP tool there is no `-o`, so the inline YAML is capped at 128 KiB: every rule on every
 engine renders about 380 KB (~95,000 tokens), which is more than most callers can hold. Over the limit the result

@@ -39,8 +39,8 @@ def test_a_required_rule_that_could_not_decide_is_incomplete_in_the_rules_own_wo
     row = _required(rep)["KN-N014"]
     assert row["evaluated"] is False and "--cni" in row["why"]
     assert rep["incompleteEvaluation"] == ["KN-N014"]
-    # not a finding and not a failure: `passed` keeps its meaning
-    assert rep["passed"] is True
+    # not a finding: no failure reason, and the headline is the third word, never `passed`
+    assert rep["failures"] == [] and rep["verdict"] == "incomplete" and rep["passed"] is False
 
 
 def test_with_the_cni_named_the_rule_is_evaluated_and_the_gate_is_complete() -> None:
@@ -160,21 +160,125 @@ def test_json_output_carries_the_record(capsys: pytest.CaptureFixture[str]) -> N
 
 
 def test_a_sarif_file_with_the_flag_still_validates(tmp_path: Path) -> None:
+    """Against the vendored OASIS schema, with the validator `tests/test_gate_sarif.py` uses (round 1, 15)."""
+    from tests.test_gate_sarif import NPM, _ajv, _validate
+
     out = tmp_path / "g.sarif"
-    main(
-        [
-            "gate",
-            "-f",
-            str(TIERS),
-            "--platform",
-            "openshift",
-            "--require-evaluated",
-            "KN-N014",
-            "--sarif",
-            str(out),
-            "--quiet",
-        ]
-    )
+    args = ["gate", "-f", str(TIERS), "--platform", "openshift", "--require-evaluated", "KN-N014", "--sarif", str(out)]
+    main([*args, "--quiet"])
     doc = json.loads(out.read_text(encoding="utf-8"))
     inv = doc["runs"][0]["invocations"][0]
     assert isinstance(inv["properties"]["requiredEvaluated"], list) and inv["executionSuccessful"] is True
+    node = _ajv()
+    if node is None:
+        pytest.skip(f"ajv is not installed: {NPM}")
+    done = _validate(node, out)
+    assert done.returncode == 0 and "VALID" in done.stdout, done.stdout + done.stderr
+
+
+# -- round 1 (5, 6, 7): one headline, the gate's partial assumption, declined on another object ------------------
+
+MIXED = ROOT / "tests" / "fixtures" / "gate" / "v011-mixed.yaml"
+CM = ROOT / "tests" / "fixtures" / "gate" / "cm.yaml"
+
+
+def test_a_rule_that_fired_on_one_object_and_declined_on_another_says_both() -> None:
+    rep = gate.run(gate.collect([str(MIXED)], _read), platform="kubernetes", require_evaluated=["KN-V011"])
+    row = _required(rep)["KN-V011"]
+    assert row["evaluated"] is True and row["fired"] == 1
+    assert row["declinedOn"] and "operator" in row["declinedOn"][0]["why"]
+    assert row["declinedOn"][0]["object"]
+    assert "declined on" in row["why"]
+    md = gate.markdown(rep)
+    assert "fired (1); declined on" in md
+    assert rep["verdict"] == "passed" and rep["incompleteEvaluation"] == []
+
+
+def test_the_gate_audits_one_file_as_part_of_a_namespace_like_audit() -> None:
+    """`gate -f one.yaml` used to audit as a whole namespace while `audit -f one.yaml` audited a partial bundle, so
+    KN-C008 read "evaluated, nothing found" in the gate and "not evaluated" in the audit (round 1, 6)."""
+    one = ROOT / "examples" / "insecure-deployment.yaml"
+    rep = gate.run(
+        gate.collect([str(one)], _read),
+        platform="kubernetes",
+        partial_bundle=True,
+        fail_on="never",
+        require_evaluated=["KN-N001", "KN-C008"],
+    )
+    rows = _required(rep)
+    assert rows["KN-N001"]["evaluated"] is False and "partial bundle" in rows["KN-N001"]["why"]
+    assert rows["KN-C008"]["evaluated"] is False
+    assert any("part of a namespace" in a for a in rep["assumptions"])
+    assert rep["verdict"] == "incomplete"
+
+
+def test_the_cli_passes_the_partial_decision_it_passes_audit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    one = ROOT / "examples" / "insecure-deployment.yaml"
+    assert main(["--format", "json", "gate", "-f", str(one), "--fail-on", "never"]) == 0
+    one_file = json.loads(capsys.readouterr().out)
+    assert "KN-N001" not in {f["ruleId"] for f in one_file["findings"]}
+    assert any("part of a namespace" in a for a in one_file["assumptions"])
+    d = tmp_path / "ns"
+    d.mkdir()
+    (d / "a.yaml").write_text(one.read_text(encoding="utf-8"), encoding="utf-8")
+    assert main(["--format", "json", "gate", "-f", str(d), "--fail-on", "never"]) == 0
+    whole = json.loads(capsys.readouterr().out)
+    assert "KN-N001" in {f["ruleId"] for f in whole["findings"]}
+    assert not any("part of a namespace" in a for a in whole["assumptions"])
+
+
+def test_an_absent_subject_rule_is_evaluated_today_and_the_help_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    rep = gate.run(gate.collect([str(CM)], _read), platform="kubernetes", require_evaluated=["KN-S001"])
+    assert _required(rep)["KN-S001"]["evaluated"] is True
+    with pytest.raises(SystemExit):
+        main(["gate", "--help"])
+    out = capsys.readouterr().out
+    assert "subject is absent" in out and "G281" in out
+
+
+def test_one_three_valued_headline_for_every_renderer(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rep = _run(require_evaluated=["KN-N014"])
+    assert rep["verdict"] == "incomplete" and rep["passed"] is False and rep["incomplete"] is True
+    assert rep["failures"] == []
+    assert gate.markdown(rep).startswith("## kube-noob gate incomplete")
+    from kube_noob.report_html import render as html_render
+
+    page = html_render(rep)
+    assert "incomplete" in page.lower() and "INCOMPLETE KN-N014" in page
+    notes = gate.github_annotations(rep)
+    assert [n for n in notes if n.startswith("::error") and "KN-N014" in n]
+    from kube_noob.oscal import assessment_results
+
+    doc = assessment_results(rep)
+    doc = doc.get("assessment-results", doc)
+    assert "KN-N014" in doc["results"][0]["remarks"] and "incomplete" in doc["results"][0]["remarks"].lower()
+    # the three words are exclusive: findings at --fail-on win
+    failed = _run(require_evaluated=["KN-N014"], cni="calico:3.32", fail_on="high")
+    assert failed["verdict"] == "failed" and failed["passed"] is False and failed["incomplete"] is False
+    clean = _run(require_evaluated=["KN-N014"], cni="ovn-kubernetes")
+    assert clean["verdict"] == "passed" and clean["passed"] is True and clean["incomplete"] is False
+
+
+def test_the_exit_1_path_prints_the_incomplete_line_on_both_channels(capsys: pytest.CaptureFixture[str]) -> None:
+    args = ["gate", "-f", str(TIERS), "--platform", "openshift", "--fail-on", "low", "--require-evaluated", "KN-N014"]
+    assert main(args) == 1
+    out = capsys.readouterr()
+    assert "INCOMPLETE KN-N014 -- " in out.out and "INCOMPLETE KN-N014 -- " in out.err
+    assert "## kube-noob gate failed" in out.out
+
+
+def test_the_github_action_passes_require_evaluated_and_cni_through() -> None:
+    import yaml
+
+    action = yaml.safe_load((ROOT / "action.yml").read_text(encoding="utf-8"))
+    assert {"require-evaluated", "cni"} <= set(action["inputs"])
+    gate_step = next(s for s in action["runs"]["steps"] if s.get("id") == "gate")
+    assert {"KN_REQUIRE_EVALUATED", "KN_CNI"} <= set(gate_step["env"])
+    run = gate_step["run"]
+    assert "--require-evaluated" in run and "--cni" in run
+    assert "result=incomplete" in run, "exit 5 is the third result word"
+    assert action["outputs"]["result"]["description"].count("incomplete") >= 1
+    docs = (ROOT / "docs" / "use-cases.md").read_text(encoding="utf-8")
+    assert "require-evaluated:" in docs and "cni:" in docs

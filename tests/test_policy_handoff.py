@@ -42,6 +42,11 @@ def test_the_documented_enforce_command_emits_fail_and_deny(tmp_path: Path, caps
     assert policies[0]["spec"]["failurePolicy"] == "Fail"
     assert bindings[0]["spec"]["validationActions"] == ["Deny"]
     assert policies[0]["metadata"]["name"] == "kube-noob-kn-s001"
+    # the exemptions the paragraph states: the platform's own namespaces, and the binding's namespace selector
+    exempt = next(v["expression"] for v in policies[0]["spec"]["variables"] if v["name"] == "exempt")
+    assert "startsWith('openshift-')" in exempt and "system:serviceaccount:openshift-" in exempt
+    expr = policies[0]["spec"]["matchConstraints"]["namespaceSelector"]["matchExpressions"][0]
+    assert expr["operator"] == "NotIn" and set(expr["values"]) == {"kube-system", "kube-public", "kube-node-lease"}
 
 
 def test_both_pages_quote_the_command_the_test_runs() -> None:
@@ -50,3 +55,4 @@ def test_both_pages_quote_the_command_the_test_runs() -> None:
     quoted = "kube-noob " + " ".join(COMMAND)
     assert flat.count(quoted) >= 2, "the gate page and the admission page each carry the handoff paragraph"
     assert flat.count("failurePolicy: Fail") >= 2 and flat.count("validationActions: [Deny]") >= 2
+    assert flat.count("`openshift-*`") >= 2 and flat.count("`kube-system`") >= 2

@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: shop}
+spec:
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      containers: [{name: api, image: registry.example.com/api@sha256:0000000000000000000000000000000000000000000000000000000000000000}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: broken, namespace: shop}
+spec:
+  selector: {app: nothing-here}
+  ports: [{port: 80}]
+---
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata: {name: ray, namespace: ml}
+spec:
+  headGroupSpec:
+    template:
+      metadata: {labels: {component: head}}
+      spec:
+        containers: [{name: head, image: registry.example.com/ray@sha256:0000000000000000000000000000000000000000000000000000000000000000}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: ray-svc, namespace: ml}
+spec:
+  selector: {ray.io/node-type: head}
+  ports: [{port: 80}]

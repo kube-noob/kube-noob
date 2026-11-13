@@ -141,6 +141,15 @@ def _fix_verdict_line(res: dict[str, Any]) -> str:
     return line
 
 
+def _gate_partial_input(a: argparse.Namespace) -> bool:
+    """The gate's version of `_partial_input`: `-f` repeats and `--chart` renders a whole release, so the input is
+    part of a namespace only when every `-f` is one file or stdin and no chart was rendered (G290 round 1, 6)."""
+    if getattr(a, "chart", None):
+        return False
+    files = [f for f in (getattr(a, "file", None) or []) if isinstance(f, str)]
+    return bool(files) and all(f == "-" or not Path(f).is_dir() for f in files)
+
+
 def _partial_input(a: argparse.Namespace) -> bool:
     """True when the caller named one file or stdin rather than a directory.
 
@@ -550,6 +559,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
             require_evaluated=list(getattr(a, "require_evaluated", []) or []),
+            partial_bundle=_gate_partial_input(a),
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -577,14 +587,17 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if report.get("unreadable") and not a.skip_unreadable:
         _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
         return 5
-    if not report["passed"]:
-        return 1
-    # Findings first (exit 1 keeps its meaning), then the evidence: a required rule that could not decide is
-    # incomplete evidence, which is what 5 already means (G290). Never a new meaning for another code.
-    incomplete = [r for r in report.get("requiredEvaluated") or [] if not r["evaluated"]]
-    if incomplete:
-        for r in incomplete:
+    # The INCOMPLETE lines go to stderr whatever the exit (the text view's summary carries them too), so a
+    # required rule that could not decide is said on the exit-1 path as on the exit-5 one (round 1, 14).
+    for r in report.get("requiredEvaluated") or []:
+        if not r["evaluated"]:
             print(f"INCOMPLETE {r['rule']} -- {r['why']}", file=sys.stderr)
+    # One headline, computed in gate.run (G290 round 1, 7): findings first (exit 1 keeps its meaning), then the
+    # evidence -- a required rule that could not decide is incomplete evidence, which is what 5 already means.
+    # Never a new meaning for another code.
+    if report["verdict"] == "failed":
+        return 1
+    if report["verdict"] == "incomplete":
         return 5
     return 0
 
@@ -1171,9 +1184,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="RULE_ID",
         help="a rule the pipeline relies on having run (repeat). When it could not decide -- KN-N014 without --cni, "
-        "KN-S036 without a registry allow-list -- the gate prints INCOMPLETE with the rule's own reason and exits 5 "
-        "(evidence incomplete); a rule that fired has been evaluated and exit 1 keeps its meaning. An id kube-noob "
-        "has no rule for exits 2",
+        "KN-S036 without a registry allow-list, a rule that needs the whole namespace when -f names one file -- the "
+        "gate prints INCOMPLETE with the rule's own reason and exits 5 (evidence incomplete); a rule that fired has "
+        "been evaluated and exit 1 keeps its meaning. A rule whose subject is absent from the input counts as "
+        "evaluated today; G281 changes that to not evaluated. An id kube-noob has no rule for exits 2",
     )
     gt.add_argument(
         "--cni",

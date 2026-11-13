@@ -281,6 +281,7 @@ def run(
     repo: Path | None = None,
     cni: str | None = None,
     require_evaluated: list[str] | None = None,
+    partial_bundle: bool = False,
 ) -> dict[str, Any]:
     """``require_evaluated``: rule ids the pipeline relies on having run; each gets a ``requiredEvaluated`` row and
     one that could not decide is listed in ``incompleteEvaluation`` (the CLI exits 5 on it, G290).
@@ -333,7 +334,9 @@ def run(
     kept_rules: list[str] = []
     excepted_rules: list[str] = []
     if sources:
-        report = analyze(combined, platform, version, cni=cni)
+        # The same partial-bundle decision `audit -f` makes for the same input (the CLI passes it): one file
+        # used to be audited as a whole namespace here and as part of one there (G290 round 1, 6).
+        report = analyze(combined, platform, version, cni=cni, partial_bundle=partial_bundle)
         audit_report = report
         kinds = set(_KIND.findall(combined))
         for f in report.findings:
@@ -363,6 +366,8 @@ def run(
         coverage = {
             "kubernetesVersion": report.kubernetes_version,
             "resources": report.resources,
+            # What the audit did not evaluate and why, as `audit` reports it (G221: the caveat travels)
+            "assumptions": list(report.assumptions),
             "controlSummary": control_summary(
                 kept_rules,
                 excepted_rules or None,
@@ -432,12 +437,19 @@ def run(
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
     known, known_verdict, known_note = _known(kinds, platform, version, data_dir, manifests=bool(sources))
     required_rows = _required_evaluated(required, audit_report, kept_rules, excepted_rules) if required else None
+    incomplete_rules = [r["rule"] for r in required_rows or [] if not r["evaluated"]]
+    # ONE three-valued headline, computed here and read by every renderer and the exit code (G290 round 1, 7):
+    # `failed` when a finding or a failure reason decides it, `incomplete` when a required rule could not decide
+    # and nothing failed, `passed` only when neither. `passed` is never true beside an INCOMPLETE line.
+    verdict = "failed" if failures else ("incomplete" if incomplete_rules else "passed")
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
         "version": version,
         "failOn": fail_on,
-        "passed": not failures,
+        "verdict": verdict,
+        "passed": verdict == "passed",
+        "incomplete": verdict == "incomplete",
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -456,10 +468,7 @@ def run(
             + " --mode enforce",
         },
         **(
-            {
-                "requiredEvaluated": required_rows,
-                "incompleteEvaluation": [r["rule"] for r in required_rows if not r["evaluated"]],
-            }
+            {"requiredEvaluated": required_rows, "incompleteEvaluation": incomplete_rules}
             if required_rows is not None
             else {}
         ),
@@ -518,15 +527,22 @@ def _required_evaluated(
     for rule in required:
         fired = kept_rules.count(rule)
         excepted = excepted_rules.count(rule)
+        declined_on = [
+            {"object": sanitize.visible(str(o))[:200], "why": sanitize.visible(str(w))[:600]}
+            for o, w in (report.undecided_on.get(rule, []) if report is not None else [])
+        ]
         if report is None:
             why = "no manifests were read, so no rule ran: pass them with -f, or render a chart with --chart"
             evaluated = False
         elif fired or excepted or rule in report.fired_rules:
             evaluated = True
-            parts = [f"fired ({fired} finding(s))" if fired else "fired"]
+            parts = [f"fired ({fired})" if fired else "fired"]
             if excepted:
                 parts.append(f"{excepted} excepted")
             why = ", ".join(parts)
+            # Fired on one object and declined on another: the decline is not hidden behind the finding
+            # (round 1, 5); the exit stays what the finding decides.
+            why += "".join(f"; declined on {d['object']}: {d['why']}" for d in declined_on[:3])
         elif rule in report.undecided:
             evaluated = False
             why = sanitize.visible(str(report.undecided[rule]))[:600]
@@ -536,7 +552,10 @@ def _required_evaluated(
         else:
             evaluated = False
             why = "the rule did not run on this input (not in the audit's evaluated list and it gave no reason)"
-        rows.append({"rule": rule, "evaluated": evaluated, "fired": fired, "excepted": excepted, "why": why})
+        row = {"rule": rule, "evaluated": evaluated, "fired": fired, "excepted": excepted, "why": why}
+        if declined_on:
+            row["declinedOn"] = declined_on
+        rows.append(row)
     return rows
 
 
@@ -736,9 +755,13 @@ def _not_run_invocation(report: dict[str, Any]) -> dict[str, Any] | None:
     of an input is a note."""
     legs = report.get("notRun") or []
     required = report.get("requiredEvaluated")
-    if not legs and required is None:
+    if not legs and required is None and not report.get("assumptions"):
         return None
     notes = [
+        {"level": "warning", "message": {"text": sanitize.visible(str(a))[:1000]}}
+        for a in report.get("assumptions") or []
+    ]
+    notes += [
         {
             "level": "warning" if str(leg).startswith("reported issues:") else "note",
             "message": {"text": f"not run: {sanitize.visible(str(leg))[:1000]}"},
@@ -956,6 +979,11 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     """
     rows = [f for f in report.get("findings") or () if isinstance(f, dict)]
     reasons = [str(x) for x in report.get("failures") or () if str(x).strip()]
+    # A required rule that could not decide is an error on the pull request too: the step exits 5, and a step
+    # that is red with nothing on the request is the shape G290's own review found (round 1, 7).
+    reasons += [
+        f"INCOMPLETE {r['rule']} -- {r['why']}" for r in report.get("requiredEvaluated") or () if not r["evaluated"]
+    ]
     if not rows and not reasons:
         return []
 
@@ -1000,8 +1028,16 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     return out
 
 
+def headline(report: dict[str, Any]) -> str:
+    """The one verdict word every renderer prints: `verdict` when the report carries it, else the two-valued one."""
+    word = report.get("verdict")
+    if word in ("passed", "failed", "incomplete"):
+        return str(word)
+    return "passed" if report.get("passed") else "failed"
+
+
 def markdown(report: dict[str, Any], top: int = 25) -> str:
-    verdict = "passed" if report["passed"] else "failed"
+    verdict = headline(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
         f"## kube-noob gate {verdict}",
@@ -1016,6 +1052,19 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     ]
     if report["failures"]:
         lines += ["### Why it failed", "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
+    if report.get("incomplete"):
+        lines += [
+            "### Why it is incomplete",
+            "",
+            *[
+                f"- INCOMPLETE {_cell(r['rule'], 40)} -- {_cell(r['why'])}"
+                for r in report.get("requiredEvaluated") or []
+                if not r["evaluated"]
+            ],
+            "",
+        ]
+    if report.get("assumptions"):
+        lines += ["### Assumptions", "", *[f"- {_cell(a, 600)}" for a in report["assumptions"]], ""]
     if report["findings"]:
         lines += ["### Findings", "", "| Severity | Rule | Where | Finding | Admission |", "|---|---|---|---|---|"]
         for r in report["findings"][:top]:
