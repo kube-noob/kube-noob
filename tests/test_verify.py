@@ -1868,17 +1868,65 @@ SWALLOWED_DRY_RUN = [
     "helm install web ./chart --set --dry-run",
 ]
 DRY_RUN_STILL = [
-    "kubectl delete ns prod --cascade --dry-run=client",
-    "kubectl delete ns prod --validate --dry-run=client",
-    "kubectl delete ns prod --wait --dry-run=client",
-    "kubectl delete ns prod -R --dry-run=client",
-    "kubectl delete ns prod -nx --dry-run=client",
+    "kubectl delete ns prod --dry-run=client",
+    "kubectl delete ns prod --dry-run",
     "kubectl delete ns prod -n=x --dry-run=client",
+    "kubectl delete ns prod --namespace=x --dry-run=client",
     "kubectl delete ns prod -n x --dry-run=client",
     "kubectl delete ns prod --dry-run -n none",
+    "kubectl delete ns prod --dry-run=none --dry-run=client",
+    "kubectl delete --dry-run=client ns prod",
     "helm uninstall web -n x --dry-run",
     "helm install web ./chart --dry-run --atomic",
 ]
+#: A flag before --dry-run whose arity only a table could tell: never credited, whatever the table says.
+DRY_RUN_AFTER_A_BARE_FLAG = [
+    "kubectl delete ns prod --cascade --dry-run=client",
+    "kubectl delete ns prod --validate --dry-run=client",
+    "kubectl delete ns prod --wait --dry-run=client",
+    "kubectl delete ns prod --force --dry-run=client",
+    "kubectl delete ns prod -R --dry-run=client",
+    "kubectl delete ns prod -nx --dry-run=client",
+    "kubectl delete pods --all --dry-run=client",
+    "kubectl delete ns prod --wait --dry-run",
+    "kubectl delete ns prod --dry-run=client --dry-run",
+    "kubectl delete ns prod --wait=false --dry-run",
+    "helm uninstall web --no-hooks --dry-run",
+    "helm install web ./chart --atomic --dry-run=server",
+]
+
+
+@pytest.mark.parametrize("cmd", DRY_RUN_AFTER_A_BARE_FLAG)
+def test_a_dry_run_after_a_flag_whose_arity_needs_a_table_is_not_credited(ws: Path, cmd: str) -> None:
+    """The bool-flag tables are not verified against the sources, and a flag listed there by mistake would let
+    `--thatflag --dry-run=client` be credited while it runs for real. So the credit never rests on them: a false
+    ask is acceptable, a false credit is not."""
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "not-determined" and "dryRun" not in r["commands"][0], (cmd, r)
+    assert any("a flag before --dry-run may take it as a value" in u for u in r["notDetermined"]), r["notDetermined"]
+
+
+@pytest.mark.parametrize("tool", ["kubectl", "helm"])
+def test_a_flag_wrongly_listed_as_bool_cannot_earn_a_dry_run(
+    ws: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    """The guard itself: with a value-taking flag deliberately mis-listed as bool in the table, the command still
+    asks, so the table can never be the single point of failure."""
+    from kube_noob.debug import steps
+
+    monkeypatch.setattr(steps, "KUBE_BOOL_FLAGS", steps.KUBE_BOOL_FLAGS | {"--namespace", "-n", "--field-manager"})
+    monkeypatch.setattr(steps, "HELM_BOOL_FLAGS", steps.HELM_BOOL_FLAGS | {"--description", "-n"})
+    lines = {
+        "kubectl": ["kubectl delete ns prod -n --dry-run=client", "kubectl delete ns prod --namespace --dry-run",
+                    "kubectl apply -f bad/deploy.yaml --field-manager --dry-run=server"],
+        "helm": ["helm upgrade web ./chart --description --dry-run", "helm uninstall web -n --dry-run=client"],
+    }[tool]  # fmt: skip
+    for line in lines:
+        assert not steps.takes_value(line.split()[-2], tool), "the table is mis-listed for this test"
+        assert steps.dry_run(line.split()[2:], tool) == "unsure", line
+        r = _verify(line, ws)
+        assert r["verdict"] == "not-determined" and "dryRun" not in r["commands"][0], (line, r)
+    assert steps.classify_step("kubectl delete ns prod -n --dry-run=client") == "change"
 
 
 @pytest.mark.parametrize("cmd", SWALLOWED_DRY_RUN)
@@ -1913,7 +1961,8 @@ def test_an_unreadable_word_after_dry_run_can_be_dry_run_none(ws: Path, cmd: str
     """Finding 2: the last --dry-run wins, so a word only known at run time after the first one decides."""
     r = _verify(cmd, ws)
     assert r["verdict"] == "not-determined", cmd
-    assert any("can be --dry-run=none" in u or "only known when the line runs" in u for u in r["notDetermined"]), r
+    reasons = ("can be --dry-run=none", "only known when the line runs", "may take it as a value")
+    assert any(w in u for u in r["notDetermined"] for w in reasons), r
 
 
 def test_server_dry_run_is_no_longer_a_dry_run_spelling(ws: Path) -> None:

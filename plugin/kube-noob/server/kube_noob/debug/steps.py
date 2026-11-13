@@ -331,31 +331,41 @@ def positionals(args: list[str], tool: str = "kubectl") -> list[str]:
 
 
 def dry_run(args: list[str], tool: str = "kubectl") -> str:
-    """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server" or "" (none).
+    """kubectl's (and helm's) --dry-run strategy for these arguments: "client", "server", "" (none) or "unsure".
 
     The LAST occurrence wins (pflag sets the flag each time it is seen), nothing after `--` is a flag, `none` or
-    `false` is no dry run (`delete ns prod --dry-run=client --dry-run=none` deletes), and a `--dry-run` that is
-    the VALUE of the bare flag before it (`-n --dry-run=client`, helm's `--description --dry-run`) is no flag at
-    all (fifth review): the arguments are walked with pflag's arity rule (``takes_value``)."""
+    `false` is no dry run, and a `--dry-run` that is the VALUE of the bare flag before it (`-n --dry-run=client`,
+    helm's `--description --dry-run`) is no flag at all. The bool-flag tables (``takes_value``) only ever REMOVE
+    credit here: a flag wrongly listed as bool would otherwise let `--thatflag --dry-run=client` be credited while
+    it runs for real, and those tables are not verified against the sources. So a dry run is credited only when
+    its arity needs no table: `--dry-run=VALUE` after a positional word, a `--flag=value` token or another
+    `--dry-run`; bare `--dry-run` after a word that is not a flag. Anything else is "unsure" -- a caller that
+    allows on a dry run must ask, and no caller treats it as one."""
     found = ""
+    unsure = False
     previous = ""
     for i, t in enumerate(args):
         if t == "--":
             break
-        swallowed = takes_value(previous, tool)
-        previous = t
-        if swallowed:
-            continue  # this word is the value of the flag before it, whatever it looks like
+        before, previous = previous, t
+        if t != "--dry-run" and not t.startswith("--dry-run="):
+            continue
+        if takes_value(before, tool):
+            continue  # by the tables this word is the value of the flag before it; either way it earns nothing
+        before_is_flag = before.startswith("-") and before != "-"
         if t == "--dry-run":
+            unsure = unsure or before_is_flag
             nxt = args[i + 1] if i + 1 < len(args) else ""
             if nxt in {"client", "server", "none"}:  # helm also takes `--dry-run server`
                 found = "" if nxt == "none" else nxt
             else:
                 found = "client"
-        elif t.startswith("--dry-run="):
+        else:
+            self_contained = "=" in before or before == "--dry-run"
+            unsure = unsure or (before_is_flag and not self_contained)
             v = t.split("=", 1)[1].lower()
             found = "client" if v in _DRY_RUN_CLIENT else "server" if v == "server" else ""
-    return found
+    return "unsure" if unsure and found else found
 
 
 def runs_local_code(args: list[str]) -> bool:

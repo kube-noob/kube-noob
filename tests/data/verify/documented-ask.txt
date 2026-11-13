@@ -697,3 +697,21 @@ helm install web ./chart --set password=hunter2
 helm install web ./chart --set-string token=hunter2
 helm install web ./chart --set-file x=/etc/shadow
 kubectl krew
+kubectl delete ns prod --dry-run=client --dry-run
+kubectl run x --image=y --privileged --dry-run=client
+kubectl delete pods --all --dry-run=client
+kubectl delete pods --all-namespaces --all --dry-run=client
+kubectl delete ns prod -nx --dry-run=client
+kubectl delete ns prod --cascade --dry-run=client
+kubectl delete ns prod --wait --dry-run=client
+kubectl delete ns prod -R --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --save-config --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --validate --dry-run=client
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --allow-missing-template-keys --dry-run=client
+kubectl apply -f k8s/priv.yaml --validate --dry-run=client
+helm install web ./chart --dry-run=none --dry-run
+helm uninstall web --no-hooks --dry-run
+helm install web ./chart --kube-context=prod --dry-run
+kubectl delete pods --all -A --dry-run=server
+kubectl delete ns prod --dry-run=client --dry-run server
+kubectl delete ns prod --dry-run=server --dry-run -- x

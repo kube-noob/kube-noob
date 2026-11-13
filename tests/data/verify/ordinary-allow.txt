@@ -264,7 +264,6 @@ kubectl delete ns prod --dry-run=true
 kubectl delete ns prod --dry-run=unchanged
 kubectl delete ns prod --dry-run client
 kubectl delete ns prod --dry-run=none --dry-run=client
-kubectl delete ns prod --dry-run=client --dry-run
 kubectl apply -f k8s/priv.yaml --dry-run=client
 kubectl apply -f k8s/priv.yaml --dry-run
 kubectl apply --dry-run=client -f k8s/web.yaml && kubectl apply -f k8s/web.yaml
@@ -280,7 +279,6 @@ kubectl replace --force -f k8s/web.yaml --dry-run=client
 kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --dry-run=client
 kubectl create deploy x --image=y --dry-run=client -o yaml
 kubectl run x --image=y --dry-run=client -o yaml
-kubectl run x --image=y --privileged --dry-run=client
 kubectl set image deploy/web c=img --dry-run=client
 kubectl set env deploy/web A=b --dry-run=client
 kubectl taint nodes n k=v:NoSchedule --dry-run=client
@@ -290,8 +288,6 @@ kubectl logs web --dry-run=client
 kubectl port-forward web 80:80 --dry-run=client
 kubectl proxy --dry-run=client
 kubectl delete pod web --dry-run=client --now
-kubectl delete pods --all --dry-run=client
-kubectl delete pods --all-namespaces --all --dry-run=client
 kubectl delete --dry-run=client ns prod
 oc delete project prod --dry-run=client
 oc new-app x --dry-run
@@ -319,16 +315,8 @@ kubectl delete ns prod --"dry-run=client"
 kubectl delete ns prod --dry-run=cl\ient
 kubectl delete ns prod --namespace=x --dry-run=client
 kubectl delete ns prod -n x --dry-run=client
-kubectl delete ns prod -nx --dry-run=client
 kubectl delete ns prod -n=x --dry-run=client
-kubectl delete ns prod --cascade --dry-run=client
-kubectl delete ns prod --wait --dry-run=client
-kubectl delete ns prod -R --dry-run=client
-kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --save-config --dry-run=client
-kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --validate --dry-run=client
-kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --allow-missing-template-keys --dry-run=client
 kubectl apply -f k8s/crb.yaml --dry-run=client
-kubectl apply -f k8s/priv.yaml --validate --dry-run=client
 kubectl scale deploy/web --replicas=0 -n --dry-run=client
 kubectl rollout restart deploy/web -n --dry-run=client
 kubectl get ns -n --dry-run=client
@@ -349,7 +337,6 @@ kubectl apply --dry-run=client --prune -l a=b -f k8s/
 for n in a b; do kubectl delete ns $n --dry-run=client; done
 kubectl delete ns prod --dry-run -- none
 kubectl delete ns prod --dry-run -n none
-helm install web ./chart --dry-run=none --dry-run
 helm install web ./chart --dry-run=true
 helm install web ./chart --dry-run=True
 helm install web ./chart --dry-run foo
@@ -368,7 +355,6 @@ helm install web evil/chart --dry-run
 helm install web ./nonexistent --dry-run
 helm install web ./chart --dry-run --kubeconfig /x --kube-context prod
 helm uninstall web --dry-run --keep-history
-helm uninstall web --no-hooks --dry-run
 helm uninstall web --dry-run --wait
 helm delete web --dry-run
 helm lint chart --dry-run=none
@@ -500,7 +486,6 @@ oc --context=prod scale deploy/web --replicas=2
 oc project prod
 oc project
 oc config set-context --current --namespace=shop
-helm install web ./chart --kube-context=prod --dry-run
 helm template web ./chart --kube-context prod
 helm list --kube-context prod
 kubectl --context prod delete pod web-abc

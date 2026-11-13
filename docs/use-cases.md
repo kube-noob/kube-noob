@@ -1262,7 +1262,10 @@ off, which exposes the port to other hosts; `attach` runs in the container and a
 same manifest would be denied, the answer carries a `note` saying so, with the rules, in text and JSON alike (the
 hook passes such an allow silently: the note is in `kube-noob verify`'s own output). The flag is read the way pflag
 reads it: a `--dry-run` that is the value of the bare flag before it (`-n --dry-run=client`) is no dry run, and a
-word after it that is only known when the line runs (`$FLAGS`, `"$@"`) can be `--dry-run=none`, so that asks. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
+word after it that is only known when the line runs (`$FLAGS`, `"$@"`) can be `--dry-run=none`, so that asks. The
+credit never rests on a table of which flags take a value: it is given only to `--dry-run=VALUE` after a word that is
+not a bare flag (a name, a `--flag=value`), or a bare `--dry-run` after a word that is not a flag, so
+`delete ns prod --wait --dry-run=client` asks too -- put `--dry-run` straight after the names. A command that carries a manifest (`apply`, `create` or `replace -f`, `apply -k`, a chart) with an
 explicit target -- `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` on the line -- is not determined,
 because the platform the manifest is judged against is that context's; a day-2 command with no manifest (a scale, a
 restart, deleting a pod by name, a label) is judged the same with or without one. `--help` or `-h` on a verb

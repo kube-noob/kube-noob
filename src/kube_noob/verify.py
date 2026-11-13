@@ -488,12 +488,15 @@ def _is_dry_run(name: str, sub: str, cmd: shell.Command, args: list[str]) -> tup
     if name in KUBE_CLIS:
         if sub not in DRY_RUN_VERBS:
             return False, None
-        dry = dry_run(args, "kubectl") in {"client", "server"}
+        mode = dry_run(args, "kubectl")
     elif name == "helm":
-        dry = sub in _HELM_DRY_RUN_VERBS and dry_run(args, "helm") in {"client", "server"}
+        mode = dry_run(args, "helm") if sub in _HELM_DRY_RUN_VERBS else ""
     else:
         return False, None
-    if not dry:
+    if mode == "unsure":
+        # The credit never rests on the bool-flag tables: a flag listed there by mistake would run for real.
+        return False, "a flag before --dry-run may take it as a value, so this may not be a dry run"
+    if mode not in {"client", "server"}:
         return False, None
     first = next((i for i, a in enumerate(args) if a == "--dry-run" or a.startswith("--dry-run=")), len(args))
     words = cmd.words[1:]
