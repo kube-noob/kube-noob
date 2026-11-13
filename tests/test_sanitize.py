@@ -73,7 +73,8 @@ def test_invisible_characters_are_removed_and_counted_before_detection() -> None
     kinds = {f.kind: f.excerpt for f in found}
     assert kinds["zero-width"] == "2 character(s) removed" and kinds["unicode-tags"] == "2 character(s) removed"
     assert kinds["bidi-override"] == "1 character(s) removed" and "instruction" in kinds
-    assert "\u200b" not in out and "\U000e0041" not in out and "podweb" in out
+    # inside a name, the marked form (fourth review): `podweb` would be another name
+    assert "\u200b" not in out and "\U000e0041" not in out and "pod<U+200B>web" in out
     assert "[removed: instruction-like text]" in out and all(f.field == "message" for f in found)
 
 

@@ -2298,12 +2298,9 @@ def test_hidden_characters_are_marked_the_same_under_every_encoding(ws: Path, en
     assert p.returncode == 5, p.stderr
     shown = json.loads(p.stdout.decode("utf-8"))["commands"][0]["command"]
     cyrillic_a = chr(0x0430)
-    assert shown in {
-        "kubectl delete ns pr<U+200B>od<U+202E> \\u0430dmin",
-        f"kubectl delete ns pr<U+200B>od<U+202E> {cyrillic_a}dmin",
-    }
-    assert "pr od" not in shown and "dmin" in shown
+    # the output boundary's rule (sanitize.visible, G279): a hidden character inside a name is marked, a bidi
+    # override at a word's edge is removed, and a printing non-ASCII letter stays -- the same under both encodings
+    assert shown == f"kubectl delete ns pr<U+200B>od {cyrillic_a}dmin"
     (ws / "x.yaml").write_text("x: 1\n")
-    marked = verify.show(f"kubectl delete ns pr{zwsp}od{rlo}\x07")
-    assert marked == "kubectl delete ns pr<U+200B>od<U+202E><U+0007>"
+    assert verify.show(f"kubectl delete ns pr{zwsp}od{rlo}x") == "kubectl delete ns pr<U+200B>od<U+202E>x"
     assert verify.show("kubectl get pods \udcd0\udcb0dmin") == f"kubectl get pods {cyrillic_a}dmin"

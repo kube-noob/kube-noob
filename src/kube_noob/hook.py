@@ -426,8 +426,9 @@ def tolerant_streams() -> None:
     from the repository, under `PYTHONIOENCODING=ascii` or `LC_ALL=POSIX`) is written as an escape such as `\\xab`
     rather than raising, which turned a verify allow into exit 4 and a harness that refuses on non-zero refused
     every command. `kube-noob verify` calls this too; it lives here so the plugin's copy needs nothing of the CLI."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
+    for outer in (sys.stdout, sys.stderr):
+        # the CLI's output boundary wraps the real stream; the encoder to relax is the one underneath
+        reconfigure = getattr(getattr(outer, "_inner", outer), "reconfigure", None)
         if reconfigure is not None:
             with contextlib.suppress(OSError, ValueError, TypeError):  # a stream that cannot be reconfigured
                 reconfigure(errors="backslashreplace")

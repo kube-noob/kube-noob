@@ -71,6 +71,11 @@ Write the test, run it, see it red, then fix the code. A test written after the 
 does rather than what it should do. Name the test after the behaviour (`test_a_blind_run_is_not_reported_as_a_clean_one`),
 not after the function.
 
+Then test what you skipped, not only what you built. `docs/review-classes.md` lists the twenty-six defect classes
+that adversarial reviews found in changes that had passed this gate with tests; for each class that applies to your
+change, write the test before you push, and after every fix test the neighbouring input (the other wrapper, the
+other type, the other order) in the same commit. A review will try those first.
+
 ## Gates that catch agents specifically
 
 | Gate | What it refuses |
@@ -104,6 +109,10 @@ A behaviour change updates, in the same commit:
 | 4 | a kube-noob error, or refused input |
 | 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
 | 141 | the output pipe closed |
+
+An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line
+on stderr with exit 4, never a raw traceback that exits 1; set `KUBE_NOOB_DEBUG=1` to print the traceback too,
+through the same output boundary (G279).
 
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations.

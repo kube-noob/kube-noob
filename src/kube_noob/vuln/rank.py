@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from kube_noob.attack_paths import Capability, Reach, Step
+from kube_noob.attack_paths import Capability, Reach, Step, ambiguous_notes
 from kube_noob.vuln.kev import Kev
 from kube_noob.vuln.reports import Finding, ImageInfo, gating_severity
 
@@ -207,4 +207,6 @@ def rank(
         "imagesPlaced": placed_images,
         "images": len(per_image),
         "formula": "base x exposure x privileges x exploited (see kube_noob.vuln.rank)",
+        # A name two different objects carry: each copy is placed with its own images and rights (G273).
+        "ambiguous": ambiguous_notes(reach or {}),
     }

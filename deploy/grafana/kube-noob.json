@@ -190,6 +190,53 @@
           "legendFormat": "{{tool}}"
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Alert to evidence report",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Alert to report, 50th and 95th percentile",
+      "description": "From kube_noob_alert_report_duration_seconds: the time from an Alertmanager payload reaching POST /v1/alert-reports to its evidence report being ready, measured inside the process. The north-star claim is under a minute; the buckets run to 60 s so a breach shows rather than folding into +Inf.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(kube_noob_alert_report_duration_seconds_bucket{job=\"$job\"}[15m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kube_noob_alert_report_duration_seconds_bucket{job=\"$job\"}[15m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reports kept, not kept, and removed by retention",
+      "description": "not-stored means the report went back to Alertmanager but was not kept: storing is off, or the data directory could not be written (the server log says which). Removed counts the reports retention deleted to stay within alertReports.maxReports and maxAgeDays.",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (increase(kube_noob_alert_reports_total{job=\"$job\"}[1h]))",
+          "legendFormat": "{{outcome}}"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(kube_noob_alert_reports_evicted_total{job=\"$job\"}[1h])",
+          "legendFormat": "removed by retention"
+        }
+      ]
     }
   ]
 }

@@ -14,7 +14,6 @@ not run until the scanner reader (requirements R5.1) is built.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,7 @@ import yaml
 
 from kube_noob import __version__, sanitize
 from kube_noob.audit.model import Severity
+from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
 MAX_TOTAL = 5_000_000
@@ -221,20 +221,42 @@ def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path |
     """Open reported issues in the target release whose text names a kind these manifests deploy."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
     from kube_noob.known_issues import get_index, vkey
+    from kube_noob.versions import read_version
 
-    if platform not in OPENSHIFT_FAMILY or not version:
+    cv = read_version(version)
+    if platform not in OPENSHIFT_FAMILY or cv is None:
         return []
-    minor = ".".join(version.split(".")[:2])
+    index = get_index(data_dir)
+    # The same reading of the version as the coverage statement beside it (G277): " 4.20.0" once matched nothing
+    # here while the statement said "determined".
+    advise = index.coverage(version)["status"] == "determined"
     out: list[dict[str, Any]] = []
-    for issue in get_index(data_dir).issues:
-        if issue.kind != "known" or issue.minor != minor:
+    for issue in index.issues:
+        if issue.kind != "known" or issue.minor != cv.minor:
             continue
-        if issue.fixed_in and vkey(version) >= vkey(issue.fixed_in):
+        if issue.fixed_in and vkey(cv.numeric) >= vkey(issue.fixed_in):
             continue
         named = sorted(k for k in kinds if _DISTINCT_KIND.match(k) and re.search(rf"\b{k}s?\b", issue.text))
         if named:
-            out.append({**issue.as_dict(version, 1.0), "kinds": named})
+            out.append({**issue.as_dict(cv.numeric, 1.0, advise, cv.shown), "kinds": named})
     return out[:20]
+
+
+def _known_coverage(platform: str, version: str | None, data_dir: Path | None) -> dict[str, Any] | None:
+    """Whether ``_known`` could answer for ``version``; ``None`` for a platform the index does not describe. With an
+    OpenShift platform and no version nothing was looked up, and that is said, not left as an empty list (G277)."""
+    from kube_noob.catalog import OPENSHIFT_FAMILY
+    from kube_noob.known_issues import coverage
+
+    if platform not in OPENSHIFT_FAMILY:
+        return None
+    if not version:
+        return {
+            "status": "not-determined",
+            "why": "No --version was given, so reported issues in the target OpenShift release were not looked up "
+            "(the audit assumed a default release). Give --version to look them up.",
+        }
+    return coverage(version, data_dir)
 
 
 def run(
@@ -257,6 +279,7 @@ def run(
     unknown_builds: list[str] | None = None,
     repo: Path | None = None,
     cni: str | None = None,
+    default_namespace: str | None = None,
 ) -> dict[str, Any]:
     """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
@@ -369,7 +392,16 @@ def run(
                     "helpUri": (f.get("sources") or [{"url": INFO_URI}])[0]["url"],
                 }
             )
-    vulns = _vulnerabilities(scanner_reports, combined, vex_paths or [], kev_path, data_dir, fail_on, trust_report_vex)
+    vulns = _vulnerabilities(
+        scanner_reports,
+        combined,
+        vex_paths or [],
+        kev_path,
+        data_dir,
+        fail_on,
+        trust_report_vex,
+        default_namespace=default_namespace,
+    )
     findings.extend(vulns["findings"])
     if vulns["failing"]:
         failures.append(
@@ -403,6 +435,7 @@ def run(
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
     known = _known(kinds, platform, version, data_dir)
+    ki_coverage = _known_coverage(platform, version, data_dir)
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
@@ -428,6 +461,7 @@ def run(
         },
         "knownIssues": known,
         "assumptions": assumptions,
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
         "notRun": [
@@ -461,6 +495,12 @@ def run(
                     "code checks: pass your SAST tools' SARIF with --sarif-report (Semgrep, Bandit, SpotBugs, ESLint, "
                     "CodeQL)"
                 ]
+            ),
+            # An empty knownIssues for a release the index does not hold is a lookup not made, not "none" (G277).
+            *(
+                [f"reported issues: {ki_coverage['why']}"]
+                if ki_coverage and ki_coverage["status"] == "not-determined"
+                else []
             ),
         ],
     }
@@ -568,6 +608,7 @@ def _vulnerabilities(
     data_dir: Path | None,
     fail_on: str,
     trust_report_vex: bool = False,
+    default_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Scanner findings as gate findings: VEX applied, KEV marked, ranked against the manifests. A finding fails the
     gate at ``fail_on`` only when it is fixable or known exploited (an unfixable finding is reported, not blocked)."""
@@ -586,7 +627,11 @@ def _vulnerabilities(
         index = vexmod.load(data_dir, vex_paths)
         kev = kevmod.load(kev_path) if kev_path else None
         reach = (
-            workload_reach(PathInventory.from_documents(d.data for d in load_documents(manifests)))
+            workload_reach(
+                PathInventory.from_documents(
+                    (d.data for d in load_documents(manifests)), default_namespace=default_namespace
+                )
+            )
             if manifests
             else None
         )
@@ -639,6 +684,8 @@ def _vulnerabilities(
         "images": [i["image"]["name"] for i in out["images"]],
         "vex": out["vex"]["sources"],
         "kev": out["kev"]["catalog"],
+        # A name two different objects carry: each copy placed with its own images and rights (G273).
+        "ambiguous": list(out["ranking"].get("ambiguous") or []),
     }
     return {"findings": findings, "failing": failing, "summary": summary}
 
@@ -776,7 +823,6 @@ def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
 _MD_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"} | {c: "\\" + c for c in "\\`*_[]!#~"}
 
 
@@ -785,8 +831,18 @@ def _cell(text: Any, limit: int = 300) -> str:
     path): control characters and line breaks become spaces so nothing starts a new heading or table row, HTML
     is entity-escaped and link, image, emphasis and code syntax is backslash-escaped, so a report cannot render as
     a different verdict, an image or a link in the job summary (red team, VUL1)."""
-    flat = _CONTROL.sub(" ", str(text))[:limit]
+    flat = sanitize.visible_squeezed(str(text))[:limit]
     return "".join(_MD_ESCAPE.get(c, c) for c in flat)
+
+
+def _annotation_data(text: Any) -> str:
+    """Text for a workflow command: cleaned first (``sanitize.visible_lines``, so what the runner shows is what
+    the escaping meant -- escaping first made ``%`` into ``%25`` and the cleaner then took ``ESC %2`` for an escape
+    sequence), then escaped per the toolkit's rules (``%``, CR, LF), with every ``##...[`` service message broken by
+    the same marker the output boundary uses (G279)."""
+    out = sanitize.visible_lines(str(text), mark=True)
+    out = out.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return sanitize.defuse_service_messages(out)
 
 
 def _annotation(level: str, finding: dict[str, Any]) -> str:
@@ -795,7 +851,7 @@ def _annotation(level: str, finding: dict[str, Any]) -> str:
     def esc(text: str, *, prop: bool = False) -> str:
         # A raw newline ends the command and an unescaped % corrupts the next escape. In a property, a comma or a
         # colon ends the property list, so those go too.
-        out = str(text).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        out = _annotation_data(text)
         # In a property a comma ends the property and a colon ends the property LIST, so both go -- every colon,
         # not just a pair of them: a value ending in ":" produced `title=x:::[KN-X] ...`, and the runner then cut
         # the title and moved the colon into the message.
@@ -868,7 +924,7 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     # SARIF file that could not be read. Those went unannotated, so the step was red and the pull request said
     # nothing. They come first, because they are why the step failed.
     for reason in reasons[:MAX_ANNOTATIONS_PER_TYPE]:
-        out.append(f"::error title=kube-noob gate::{reason}")
+        out.append(f"::error title=kube-noob gate::{_annotation_data(reason)}")
     if len(reasons) > MAX_ANNOTATIONS_PER_TYPE:
         out[-1] = (
             f"::error title=kube-noob gate::{len(reasons) - MAX_ANNOTATIONS_PER_TYPE + 1} more reason(s) this "
@@ -948,6 +1004,9 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
             f"{v['knownExploited']} known exploited.",
             "",
         ]
+        lines += [f"Note: {_cell(n, 400)}" for n in v.get("ambiguous") or []]
+        if v.get("ambiguous"):
+            lines.append("")
     if report["knownIssues"]:
         lines += ["### Reported issues in this release (informational)", ""]
         for k in report["knownIssues"]:
@@ -958,13 +1017,14 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("assumptions"):
         lines += ["### Assumed, or not evaluated", "", *[f"- {_cell(a, 600)}" for a in report["assumptions"]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
-    return "\n".join(lines)
+    return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:
     if sarif_path:
-        Path(sarif_path).write_text(json.dumps(sarif(report), indent=1) + "\n", encoding="utf-8")
+        # json_document: a CI step that prints the file must not run a workflow command from it (G279)
+        Path(sarif_path).write_text(json_document(sarif(report), indent=1) + "\n", encoding="utf-8")
     if summary:
         Path(summary).write_text(markdown(report), encoding="utf-8", errors="replace")
     if quality:
-        Path(quality).write_text(json.dumps(codequality(report), indent=1) + "\n", encoding="utf-8")
+        Path(quality).write_text(json_document(codequality(report), indent=1) + "\n", encoding="utf-8")

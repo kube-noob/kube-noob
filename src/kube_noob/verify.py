@@ -310,10 +310,16 @@ class _Read:
 
 def show(text: Any, limit: int = 200) -> str:
     """Input-derived text made one line: whitespace collapsed (no newline can forge a row), and every character
-    that does not print -- a zero-width space, a bidi override, a control character, a surrogate from argv under a
-    C locale -- shown as a marker (`<U+200B>`) by ``sanitize.marked`` rather than dropped, so the person sees the
-    command that runs. The marker is ASCII, so the display is the same bytes under every terminal encoding."""
-    flat = " ".join(sanitize.marked(str(text)).split())
+    that does not print shown as a marker (`<U+200B>`) by ``sanitize.visible`` rather than dropped, so the person
+    sees the command that runs. Bytes that reached argv under an ASCII locale (surrogate escapes) are first put
+    back together as the UTF-8 they were, so the display is the same under `LC_ALL=C` as under UTF-8."""
+    raw = str(text)
+    if any("\udc80" <= ch <= "\udcff" for ch in raw):
+        try:
+            raw = raw.encode("utf-8", "surrogateescape").decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+    flat = " ".join(sanitize.visible(raw).split())
     return flat if len(flat) <= limit else flat[: limit - 3] + "..."
 
 
