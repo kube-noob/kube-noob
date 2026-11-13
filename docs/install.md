@@ -68,7 +68,7 @@ Installing and running without a network is a transcript in this repository's CI
 that `requirements.lock` pins (hashes checked; this is the one step with network), and then, inside a network
 namespace with no interface and no route (`unshare -rn`), installs from that directory only (`pip install
 --no-index --find-links <dir> --require-hashes -r requirements.lock`, then the kube-noob wheel with `--no-deps`) and
-runs four workflows with their exit codes asserted: `kube-noob doctor` (0), `kube-noob audit -f
+runs the network proof and four checks with their exit codes asserted: `kube-noob doctor` (0), `kube-noob audit -f
 insecure-deployment.yaml` (1: findings at high, from the copy the wheel carries), `kube-noob must-gather analyze` on
 the bundled sample (0), and one `tools/list` request to `kube-noob mcp` over stdio (0). Before the four, the namespace
 is proved on itself: a DNS lookup and a TCP connect must both fail, or the run stops without a verdict. The same
@@ -83,7 +83,9 @@ scripts/airgap_check.sh verify /path/to/wheels
 
 `prepare` needs network (or point `pip` at your mirror with `PIP_INDEX_URL`); `verify` needs none and refuses to run
 outside a namespace it can create (`unshare -rn`, else `sudo unshare -n`), with exit 2 and a message rather than a
-pass. Exit 0 is every check passed; 1 names the check that failed and keeps its output.
+pass. Exit 0 is the proof and every check passed (`PASS: network proof + 4 checks`); 1 names the check that failed and
+keeps its output; 2 is a run that could not start (no namespace, no wheel, or two kube-noob wheels in the
+directory, named).
 
 What this establishes: with the wheels already on local disk, the install and these four workflows need no network
 and make no network attempt that could succeed. What it does not establish: how the wheels got there -- the mirrored

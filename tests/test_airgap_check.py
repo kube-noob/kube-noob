@@ -63,7 +63,7 @@ def test_an_unknown_subcommand_or_a_missing_executable_is_exit_2(tmp_path: Path)
 
 
 @pytest.mark.skipif(not _namespace_available(), reason="unshare -rn is not permitted here")
-def test_the_five_checks_run_in_a_namespace_with_no_network_and_each_exit_is_asserted(tmp_path: Path) -> None:
+def test_the_network_proof_and_the_four_checks_run_in_a_namespace_and_each_exit_is_asserted(tmp_path: Path) -> None:
     assert EXE.is_file(), "the venv's kube-noob"
     proc = _run("checks", str(EXE), env={"KN_AIRGAP_WORK": str(tmp_path)})
     out = proc.stdout
@@ -72,7 +72,7 @@ def test_the_five_checks_run_in_a_namespace_with_no_network_and_each_exit_is_ass
     steps = (("doctor", 0), ("audit insecure-deployment.yaml", 1), ("must-gather analyze", 0), ("mcp tools/list", 0))
     for step, code in steps:
         assert re.search(rf"^ok\s+{re.escape(step)}.*exit {code}", out, re.M), (step, out)
-    assert "PASS: 5 checks, 0 network attempts could have succeeded" in out
+    assert "PASS: network proof + 4 checks; no network attempt could have succeeded" in out
     assert "KN-PLANTED-SECRET" not in out, "the sample's planted secret never reaches the transcript"
 
 
@@ -102,3 +102,29 @@ def test_ci_runs_the_transcript_on_the_built_wheel_and_install_md_says_what_it_p
     for phrase in phrases:
         assert phrase in section, phrase
     assert "scripts/airgap_check.sh checks" in (ROOT / "scripts" / "check.sh").read_text(encoding="utf-8")
+
+
+def test_two_wheels_in_the_directory_is_a_refusal_naming_both(tmp_path: Path) -> None:
+    """Finding 11c: `verify` installed the first of several kube_noob wheels silently."""
+    for name in ("kube_noob-0.9.2-py3-none-any.whl", "kube_noob-0.9.3-py3-none-any.whl"):
+        (tmp_path / name).write_bytes(b"not a wheel")
+    proc = _run("verify", str(tmp_path))
+    assert proc.returncode == 2
+    assert "kube_noob-0.9.2-py3-none-any.whl" in proc.stderr and "kube_noob-0.9.3-py3-none-any.whl" in proc.stderr
+    assert "one kube_noob wheel" in proc.stderr
+
+
+def test_no_unshare_with_passwordless_sudo_is_exit_2_with_the_sentence_never_127(tmp_path: Path) -> None:
+    """Finding 11b: with `unshare` missing the sudo path died in `env: unshare: No such file` (127)."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "sudo").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")  # passwordless, as a runner's is
+    (fake / "sudo").chmod(0o755)
+    for tool in ("sh", "python3", "mktemp", "basename", "dirname", "tr", "ls", "wc", "cp", "rm", "mkdir", "cat"):
+        real = shutil.which(tool)
+        if real:
+            (fake / tool).symlink_to(real)
+    proc = _run("checks", str(EXE), env={"PATH": str(fake), "KN_AIRGAP_WORK": str(tmp_path / "w")})
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "cannot create a network namespace here" in proc.stderr and "not run, which is not a pass" in proc.stderr
+    assert "unshare" in proc.stderr

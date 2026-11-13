@@ -7,9 +7,9 @@
 #                                                      (--no-index) into a fresh venv, then run the checks below
 #   scripts/airgap_check.sh checks  <kube-noob>        no network: the checks alone, against an installed kube-noob
 #
-# The checks, each with the exit code it must return: `doctor` (0), `audit -f insecure-deployment.yaml` (1: findings
-# at high), `must-gather analyze` on the bundled sample (0), and one MCP request (`tools/list`) over stdio (0).
-# Before any of them the namespace is proved: a DNS lookup and a TCP connect must both fail, or the run stops. What
+# The network proof first -- a DNS lookup and a TCP connect must both fail, or the run stops -- then four checks,
+# each with the exit code it must return: `doctor` (0), `audit -f insecure-deployment.yaml` (1: findings at high),
+# `must-gather analyze` on the bundled sample (0), and one MCP request (`tools/list`) over stdio (0). What
 # this establishes: with the wheels already on local disk, the install and these four workflows need no network and
 # attempt none that could succeed. What it does not: how the wheels got there (a mirrored index, a signed bundle, a
 # verified `gh attestation verify` are the operator's steps), anything a check does not exercise, and -- without
@@ -154,7 +154,7 @@ checks() {
   check "must-gather analyze" 0 "$exe" must-gather analyze "$work/mg/must-gather.tar.gz" || failed=1
   check "mcp tools/list" 0 mcp_one_request "$exe" "$py" || failed=1
   if [ "$failed" = 0 ]; then
-    say "PASS: 5 checks, 0 network attempts could have succeeded (unshare -rn: no interface, no route)"
+    say "PASS: network proof + 4 checks; no network attempt could have succeeded (unshare -rn: no interface, no route)"
     return 0
   fi
   say "FAIL: see the lines above; logs in $work"
@@ -171,6 +171,7 @@ install_and_check() {
   "$venv/bin/pip" install --disable-pip-version-check --quiet --no-index --find-links "$dir" --only-binary=:all: \
     --require-hashes -r "$here/requirements.lock" \
     || { say "FAIL  install dependencies from $dir (requirements.lock, --no-index)"; return 1; }
+  one_wheel "$dir"
   set -- "$dir"/kube_noob-*.whl
   "$venv/bin/pip" install --disable-pip-version-check --quiet --no-index --no-deps "$1" \
     || { say "FAIL  install $1 (--no-index --no-deps)"; return 1; }
@@ -187,14 +188,31 @@ in_namespace() {
   PYTHON="$(command -v "${PYTHON:-python3}" || true)"
   [ -n "$PYTHON" ] || die "no python3 on PATH (set PYTHON)"
   export PYTHON
-  if unshare -rn true >/dev/null 2>&1; then
-    exec unshare -rn "$self" "$@"
+  # `unshare` itself first: without it the sudo path below died in `env: unshare: No such file` with exit 127
+  # instead of this script's own refusal (review finding 11b).
+  unshare="$(command -v unshare || true)"
+  [ -n "$unshare" ] \
+    || die "cannot create a network namespace here (no unshare on PATH): not run, which is not a pass"
+  if "$unshare" -rn true >/dev/null 2>&1; then
+    exec "$unshare" -rn "$self" "$@"
   fi
   if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
     say "note: unshare -rn is not permitted for this user; running inside sudo unshare -n (as root)"
-    exec sudo -n env "PYTHON=$PYTHON" "KN_AIRGAP_WORK=$work" "PATH=$PATH" unshare -n "$self" "$@"
+    exec sudo -n env "PYTHON=$PYTHON" "KN_AIRGAP_WORK=$work" "PATH=$PATH" "$unshare" -n "$self" "$@"
   fi
   die "cannot create a network namespace here (unshare -rn refused, no passwordless sudo): not run, which is not a pass"
+}
+
+one_wheel() {
+  # Exactly one kube_noob wheel in the directory: two would install the first silently (review finding 11c).
+  dir="$1"
+  set -- "$dir"/kube_noob-*.whl
+  [ -f "$1" ] || die "no kube_noob-*.whl in $dir (run: scripts/airgap_check.sh prepare $dir)"
+  if [ $# -gt 1 ]; then
+    names=""
+    for w in "$@"; do names="$names $(basename "$w")"; done
+    die "expected one kube_noob wheel in $dir, found $#:$names; keep the one to verify"
+  fi
 }
 
 cmd="${1:-}"
@@ -209,8 +227,7 @@ case "$cmd" in
     [ $# -ge 2 ] || die "usage: verify <wheel-dir>"
     dir="$2"
     [ -d "$dir" ] || die "no such directory: $dir"
-    set -- "$dir"/kube_noob-*.whl
-    [ -f "$1" ] || die "no kube_noob-*.whl in $dir (run: scripts/airgap_check.sh prepare $dir)"
+    one_wheel "$dir"
     in_namespace --inner-verify "$dir"
     ;;
   --inner-verify) install_and_check "$2" ;;
