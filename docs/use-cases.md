@@ -740,9 +740,17 @@ kube-noob build audit -f Containerfile --image-layout /tmp/web-oci --fail-on hig
 
 `gate` is one command for CI: the audit rules over manifests and rendered charts, the exception list, whether each
 finding would be refused by the generated admission policy in enforce mode, open reported issues in the target
-OpenShift release that name a kind you deploy, and the Containerfile checks. It exits 1 at `--fail-on` and writes
-SARIF (GitHub code scanning), a Markdown summary and GitLab code quality JSON. Findings in a rendered chart point at
-the template file.
+OpenShift release that name a kind you deploy -- and it says when it could not look them up -- and the Containerfile
+checks. It exits 1 at `--fail-on` and writes SARIF (GitHub code scanning), a Markdown summary and GitLab code quality
+JSON. Findings in a rendered chart point at the template file.
+
+The reported-issues check has three answers, not one list: `knownIssuesVerdict` is `looked-up` when the bundled
+release notes hold the release and were searched (an empty `knownIssues` is then a real zero), `not-evaluated` when
+no search happened -- no `--version`, or a release the index does not cover, with the releases it does cover and
+the date of the snapshot in `knownIssuesNote` -- and `not-applicable` on a Kubernetes platform. A `not-evaluated`
+check is listed under "Not run" in the summary and as a warning in the SARIF file's `toolExecutionNotifications`,
+so a pipeline on OpenShift 4.14 no longer reads the same `[]` as one on 4.20. The exit code does not change for it;
+a pipeline that wants to fail on `not-evaluated` reads the field.
 
 ```bash
 kube-noob gate --chart deploy/helm/shop --values deploy/helm/shop/values-prod.yaml --containerfile Containerfile \

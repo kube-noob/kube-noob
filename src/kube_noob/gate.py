@@ -2,7 +2,9 @@
 
 ``kube-noob gate`` runs the audit rules (with an exception list when given), says for every finding whether the
 generated admission policy would refuse it in enforce mode, lists open reported issues in the target OpenShift
-release that mention a kind the manifests deploy, audits Containerfiles, and fails at ``--fail-on``. It writes SARIF
+release that mention a kind the manifests deploy (``knownIssuesVerdict`` says whether that search happened: a
+release the bundled index does not cover is ``not-evaluated``, never an empty list), audits Containerfiles, and
+fails at ``--fail-on``. It writes SARIF
 2.1.0 (GitHub code scanning), a Markdown summary (``$GITHUB_STEP_SUMMARY``, merge request notes) and GitLab's code
 quality JSON. Findings in a rendered Helm chart point at the template file (``# Source:`` comments) when
 ``--chart-path`` names the chart in the repository.
@@ -217,16 +219,53 @@ def _admission_text(rule: str, severity: str, enforced: dict[str, str], not_gene
     return "refused in enforce mode" + (f" (partly: {enforced[rule]})" if enforced[rule] else "")
 
 
-def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path | None) -> list[dict[str, Any]]:
-    """Open reported issues in the target release whose text names a kind these manifests deploy."""
+#: The three answers the reported-issues check can give, the vocabulary `must-gather analyze` uses for the same
+#: field. `looked-up`: the index held the release and was searched, so an empty list is a real zero. `not-evaluated`:
+#: no search happened, and the note says why. `not-applicable`: the question does not arise (not OpenShift).
+KNOWN_ISSUES_VERDICTS = ("looked-up", "not-evaluated", "not-applicable")
+
+
+def _known(
+    kinds: set[str], platform: str, version: str | None, data_dir: Path | None
+) -> tuple[list[dict[str, Any]], str, str]:
+    """Open reported issues in the target release whose text names a kind these manifests deploy, with the verdict
+    and its note.
+
+    `[]` used to be the whole answer for a Kubernetes platform, for OpenShift with no version, for a release the
+    bundled index does not cover, and for a real search that matched nothing -- the same bytes for four different
+    facts, and a pipeline read all four as "no reported issue" (G284)."""
     from kube_noob.catalog import OPENSHIFT_FAMILY
     from kube_noob.known_issues import get_index, vkey
 
-    if platform not in OPENSHIFT_FAMILY or not version:
-        return []
+    if platform not in OPENSHIFT_FAMILY:
+        return (
+            [],
+            "not-applicable",
+            f"the index holds OpenShift release-note issues; they do not apply to {sanitize.visible(platform)[:40]}",
+        )
+    index = get_index(data_dir)
+    knowledge = index.knowledge()
+    releases = ", ".join(knowledge["openshiftReleases"]) or "no release"
+    as_of = knowledge.get("knownIssuesAsOf") or "an unknown date"
+    coverage = f"the index covers OpenShift {releases} as of {as_of}"
+    if not version:
+        return (
+            [],
+            "not-evaluated",
+            f"no --version was given, so the OpenShift release notes were not searched; pass --version "
+            f"{knowledge['openshiftReleases'][-1] if knowledge['openshiftReleases'] else '4.20'} ({coverage})",
+        )
     minor = ".".join(version.split(".")[:2])
+    shown = sanitize.visible(version)[:40]
+    if minor not in knowledge["openshiftReleases"]:
+        return (
+            [],
+            "not-evaluated",
+            f"OpenShift {shown} is outside the indexed release notes ({coverage}), so reported issues were not "
+            "looked up; a release the index does not cover is not determined, never none",
+        )
     out: list[dict[str, Any]] = []
-    for issue in get_index(data_dir).issues:
+    for issue in index.issues:
         if issue.kind != "known" or issue.minor != minor:
             continue
         if issue.fixed_in and vkey(version) >= vkey(issue.fixed_in):
@@ -234,7 +273,15 @@ def _known(kinds: set[str], platform: str, version: str | None, data_dir: Path |
         named = sorted(k for k in kinds if _DISTINCT_KIND.match(k) and re.search(rf"\b{k}s?\b", issue.text))
         if named:
             out.append({**issue.as_dict(version, 1.0), "kinds": named})
-    return out[:20]
+    total = len(out)
+    out = out[:20]
+    if total:
+        shown_n = f"{len(out)} of {total}" if total > len(out) else str(total)
+        what = f"{shown_n} open issue(s) name a kind these manifests deploy"
+    else:
+        what = "no open reported issue names a kind these manifests deploy"
+    note = f"OpenShift {minor} was searched ({coverage}); {what}"
+    return out, "looked-up", note
 
 
 def run(
@@ -397,7 +444,7 @@ def run(
             r["failsGate"] = True
         if over:
             failures.append(f"{len(over)} finding(s) at {fail_on} or above")
-    known = _known(kinds, platform, version, data_dir)
+    known, known_verdict, known_note = _known(kinds, platform, version, data_dir)
     return {
         "tool": {"name": "kube-noob", "version": __version__},
         "platform": platform,
@@ -422,6 +469,8 @@ def run(
             + " --mode enforce",
         },
         "knownIssues": known,
+        "knownIssuesVerdict": known_verdict,
+        "knownIssuesNote": known_note,
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
         "notRun": [
@@ -456,6 +505,9 @@ def run(
                     "CodeQL)"
                 ]
             ),
+            # The reported-issues check that did not run is a leg like the others; `knownIssues: []` alone said
+            # nothing (G284). `not-applicable` is not a skipped check and is not listed here.
+            *([f"reported issues: {known_note}"] if known_verdict == "not-evaluated" else []),
         ],
     }
 
@@ -649,7 +701,27 @@ def _fingerprint(r: dict[str, Any]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
+def _not_run_invocation(report: dict[str, Any]) -> dict[str, Any] | None:
+    """The gate's "Not run" legs as `toolExecutionNotifications`: a SARIF file is a list of results, and a gate that
+    searched no release-note index wrote the same file as one that searched it and found nothing (G284). The
+    reported-issues leg is a warning, like an audit assumption in `sarif_of_audit`; a leg that was not run for want
+    of an input is a note."""
+    legs = report.get("notRun")
+    if not legs:
+        return None
+    notes = [
+        {
+            "level": "warning" if str(leg).startswith("reported issues:") else "note",
+            "message": {"text": f"not run: {sanitize.visible(str(leg))[:1000]}"},
+        }
+        for leg in legs
+    ]
+    return {"executionSuccessful": True, "toolExecutionNotifications": notes}
+
+
 def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
+    if invocation is None:
+        invocation = _not_run_invocation(report)
     rules: dict[str, dict[str, Any]] = {}
     results = []
     for r in report["findings"]:
@@ -947,6 +1019,10 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         for k in report["knownIssues"]:
             lines.append(f"- [{_cell(k['id'], 40)}]({k['url']}) ({', '.join(k['kinds'])}): {_cell(k['summary'])}")
         lines.append("")
+    elif report.get("knownIssuesVerdict") in {"looked-up", "not-applicable"}:
+        # An empty list is a real zero only when the release was searched; say which it was. `not-evaluated`
+        # is under "Not run" below, with the others.
+        lines += [f"Reported issues in this release: {_cell(report.get('knownIssuesNote'), 400)}", ""]
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]

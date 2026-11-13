@@ -1108,7 +1108,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="CI gate before deploy: audit, admission policy, reported issues and Containerfiles; SARIF and a summary",
         description="Audits manifests and rendered charts (with an exception list when given), says which findings the "
         "generated admission policies would refuse, lists open reported issues in the target OpenShift release that "
-        "name a deployed kind, audits Containerfiles, and exits 1 at --fail-on. Writes SARIF 2.1.0, a Markdown "
+        "name a deployed kind (and says when it could not look them up: no --version, or a release the bundled index "
+        "does not cover), audits Containerfiles, and exits 1 at --fail-on. Writes SARIF 2.1.0, a Markdown "
         "summary and GitLab code quality JSON. Offline. Example: helm template app chart/ > rendered.yaml && "
         "kube-noob gate -f rendered.yaml --chart-path chart --platform openshift --version 4.20 --sarif out.sarif",
     )
