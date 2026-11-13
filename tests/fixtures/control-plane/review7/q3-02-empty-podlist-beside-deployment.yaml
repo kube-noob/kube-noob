@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: PodList
+metadata:
+  resourceVersion: "123"
+items: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d
+  namespace: shop
+spec:
+  selector:
+    matchLabels: {a: b}
+  template:
+    metadata:
+      labels: {a: b}
+    spec:
+      containers:
+      - name: c
+        image: nginx:1.27

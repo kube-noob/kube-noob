@@ -255,7 +255,7 @@ def test_a_rancher_selector_config_declines_naming_the_selector_and_is_never_a_f
         ).replace("authorization-mode=AlwaysAllow", "authorization-mode+=AlwaysAllow"),
         "apiVersion: provisioning.cattle.io/v1\nkind: Cluster\nmetadata: {name: c, namespace: fleet-default}\nspec:\n"
         "  rkeConfig:\n    machineGlobalConfig:\n"
-        "      kube-apiserver-arg: [authorization-mode=Node,RBAC, authorization-mode+=AlwaysAllow]\n",
+        '      kube-apiserver-arg: ["authorization-mode=Node,RBAC", "authorization-mode+=AlwaysAllow"]\n',
     ],
 )
 def test_the_append_suffix_is_a_second_authorization_mode_flag(text: str) -> None:

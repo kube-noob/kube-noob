@@ -144,11 +144,17 @@ class Report:
     # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
     # rule declined with a reason, so every result that had none stays byte-identical.
     declined: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Every object, or part of one, the engine recorded as NOT audited without a rule declining on it: a pod spec
-    # in a kind with no reader, a container whose image an operator supplies, an object in a group this reader
-    # refuses. Each entry is (what it is, the object), and `score_withheld` reads it beside `declined`: the
-    # sixth review found "containers were NOT audited" printed under `score 100.0` (G272).
-    unread: list[tuple[str, str]] = field(default_factory=list)
+    # Every object, or part of one, that was NOT audited without a rule declining on it: a pod spec in a kind
+    # with no reader, a container whose image an operator supplies, an object in a group this reader refuses.
+    # Each entry is {"object", "kind", "why"} with `why` a fixed phrase, never input text; `undetermined` reads
+    # it beside `declined`: the sixth review found "containers were NOT audited" printed under `score 100.0`
+    # (G272). Carried in `as_dict` as `notAudited`.
+    not_audited: list[dict[str, str]] = field(default_factory=list)
+    # Rule -> why it reached no verdict at all on this input: "stage not requested" when the caller asked for
+    # other stages, or the summary of `declined` ("declined on N objects"), which keeps the per-object detail.
+    # `partlyEvaluatedRules` (a finding on one object, a decline on another) stay in `evaluated_rules` and are
+    # not here. Carried in `as_dict` as `notEvaluated` (G272, seventh review).
+    not_evaluated: dict[str, str] = field(default_factory=dict)
 
     def max_severity(self) -> Severity | None:
         return max((f.severity for f in self.findings), default=None)
@@ -161,28 +167,29 @@ class Report:
 
     def score(self) -> float:
         """0..100 posture score over the findings. Deterministic; used by the learning grader and the training
-        reward, which ask for it by name. The REPORT withholds it while a rule declined on an object: see
-        `score_withheld`."""
+        reward, which ask for it by name. The REPORT withholds it while anything was not read: see
+        `undetermined`."""
         weights = {Severity.CRITICAL: 25.0, Severity.HIGH: 10.0, Severity.MEDIUM: 4.0, Severity.LOW: 1.0}
         penalty = sum(weights.get(f.severity, 0.0) for f in self.findings)
         return max(0.0, 100.0 - penalty)
 
-    def score_withheld(self) -> str | None:
-        """Why the headline score is not a number, or None when it is one.
+    def undetermined(self) -> str | None:
+        """Why this report is not a verdict, or None when it is one: the ONE predicate every renderer reads.
 
         A score is computed from findings, and a rule that declined on an object (`declined` names it: an API
         server started through a script it did not read, a partly evaluated rule) found nothing there BECAUSE it
         did not look. `score=100.0` printed above "KN-S038 was not evaluated in full" was a number beside an
         unread rule, the one thing the product rule forbids (G272). The same holds for every other record that
-        something was not read (`unread`: a pod spec in a kind with no reader, an operator-supplied image, a
-        refused group), which the sixth review found still carried a number. This is the ONE predicate every
-        renderer reads -- text, JSON, YAML, HTML, Markdown, the gate, MCP, `fix`, the eval grader. The quiet
-        declines of a partial bundle (no NetworkPolicy here to judge) are not a rule declining on an object, and
-        keep the number.
+        something was not read (`not_audited`). While this is not None: `score` is null with this text beside
+        it as `scoreWithheld`, `audit` and `gate` exit 1 whatever `--fail-on` says, the gate is `incomplete` and
+        not `passed`, and the eval grader marks every finding-derived check not evaluated (seventh review: an
+        undetermined audit exited 0 and the gate said passed). The quiet declines of a partial bundle (no
+        NetworkPolicy here to judge) and a stage the caller did not ask for are not an unread object, and keep
+        the number.
 
         The text before the first colon is the short form the text view prints.
         """
-        if not self.declined and not self.unread:
+        if not self.declined and not self.not_audited:
             return None
         heads: list[str] = []
         details: list[str] = []
@@ -193,15 +200,15 @@ class Report:
                 ", ".join(ids[:MAX_WITHHELD_NAMED])
                 + (f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else "")
             )
-        if self.unread:
+        if self.not_audited:
             counts: dict[str, int] = {}
-            for what, _ in self.unread:
-                counts[what] = counts.get(what, 0) + 1
+            for entry in self.not_audited:
+                counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
             heads.append(
                 " and ".join(f"{n} {what}{'s' if n != 1 else ''}" for what, n in sorted(counts.items()))
                 + " not audited"
             )
-            names = list(dict.fromkeys(obj for _, obj in self.unread))
+            names = list(dict.fromkeys(entry["object"] for entry in self.not_audited))
             details.append(
                 "not read in full: "
                 + ", ".join(names[:MAX_WITHHELD_NAMED])
@@ -220,7 +227,7 @@ class Report:
                 "maxSeverity": top.name.lower() if (top := self.max_severity()) is not None else None,
                 # null, with the reason beside it, while a rule declined on an object; a report where none did
                 # stays byte-identical (G272).
-                "score": None if (withheld := self.score_withheld()) else round(self.score(), 1),
+                "score": None if (withheld := self.undetermined()) else round(self.score(), 1),
                 **({"scoreWithheld": withheld} if withheld else {}),
             },
             "assumptions": self.assumptions,
@@ -239,6 +246,8 @@ class Report:
             # stays byte-identical (R4, G244).
             **({"detectionCoverage": self.detection_coverage} if self.detection_coverage else {}),
             **({"declined": self.declined} if self.declined else {}),
+            **({"notAudited": self.not_audited} if self.not_audited else {}),
+            **({"notEvaluated": self.not_evaluated} if self.not_evaluated else {}),
         }
 
 

@@ -58,8 +58,8 @@ def test_an_object_whose_kind_is_not_a_string_is_a_high_finding_and_never_scores
 ) -> None:
     report = _r(fixture)
     v001 = _hits(report, "KN-V001")
-    assert v001 and all("kind" in f.message and "not a string" in f.message for f in v001), report.findings
-    assert report.score_withheld() is not None and report.as_dict()["summary"]["score"] is None
+    assert v001 and any("kind is not a string" in f.message for f in v001), report.findings
+    assert report.undetermined() is not None and report.as_dict()["summary"]["score"] is None
     code, out, _ = _cli(["audit", "-f", str(FX / fixture)], capsys)
     assert code == 1 and "score=not determined" in out.splitlines()[0]
 
@@ -118,7 +118,7 @@ def test_the_withheld_reason_names_rules_and_unread_objects_together() -> None:
         + "---\n"
         + (FX / "q1-32-podlist-item-kind-int.yaml").read_text(encoding="utf-8")
     )
-    withheld = _t(text).score_withheld()
+    withheld = _t(text).undetermined()
     assert withheld is not None
     head = withheld.partition(":")[0]
     assert "rule" in head and "not audited" in head and KAS in withheld

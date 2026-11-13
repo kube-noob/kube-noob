@@ -15,9 +15,9 @@ from typing import Any
 
 from kube_noob.audit.argv import (
     _EMBEDDED_APISERVER_ARG,
+    _FLAG_NAME,
     INSECURE_FLAGS,
     _exits_at_once,
-    _expands,
     _flag_values,
     _go_bool,
     _image_tag,
@@ -25,8 +25,10 @@ from kube_noob.audit.argv import (
     _launch,
     _quoted,
     _shown,
+    expand_argv,
     insecure_serving,
-    k3s_arg,
+    k3s_pairs,
+    shown_value,
 )
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
@@ -487,7 +489,7 @@ CONFIG_FILE_KINDS = frozenset(
     "kubectl/oc reject objects without these identity fields.",
 )
 def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
-    from kube_noob.yamlio import is_empty_list
+    from kube_noob.yamlio import is_empty_list, is_list_kind
 
     for d in ctx.docs:
         if not isinstance(d.data, dict):
@@ -498,22 +500,28 @@ def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if is_empty_list(d.data):
             continue  # the record that a list held nothing is not an object (G272)
         missing = [k for k in ("apiVersion", "kind") if not d.data.get(k)]
+        wrapper = is_list_kind(d.data)  # a list wrapper of any shape has no metadata.name: not a wrapper field
         # A `kind: 7` or `kind: [List]` is truthy, so it was never "missing", and once the schema lookup for it
         # failed nothing else looked: a PodList item with `kind: 7` and a privileged container scored 100 with
         # exit 0 (G272, sixth review). The API server refuses a non-string identity field outright.
         for k in ("apiVersion", "kind"):
             value = d.data.get(k)
             if value and not isinstance(value, str):
+                what = (
+                    "a mapping"
+                    if isinstance(value, dict)
+                    else "a list"
+                    if isinstance(value, list)
+                    else shown_value(value)
+                )
                 yield r.finding(
-                    d,
-                    (k,),
-                    f"{k} is not a string ({_quoted(value, 60)}); the API server refuses it.",
-                    resource=f"doc[{d.index}]",
+                    d, (k,), f"{k} is not a string ({what}); the API server refuses it.", resource=f"doc[{d.index}]"
                 )
         meta = d.data.get("metadata")
-        if (api_group(d.api_version), d.kind) in CONFIG_FILE_KINDS:
+        if wrapper or (api_group(d.api_version), d.kind) in CONFIG_FILE_KINDS:
             # A kubeadm or kind configuration file, not an API object: it has no metadata by design, and asking
-            # it for a name failed every kubeadm file at HIGH (G272, sixth review).
+            # it for a name failed every kubeadm file at HIGH (G272, sixth review). Nor has a list wrapper whose
+            # `items` the loader could not open (seventh review): the control-plane rules decline it instead.
             pass
         elif not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
@@ -537,8 +545,8 @@ def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if not isinstance(d.data, dict):
             continue
         valid = KIND_API_VERSIONS.get(d.kind)
-        if not valid or d.api_version in valid:
-            continue
+        if not valid or d.api_version in valid or not d.api_version:
+            continue  # an absent apiVersion is KN-V001's, not a wrong one (G272)
         if not claims_a_known_group(d.api_version):
             # A kind name is unique only inside its group. `Service` is core v1 AND serving.knative.dev/v1;
             # `Job` is batch/v1 AND batch.volcano.sh/v1alpha1. Firing on the name alone called a correct Knative
@@ -979,20 +987,29 @@ def _v017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _v018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
+        notes = {path: "; ".join(note for p, _, note in d.refused_keys if p == path) for path, _, _ in d.refused_keys}
         for path, line in d.duplicate_keys:
-            f = r.finding(d, path, f"Duplicate key '{fmt_path(path)}' (second occurrence on line {line}).")
-            f.line = line
-            yield f
-        # The wrapper this object was opened out of had the key twice (`items` twice, `kind` twice): the loader
-        # kept every object under every `items`, and the record travels with the first of them, because the API
-        # server's strict decoder refuses the whole file and the wrapper itself is no longer a document (G272).
-        for path, line in d.wrapper_duplicate_keys:
+            note = notes.get(path, "")
             f = r.finding(
                 d,
                 path,
-                f"Duplicate key '{fmt_path(path)}' in the {d.from_list} that holds this object (second occurrence "
-                f"on line {line}); the API server refuses the whole list.",
-                resource=f"{d.from_list}/<wrapper>",
+                f"Duplicate key '{fmt_path(path)}' (second occurrence on line {line})"
+                + (f"; {note}; the API server refuses the whole list." if note else "."),
+            )
+            f.line = line
+            yield f
+        # The wrapper this object was opened out of had the key twice (`items` twice, `kind` twice): the loader
+        # kept every object under every sequence `items`, and the record travels with the first of them, naming
+        # the wrapper that has the key and what became of an occurrence that was not a list, because the API
+        # server's strict decoder refuses the whole file and the wrapper itself is no longer a document (G272).
+        for path, line, wrapper, note in d.wrapper_duplicate_keys:
+            holds = "object" if wrapper == d.from_list else d.from_list
+            f = r.finding(
+                d,
+                path,
+                f"Duplicate key '{fmt_path(path)}' in the {wrapper} that holds this {holds} (second occurrence on "
+                f"line {line}){'; ' + note if note else ''}; the API server refuses the whole list.",
+                resource=f"{wrapper}/<wrapper>",
             )
             f.line = line
             yield f
@@ -4439,42 +4456,132 @@ def _refused_authorization(flags: dict[str, list[tuple[str, int]]]) -> tuple[lis
     return modes, ""
 
 
-def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, launch: _Launch) -> Finding | None:
-    """The one thing an embedding server's argv decides on its own: AlwaysAllow passed to the API server.
-
-    `--kube-apiserver-arg=authorization-mode=...AlwaysAllow` (or the value as the next token) is given to the API
-    server after the distribution's own defaults, and AlwaysAllow in the chain allows every request whatever
-    else is in it. Anything else depends on those defaults, which are not read, and is declined by the caller.
-    """
+def _embedded_apiserver_args(launch: _Launch) -> list[tuple[str, int]] | None:
+    """The `--kube-apiserver-arg` values an embedding server's argv passes on, in argv order, each with the index
+    of the token that carries it -- or None when the binary is not one that passes them (k0s)."""
     key = _EMBEDDED_APISERVER_ARG.get(launch.embedded)
     if key is None:
         return None
-    modes: list[str] = []
-    last = -1
+    values: list[tuple[str, int]] = []
     tokens = launch.tokens
     for i, t in enumerate(tokens):
-        value = None
         if t in (f"--{key}", f"-{key}") and i + 1 < len(tokens):
-            value, at = tokens[i + 1], i + 1
+            values.append((tokens[i + 1], i + 1))
         elif t.startswith((f"--{key}=", f"-{key}=")):
-            value, at = t.partition("=")[2], i
-        if value is None:
-            continue
-        # One leading `--`, `key+=value` (append) and `key-=value` (prepend) as k3s's GetArgs reads them: each
-        # is a second --authorization-mode beside the distribution's own, which pflag appends to the slice (G272).
-        name, setting = k3s_arg(value)
-        if name == "authorization-mode":
-            modes.extend(setting.split(","))
-            last = at
-    if "AlwaysAllow" not in modes:
-        return None
-    return r.finding(
-        d,
-        _argv_path(c, launch.skip, last),
-        f"{where} runs kube-apiserver inside {launch.embedded} server and passes it AlwaysAllow in "
-        f"--authorization-mode ({_quoted(','.join(modes))}) through --{key}: any request no earlier authorizer "
-        "denies is allowed, so an authenticated client can do anything.",
-    )
+            values.append((t.partition("=")[2], i))
+    return values
+
+
+def _apiserver_explicit(
+    ctx: AuditContext,
+    r: Rule,
+    d: Document,
+    pairs: list[tuple[str, str, PathT]],
+    passes: str,
+    through: str,
+) -> tuple[list[Finding], list[str], bool]:
+    """What flags an outside writer passes kube-apiserver EXPLICITLY decide, in the order pflag receives them,
+    and what they leave undecided: the ONE decision block for every reader that is not the static pod's argv --
+    kubeadm's ClusterConfiguration (and the objects that embed it), k0s, Rancher's RKE2 config and the k3s/RKE2
+    argv (`--kube-apiserver-arg`). The seventh review found the argv reader deciding AlwaysAllow only, so
+    `anonymous-auth=true` on `k3s server` was a MEDIUM finding in the Rancher config and nothing on the argv.
+
+    A flag name no server defines (a padded one, `--123`) means the server does not start, as does an
+    authorization chain the API server refuses, so those return no finding and the reason. An explicit
+    `--authorization-mode=` replaces the writer's default with nothing, which upstream's Complete() fills with
+    AlwaysAllow; AlwaysAllow in the chain is CRITICAL; ABAC and Webhook decline the authorizer; an explicit
+    `--anonymous-auth` is read as a Go boolean (MEDIUM when true, declined when neither) unless AlwaysAllow
+    already turned it off; the insecure port is read as the static-pod reader reads it. Absent flags are the
+    writer's own defaults, which are not read: the caller declines those.
+    Returns (findings, the fragments of the decline's reason, whether the whole rule is decided -- only AlwaysAllow
+    decides it, because it allows every request and turns anonymous off; an explicit anonymous-auth leaves the
+    authorizer to the writer's defaults); the caller adds the writer's defaults line.
+    """
+    out: list[Finding] = []
+    unread: list[str] = []
+    flags: dict[str, list[tuple[str, int]]] = {}
+    for i, (name, value, _) in enumerate(pairs):
+        if _FLAG_NAME.fullmatch(name) is None:
+            padded = " with whitespace in its name" if name != name.strip() else ""
+            return (
+                [],
+                [
+                    f"passes the flag {_quoted(name, 80)}{padded}: kube-apiserver has no such flag; its flag parser "
+                    "refuses it, so this server does not start"
+                ],
+                False,
+            )
+        flags.setdefault(name, []).append((value, i))
+    if _last(flags, "authorization-config"):
+        unread.append("it names --authorization-config, a file that is not in the input")
+    modes, refused = _refused_authorization(flags)
+    if refused:
+        return [], [f"it {refused}"], False
+    anon = flags.get("anonymous-auth", [])
+    if anon and _go_bool(anon[-1][0]) is None:
+        # pflag parses every flag before the server reads any: a value strconv.ParseBool refuses means it does
+        # not start, whatever --authorization-mode says (G272, seventh review).
+        return (
+            [],
+            [f"it sets --anonymous-auth={_quoted(anon[-1][0], 60)}, which is not a boolean, so it does not start"],
+            False,
+        )
+    always_allow = False
+    given = flags.get("authorization-mode", [])
+    if given and not modes and not _last(flags, "authorization-config"):
+        always_allow = True
+        out.append(
+            r.finding(
+                d,
+                pairs[given[-1][1]][2],
+                f"{passes} --authorization-mode= (nothing) {through}, which replaces its own default with an empty "
+                f"chain, and names no --authorization-config, so kube-apiserver uses the upstream default, AlwaysAllow "
+                f"({APISERVER_DEFAULTS_CHECKED}): every request any authenticated client makes is allowed.",
+            )
+        )
+    elif "AlwaysAllow" in modes:
+        always_allow = True
+        out.append(
+            r.finding(
+                d,
+                pairs[next(i for v, i in reversed(given) if "AlwaysAllow" in v.split(","))][2],
+                f"{passes} AlwaysAllow in --authorization-mode ({_quoted(','.join(modes))}) {through}: any request "
+                "no earlier authorizer denies is allowed, so an authenticated client can do anything.",
+            )
+        )
+    elif "ABAC" in modes or "Webhook" in modes:
+        which = " and ".join(m for m in ("ABAC", "Webhook") if m in modes)
+        unread.append(
+            f"it authorizes through {which} in --authorization-mode ({_quoted(','.join(modes))}), which decides from "
+            "a policy file or a webhook that is not in the input and can allow every request"
+        )
+    if anon and not always_allow:
+        value, idx = anon[-1]
+        if _go_bool(value):
+            out.append(
+                r.finding(
+                    d,
+                    pairs[idx][2],
+                    f"{passes} --anonymous-auth=true {through}: a request with no credentials is served as "
+                    "system:anonymous in group system:unauthenticated.",
+                    severity=Severity.MEDIUM,
+                )
+            )
+    minor = parse_minor(ctx.k8s_version)
+    target = f"Kubernetes {ctx.k8s_version}" + ("" if ctx.version_stated else ", assumed")
+    insecure = insecure_serving(flags, ctx.version_stated, minor, target)
+    if insecure is not None and insecure[0] == "decline":
+        unread.append(f"it {insecure[1]}")
+    elif insecure is not None:
+        out.append(
+            r.finding(
+                d,
+                pairs[insecure[2]][2],
+                f"{passes} {insecure[1]} {through}: on that port (Kubernetes 1.19 and older) a request is neither "
+                "authenticated nor authorized, so anyone who can reach it has the API server as cluster-admin.",
+            )
+        )
+    return out, unread, always_allow
 
 
 def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
@@ -4482,10 +4589,12 @@ def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
     document that is not a mapping at all (a list item that was a string or null, or a bare scalar document), and
     any document holding a pod spec no reader looks at (`items` under `spec`, `kind: podlist`, a sequence of Pods
     as one item) -- each may hold a pod these rules cannot read. Never the opened part read as the whole (G272)."""
-    from kube_noob.yamlio import is_list_kind
+    from kube_noob.yamlio import is_empty_list, is_list_kind
 
     seen = False
     for d in ctx.docs:
+        if is_empty_list(d.data):
+            continue  # the record that a list held nothing (`items: []` or `items: null`), not a list to read
         if is_list_kind(d.data) and isinstance(d.data, dict) and not isinstance(d.data.get("items"), list):
             seen = True
             ref = _shown(d.ref(), 160)
@@ -4510,7 +4619,7 @@ def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
             seen = True
             ref = f"document {d.index + 1} (line {d.start_line})"
             ctx.cannot_decide(
-                r.rule_id, f"{ref} is not a mapping ({_quoted(d.data, 40)}), so what it is was not read", ref
+                r.rule_id, f"{ref} is not a mapping ({shown_value(d.data)}), so what it is was not read", ref
             )
     return seen
 
@@ -4528,7 +4637,7 @@ def _config_objects(ctx: AuditContext, r: Rule, component: str) -> tuple[bool, l
     seen = False
     out: list[Finding] = []
     for d in ctx.docs:
-        read = read_config(d, component)
+        read = read_config(d, component, parse_minor(ctx.k8s_version))
         if read is None:
             continue
         seen = True
@@ -4536,31 +4645,11 @@ def _config_objects(ctx: AuditContext, r: Rule, component: str) -> tuple[bool, l
         ctx.looked_at(r.rule_id, ref)
         decided = False
         if component == "kube-apiserver":
-            modes = [(m, path) for k, v, path in read.pairs if k == "authorization-mode" for m in v.split(",")]
-            anon = [(v, path) for k, v, path in read.pairs if k == "anonymous-auth"]
-            if any(k == "authorization-config" for k, _, _ in read.pairs):
-                read.unread.append("it names --authorization-config, a file that is not in the input")
-            elif any(m == "AlwaysAllow" for m, _ in modes):
-                decided = True
-                out.append(
-                    r.finding(
-                        d,
-                        next(p for m, p in reversed(modes) if m == "AlwaysAllow"),
-                        f"{ref} has {read.tool} pass AlwaysAllow in --authorization-mode "
-                        f"({_quoted(','.join(m for m, _ in modes))}) to kube-apiserver: any request no earlier "
-                        "authorizer denies is allowed, so an authenticated client can do anything.",
-                    )
-                )
-            if not decided and anon and _go_bool(anon[-1][0]):
-                out.append(
-                    r.finding(
-                        d,
-                        anon[-1][1],
-                        f"{ref} has {read.tool} pass --anonymous-auth=true to kube-apiserver: a request with no "
-                        "credentials is served as system:anonymous in group system:unauthenticated.",
-                        severity=Severity.MEDIUM,
-                    )
-                )
+            found, unread, decided = _apiserver_explicit(
+                ctx, r, d, read.pairs, f"{ref} has {read.tool} pass", "to kube-apiserver"
+            )
+            out.extend(found)
+            read.unread.extend(unread)
         else:
             for k, v, path in read.pairs:
                 if k not in _ETCD_URL_DEFAULTS:
@@ -4571,6 +4660,7 @@ def _config_objects(ctx: AuditContext, r: Rule, component: str) -> tuple[bool, l
                     read.unread.append(str(why))
                     continue
                 if plain:
+                    decided = True
                     side = "client" if "client" in k else "peer"
                     out.append(
                         r.finding(
@@ -4581,7 +4671,9 @@ def _config_objects(ctx: AuditContext, r: Rule, component: str) -> tuple[bool, l
                             severity=Severity.CRITICAL if side == "client" else Severity.HIGH,
                         )
                     )
-        if not decided:
+        # Declined whenever something was not read, decided or not: the seventh review found a refused entry
+        # ("not a {name, value} pair") hidden behind a decided AlwaysAllow beside it (G272).
+        if not decided or read.unread:
             rest = "; ".join(read.unread[:3]) or f"the rest of what it sets depends on {read.tool}'s own defaults"
             ctx.cannot_decide(
                 r.rule_id,
@@ -4649,10 +4741,13 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         flags: dict[str, list[tuple[str, int]]] = {}
         problem: str | None = None
         exits: bool | str = False
-        if not launch.declined and not launch.embedded and not _expands(launch.tokens):
+        # `$(NAME)` expanded from a literal env value as the kubelet expands it, `$$` read as a literal `$`,
+        # and anything else declined with the name (G272, seventh review).
+        tokens, unexpanded = ((), None) if launch.declined else expand_argv(launch.tokens, c.container)
+        if not launch.declined and not launch.embedded and unexpanded is None:
             # --version and --help are read only where pflag would read them as flags: `--etcd-prefix --version`
             # gives --etcd-prefix the value, and an ambiguous argv is declined below, not taken as a job (G272).
-            flags, problem = _flag_values(launch.tokens, _APISERVER_READ, _APISERVER_BOOLS, False, pflag=True)
+            flags, problem = _flag_values(tokens, _APISERVER_READ, _APISERVER_BOOLS, False, pflag=True)
             if problem is None:
                 exits = _exits_at_once(flags, pflag=True)
                 if exits is True:
@@ -4674,22 +4769,35 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             starts = "may start" if launch.maybe else "starts"
             ctx.cannot_decide(r.rule_id, f"{where} {starts} kube-apiserver {launch.declined}", ref)
             continue
+        if unexpanded:
+            ctx.cannot_decide(r.rule_id, f"{where} passes an argument through $(VAR) expansion: {unexpanded}", ref)
+            continue
         if launch.embedded:
-            hit = _embedded_always_allow(r, d, c, where, launch)
-            if hit is not None:
-                yield hit
-            else:
+            # The same decision block as the Rancher config and kubeadm, over the `--kube-apiserver-arg` values
+            # in the order GetArgs emits them; the distribution's own defaults are not read and are declined.
+            given = _embedded_apiserver_args(launch) or []
+            pairs = [
+                (flag, value, _argv_path(c, launch.skip, given[i][1]))
+                for flag, value, i in k3s_pairs([v for v, _ in given])
+            ]
+            found, unread, decided = _apiserver_explicit(
+                ctx,
+                r,
+                d,
+                pairs,
+                f"{where} runs kube-apiserver inside {launch.embedded} server and passes it",
+                f"through --{_EMBEDDED_APISERVER_ARG.get(launch.embedded, 'its arguments')}",
+            )
+            yield from found
+            if not decided or unread:
+                rest = "; ".join(unread[:3])
                 ctx.cannot_decide(
                     r.rule_id,
                     f"{where} runs kube-apiserver inside {launch.embedded} server, which sets the API server's other "
-                    "flags from its own defaults and configuration file, which are not read",
+                    f"flags from its own defaults and configuration file, which are not read"
+                    f"{'; ' + rest if rest else ''}",
                     ref,
                 )
-            continue
-        if any("$(" in t for t in launch.tokens):
-            ctx.cannot_decide(
-                r.rule_id, f"{where} passes an argument through $(VAR) expansion, whose value is not read", ref
-            )
             continue
         if problem or isinstance(exits, str):
             ctx.cannot_decide(r.rule_id, f"{where} {problem or exits}", ref)
@@ -4697,6 +4805,15 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         modes, refused = _refused_authorization(flags)
         if refused:
             ctx.cannot_decide(r.rule_id, f"{where} {refused}", ref)
+            continue
+        given_anon = flags.get("anonymous-auth", [])
+        if given_anon and _go_bool(given_anon[-1][0]) is None:
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{where} sets --anonymous-auth={_quoted(given_anon[-1][0], 60)}, which is not a boolean, so it "
+                "does not start",
+                ref,
+            )
             continue
         skip = launch.skip
         # --- the insecure port: a finding up to a stated 1.19, a decline after (argv.insecure_serving) ---
@@ -4757,15 +4874,9 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         # --- anonymous authentication (off whenever AlwaysAllow is on: upstream resets it) ---
         if always_allow:
             continue
-        given_anon = flags.get("anonymous-auth", [])
         if given_anon:
             value, idx = given_anon[-1]
-            parsed = _go_bool(value)
-            if parsed is None:
-                ctx.cannot_decide(
-                    r.rule_id, f"{where} sets --anonymous-auth={_quoted(value, 60)}, which is not a boolean", ref
-                )
-            elif parsed:
+            if _go_bool(value):
                 yield r.finding(
                     d,
                     _argv_path(c, skip, idx),
@@ -4996,8 +5107,9 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         flags: dict[str, list[tuple[str, int]]] = {}
         problem: str | None = None
         exits: bool | str = False
-        if not launch.declined and not _expands(launch.tokens):
-            flags, problem = _flag_values(launch.tokens, _ETCD_READ, _ETCD_KNOWN_BOOLS, single_dash=True)
+        tokens, unexpanded = ((), None) if launch.declined else expand_argv(launch.tokens, c.container)
+        if not launch.declined and unexpanded is None:
+            flags, problem = _flag_values(tokens, _ETCD_READ, _ETCD_KNOWN_BOOLS, single_dash=True)
             if problem is None:
                 exits = _exits_at_once(flags, pflag=False)
                 if exits is True:
@@ -5028,7 +5140,10 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 ref,
             )
             continue
-        findings, reasons = _etcd_findings(r, d, c, where, launch.tokens, launch.skip, flags, problem)
+        if unexpanded:
+            ctx.cannot_decide(r.rule_id, f"{where} passes an argument through $(VAR) expansion: {unexpanded}", ref)
+            continue
+        findings, reasons = _etcd_findings(r, d, c, where, tokens, launch.skip, flags, problem)
         for why in reasons:
             ctx.cannot_decide(r.rule_id, f"{where}: {why}", ref)
         yield from findings
@@ -5050,8 +5165,6 @@ def _etcd_findings(
     `_flag_values` over ``tokens``, already read to tell a server from a `--version` job)."""
     if c.container.get("envFrom"):
         return [], ["envFrom can set any ETCD_* variable, ETCD_CONFIG_FILE included, and is not read"]
-    if any("$(" in t for t in tokens):
-        return [], ["it passes an argument through $(VAR) expansion, whose value is not read"]
     if problem:
         return [], [f"it {problem}"]
     env: dict[str, tuple[Any, int]] = {}

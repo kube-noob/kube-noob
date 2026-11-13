@@ -79,7 +79,8 @@ def analyze(
         platform=platform,
         kubernetes_version=ctx.k8s_version,
         platform_version=ctx.platform_version,
-        resources=[d.ref() for d in docs],
+        # An empty list wrapper is the record that a kind held nothing, not a resource (G272, seventh review).
+        resources=[d.ref() for d in docs if not is_empty_list(d.data)],
     )
     if platform in OPENSHIFT_FAMILY and version is None:
         report.assumptions.append(f"{ASSUMED_VERSION_PREFIXES[1]}; assumed Kubernetes {ctx.k8s_version} semantics.")
@@ -97,7 +98,9 @@ def analyze(
     for d in docs:
         for path in unread_pod_specs(d):
             unread.append(f"{_label(d)} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
-            report.unread.append(("pod spec", _label(d)))
+            report.not_audited.append(
+                {"object": _label(d), "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}
+            )
     if unread:
         # A pod spec in a kind with no reader used to produce nothing at all -- no finding, no declined rule, no
         # word -- so a privileged container sat inside a document that reported clean. The shape is detectable
@@ -112,7 +115,7 @@ def analyze(
     for d in docs:
         for path in operator_supplied_images(d):
             supplied.append(f"{d.ref()} at {'.'.join(str(x) for x in path)}")
-            report.unread.append(("container image", d.ref()))
+            report.not_audited.append({"object": d.ref(), "kind": "container image", "why": "supplied by an operator"})
     if supplied:
         # Said, not assumed silently: the container is audited for everything else, and its image -- the one
         # thing a registry allowlist, a digest pin and a scanner all work from -- is in a ServingRuntime this
@@ -129,7 +132,9 @@ def analyze(
             # The object names a kind this reader knows pod specs for, in a group it does not. Not reading it is
             # right -- another project's CRD of the same name has another schema -- but saying nothing about it
             # leaves a privileged container in a document that reported clean (G231).
-            report.unread.append(("object", d.ref()))
+            report.not_audited.append(
+                {"object": d.ref(), "kind": "object", "why": "in an API group this reader refuses"}
+            )
             report.assumptions.append(
                 f"{d.ref()} declares API group {group}, which is not where kube-noob knows this kind's pod specs "
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
@@ -142,6 +147,17 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    # Rules that reached no verdict at all, and why: a stage the caller did not ask for, or a decline on every
+    # object the rule looked at (`declined` keeps the per-object detail). A rule with a finding on one object and
+    # a decline on another is partly evaluated, stays in `evaluated_rules`, and is not here (G272).
+    for rid, rule in sorted(RULES.items()):
+        if rule.stage not in rule_stages and rule.stage is not Stage.RED_TEAM:
+            report.not_evaluated[rid] = "stage not requested"
+    fired = {f.rule_id for f in findings}
+    for rid in sorted(ctx.declined):
+        if rid not in evaluated and rid not in fired:
+            n = len(ctx.declined[rid])
+            report.not_evaluated[rid] = f"declined on {n} object{'s' if n != 1 else ''}"
     # A rule that declined and said why gets one line, sorted by id so the same input gives the same bytes. The
     # line gives the first few reasons in full and then NAMES every further object, up to a cap, with a count of
     # the ones it could not name: capping reasons alone left the fourth and fifth declined objects named nowhere
@@ -256,21 +272,21 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
     objects = [d.data for d in docs if isinstance(d.data, dict)]
     if any("apiVersion" in o and "kind" in o and not is_empty_list(o) for o in objects):
         return
-    if any(d.from_list for d in docs):
-        # The list wrapper had apiVersion and kind; what it held is for the audit to report (KN-V001 on an item
-        # that is not an object, the pods inside a sequence item named as not audited). Refusing it here said
-        # "no document has both apiVersion and kind" about a file whose wrapper and Pods all did (G272).
-        return
-    if objects and all(is_empty_list(o) for o in objects):
-        if any(d.duplicate_keys for d in docs):
-            return  # an empty list with a key twice: KN-V018 refuses it, which is the answer
-        # Only lists that held nothing, in either spelling: nothing to audit, said in those words (G272).
+    # Only lists that held nothing, in either spelling, at the top or inside a `kind: List` (the seventh review
+    # found a List of empty PodLists scoring 100): nothing to audit, said in those words (G272). An empty list
+    # with a key twice is for KN-V018 to refuse, which is the answer, so it is not refused here.
+    if objects and all(is_empty_list(o) for o in objects) and not any(d.duplicate_keys or d.refused_keys for d in docs):
         kinds = sorted({str(o.get("kind")) for o in objects})
         raise ConfigError(
             f"nothing here is a Kubernetes object: the input is {len(objects)} list{'s' if len(objects) != 1 else ''} "
             f"({', '.join(kinds)}) that held no items, so there is nothing to audit. Pass the objects themselves, "
             "or a list with items."
         )
+    if any(d.from_list for d in docs) or any(d.duplicate_keys or d.refused_keys for d in docs):
+        # The list wrapper had apiVersion and kind; what it held is for the audit to report (KN-V001 on an item
+        # that is not an object, the pods inside a sequence item named as not audited). Refusing it here said
+        # "no document has both apiVersion and kind" about a file whose wrapper and Pods all did (G272).
+        return
     keys: set[str] = set()
     for o in objects:
         keys |= {k for k in o if isinstance(k, str)}

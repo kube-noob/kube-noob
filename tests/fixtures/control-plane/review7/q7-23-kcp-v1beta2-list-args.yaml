@@ -1,0 +1,15 @@
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata: {name: cp, namespace: default}
+spec:
+  replicas: 3
+  version: v1.31.0
+  machineTemplate:
+    spec:
+      infrastructureRef: {kind: DockerMachineTemplate, apiGroup: infrastructure.cluster.x-k8s.io, name: cp}
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+        - name: authorization-mode
+          value: AlwaysAllow

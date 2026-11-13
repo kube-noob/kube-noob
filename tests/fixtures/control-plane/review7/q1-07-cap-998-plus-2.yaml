@@ -1,0 +1,9004 @@
+apiVersion: v1
+kind: PodList
+items:
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p0
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p1
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p2
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p3
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p4
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p5
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p6
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p7
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p8
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p9
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p10
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p11
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p12
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p13
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p14
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p15
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p16
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p17
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p18
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p19
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p20
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p21
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p22
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p23
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p24
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p25
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p26
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p27
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p28
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p29
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p30
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p31
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p32
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p33
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p34
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p35
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p36
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p37
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p38
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p39
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p40
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p41
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p42
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p43
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p44
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p45
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p46
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p47
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p48
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p49
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p50
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p51
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p52
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p53
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p54
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p55
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p56
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p57
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p58
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p59
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p60
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p61
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p62
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p63
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p64
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p65
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p66
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p67
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p68
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p69
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p70
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p71
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p72
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p73
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p74
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p75
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p76
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p77
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p78
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p79
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p80
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p81
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p82
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p83
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p84
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p85
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p86
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p87
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p88
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p89
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p90
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p91
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p92
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p93
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p94
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p95
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p96
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p97
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p98
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p99
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p100
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p101
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p102
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p103
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p104
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p105
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p106
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p107
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p108
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p109
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p110
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p111
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p112
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p113
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p114
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p115
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p116
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p117
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p118
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p119
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p120
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p121
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p122
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p123
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p124
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p125
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p126
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p127
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p128
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p129
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p130
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p131
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p132
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p133
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p134
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p135
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p136
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p137
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p138
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p139
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p140
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p141
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p142
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p143
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p144
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p145
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p146
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p147
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p148
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p149
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p150
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p151
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p152
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p153
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p154
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p155
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p156
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p157
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p158
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p159
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p160
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p161
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p162
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p163
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p164
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p165
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p166
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p167
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p168
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p169
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p170
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p171
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p172
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p173
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p174
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p175
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p176
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p177
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p178
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p179
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p180
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p181
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p182
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p183
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p184
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p185
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p186
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p187
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p188
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p189
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p190
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p191
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p192
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p193
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p194
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p195
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p196
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p197
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p198
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p199
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p200
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p201
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p202
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p203
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p204
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p205
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p206
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p207
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p208
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p209
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p210
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p211
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p212
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p213
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p214
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p215
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p216
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p217
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p218
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p219
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p220
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p221
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p222
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p223
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p224
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p225
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p226
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p227
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p228
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p229
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p230
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p231
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p232
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p233
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p234
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p235
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p236
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p237
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p238
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p239
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p240
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p241
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p242
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p243
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p244
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p245
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p246
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p247
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p248
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p249
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p250
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p251
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p252
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p253
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p254
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p255
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p256
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p257
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p258
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p259
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p260
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p261
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p262
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p263
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p264
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p265
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p266
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p267
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p268
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p269
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p270
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p271
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p272
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p273
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p274
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p275
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p276
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p277
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p278
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p279
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p280
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p281
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p282
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p283
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p284
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p285
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p286
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p287
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p288
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p289
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p290
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p291
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p292
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p293
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p294
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p295
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p296
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p297
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p298
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p299
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p300
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p301
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p302
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p303
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p304
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p305
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p306
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p307
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p308
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p309
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p310
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p311
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p312
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p313
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p314
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p315
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p316
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p317
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p318
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p319
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p320
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p321
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p322
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p323
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p324
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p325
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p326
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p327
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p328
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p329
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p330
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p331
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p332
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p333
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p334
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p335
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p336
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p337
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p338
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p339
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p340
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p341
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p342
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p343
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p344
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p345
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p346
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p347
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p348
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p349
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p350
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p351
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p352
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p353
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p354
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p355
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p356
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p357
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p358
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p359
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p360
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p361
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p362
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p363
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p364
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p365
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p366
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p367
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p368
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p369
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p370
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p371
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p372
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p373
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p374
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p375
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p376
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p377
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p378
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p379
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p380
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p381
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p382
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p383
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p384
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p385
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p386
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p387
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p388
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p389
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p390
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p391
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p392
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p393
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p394
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p395
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p396
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p397
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p398
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p399
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p400
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p401
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p402
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p403
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p404
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p405
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p406
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p407
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p408
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p409
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p410
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p411
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p412
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p413
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p414
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p415
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p416
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p417
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p418
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p419
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p420
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p421
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p422
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p423
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p424
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p425
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p426
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p427
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p428
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p429
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p430
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p431
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p432
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p433
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p434
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p435
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p436
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p437
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p438
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p439
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p440
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p441
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p442
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p443
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p444
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p445
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p446
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p447
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p448
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p449
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p450
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p451
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p452
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p453
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p454
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p455
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p456
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p457
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p458
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p459
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p460
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p461
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p462
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p463
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p464
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p465
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p466
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p467
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p468
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p469
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p470
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p471
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p472
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p473
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p474
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p475
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p476
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p477
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p478
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p479
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p480
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p481
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p482
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p483
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p484
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p485
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p486
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p487
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p488
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p489
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p490
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p491
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p492
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p493
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p494
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p495
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p496
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p497
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p498
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p499
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p500
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p501
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p502
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p503
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p504
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p505
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p506
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p507
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p508
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p509
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p510
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p511
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p512
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p513
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p514
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p515
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p516
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p517
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p518
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p519
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p520
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p521
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p522
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p523
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p524
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p525
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p526
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p527
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p528
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p529
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p530
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p531
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p532
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p533
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p534
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p535
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p536
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p537
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p538
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p539
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p540
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p541
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p542
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p543
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p544
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p545
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p546
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p547
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p548
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p549
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p550
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p551
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p552
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p553
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p554
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p555
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p556
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p557
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p558
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p559
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p560
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p561
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p562
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p563
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p564
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p565
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p566
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p567
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p568
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p569
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p570
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p571
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p572
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p573
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p574
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p575
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p576
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p577
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p578
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p579
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p580
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p581
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p582
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p583
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p584
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p585
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p586
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p587
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p588
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p589
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p590
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p591
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p592
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p593
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p594
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p595
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p596
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p597
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p598
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p599
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p600
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p601
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p602
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p603
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p604
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p605
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p606
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p607
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p608
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p609
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p610
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p611
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p612
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p613
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p614
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p615
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p616
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p617
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p618
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p619
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p620
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p621
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p622
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p623
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p624
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p625
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p626
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p627
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p628
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p629
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p630
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p631
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p632
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p633
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p634
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p635
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p636
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p637
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p638
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p639
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p640
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p641
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p642
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p643
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p644
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p645
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p646
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p647
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p648
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p649
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p650
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p651
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p652
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p653
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p654
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p655
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p656
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p657
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p658
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p659
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p660
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p661
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p662
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p663
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p664
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p665
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p666
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p667
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p668
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p669
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p670
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p671
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p672
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p673
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p674
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p675
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p676
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p677
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p678
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p679
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p680
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p681
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p682
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p683
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p684
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p685
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p686
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p687
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p688
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p689
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p690
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p691
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p692
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p693
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p694
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p695
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p696
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p697
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p698
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p699
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p700
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p701
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p702
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p703
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p704
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p705
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p706
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p707
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p708
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p709
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p710
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p711
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p712
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p713
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p714
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p715
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p716
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p717
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p718
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p719
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p720
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p721
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p722
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p723
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p724
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p725
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p726
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p727
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p728
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p729
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p730
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p731
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p732
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p733
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p734
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p735
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p736
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p737
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p738
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p739
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p740
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p741
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p742
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p743
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p744
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p745
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p746
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p747
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p748
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p749
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p750
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p751
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p752
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p753
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p754
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p755
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p756
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p757
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p758
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p759
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p760
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p761
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p762
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p763
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p764
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p765
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p766
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p767
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p768
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p769
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p770
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p771
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p772
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p773
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p774
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p775
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p776
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p777
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p778
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p779
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p780
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p781
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p782
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p783
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p784
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p785
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p786
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p787
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p788
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p789
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p790
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p791
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p792
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p793
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p794
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p795
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p796
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p797
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p798
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p799
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p800
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p801
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p802
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p803
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p804
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p805
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p806
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p807
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p808
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p809
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p810
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p811
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p812
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p813
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p814
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p815
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p816
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p817
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p818
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p819
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p820
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p821
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p822
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p823
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p824
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p825
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p826
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p827
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p828
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p829
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p830
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p831
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p832
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p833
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p834
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p835
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p836
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p837
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p838
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p839
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p840
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p841
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p842
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p843
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p844
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p845
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p846
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p847
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p848
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p849
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p850
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p851
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p852
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p853
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p854
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p855
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p856
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p857
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p858
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p859
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p860
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p861
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p862
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p863
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p864
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p865
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p866
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p867
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p868
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p869
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p870
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p871
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p872
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p873
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p874
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p875
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p876
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p877
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p878
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p879
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p880
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p881
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p882
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p883
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p884
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p885
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p886
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p887
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p888
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p889
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p890
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p891
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p892
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p893
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p894
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p895
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p896
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p897
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p898
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p899
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p900
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p901
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p902
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p903
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p904
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p905
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p906
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p907
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p908
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p909
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p910
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p911
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p912
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p913
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p914
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p915
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p916
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p917
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p918
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p919
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p920
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p921
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p922
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p923
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p924
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p925
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p926
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p927
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p928
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p929
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p930
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p931
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p932
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p933
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p934
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p935
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p936
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p937
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p938
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p939
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p940
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p941
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p942
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p943
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p944
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p945
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p946
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p947
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p948
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p949
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p950
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p951
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p952
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p953
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p954
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p955
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p956
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p957
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p958
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p959
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p960
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p961
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p962
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p963
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p964
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p965
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p966
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p967
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p968
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p969
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p970
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p971
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p972
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p973
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p974
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p975
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p976
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p977
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p978
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p979
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p980
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p981
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p982
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p983
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p984
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p985
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p986
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p987
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p988
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p989
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p990
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p991
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p992
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p993
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p994
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p995
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p996
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p997
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+items:
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p998
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: p999
+    namespace: shop
+  spec:
+    containers:
+    - name: c
+      image: nginx:1

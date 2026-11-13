@@ -221,6 +221,8 @@ class Collected:
     namespaces: frozenset[str] | None = None
     caveats: list[str] = field(default_factory=list)
     unreadable: list[dict[str, str]] = field(default_factory=list)
+    #: Files read whole whose YAML the API server refuses (a key twice): named, and the answer is partial.
+    refused_files: list[dict[str, str]] = field(default_factory=list)
     dropped_unread: int = 0  # objects of a kind never read (Secrets): counted, never parsed further
     dropped: Counter[str] = field(default_factory=Counter)  # objects past MAX_ITEMS, per resource: never silent
     rejected: Counter[str] = field(default_factory=Counter)  # items in an OLM context that were not usable objects
@@ -488,12 +490,17 @@ def _add_document(c: Collected, doc: Any, label: str) -> None:
     c.add(doc, label)
 
 
-def from_sources(sources: Iterable[tuple[str, list[Any]]], unreadable: list[dict[str, str]] | None = None) -> Collected:
+def from_sources(
+    sources: Iterable[tuple[str, list[Any]]],
+    unreadable: list[dict[str, str]] | None = None,
+    refused: list[dict[str, str]] | None = None,
+) -> Collected:
     """Collect OLM objects from parsed documents, grouped by the file (or label) they came from. A ``List`` or
     ``<Kind>List`` is opened; Secrets are counted and dropped unread; ``unreadable`` are files the caller could not
     parse, which make the answer partial."""
     c = Collected("manifests")
     c.unreadable = [dict(u) for u in (unreadable or [])]
+    c.refused_files = [dict(u) for u in (refused or [])]
     for label, docs in sources:
         for doc in docs:
             _add_document(c, doc, label)
@@ -504,6 +511,25 @@ def from_documents(docs: Iterable[Any], label: str = "manifest") -> Collected:
     return from_sources([(label, list(docs))])
 
 
+def duplicate_key_note(docs: list[Any]) -> str | None:
+    """Why a file whose YAML gives a key twice is not what the API server serves, or None. The loader keeps every
+    object under every `items` of a list wrapper (one loader for the audit and this inventory), so what was read
+    is named as partial rather than listed as complete (G272, seventh review)."""
+    from kube_noob.yamlio import fmt_path
+
+    for d in docs:
+        for path, line in d.duplicate_keys:
+            return (
+                f"has the key '{fmt_path(path)}' twice (second occurrence on line {line}), which the API server refuses"
+            )
+        for path, line, wrapper, _ in d.wrapper_duplicate_keys:
+            return (
+                f"has a {wrapper} with the key '{fmt_path(path)}' twice (second occurrence on line {line}), which the "
+                "API server refuses"
+            )
+    return None
+
+
 def from_manifests(text: str, label: str = "manifest") -> Collected:
     """Collect from YAML text (the ``yamlio`` caps on size, documents, depth and aliases apply)."""
     from kube_noob.yamlio import load_documents
@@ -512,7 +538,9 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     # here, so an item that was not a usable object of that kind is still counted against that kind.
     grouped: list[Any] = []
     marker = "__from_list__"
-    for d in load_documents(text):
+    docs = load_documents(text)
+    refused = [{"path": label, "reason": note}] if (note := duplicate_key_note(docs)) is not None else []
+    for d in docs:
         if d.from_list and d.from_list != "List":
             if grouped and isinstance(grouped[-1], dict) and grouped[-1].get(marker) == d.from_list:
                 grouped[-1]["items"].append(d.data)
@@ -523,7 +551,7 @@ def from_manifests(text: str, label: str = "manifest") -> Collected:
     for g in grouped:
         if isinstance(g, dict):
             g.pop(marker, None)
-    return from_sources([(label, grouped)])
+    return from_sources([(label, grouped)], refused=refused)
 
 
 def _not_served(resource: str, message: str) -> bool:
@@ -957,6 +985,7 @@ def _verdict(c: Collected, entries: list[Operator], conflicts: list[str]) -> Ver
     gaps = (
         any(c.reads[r].state != "read" for r in REQUIRED)
         or c.unreadable
+        or c.refused_files
         or c.namespaces is not None
         or c.dropped
         or c.rejected
@@ -993,6 +1022,11 @@ def _assemble(
             caveats.append(f"{what} {how[read.state]}: {read.reason}")
     if c.unreadable:
         caveats.append(f"{len(c.unreadable)} file(s) could not be read; operators in them are not in this answer")
+    for refused_file in c.refused_files[:MAX_UNREADABLE]:
+        caveats.append(
+            f"{refused_file['path']} {refused_file['reason']}, so what was read from it may not be what the cluster "
+            "serves"
+        )
     for r, n in sorted(c.dropped.items()):
         caveats.append(f"{n} {r} past the first {MAX_ITEMS} were not read; operators among them are not in this answer")
     for r, n in sorted(c.rejected.items()):

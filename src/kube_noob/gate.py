@@ -340,7 +340,13 @@ def run(
             # API server the audit had declined, and said nothing anywhere (G272).
             "assumptions": list(report.assumptions),
             **({"declined": report.declined} if report.declined else {}),
+            **({"notAudited": report.not_audited} if report.not_audited else {}),
+            **({"notEvaluated": report.not_evaluated} if report.not_evaluated else {}),
         }
+        if (undetermined := report.undetermined()) is not None:
+            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh review).
+            coverage["undetermined"] = undetermined
+            failures.append(f"the audit is undetermined: {undetermined}")
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
     for uri, text in containerfiles:
@@ -408,6 +414,9 @@ def run(
         "version": version,
         "failOn": fail_on,
         "passed": not failures,
+        # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
+        # false and the headline says "incomplete", not "failed" (G272).
+        "incomplete": "undetermined" in coverage,
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -903,8 +912,15 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     return out
 
 
+def verdict_word(report: dict[str, Any]) -> str:
+    """ "passed", "failed", or "incomplete" while the audit under the gate is undetermined."""
+    if report.get("incomplete"):
+        return "incomplete"
+    return "passed" if report["passed"] else "failed"
+
+
 def markdown(report: dict[str, Any], top: int = 25) -> str:
-    verdict = "passed" if report["passed"] else "failed"
+    verdict = verdict_word(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
         f"## kube-noob gate {verdict}",
@@ -918,7 +934,8 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         "",
     ]
     if report["failures"]:
-        lines += ["### Why it failed", "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
+        why = "### Why it is incomplete" if verdict == "incomplete" else "### Why it failed"
+        lines += [why, "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
     if report["findings"]:
         lines += ["### Findings", "", "| Severity | Rule | Where | Finding | Admission |", "|---|---|---|---|---|"]
         for r in report["findings"][:top]:
@@ -1002,9 +1019,39 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
         {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
         for u in report.get("unreadable") or []
     ]
-    if not notes:
+    undetermined = report.get("undetermined")
+    if not notes and not undetermined:
         return sarif(report)
-    return sarif(report, invocation={"executionSuccessful": True, "toolExecutionNotifications": notes})
+    invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
+    if undetermined:
+        # The incomplete state as a property of the invocation AND one note-level result, so a consumer that
+        # reads only results sees it (G272, seventh review).
+        invocation["properties"] = {"incomplete": True, "undetermined": undetermined}
+    out = sarif(report, invocation=invocation)
+    if undetermined:
+        run = out["runs"][0]
+        run["tool"]["driver"].setdefault("rules", []).append(
+            {
+                "id": "kube-noob/undetermined",
+                "name": "AuditUndetermined",
+                "shortDescription": {"text": "The audit reached no verdict on part of the input"},
+                "fullDescription": {
+                    "text": "Something was not read: a rule declined on an object, or an object no rule audited. "
+                    "The gate is incomplete, not passed."
+                },
+                "helpUri": INFO_URI,
+                "defaultConfiguration": {"level": "note"},
+            }
+        )
+        run["results"].append(
+            {
+                "ruleId": "kube-noob/undetermined",
+                "ruleIndex": len(run["tool"]["driver"]["rules"]) - 1,
+                "level": "note",
+                "message": {"text": f"gate incomplete: {undetermined}"},
+            }
+        )
+    return out
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:

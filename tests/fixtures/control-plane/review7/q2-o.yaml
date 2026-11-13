@@ -1,0 +1,281 @@
+platform: kubernetes
+platformVersion: null
+kubernetesVersion: '1.30'
+resources:
+- 7/q
+summary:
+  counts:
+    info: 0
+    low: 0
+    medium: 0
+    high: 1
+    critical: 0
+  maxSeverity: high
+  score: null
+  scoreWithheld: '2 rules not evaluated in full and 1 pod spec not audited: KN-S038, KN-S039; not read in full: 7/q'
+assumptions:
+- 'Audited part of a namespace, so rules that fire because another object is absent (no NetworkPolicy selects this workload,
+  no PodDisruptionBudget, an undeclared StorageClass) were not evaluated: from these documents alone they cannot tell a real
+  gap from an object you did not pass. Pass the whole namespace to evaluate them: a directory on the command line, or partial_bundle=false
+  with every object of the namespace in one call.'
+- '1 pod spec(s) are in kinds kube-noob has no reader for, so their containers were NOT audited: 7/q at spec path spec. Audit
+  the Deployments the operator creates from them, or ask for the kind to be added with its published schema.'
+- 'KN-S038 was not evaluated in full, so it is not counted as clean: 7/q holds 1 pod spec(s) in a kind kube-noob has no reader
+  for, which may run a control-plane binary, so they were not read.'
+- 'KN-S039 was not evaluated in full, so it is not counted as clean: 7/q holds 1 pod spec(s) in a kind kube-noob has no reader
+  for, which may run a control-plane binary, so they were not read.'
+- No bundled schema for v1 7 (7/q); structural checks skipped.
+findings:
+- ruleId: KN-V001
+  title: Object is missing apiVersion, kind or metadata.name
+  severity: high
+  stage: validate
+  category: schema
+  resource: doc[0]
+  docIndex: 0
+  path: kind
+  fingerprint: 601a6e3bf4873a2530e5157d11480c0d
+  line: 4
+  message: kind is not a string ('7'); the API server refuses it.
+  remediation: Every object needs apiVersion, kind and metadata.name (or metadata.generateName).
+  citations: []
+  stackroxPolicies: []
+  controls:
+  - CM-3(2)
+  - CM-6
+  file: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q1-32-podlist-item-kind-int.yaml
+controlSummary:
+  catalog: NIST SP 800-53 Rev. 5
+  controls:
+  - id: CM-3(2)
+    title: Configuration Change Control | Testing, Validation, and Documentation of Changes
+    findings: 1
+    clean: 15
+    notEvaluated: 0
+    withheld: 0
+  - id: CM-6
+    title: Configuration Settings
+    findings: 1
+    clean: 29
+    notEvaluated: 3
+    withheld: 0
+  - id: AC-14
+    title: Permitted Actions Without Identification or Authentication
+    findings: 0
+    clean: 1
+    notEvaluated: 1
+    withheld: 0
+  - id: AC-3
+    title: Access Enforcement
+    findings: 0
+    clean: 3
+    notEvaluated: 2
+    withheld: 0
+  - id: AC-4
+    title: Information Flow Enforcement
+    findings: 0
+    clean: 6
+    notEvaluated: 1
+    withheld: 0
+  - id: AC-5
+    title: Separation of Duties
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6
+    title: Least Privilege
+    findings: 0
+    clean: 18
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6(10)
+    title: Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6(5)
+    title: Least Privilege | Privileged Accounts
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: AU-12
+    title: Audit Record Generation
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: AU-2
+    title: Event Logging
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: CM-2
+    title: Baseline Configuration
+    findings: 0
+    clean: 1
+    notEvaluated: 1
+    withheld: 0
+  - id: CM-7
+    title: Least Functionality
+    findings: 0
+    clean: 18
+    notEvaluated: 0
+    withheld: 0
+  - id: CP-10
+    title: System Recovery and Reconstitution
+    findings: 0
+    clean: 7
+    notEvaluated: 2
+    withheld: 0
+  - id: IA-5
+    title: Authenticator Management
+    findings: 0
+    clean: 2
+    notEvaluated: 1
+    withheld: 0
+  - id: IA-5(7)
+    title: Authenticator Management | No Embedded Unencrypted Static Authenticators
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SA-22
+    title: Unsupported System Components
+    findings: 0
+    clean: 5
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-28
+    title: Protection of Information at Rest
+    findings: 0
+    clean: 3
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-28(1)
+    title: Protection of Information at Rest | Cryptographic Protection
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-36
+    title: Distributed Processing and Storage
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-39
+    title: Process Isolation
+    findings: 0
+    clean: 10
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-4
+    title: Information in Shared System Resources
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-5
+    title: Denial-of-service Protection
+    findings: 0
+    clean: 2
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-6
+    title: Resource Availability
+    findings: 0
+    clean: 5
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-7
+    title: Boundary Protection
+    findings: 0
+    clean: 11
+    notEvaluated: 2
+    withheld: 0
+  - id: SC-7(5)
+    title: Boundary Protection | Deny by Default — Allow by Exception
+    findings: 0
+    clean: 4
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-8
+    title: Transmission Confidentiality and Integrity
+    findings: 0
+    clean: 4
+    notEvaluated: 3
+    withheld: 0
+  - id: SC-8(1)
+    title: Transmission Confidentiality and Integrity | Cryptographic Protection
+    findings: 0
+    clean: 2
+    notEvaluated: 3
+    withheld: 0
+  - id: SI-10
+    title: Information Input Validation
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SI-2
+    title: Flaw Remediation
+    findings: 0
+    clean: 11
+    notEvaluated: 0
+    withheld: 0
+  - id: SI-7
+    title: Software, Firmware, and Information Integrity
+    findings: 0
+    clean: 3
+    notEvaluated: 1
+    withheld: 0
+  notEvaluatedRules:
+  - KN-C008
+  - KN-C015
+  - KN-C016
+  - KN-N001
+  - KN-N013
+  - KN-S035
+  - KN-S036
+  - KN-S037
+  - KN-S038
+  - KN-S039
+  - KN-S040
+  - KN-S041
+  partlyEvaluatedRules: []
+  note: Findings are evidence about these controls; an assessment decides whether a control is met.
+redTeam:
+- scenarioId: RT-PRIVESC
+  question: If an attacker gets code execution in this pod, can they escalate to the node or the cluster?
+  verdict: mitigated
+  severity: info
+  evidence: []
+  blastRadius: Privileged containers, host namespaces/paths, dangerous capabilities and broad RBAC each turn a single compromised
+    pod into node or cluster takeover.
+  safeguards:
+  - Pod Security 'restricted' (restricted-v2 SCC on OpenShift)
+  - 'automountServiceAccountToken: false; least-privilege Roles without wildcards'
+  - RHACS/StackRox deploy-time enforcement of the matching default policies
+  verification:
+  - oc auth can-i --list --as=system:serviceaccount:<ns>:<sa>
+  - oc get pod <pod> -o jsonpath='{.metadata.annotations.openshift\.io/scc}'
+declined:
+  KN-S038:
+    entries:
+    - resource: 7/q
+      reason: 7/q holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they
+        were not read
+    withheld: 0
+    decided: 0
+  KN-S039:
+    entries:
+    - resource: 7/q
+      reason: 7/q holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they
+        were not read
+    withheld: 0
+    decided: 0
+unreadable: []

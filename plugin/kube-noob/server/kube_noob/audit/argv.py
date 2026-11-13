@@ -42,6 +42,16 @@ def _quoted(value: object, limit: int = SHOWN_LIMIT) -> str:
     return f"'{_shown(value, limit)}'"
 
 
+def shown_value(value: object) -> str:
+    """A scalar the tool quotes in its own words: `null` for None, YAML's `true`/`false`, else the cleaned text --
+    never a Python repr (R6, G272)."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return _shown(value, 40)
+
+
 #: Shells whose script may start a control-plane binary. Such a container is RECOGNISED and then declined: the
 #: flags are in a script kube-noob does not execute, so neither a finding nor a pass can be read from it.
 _SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"})
@@ -107,18 +117,104 @@ _COMMAND_POSITION = (
 )
 
 
-def k3s_arg(item: str) -> tuple[str, str]:
+def k3s_arg(item: str) -> tuple[str, str, str]:
     """One `--kube-apiserver-arg` / `--etcd-arg` value as k3s and RKE2 read it (pkg/util/args.go GetArgs,
     fetched 2026-11-13): one leading `--` is trimmed (`strings.TrimPrefix`, exactly once), the first `=` splits
     name from value, no `=` means the value "true", and a trailing run of `-` and `+` on the name
     (`strings.TrimRight(arg, "-+")`) is the append (`+`) or prepend (`-`) marker, either of which puts the value
     on the flag beside the distribution's own default -- a second occurrence, which pflag appends to a slice such
-    as --authorization-mode. Returns (name with `_` read as `-`, as kube-apiserver's pflag does; value). Both
-    readers of this syntax -- the k3s argv and the Rancher config -- call this one function (G272, sixth review).
+    as --authorization-mode. Nothing is trimmed (configfilearg/parser.go passes a config value untouched, so a
+    padded name is a flag pflag refuses). Returns (the cleaned RAW name, the name with `_` read as `-` as
+    kube-apiserver's pflag does, the value). Both readers of this syntax -- the k3s argv and the Rancher config --
+    call this one function, and `k3s_pairs` orders what they read as GetArgs does (G272, sixth and seventh reviews).
     """
     body = item[2:] if item.startswith("--") else item
     name, eq, value = body.partition("=")
-    return name.rstrip("-+").replace("_", "-"), value if eq else "true"
+    raw = name.rstrip("-+")
+    return raw, raw.replace("_", "-"), value if eq else "true"
+
+
+def k3s_pairs(values: list[str]) -> list[tuple[str, str, int]]:
+    """The (flag, value, index of the value it came from) list kube-apiserver receives from a list of
+    `--kube-apiserver-arg` values: GetArgs keys them on the cleaned raw name, keeps the order of repeats within
+    one key, `slices.Sort`s the keys and emits them in that order -- so `anonymous_auth=true` then
+    `anonymous-auth=false` reaches pflag as `--anonymous-auth=false --anonymous_auth=true`, which pflag folds
+    to one flag whose LAST value, true, wins (G272, seventh review). The fold happens here, after the sort."""
+    by_key: dict[str, list[tuple[str, int]]] = {}
+    for i, item in enumerate(values):
+        raw, _, value = k3s_arg(item)
+        by_key.setdefault(raw, []).append((value, i))
+    out: list[tuple[str, str, int]] = []
+    for raw in sorted(by_key):
+        out.extend((raw.replace("_", "-"), value, i) for value, i in by_key[raw])
+    return out
+
+
+#: Why a `$(NAME)` in argv cannot be read from the manifest.
+_NO_LITERAL = "env {name} has no literal value in this container"
+
+
+def expand_argv(tokens: tuple[str, ...], container: dict[str, Any]) -> tuple[tuple[str, ...], str | None]:
+    """``tokens`` with `$(NAME)` references expanded as the kubelet expands them, or why they cannot be.
+
+    third_party/forked/golang/expansion/expand.go (v1.31.0): `$$` is one literal `$`; `$(NAME)` is replaced by
+    the mapping of NAME; a `$` before anything else, and an unclosed `$(`, are literal. The kubelet's mapping is
+    the container's environment: a `$(NAME)` is read here only from a literal `env[].value` in the same
+    container (the last entry of that name), never from `valueFrom`, from `envFrom`, from a value that itself
+    carries `$(`, or from a name the manifest does not define (the kubelet may add it from a Service), and any of
+    those declines with the name. Before this `$$(MODE)` was declined as an expansion the kubelet never performs,
+    and `--anonymous-auth=$(ANON)` beside `ANON: "true"` was declined though the value was in the input (G272).
+    """
+    literal: dict[str, str] = {}
+    unreadable: set[str] = set()
+    raw_env = container.get("env")
+    for e in raw_env if isinstance(raw_env, list) else []:
+        if not isinstance(e, dict) or not isinstance(e.get("name"), str):
+            continue
+        value = e.get("value")
+        if "valueFrom" in e or not isinstance(value, str) or "$(" in value:
+            unreadable.add(e["name"])
+            literal.pop(e["name"], None)
+        else:
+            literal[e["name"]] = value
+            unreadable.discard(e["name"])
+    env_from = bool(container.get("envFrom"))
+    out: list[str] = []
+    for token in tokens:
+        if "$" not in token:
+            out.append(token)
+            continue
+        buf: list[str] = []
+        i, n = 0, len(token)
+        while i < n:
+            ch = token[i]
+            if ch != "$" or i + 1 >= n:
+                buf.append(ch)
+                i += 1
+                continue
+            nxt = token[i + 1]
+            if nxt == "$":
+                buf.append("$")
+                i += 2
+            elif nxt == "(":
+                close = token.find(")", i + 2)
+                if close < 0:
+                    buf.append("$(")
+                    i += 2
+                    continue
+                name = token[i + 2 : close]
+                if name in literal and name not in unreadable:
+                    buf.append(literal[name])
+                else:
+                    return (), _NO_LITERAL.format(name=_shown(name, 60)) + (
+                        " (envFrom may set it)" if env_from and name not in unreadable else ""
+                    )
+                i = close + 1
+            else:
+                buf.append("$" + nxt)
+                i += 2
+        out.append("".join(buf))
+    return tuple(out), None
 
 
 def _basename(token: str) -> str:

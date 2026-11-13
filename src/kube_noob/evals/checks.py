@@ -276,40 +276,42 @@ def evaluate(answer: str, spec: dict[str, Any]) -> Evaluation:
     present = {d.kind for d in docs}
     for k in spec.get("kinds") or []:
         outcomes.append(CheckOutcome(f"kind {k}", k in present, "present" if k in present else "missing"))
+    # Every check that reads the FINDINGS is not evaluated while the audit is undetermined: a rule that declined
+    # on the only API server found nothing there because it did not look, so "rule KN-S038 not triggered"
+    # passed on a server that ran AlwaysAllow (seventh review); `minScore` alone read this before (G272).
+    undetermined = report.undetermined()
+
+    def finding_check(name: str, passed: bool, detail: str, weight: float, gating: bool = False) -> CheckOutcome:
+        if undetermined is not None:
+            return CheckOutcome(name, False, f"not evaluated: {undetermined}", weight=weight, gating=gating)
+        return CheckOutcome(name, passed, detail, weight=weight, gating=gating)
+
     if spec.get("schemaValid"):
         errs = [f for f in report.findings if f.rule_id in {"KN-V007", "KN-V001", "KN-V002", "KN-V010", "KN-V018"}]
-        outcomes.append(
-            CheckOutcome("schema valid", not errs, "; ".join(f.message for f in errs[:3]) or "ok", weight=2.0)
-        )
+        outcomes.append(finding_check("schema valid", not errs, "; ".join(f.message for f in errs[:3]) or "ok", 2.0))
     if spec.get("maxSeverity"):
         limit = Severity.parse(spec["maxSeverity"])
         over = [f for f in report.findings if f.severity > limit]
         outcomes.append(
-            CheckOutcome(
+            finding_check(
                 f"no findings above {limit.name.lower()}",
                 not over,
                 "; ".join(f"{f.rule_id} {f.message}" for f in over[:4]) or "ok",
-                weight=2.0,
+                2.0,
             )
         )
     for rid in spec.get("forbidRules") or []:
         hits = [f for f in report.findings if f.rule_id == rid and f.severity >= Severity.LOW]
         outcomes.append(
-            CheckOutcome(
-                f"rule {rid} not triggered", not hits, hits[0].message if hits else "ok", weight=1.5, gating=True
-            )
+            finding_check(f"rule {rid} not triggered", not hits, hits[0].message if hits else "ok", 1.5, gating=True)
         )
     if "minScore" in spec:
-        # The one consumer that read `score()` by name: a report whose score the product withholds (a rule
-        # declined on an object, a pod spec not read) passed `minScore: 80` at "score 100" while `audit` printed
-        # "not determined" for the same input (G272, sixth review). Withheld is not a pass.
-        withheld = report.score_withheld()
         outcomes.append(
-            CheckOutcome(
+            finding_check(
                 f"posture score >= {spec['minScore']}",
-                withheld is None and report.score() >= float(spec["minScore"]),
-                f"score not determined ({withheld})" if withheld else f"score {report.score():.0f}",
-                weight=1.5,
+                report.score() >= float(spec["minScore"]),
+                f"score {report.score():.0f}",
+                1.5,
             )
         )
     for a in spec.get("assertions") or []:
