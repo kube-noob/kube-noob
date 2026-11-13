@@ -61,6 +61,38 @@ python3 -I -B skill/kube-noob/scripts/kn.py insight '{"text": "0/3 nodes are ava
 python3 -I -B skill/kube-noob/scripts/kn.py audit_manifests --text-file manifests=app.yaml
 ```
 
+## Offline install, verified
+
+Installing and running without a network is a transcript in this repository's CI, not a sentence here. Every run of
+`ci.yml` has an `airgap` job that takes the wheel the `publishable` job just built, downloads the dependency wheels
+that `requirements.lock` pins (hashes checked; this is the one step with network), and then, inside a network
+namespace with no interface and no route (`unshare -rn`), installs from that directory only (`pip install
+--no-index --find-links <dir> --require-hashes -r requirements.lock`, then the kube-noob wheel with `--no-deps`) and
+runs four workflows with their exit codes asserted: `kube-noob doctor` (0), `kube-noob audit -f
+insecure-deployment.yaml` (1: findings at high, from the copy the wheel carries), `kube-noob must-gather analyze` on
+the bundled sample (0), and one `tools/list` request to `kube-noob mcp` over stdio (0). Before the four, the namespace
+is proved on itself: a DNS lookup and a TCP connect must both fail, or the run stops without a verdict. The same
+script, `scripts/airgap_check.sh`, runs the four checks against the locally built wheel in `scripts/check.sh`.
+
+To repeat it at your site, with a mirrored index or a directory of wheels you carried in:
+
+```bash
+scripts/airgap_check.sh prepare /path/to/wheels
+scripts/airgap_check.sh verify /path/to/wheels
+```
+
+`prepare` needs network (or point `pip` at your mirror with `PIP_INDEX_URL`); `verify` needs none and refuses to run
+outside a namespace it can create (`unshare -rn`, else `sudo unshare -n`), with exit 2 and a message rather than a
+pass. Exit 0 is every check passed; 1 names the check that failed and keeps its output.
+
+What this establishes: with the wheels already on local disk, the install and these four workflows need no network
+and make no network attempt that could succeed. What it does not establish: how the wheels got there -- the mirrored
+index, the signed bundle, and `gh attestation verify dist/kube_noob-*.whl --repo kube-noob/kube-noob` before the
+wheel is trusted (see [SECURITY.md](../SECURITY.md)) are the operator's steps; anything the four checks do not
+exercise (live cluster access, the HTTP service, web access when enabled); and, without `strace`, a network attempt
+that was made, failed in the namespace and was tolerated silently -- the namespace makes every attempt fail, it does
+not see one that the code chose to ignore.
+
 ## Errors and fixes
 
 | You see | Why | Fix |
