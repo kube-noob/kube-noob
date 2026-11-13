@@ -50,22 +50,42 @@ def _get(data: Any, *path: str | int) -> Any:
     return data
 
 
-#: kubeadm's API versions that take `extraArgs` as a mapping; v1beta4 takes a list of `{name, value}`. A document
-#: in the other form does not decode, so kubeadm writes no static pod from it (G272).
-_KUBEADM_MAP_VERSIONS = frozenset({"kubeadm.k8s.io/v1beta1", "kubeadm.k8s.io/v1beta2", "kubeadm.k8s.io/v1beta3"})
+#: The kubeadm API versions kube-noob reads: v1beta3 takes `extraArgs` as a mapping, v1beta4 as a list of
+#: `{name, value}`. A document in the other form does not decode, so kubeadm writes no static pod from it; a
+#: document in any OTHER version (v1beta2, which 1.31 no longer decodes; v1alpha3; v1beta5, which does not exist)
+#: is declined rather than read by its shape, because what kubeadm would do with it is not known here (G272).
+_KUBEADM_MAP_VERSIONS = frozenset({"kubeadm.k8s.io/v1beta3"})
 _KUBEADM_LIST_VERSIONS = frozenset({"kubeadm.k8s.io/v1beta4"})
 
 
-def _extra_args(value: Any, path: PathT, out: ConfigRead, what: str, api_version: str = "") -> None:
+def _scalar(value: Any) -> str:
+    """A YAML scalar as it was written: `true`, not Python's `True`."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _extra_args(
+    value: Any, path: PathT, out: ConfigRead, what: str, api_version: str = "", strict: bool = False
+) -> None:
     """kubeadm/k0s `extraArgs`: a mapping (v1beta3, k0s) or a list of `{name, value}` (kubeadm v1beta4).
 
-    The v1beta4 list keeps every entry, and kubeadm sorts the arguments by (name, value) before it writes them
-    (cmd/kubeadm/app/util/arguments.go v1.31.0, ArgumentsToCommand), so a name given twice reaches pflag in that
-    order and the last VALUE in sort order wins: `anonymous-auth: "true"` then `"false"` is `--anonymous-auth=false
-    --anonymous-auth=true`, which is true. The pairs are sorted here the same way. With ``api_version`` stated,
-    a form that does not match it is declined: kubeadm cannot decode it, so it writes nothing.
+    The v1beta4 list keeps every entry, and kubeadm sorts the arguments by (name, value) ON THE RAW NAME before
+    it writes them (cmd/kubeadm/app/util/arguments.go ArgumentsToCommand, identical at v1.31.0, v1.32.0, v1.33.0,
+    v1.34.0 and v1.35.0: `sort.Slice` on Name then Value), so `anonymous-auth` sorts before `anonymous_auth`;
+    only then does kube-apiserver's pflag fold `_` to `-` (WordSepNormalizeFunc) and keep the LAST value. So
+    `anonymous_auth: "false"` + `anonymous-auth: "true"` is `--anonymous-auth=true --anonymous_auth=false`, which
+    is false. The v1beta3 map is converted to the same Arg list before that sort, so its keys are sorted alike.
+    Folding before sorting put the entries in the wrong order (G272, sixth review).
+    On kubernetes master (the 1.36 cycle) ArgumentsToCommand was rewritten to sort the base only and keep the
+    override order through a `mergeMethod`, so a version switch will be needed when 1.36 is added.
+    With ``api_version`` stated, a form that does not match it is declined: kubeadm cannot decode it, so it
+    writes nothing. With ``strict`` (kubeadm), a value that is not a string is declined too: `Arg.Value` and the
+    v1beta3 map are strings, and sigs.k8s.io/yaml refuses a YAML bool or number for a string field, so `kubeadm
+    init` fails on the file and no API server runs with it.
     """
     if value is None:
+        return
+    if api_version and api_version not in _KUBEADM_MAP_VERSIONS | _KUBEADM_LIST_VERSIONS:
+        out.unread.append(f"{what} is under {api_version}, and kubeadm {api_version} is not one kube-noob reads")
         return
     if api_version in _KUBEADM_MAP_VERSIONS and isinstance(value, list):
         out.unread.append(f"{what} is a list under {api_version}, which takes a mapping: kubeadm cannot decode it")
@@ -73,24 +93,41 @@ def _extra_args(value: Any, path: PathT, out: ConfigRead, what: str, api_version
     if api_version in _KUBEADM_LIST_VERSIONS and isinstance(value, dict):
         out.unread.append(f"{what} is a mapping under {api_version}, which takes a list: kubeadm cannot decode it")
         return
+    entries: list[tuple[str, str, PathT]] = []
     if isinstance(value, dict):
         for k, v in value.items():
-            if isinstance(k, str) and isinstance(v, (str, int, float, bool)):
-                out.pairs.append((k.replace("_", "-"), str(v).lower() if isinstance(v, bool) else str(v), (*path, k)))
+            if not isinstance(k, str):
+                out.unread.append(f"{what} has an entry {_quoted(k, 60)} that is not a string setting")
+            elif isinstance(v, str):
+                entries.append((k, v, (*path, k)))
+            elif strict:
+                out.unread.append(
+                    f"{what}.{_shown(k, 60)} is {_quoted(_scalar(v), 40)}, not a string, which kubeadm's decoder "
+                    "refuses"
+                )
+            elif isinstance(v, (int, float, bool)):
+                entries.append((k, str(v).lower() if isinstance(v, bool) else str(v), (*path, k)))
             else:
                 out.unread.append(f"{what} has an entry {_quoted(k, 60)} that is not a string setting")
-        return
-    if isinstance(value, list):
-        entries: list[tuple[str, str, PathT]] = []
+    elif isinstance(value, list):
         for i, item in enumerate(value):
             name, v = (item.get("name"), item.get("value")) if isinstance(item, dict) else (None, None)
-            if isinstance(name, str) and isinstance(v, (str, int, float, bool)):
-                entries.append((name.replace("_", "-"), str(v), (*path, i, "value")))
+            if isinstance(name, str) and isinstance(v, str):
+                entries.append((name, v, (*path, i, "value")))
+            elif isinstance(name, str) and strict and v is not None:
+                out.unread.append(
+                    f"{what}[{i}].value is {_quoted(_scalar(v), 40)}, not a string, which kubeadm's decoder refuses"
+                )
+            elif isinstance(name, str) and isinstance(v, (int, float, bool)):
+                entries.append((name, str(v), (*path, i, "value")))
             else:
                 out.unread.append(f"{what}[{i}] is not a {{name, value}} pair")
-        out.pairs.extend(sorted(entries, key=lambda e: (e[0], e[1])))
+    else:
+        out.unread.append(f"{what} is neither a mapping nor a list")
         return
-    out.unread.append(f"{what} is neither a mapping nor a list")
+    # Sorted on the raw name, as kubeadm writes them; folded for pflag only after.
+    entries.sort(key=lambda e: (e[0], e[1]))
+    out.pairs.extend((k.replace("_", "-"), v, p) for k, v, p in entries)
 
 
 def _cluster_configuration(
@@ -111,6 +148,7 @@ def _cluster_configuration(
             out,
             f"{where}.apiServer.extraArgs",
             api_version,
+            strict=True,
         )
     else:
         if _get(cc, "etcd", "external") is not None:
@@ -121,6 +159,7 @@ def _cluster_configuration(
             out,
             f"{where}.etcd.local.extraArgs",
             api_version,
+            strict=True,
         )
 
 

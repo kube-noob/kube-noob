@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from kube_noob.audit.engine import analyze, refuse_if_not_manifests
-from kube_noob.audit.model import Report
+from kube_noob.audit.model import Report, Severity
 from kube_noob.errors import ConfigError
 from kube_noob.yamlio import load_documents
 
@@ -291,6 +291,64 @@ def test_the_eval_grader_fails_min_score_on_a_withheld_score() -> None:
     ev = evaluate(text, {"minScore": 80, "platform": "kubernetes", "version": "1.30"})
     outcome = next(o for o in ev.outcomes if o.name.startswith("posture score"))
     assert outcome.passed is False and "not evaluated in full" in outcome.detail and ev.passed is False
+
+
+# --- F7: kubeadm sorts the raw name; pflag folds `_` after ---
+
+
+def test_kubeadm_v1beta4_sorts_the_raw_name_before_pflag_folds_underscores() -> None:
+    # cmd/kubeadm/app/util/arguments.go ArgumentsToCommand, identical at v1.31.0..v1.35.0: sort.Slice on the raw
+    # Name then Value, so `anonymous-auth` < `anonymous_auth`; kube-apiserver's WordSepNormalizeFunc then makes
+    # them one flag and the LAST value wins.
+    assert not _hits(
+        _r("q3-10b-b4-underscore-false-dash-true.yaml"), KAS
+    )  # --anonymous-auth=true --anonymous_auth=false
+    assert [h.severity for h in _hits(_r("q3-10-b4-name-underscore-and-dash.yaml"), KAS)] == [Severity.MEDIUM]
+
+
+def test_kubeadm_v1beta3_map_keys_are_sorted_the_same_way() -> None:
+    # The v1beta3 map is converted to the same Arg list before ArgumentsToCommand sorts it.
+    assert [h.severity for h in _hits(_r("q3-11-b3-dup-underscore-dash.yaml"), KAS)] == [Severity.MEDIUM]
+
+
+def test_the_v1beta4_order_is_pinned_for_1_35() -> None:
+    text = (FX / "q3-10b-b4-underscore-false-dash-true.yaml").read_text(encoding="utf-8")
+    assert not _hits(_t(text, version="1.35"), KAS)
+
+
+# --- F8: a kubeadm apiVersion kube-noob does not read ---
+
+
+@pytest.mark.parametrize("fixture", ["q3-16-unknown-apiversion-list.yaml", "q3-17-unknown-apiversion-map.yaml"])
+def test_an_unknown_kubeadm_api_version_declines_rather_than_reading_by_shape(fixture: str) -> None:
+    report = _r(fixture)
+    assert not _hits(report, KAS)
+    line = _declined(report, KAS)
+    assert "is not one kube-noob reads" in line and ("v1beta5" in line or "v1alpha3" in line)
+
+
+# --- F9: a kubeadm configuration file is not an API object ---
+
+
+def test_a_kubeadm_cluster_configuration_gets_no_metadata_name_finding() -> None:
+    report = _r("q3-01-b4-value-with-eq.yaml")
+    assert not _hits(report, "KN-V001"), report.findings
+    assert not _hits(report, KAS)
+    for kind in ("InitConfiguration", "JoinConfiguration"):
+        assert not _hits(_t(f"apiVersion: kubeadm.k8s.io/v1beta4\nkind: {kind}\n"), "KN-V001")
+    # The same kind in another group is somebody else's object and still needs a name.
+    assert _hits(_t("apiVersion: other.io/v1\nkind: ClusterConfiguration\n"), "KN-V001")
+
+
+# --- F10: a bare YAML boolean kubeadm's decoder refuses ---
+
+
+@pytest.mark.parametrize("fixture", ["q3-08-b4-value-bool-bare.yaml", "q3-09-b3-value-bool-bare.yaml"])
+def test_a_bare_boolean_value_in_a_kubeadm_configuration_declines(fixture: str) -> None:
+    report = _r(fixture)
+    assert not _hits(report, KAS)
+    line = _declined(report, KAS)
+    assert "not a string" in line and "refuses" in line
 
 
 # --- what round six verified clean stays so ---

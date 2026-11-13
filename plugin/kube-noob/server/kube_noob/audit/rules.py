@@ -459,6 +459,22 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
 # VALIDATE
 # =====================================================================================================
 
+#: Configuration FILES that carry `apiVersion` and `kind` but are not API objects and have no `metadata`: the
+#: kubeadm and kind configuration kinds `cpconfig.read_config` reads, by (group, kind) so a CRD of the same name in
+#: another group still needs a name. KN-V001 reported `metadata.name` missing on every one of them (G272).
+CONFIG_FILE_KINDS = frozenset(
+    {
+        ("kubeadm.k8s.io", "ClusterConfiguration"),
+        ("kubeadm.k8s.io", "InitConfiguration"),
+        ("kubeadm.k8s.io", "JoinConfiguration"),
+        ("kubeadm.k8s.io", "ResetConfiguration"),
+        ("kubeadm.k8s.io", "UpgradeConfiguration"),
+        ("kubelet.config.k8s.io", "KubeletConfiguration"),
+        ("kubeproxy.config.k8s.io", "KubeProxyConfiguration"),
+        ("kind.x-k8s.io", "Cluster"),
+    }
+)
+
 
 @rule(
     "KN-V001",
@@ -494,7 +510,11 @@ def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     resource=f"doc[{d.index}]",
                 )
         meta = d.data.get("metadata")
-        if not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
+        if (api_group(d.api_version), d.kind) in CONFIG_FILE_KINDS:
+            # A kubeadm or kind configuration file, not an API object: it has no metadata by design, and asking
+            # it for a name failed every kubeadm file at HIGH (G272, sixth review).
+            pass
+        elif not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
         if missing:
             yield r.finding(d, (), f"Missing required field(s): {', '.join(missing)}.", resource=f"doc[{d.index}]")
