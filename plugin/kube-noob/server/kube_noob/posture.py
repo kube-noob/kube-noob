@@ -26,7 +26,7 @@ def crypto_posture() -> dict[str, Any]:
     Three reads: the kernel flag ``/proc/sys/crypto/fips_enabled`` (``1`` is on; unreadable is None), OpenSSL's own
     FIPS mode as the ``_hashlib`` module linked against it reports it (``_hashlib.get_fips_mode()``), and the
     OpenSSL version string Python was built against (``ssl.OPENSSL_VERSION``); plus which SHA-256 this process
-    runs (OpenSSL's through ``_hashlib``, or CPython's own ``_sha2``). The primitives the code calls are listed in
+    runs (OpenSSL's through ``_hashlib``, or CPython's own module, named). The primitives the code calls are listed in
     ``algorithms``. Whether any of these modules is CMVP-validated: that is a property of the module, its version
     and its operating environment, which the operator evidences with the module name, version and certificate.
     This function makes no such claim, and ``fipsMode`` is the flags' reading, not a validation status (G292).
@@ -49,26 +49,39 @@ def crypto_posture() -> dict[str, Any]:
         openssl = bool(_hashlib.get_fips_mode())
     except (ImportError, AttributeError, ValueError):
         openssl = None
+    # OpenSSL's reading decides: it is the library the process hashes and speaks TLS with. The kernel flag decides
+    # only when OpenSSL's mode could not be read. The two can disagree (a FIPS-mode kernel with a non-FIPS OpenSSL
+    # build, or the reverse), and then the disagreement is said rather than hidden behind one word.
     if openssl or (kernel and openssl is None):
         mode = "on"
     elif kernel is None and openssl is None:
         mode = "unknown"
     else:
         mode = "off"
+    sha256_module = type(hashlib.sha256()).__module__
+    note = ""
+    if kernel is not None and openssl is not None and kernel != openssl:
+        note = (
+            f"the kernel flag ({'1' if kernel else '0'}) and OpenSSL's mode ({'on' if openssl else 'off'}) disagree; "
+            "OpenSSL's reading decides fipsMode"
+        )
     return {
         "fipsMode": mode,
         "kernelFipsEnabled": kernel,
         "opensslFipsMode": openssl,
         "openssl": ssl.OPENSSL_VERSION,
         "sha256Backend": (
-            "OpenSSL (_hashlib)" if type(hashlib.sha256()).__module__ == "_hashlib" else "CPython built-in (_sha2)"
+            "OpenSSL (_hashlib)" if sha256_module == "_hashlib" else f"CPython built-in ({sha256_module})"
         ),
         "algorithms": (
             "SHA-256 (integrity, ids) and PBKDF2-HMAC-SHA256 (sealed Jira snapshot key) through hashlib; "
             "HMAC constant-time compare of the HTTP bearer token; TLS through Python's ssl module; AES-256-GCM "
             "for sealing a Jira snapshot through the cryptography package, whose wheel carries its own OpenSSL "
-            "build; no MD5, SHA-1 or custom crypto"
+            "build; UUIDv5 (SHA-1, an identifier and not a security use) for OSCAL ids and UUIDv4 for a file "
+            "suffix; salts, nonces and approval ids from the kernel's CSPRNG through the secrets module; no MD5 "
+            "and no custom crypto"
         ),
+        **({"fipsNote": note} if note else {}),
         **({"kernelFipsNote": kernel_note} if kernel_note else {}),
     }
 
@@ -195,7 +208,8 @@ def render_text(p: dict[str, Any]) -> str:
         ),
         *(["  memory         none (memory.paths)"] if not p.get("memory") else []),
         f"  telemetry      {p['telemetry']}",
-        f"  FIPS mode      {p['crypto']['fipsMode']} ({p['crypto']['openssl']})",
+        f"  FIPS mode      {p['crypto']['fipsMode']} ({p['crypto']['openssl']})"
+        + (" (kernel flag disagrees)" if p["crypto"].get("fipsNote") else ""),
         f"  sha256 backend {p['crypto']['sha256Backend']}",
         f"  config file    {p['configFile'] or 'none (defaults + environment)'}",
     ]
