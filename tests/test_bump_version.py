@@ -34,7 +34,9 @@ FILES = [
     "docs/openshift-catalog.md",
     "CHANGELOG.md",
 ]
-MINOR_ONLY = {"docs/install.md"}  # names the image's MAJOR.MINOR tag, which a patch release does not change
+# Files a patch release leaves alone. docs/install.md used to be one (it names the image's MAJOR.MINOR tag), until it
+# also named the pinned release for the directory plugin and the no-krew kubectl path (G276).
+MINOR_ONLY: set[str] = set()
 
 
 def _load():  # type: ignore[no-untyped-def]

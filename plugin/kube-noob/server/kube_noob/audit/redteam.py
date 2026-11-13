@@ -6,8 +6,12 @@ the evidence (finding ids / objects), blast radius, safeguards and the commands 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any
 
+from kube_noob import shape
 from kube_noob.audit.model import Finding, RedTeamScenario, Severity
 from kube_noob.audit.podspec import REPLICATED_KINDS, replicas
 from kube_noob.audit.rules import AuditContext
@@ -16,7 +20,26 @@ from kube_noob.yamlio import get_path
 ScenarioFn = Callable[[AuditContext, list[Finding]], RedTeamScenario | None]
 
 
+# The rule ids the running scenario has read through `_ids`, so `red_team` can tell which of them were not evaluated.
+# A context variable, not a module list: the MCP and REST servers run tools in threads, and one shared list let a clean
+# run clear what a bad one had recorded, which turned an undecided scenario back into `mitigated` (G276).
+_READ: ContextVar[list[str] | None] = ContextVar("kube_noob_redteam_read", default=None)
+
+
+@contextmanager
+def _recording() -> Iterator[list[str]]:
+    read: list[str] = []
+    token = _READ.set(read)
+    try:
+        yield read
+    finally:
+        _READ.reset(token)
+
+
 def _ids(findings: list[Finding], *rule_ids: str) -> list[Finding]:
+    read = _READ.get()
+    if read is not None:
+        read.extend(rule_ids)
     return [f for f in findings if f.rule_id in rule_ids]
 
 
@@ -103,25 +126,36 @@ def zone_outage(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario |
 
 def rwx_split_brain(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
     shared: list[str] = []
-    pvc_modes = {
-        (d.namespace or "", d.name): get_path(d.data, ("spec", "accessModes")) or []
-        for d in ctx.by_kind("PersistentVolumeClaim")
-    }
+    pvc_modes: dict[tuple[str, str], list[Any]] = {}
+    unread: list[str] = []
+    for d in ctx.by_kind("PersistentVolumeClaim"):
+        try:
+            pvc_modes[(d.namespace or "", d.name)] = shape.sequence(
+                get_path(d.data, ("spec", "accessModes")), f"{d.ref()} spec.accessModes"
+            )
+        except shape.WrongShape as exc:
+            unread.append(f"not read: {exc}")
     for d, pt in ctx.workloads():
         if (replicas(d) or 1) < 2:
             continue
-        for v in pt.spec.get("volumes") or []:
+        try:
+            volumes = shape.sequence(pt.spec.get("volumes"), f"{d.ref()} spec.volumes")
+        except shape.WrongShape as exc:
+            # Not "no shared volume": the volumes could not be read, so this workload is undecided (G276).
+            unread.append(f"not read: {exc}")
+            continue
+        for v in volumes:
             claim = get_path(v, ("persistentVolumeClaim", "claimName")) if isinstance(v, dict) else None
             if claim and "ReadWriteMany" in pvc_modes.get((d.namespace or "", str(claim)), []):
                 shared.append(f"{d.ref()} ({replicas(d)} replicas) writes to RWX claim '{claim}'")
     fs = _ids(findings, "KN-ST001")
-    if not shared and not fs:
+    if not shared and not fs and not unread:
         return None
-    evidence = shared + _evidence(fs)
+    evidence = shared + _evidence(fs) + unread
     return RedTeamScenario(
         "RT-RWX-SPLIT-BRAIN",
         "Does this ReadWriteMany volume cause split-brain, locking or corruption?",
-        "exposed",
+        "exposed" if shared or fs else "undecided",
         Severity.HIGH if fs else Severity.MEDIUM,
         evidence,
         "RWX only guarantees that several pods can mount the volume. Concurrent writers need application-level "
@@ -244,10 +278,10 @@ def upgrade_block(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario
 
 
 def secret_leak(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
-    fs = _ids(findings, "KN-S013", "KN-S018", "KN-S026", "KN-S027", "KN-S014")
-    fs = [f for f in fs if f.severity >= Severity.LOW]
-    if not fs:
-        return None
+    read = ("KN-S013", "KN-S018", "KN-S026", "KN-S027", "KN-S014")
+    fs = [f for f in _ids(findings, *read) if f.severity >= Severity.LOW]
+    if not fs and not any(r in ctx.undecided for r in read):
+        return None  # shown only when something leaks -- or when whether it does could not be decided (G276)
     verdict, sev = _verdict(fs)
     return RedTeamScenario(
         "RT-SECRET-LEAK",
@@ -328,10 +362,36 @@ SCENARIOS: tuple[ScenarioFn, ...] = (
 )
 
 
-def red_team(ctx: AuditContext, findings: list[Finding]) -> list[RedTeamScenario]:
+def rules_read(fn: ScenarioFn, ctx: AuditContext, findings: list[Finding]) -> list[str]:
+    """The rule ids ``fn`` reads, in the order it reads them."""
+    with _recording() as read:
+        fn(ctx, findings)
+    return list(dict.fromkeys(read))
+
+
+def red_team_with(
+    ctx: AuditContext, findings: list[Finding], scenarios: tuple[ScenarioFn, ...]
+) -> list[RedTeamScenario]:
+    """Run ``scenarios``. A scenario is only as decided as the rules it reads: "mitigated" claims each of them ran
+    and found nothing, so when one did not run (it declined to decide, or could not read its input) the verdict is
+    `undecided` and the rule is named. An `exposed` scenario stays exposed -- a finding is a finding -- and names the
+    rules it could not consult as well (G276)."""
     out: list[RedTeamScenario] = []
-    for fn in SCENARIOS:
-        s = fn(ctx, findings)
-        if s is not None:
-            out.append(s)
+    for fn in scenarios:
+        with _recording() as recorded:
+            s = fn(ctx, findings)
+        read = list(dict.fromkeys(recorded))
+        if s is None:
+            continue
+        missing = [r for r in read if r in ctx.undecided]
+        if missing:
+            why = ", ".join(f"{r} ({ctx.unreadable_shapes[r]})" if r in ctx.unreadable_shapes else r for r in missing)
+            s.evidence = [*s.evidence, f"not evaluated, so this scenario cannot be called mitigated: {why}"]
+            if s.verdict == "mitigated":
+                s.verdict = "undecided"
+        out.append(s)
     return out
+
+
+def red_team(ctx: AuditContext, findings: list[Finding]) -> list[RedTeamScenario]:
+    return red_team_with(ctx, findings, SCENARIOS)

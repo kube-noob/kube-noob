@@ -115,7 +115,9 @@ on stderr with exit 4, never a raw traceback that exits 1; set `KUBE_NOOB_DEBUG=
 through the same output boundary (G279).
 
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
-that as policy violations.
+that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
+Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
+shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
 
 ## Versions
 
@@ -177,6 +179,13 @@ rewrite history on a shared branch.
   docs say the label is decided during review and the portal has no step for it. Do not strip the server out of
   `plugin/kube-noob` -- it is what installs from this repository's own marketplace, and its seven skills call 46
   `kubenoob_*` tools, so a server-less copy of them would name tools that do not exist. `plugin/kube-noob-skills` is
-  the directory's plugin: knowledge only, rewritten rather than copied, held by `tests/test_directory_plugin.py`
-  (G267). A remote MCP server pointing at the user's own `kube-noob serve` endpoint through a `userConfig` value
-  would be admissible and has not been decided; it would put a bearer token in the plugin.
+  the directory's plugin, rewritten rather than copied (G267). Since G276 its skills drive the CLI the user installed
+  through Claude's Bash tool: `kube-noob --version` first (never `kubectl noob` or `uvx`, which fetch), then every
+  command as `KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob ... --format json` into a private
+  `mktemp -d` folder, and "nothing has been audited" when no engine is there. `tests/test_directory_plugin.py` maps
+  every `kubenoob_*` tool the full skills call to a CLI command or a stated reason, parses every command line with the
+  real parser, and runs every command a skill's table names on a fixture to check the fields the row cites. A tool
+  added to a full skill, or a field renamed in a command's JSON, fails there. Do not add `allowed-tools`, a `!`-command
+  line, a heredoc, a fixed `/tmp` path, a hook, `bin/` or a package launcher to that plugin. A remote MCP server
+  pointing at the user's own `kube-noob serve` through `userConfig` is admissible and was not shipped: an unset URL is
+  an error on every install that does not run `serve` (SECURITY.md, "The directory plugin and a remote server").

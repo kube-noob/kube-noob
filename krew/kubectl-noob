@@ -37,7 +37,7 @@ echo "kubectl-noob: neither kube-noob nor uv is installed." >&2
 echo "" >&2
 echo "Install one of:" >&2
 echo "  pipx install kube-noob==$VERSION      # or: pip install --user kube-noob==$VERSION" >&2
-echo "  brew install kube-noob/tap/kube-noob" >&2
+echo "  brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob && brew trust --formula kube-noob/kube-noob/kube-noob && brew install kube-noob" >&2
 echo "  curl -LsSf https://astral.sh/uv/install.sh | sh   # then this plugin runs kube-noob through uvx" >&2
 echo "" >&2
 echo "kube-noob is offline by default: it reaches no network and no cluster unless you turn those on." >&2
