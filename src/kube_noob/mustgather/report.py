@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kube_noob import __version__
+from kube_noob import __version__, sanitize
 from kube_noob.debug.cluster import redact_text
 from kube_noob.mustgather.analyse import SEVERITIES, Analysis, has_clusterversion
 from kube_noob.mustgather.ingest import GATHER_DIRS, Bundle
@@ -99,25 +99,20 @@ def build(
             "the index holds OpenShift release-note issues; they do not apply to plain Kubernetes",
         )
     else:
-        # The one coverage verdict the gate uses (G284): a release the index does not cover is not-evaluated,
-        # never looked-up by default (round 1, 2). Mid-update, the running release is what is searched and the
-        # note says the target was not, which the completeness leg reads as partial.
-        from kube_noob.known_issues import release_coverage
-
-        verdict, note, _minor = release_coverage(
-            "openshift", version, data_dir, hint="the must-gather's ClusterVersion names none; the newest indexed is"
-        )
+        # Main's vocabulary (G277): `looked-up` says the findings were matched, and `knownIssuesCoverage` says
+        # whether the index can answer for this exact version. The completeness leg reads that statement (G285), so
+        # a release the index does not hold is a partial leg, never a complete one. Mid-update, the running release
+        # is what is matched and the note says the target was not.
+        verdict, note = "looked-up", None
         desired = cluster.get("desiredVersion")
-        if verdict == "looked-up" and desired and version and desired != version:
-            note = f"{note}; the running release {version} was searched and the update target {desired} was not"
+        if desired and version and desired != version:
+            note = f"the running release {version} was searched and the update target {desired} was not"
     operators = [o["name"] for o in cluster.get("operators", [])]
     roots = bundle.as_dict()["gatherRoots"]
     findings = [{"rank": n, **f} for n, f in enumerate(a["findings"], start=1)]
 
     def known(text: str) -> dict[str, Any]:
-        if okd or verdict == "not-evaluated":
-            # the notes do not describe OKD's builds, or the release is outside the index: what the index is, but
-            # nothing matched against it (a match across every release would be a search of the wrong release)
+        if okd:  # the notes do not describe OKD's builds: what the index is, but nothing matched against it
             return {"knowledge": _known("", "openshift", None, data_dir)["knowledge"] if match_known is None else {}}
         if match_known is not None:
             return match_known(text, platform, version)
@@ -125,12 +120,14 @@ def build(
 
     issues: dict[str, dict[str, Any]] = {}
     knowledge: dict[str, Any] = {}
+    ki_coverage: dict[str, Any] | None = None
     memory: dict[str, dict[str, Any]] = {}
     memory_notes: list[str] = []
     for f in [x for x in findings if x["severity"] in {"critical", "high", "medium"}][:MAX_MATCHED_FINDINGS]:
         q = _query(f)
         found = known(q)
         knowledge = knowledge or found.get("knowledge", {})
+        ki_coverage = ki_coverage or found.get("versionCoverage")
         for m in found.get("matches", []):
             entry = issues.setdefault(m["id"], {**{k: m[k] for k in _ISSUE_KEYS if k in m}, "findings": []})
             entry["findings"].append(f["rank"])
@@ -146,8 +143,9 @@ def build(
                 entry = memory.setdefault(m["id"], {**m, "findings": []})
                 entry["findings"].append(f["rank"])
                 f.setdefault("memory", []).append(m["id"])
-    if not knowledge:
-        knowledge = known("")["knowledge"] if match_known is None else {}
+    if not knowledge and match_known is None:
+        empty = known("")
+        knowledge, ki_coverage = empty["knowledge"], ki_coverage or empty.get("versionCoverage")
     steps: list[dict[str, Any]] = []
     seen: set[str] = set()
     for f in findings:
@@ -170,6 +168,7 @@ def build(
     head: dict[str, Any] = {
         "knownIssuesVerdict": verdict,
         "knownIssuesNote": note,
+        "knownIssuesCoverage": ki_coverage,
         "cluster": cluster,
     }
     return {
@@ -184,6 +183,8 @@ def build(
         "knownIssues": sorted(issues.values(), key=lambda m: (min(m["findings"]), m["id"])),
         "knownIssuesVerdict": verdict,
         "knownIssuesNote": note,
+        # For the detected version: a release the index does not hold makes an empty list "not determined" (G277).
+        **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "memory": sorted(memory.values(), key=lambda m: (min(m["findings"]), m["id"])),
         "memoryNotes": list(dict.fromkeys(memory_notes)),
         "nextSteps": steps,
@@ -289,6 +290,13 @@ def _knowledge_line(r: dict[str, Any]) -> str:
     return line
 
 
+def _coverage_line(r: dict[str, Any]) -> str | None:
+    from kube_noob.known_issues import coverage_line
+
+    line = coverage_line(r.get("knownIssuesCoverage"), listed=bool(r["knownIssues"]))
+    return _md(line) if line else None
+
+
 def markdown(r: dict[str, Any]) -> str:
     c, counts = r["cluster"], r["counts"]
     if c.get("version"):
@@ -345,10 +353,12 @@ def markdown(r: dict[str, Any]) -> str:
                 f"| {ref} | {_md(m.get('status') or '')} | {_md(m.get('fixedIn') or 'not yet')} | {found} | "
                 f"{_md(m.get('summary') or '')} |"
             )
+        if limit := _coverage_line(r):
+            lines += ["", limit]
     elif r.get("knownIssuesVerdict") == "not-determined":
         lines.append(f"Not determined: {_md(r['knownIssuesNote'])}. {_knowledge_line(r)}")
     else:
-        lines.append(f"None of the findings matches a known issue. {_knowledge_line(r)}")
+        lines.append(_coverage_line(r) or f"None of the findings matches a known issue. {_knowledge_line(r)}")
     if r["memory"] or r["memoryNotes"]:
         lines += ["", "## From your team's memory", ""]
         for m in r["memory"]:
@@ -399,7 +409,7 @@ def markdown(r: dict[str, Any]) -> str:
         lines += ["", *extra]
     if r["signals"]:
         lines += ["", "## Signals", "", ", ".join(f"{_md(s['kind'])}:{_md(s['name'])}" for s in r["signals"])]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)
 
 
 def case_draft(r: dict[str, Any]) -> str:
@@ -460,15 +470,17 @@ def case_draft(r: dict[str, Any]) -> str:
                 f"- {_md(m['id'])}: {_md(m.get('summary') or '')} ({_md(m.get('status') or '')}{fixed}; matches "
                 f"finding {', '.join(str(n) for n in m['findings'])})"
             )
+        if limit := _coverage_line(r):
+            lines.append(f"- {limit}")
     elif r.get("knownIssuesVerdict") == "not-determined":
         lines.append(f"- Not determined: {_md(r['knownIssuesNote'])}. {_knowledge_line(r)}")
     else:
-        lines.append(f"- None matched. {_knowledge_line(r)}")
+        lines.append(f"- {_coverage_line(r) or f'None matched. {_knowledge_line(r)}'}")
     lines += ["", "## Steps already taken", "", FILL.format("what you tried and what happened"), ""]
     if r["nextSteps"]:
         lines += ["Read-only checks kube-noob suggests running first (paste their output into the case):", ""]
         lines += ["```bash", *(s["command"] for s in r["nextSteps"][:10]), "```"]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)
 
 
 def write(r: dict[str, Any], out_dir: Path, *, draft: bool) -> list[Path]:

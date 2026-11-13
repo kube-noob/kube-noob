@@ -356,7 +356,8 @@ def test_cli_text_json_file_and_capture(tmp_path: Path, capsys: pytest.CaptureFi
     assert pcap["kinds"][0]["kind"] == "packet-capture" and pcap["skipped"][0]["kind"] == "packet-capture"
     assert main(["insight", " "]) == 2
     assert main(["insight", "-f", str(tmp_path / "missing.txt")]) == 2
-    assert main(["insight", "why does my pod stay Pending?", "--version", "4.20; ls"]) == 4  # invalid input
+    # a refused --version is a bad flag value: exit 2 with one sentence, as on every command that takes one (G277)
+    assert main(["insight", "why does my pod stay Pending?", "--version", "4.20; ls"]) == 2
 
 
 def test_a_long_pasted_post_needs_more_than_the_documents_subject_words(

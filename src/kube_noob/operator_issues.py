@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from kube_noob import operators as ops
+from kube_noob import versions
 from kube_noob.known_issues import Index, Issue, get_index, vkey
 
 DOCS = "openshift/openshift-docs a28e76ff671df01eb6d75f305153dc6a01039c60 modules/"
@@ -149,10 +150,8 @@ OTHER_DEFAULT_CATALOGS = frozenset({"certified-operators", "community-operators"
 MAX_ISSUES_PER_PACKAGE = 200
 DEFAULT_ISSUES_PER_PACKAGE = 50
 MUST_GATHER_ISSUES_PER_PACKAGE = 5
-_NUM = r"(?:0|[1-9][0-9]{0,2})"
-_OCP = re.compile(rf"^({_NUM})\.({_NUM})(?:\.(0|[1-9][0-9]{{0,4}}))?([-+][0-9A-Za-z.-]{{1,64}})?\Z")
-#: what the tools accept, in the form pydantic's validator takes (no lookarounds; $ is end of text there)
-VERSION_FIELD_PATTERN = r"^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,4}))?([-+][0-9A-Za-z.-]{1,64})?$"
+#: What the tools accept, in the form pydantic's validator takes: the one grammar in ``kube_noob.versions``.
+VERSION_FIELD_PATTERN = versions.VERSION_FIELD_PATTERN
 
 OpVerdict = Literal[
     "named", "mentioned", "none-named", "no-alias", "package-unknown", "not-determined", "not-installed"
@@ -343,17 +342,18 @@ def _corpus(index: Index) -> _Corpus:
 
 
 def parse_version(value: Any) -> str | None:
-    """An OpenShift version as given (4.21, 4.21.9 or 4.21.0-rc.1): ASCII digits, no leading zeros. Else None."""
-    return value if isinstance(value, str) and _OCP.match(value) else None
+    """An OpenShift version as given (4.21, 4.21.9 or 4.21.0-rc.1), read by the one grammar every surface shares
+    (``kube_noob.versions``): ASCII digits, no leading zeros, no white space. Else None."""
+    return value if versions.is_version(value) else None
 
 
 def is_okd(version: str | None) -> bool:
-    """An OKD version: OKD, the community distribution built from the same sources, writes an ``okd`` pre-release
-    suffix (``4.20.0-okd-scos.0`` in okd.io's 4.20 release notes; ``4.20.0-0.okd-scos-<date>`` in its
+    """An OKD version: OKD, the community distribution built from the same sources, writes an ``okd`` token in its
+    build (``4.20.0-okd-scos.0`` in okd.io's 4.20 release notes; ``4.20.0-0.okd-scos-<date>`` in its
     ``4.20.0-0.okd-scos`` release stream). The bundled index is OpenShift Container Platform's release notes, which do
     not describe OKD's builds."""
-    m = _OCP.match(version or "")
-    return bool(m and m.group(4) and "okd" in m.group(4).lower())
+    cv = versions.read_version(version)
+    return bool(cv and cv.okd)
 
 
 def okd_note(version: str) -> str:
@@ -369,18 +369,20 @@ def okd_version(release: Release) -> str | None:
 
 
 def _release(version: str) -> str:
-    m = _OCP.match(version)
-    if m is None:  # callers pass parse_version output only
+    cv = versions.read_version(version)
+    if cv is None:  # callers pass parse_version output only
         raise ValueError(version)
-    return f"{m.group(1)}.{m.group(2)}"
+    return cv.minor
 
 
 def _exact(version: str | None) -> tuple[int, int, int] | None:
-    """major, minor, update -- only for a version that has all three and no pre-release suffix."""
-    m = _OCP.match(version or "")
-    if m is None or m.group(3) is None or m.group(4):
+    """major, minor, update -- only for a version that has all three and no pre-release suffix (a release-image
+    architecture, ``4.21.3-x86_64``, is the release 4.21.3)."""
+    cv = versions.read_version(version)
+    if cv is None or not cv.has_z or cv.build:
         return None
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    major, minor, z = (int(p) for p in cv.numeric.split("."))
+    return major, minor, z
 
 
 @dataclass
@@ -438,7 +440,8 @@ def live_release(backend: Any) -> Release:
         cv = backend.get("clusterversions", name="version")
     except KubeNoobError as exc:
         message = str(exc)
-        if ops._not_served("clusterversions", message, group="config.openshift.io", version="v1"):
+        # the exception, not its message: it carries the full stderr or the HTTP status (G279)
+        if ops._not_served("clusterversions", exc, group="config.openshift.io", version="v1"):
             return Release(
                 detected_from="live",
                 not_openshift=True,

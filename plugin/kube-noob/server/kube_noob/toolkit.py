@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from kube_noob.audit.engine import analyze, explain_rule, list_rules
 from kube_noob.audit.fixer import fix_manifests
@@ -53,6 +53,8 @@ from kube_noob.learn.tutor import Tutor
 from kube_noob.signals import alertmanager, for_text, playbooks_for
 from kube_noob.upgrade_risks import parse_version
 from kube_noob.upgrade_risks import risks as upgrade_risk_match
+from kube_noob.versions import MAX_SHOWN as MAX_VERSION
+from kube_noob.versions import VERSION_FIELD_PATTERN, same_release, strict_field
 
 PlatformT = Literal["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 MAX_MANIFEST_CHARS = 1_000_000
@@ -76,6 +78,13 @@ READABLE_CONTENT_TYPES = frozenset(
         "text/x-yaml",
     }
 )
+
+
+# Every tool reads a version as the command line does (kube_noob.versions, G277): the same values accepted, the
+# whitespace around one ignored, so a tool never refuses what `kube-noob ... --version` takes.
+#: A version field: the one grammar (``kube_noob.versions``), refused before the pattern with the sentence the CLI
+#: prints, so a padded or prefixed value is a one-line refusal everywhere, never a validation dump (G277, R5).
+VersionT = Annotated[str | None, BeforeValidator(strict_field("version"))]
 
 
 class _In(BaseModel):
@@ -273,10 +282,10 @@ class DiagnoseIn(_In):
         "as text; an `openshift_version` or `version` label gives the version).",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version (4.20 or 4.20.8): leaves out reported issues already fixed there.",
     )
     limit: int = Field(5, ge=1, le=10)
@@ -289,23 +298,27 @@ class TicketIn(_In):
         pattern=r"^[A-Za-z][A-Za-z0-9_]{1,29}-\d{1,9}$",
         description="A Red Hat Jira key, e.g. OCPBUGS-12345 or ROX-30000.",
     )
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version: says whether the fix is already in it.",
     )
 
 
 class KnownIssuesIn(_In):
     text: str = Field(
-        ..., min_length=3, max_length=100_000, description="An error message, events, logs or a symptom in words."
+        ...,
+        min_length=3,
+        max_length=MAX_DIAGNOSE_TEXT,
+        description="An error message, events, logs or a symptom in words. Past 100,000 characters only the end is "
+        "matched, and the result says so (inputTruncated).",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version (4.20 or 4.20.8): keeps only issues that can affect it.",
     )
     limit: int = Field(3, ge=1, le=10)
@@ -381,10 +394,10 @@ class MemoryMatchIn(_In):
         max_length=MAX_SIGNAL_TEXT,
         description="An error, events, logs, a symptom in words or an Alertmanager webhook payload.",
     )
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version: entries already fixed there are shown as retired.",
     )
     platform: PlatformT | None = None
@@ -424,7 +437,7 @@ class InsightIn(_In):
         "build log, a Containerfile, an SBOM or scanner report, or a question.",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: VersionT = Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN)
 
 
 class TicketChangesIn(_In):
@@ -611,6 +624,13 @@ class PostureScanIn(_In):
         "are dropped unread.",
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
 
 
 class ClusterPostureIn(_In):
@@ -618,6 +638,52 @@ class ClusterPostureIn(_In):
         default_factory=list, max_length=50, description="Namespaces to read (default: all the account can list)."
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+
+
+# A Field pattern runs on pydantic's Rust regex engine, where `$` is the end of the text (no final-newline match).
+_WORKLOAD_REF = (
+    r"^[A-Za-z][A-Za-z0-9]{0,62}/(?:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[A-Za-z0-9][A-Za-z0-9._:-]{0,252}"
+    r"(?:\[[A-Za-z0-9/_.-]{1,128}\])?$"
+)
+
+
+class _ReachAnchor(_In):
+    workload: str = Field(
+        ...,
+        min_length=3,
+        max_length=512,
+        pattern=_WORKLOAD_REF,
+        description="The workload: Kind/name with `namespace` (deployment/web), or Kind/namespace/name as "
+        "posture_scan prints it (Deployment/shop/web). A Pod is scored on its own spec, its owners as context.",
+    )
+    namespace: str | None = Field(
+        None, max_length=63, pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", description="Default: default."
+    )
+    mermaid: bool = Field(False, description="Also return the graph as a Mermaid flowchart (text).")
+
+
+class PostureReachIn(_ReachAnchor):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.",
+    )
+    whole_bundle: bool = Field(
+        False,
+        description="True only when the manifests are everything that applies to this workload (its RoleBindings, "
+        "the ClusterRoleBindings, its Services, Routes and Ingresses): an absence in them then counts as an answer. "
+        "Otherwise the answer is never complete, because files cannot show what they leave out.",
+    )
+
+
+class ClusterPostureReachIn(_ReachAnchor):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: all the account can list). Grants in namespaces not read are "
+        "reported as not determined.",
+    )
 
 
 class OperatorInventoryIn(_In):
@@ -643,22 +709,12 @@ class ClusterOperatorInventoryIn(_In):
 
 
 def _ocp_version_field(description: str) -> Any:
-    from kube_noob.operator_issues import VERSION_FIELD_PATTERN
-
-    return Field(None, max_length=80, pattern=VERSION_FIELD_PATTERN, description=description)
+    return Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN, description=description)
 
 
-def _strict_ocp_version(value: Any) -> Any:
-    """The version exactly as the CLI's --openshift-version takes it. Runs before the model strips whitespace and
-    before the pattern, whose ``$`` would accept a trailing newline: "4.21\n" is refused, not read as 4.21."""
-    from kube_noob.operator_issues import parse_version
-
-    if value is not None and parse_version(value) is None:
-        raise ValueError(
-            "openshift_version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, no "
-            "leading zeros, no whitespace)"
-        )
-    return value
+#: The version exactly as the CLI's --openshift-version takes it (``kube_noob.versions``): runs before the model strips
+#: whitespace and before the pattern, whose ``$`` would accept a trailing newline, so a padded value is refused.
+_strict_ocp_version = strict_field("openshift_version")
 
 
 class OperatorKnownIssuesIn(_In):
@@ -704,10 +760,10 @@ class BuildDiagnoseIn(_In):
         "build (oc logs build/<name>). The end of the log matters most: when cutting, keep the end.",
     )
     platform: PlatformT | None = None
-    version: str | None = Field(
+    version: VersionT = Field(
         None,
-        max_length=20,
-        pattern=r"^\d+\.\d+(\.\d+)?$",
+        max_length=MAX_VERSION,
+        pattern=VERSION_FIELD_PATTERN,
         description="The cluster's OpenShift version, for reported issues that may apply.",
     )
 
@@ -742,6 +798,13 @@ _CPE = r"^cpe:/[aho]:[a-z0-9_.-]+:[a-z0-9_.-]+:[0-9][a-z0-9_.-]*(?::[A-Za-z0-9_.
 
 
 class VulnReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         ...,
         min_length=1,
@@ -815,6 +878,13 @@ class MustGatherIn(_In):
 
 
 class CodeReportIn(_In):
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
+    )
     sarif: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
         max_length=10,
@@ -854,11 +924,18 @@ class CodeReportIn(_In):
 class ThreatModelIn(_In):
     manifests: str = Field(..., min_length=10, max_length=MAX_MANIFEST_CHARS, description="The application's YAML.")
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: VersionT = Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN)
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
         max_length=10,
         description="Optional scanner reports of its images, to assess public-facing exploits (threat TM-E01).",
+    )
+    namespace: str | None = Field(
+        None,
+        max_length=63,
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        description="Where objects in the manifests without a namespace are placed, as kubectl apply -n does. "
+        "Without it their namespace is not known and the answer says so.",
     )
 
 
@@ -1421,8 +1498,20 @@ class Toolkit:
             context=payload.context if payload else None,
         ).as_dict()
         if payload:
+            given: dict[str, Any] = {}
+            if p.version and payload.version:
+                # The argument decides, but the payload's own version is kept and a disagreement is said: a flag
+                # silently replacing the alert's version hid which release the alert came from (G277).
+                given = {"payloadVersion": payload.version, "payloadVersionFrom": payload.version_from}
+                if not same_release(payload.version, p.version):
+                    given["versionConflict"] = (
+                        f"The version given ({p.version}) differs from the payload's {payload.version_from} "
+                        f"({payload.version}); reported issues are matched for {p.version}."
+                    )
             out = {
-                "input": {**payload.summary(), "version": version} | ({"versionFrom": "argument"} if p.version else {}),
+                "input": {**payload.summary(), "version": version}
+                | ({"versionFrom": "argument"} if p.version else {})
+                | given,
                 **out,
             }
         self._observe([f"playbook:{d['id']}" for d in out.get("diagnoses", [])])
@@ -1430,6 +1519,8 @@ class Toolkit:
             payload.symptoms if payload else text, p.platform, version, 3, self.settings.data_dir, require_context=True
         )
         out["knownIssues"] = reported["matches"]
+        if "versionCoverage" in reported:  # an empty list for a release the index does not hold is not "none" (G277)
+            out["knownIssuesCoverage"] = reported["versionCoverage"]
         if reported["matches"]:
             self._observe([f"known-issue:{m['id']}" for m in reported["matches"]])
         self._attach_memory(out, p.text, version, p.platform)
@@ -1741,7 +1832,7 @@ class Toolkit:
     def posture_scan(self, p: PostureScanIn) -> dict[str, Any]:
         from kube_noob import attack_paths
 
-        out = attack_paths.scan_manifests(p.manifests, top=p.top)
+        out = attack_paths.scan_manifests(p.manifests, top=p.top, default_namespace=p.namespace)
         self._observe([f"posture:{len(out['paths'])}"])
         return out
 
@@ -1750,6 +1841,26 @@ class Toolkit:
 
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
         return attack_paths.scan(inv, top=p.top)
+
+    def posture_reach(self, p: PostureReachIn) -> dict[str, Any]:
+        from kube_noob import attack_paths, blast_radius
+        from kube_noob.yamlio import load_documents
+
+        # `namespace` places objects without one there, as `kubectl apply -n` does (G273, fourth review D1).
+        inv = attack_paths.Inventory.from_documents(
+            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+        )
+        out = blast_radius.reach_result(inv, p.workload, p.namespace, mermaid=p.mermaid, whole_bundle=p.whole_bundle)
+        self._observe([f"posture-reach:{len(out['notDetermined'])}"])
+        return out
+
+    def cluster_posture_reach(self, p: ClusterPostureReachIn) -> dict[str, Any]:
+        from kube_noob import attack_paths, blast_radius
+
+        inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
+        return blast_radius.reach_result(
+            inv, p.workload, p.namespace, mermaid=p.mermaid, live=True, namespaces_read=list(p.namespaces)
+        )
 
     def operator_inventory(self, p: OperatorInventoryIn) -> dict[str, Any]:
         """Which OLM operators the objects describe, and what they could not say."""
@@ -1808,6 +1919,8 @@ class Toolkit:
             evidence[:100_000], platform, p.version, 3, self.settings.data_dir, require_context=True
         )
         out["knownIssues"] = reported["matches"]
+        if "versionCoverage" in reported:
+            out["knownIssuesCoverage"] = reported["versionCoverage"]
         self._attach_memory(out, evidence[:MAX_SIGNAL_TEXT], p.version, platform)
         self._observe([f"build:{d.system}:{d.cause or 'unknown'}"])
         return out
@@ -1849,7 +1962,13 @@ class Toolkit:
         return self._rhacs_out(policies, list(p.outcomes), {"input": "export"})
 
     def _vuln(
-        self, reports: list[str], vex_texts: list[str], kev_text: str | None, manifests: str | None, **kw: Any
+        self,
+        reports: list[str],
+        vex_texts: list[str],
+        kev_text: str | None,
+        manifests: str | None,
+        namespace: str | None = None,
+        **kw: Any,
     ) -> dict[str, Any]:
         from kube_noob.attack_paths import Inventory as PathInventory
         from kube_noob.attack_paths import workload_reach
@@ -1864,7 +1983,11 @@ class Toolkit:
             index = vexmod.load(self.settings.data_dir, texts=vex_texts, products=kw.get("products", ()))
             kev = kevmod.parse(kev_text, "KEV catalog") if kev_text else None
             reach = (
-                workload_reach(PathInventory.from_documents(d.data for d in load_documents(manifests)))
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(manifests)), default_namespace=namespace
+                    )
+                )
                 if manifests
                 else None
             )
@@ -1880,6 +2003,7 @@ class Toolkit:
             list(p.vex),
             p.kev,
             p.manifests,
+            namespace=p.namespace,
             products=tuple(p.products),
             image=p.image,
             top=p.top,
@@ -1961,7 +2085,13 @@ class Toolkit:
                 for c in p.containerfiles
             ]
             reach = (
-                dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(p.manifests))))
+                dict(
+                    workload_reach(
+                        PathInventory.from_documents(
+                            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
+                        )
+                    )
+                )
                 if p.manifests
                 else None
             )
@@ -1987,11 +2117,17 @@ class Toolkit:
 
         vulnerable = None
         if p.reports:
-            out = self._vuln(list(p.reports), [], None, p.manifests)
+            out = self._vuln(list(p.reports), [], None, p.manifests, namespace=p.namespace)
             vulnerable = assess.summary_for_workloads(out)
         platform = p.platform or self.settings.default_platform
         try:
-            return threat.model(p.manifests, platform=platform, version=p.version, vulnerable_images=vulnerable)
+            return threat.model(
+                p.manifests,
+                platform=platform,
+                version=p.version,
+                vulnerable_images=vulnerable,
+                default_namespace=p.namespace,
+            )
         except threat.ThreatError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -2046,11 +2182,16 @@ class Toolkit:
         backend = get_backend(self.settings)
         inv = inventory_from_cluster(backend, p.source, p.destination, p.cni)
         platform = p.platform
+        platform_note = ""
         if platform is None:
             with contextlib.suppress(Exception):  # the platform only picks oc or kubectl in the commands
-                platform = "openshift" if cluster_info(backend).get("openshift") else "kubernetes"
+                info = cluster_info(backend)
+                platform = info.get("platform")
+                platform_note = str(info.get("platformNotRead") or "")
         cli = "oc" if platform in {"openshift", "rosa-classic", "rosa-hcp"} else "kubectl"
         out = check_reachability(inv, p.source, p.destination, p.port, p.protocol, cli)
+        if platform_note:  # an unread platform is not "kubernetes": the commands below say kubectl for want of one
+            out["notes"] = [*out.get("notes", []), f"{platform_note}; the commands are written for kubectl"]
         out["readFrom"] = f"live cluster via {backend.name} (read-only)"
         self._observe([f"netpol:{out['verdict']}"])
         return out
@@ -2520,12 +2661,27 @@ class Toolkit:
                 "posture_scan",
                 "Attack paths in manifests",
                 "Rank the paths from an exposure (Route, Ingress, LoadBalancer or NodePort Service) to what a "
-                "compromised pod could do: node access (privileged, hostPath, host namespaces) or Kubernetes API "
-                "rights through its ServiceAccount token (read Secrets, exec, create workloads, escalate). Score = "
+                "compromised pod could do: node access (privileged, hostPath, host namespaces, dangerous capabilities) "
+                "or Kubernetes API rights through its ServiceAccount token, automounted or projected (read Secrets, "
+                "exec, create workloads, mint tokens, escalate, control webhooks). Score = "
                 "exposure x blast radius; every step names the field that proves it, with a fix. Secret objects are "
                 "dropped unread.",
                 PostureScanIn,
                 self.posture_scan,
+            ),
+            ToolSpec(
+                "posture_reach",
+                "Blast radius of one workload in manifests",
+                "If this workload is compromised, what can it reach? Its ServiceAccount, the bindings that name it "
+                "(directly or through the system:serviceaccounts and system:authenticated groups), what they allow, "
+                "the Secrets it may read by RBAC (names and scopes only; Secret contents are never read), the node "
+                "when the pod spec can escape to it, and the namespaces or cluster that covers -- as a bounded "
+                "graph whose every edge names the object and field that prove it, with the paths posture_scan "
+                "ranks through it. A ServiceAccount, Role or binding the manifests do not carry is a 'not "
+                "determined' leg, never an empty one; a reference that matches nothing is an error. Optionally a "
+                "Mermaid flowchart of the same graph.",
+                PostureReachIn,
+                self.posture_reach,
             ),
             ToolSpec(
                 "operator_inventory",
@@ -2758,6 +2914,16 @@ class Toolkit:
                     "(never Secrets) and rank the attack paths like posture_scan.",
                     ClusterPostureIn,
                     self.cluster_posture_scan,
+                    open_world=True,
+                ),
+                ToolSpec(
+                    "cluster_posture_reach",
+                    "Blast radius of one workload in the cluster (live, read-only)",
+                    "Read workloads, ServiceAccounts and RBAC from the cluster (never Secrets) and return what one "
+                    "workload reaches if compromised, like posture_reach. A list the account may not read, or a "
+                    "namespace not read, makes its leg 'not determined'.",
+                    ClusterPostureReachIn,
+                    self.cluster_posture_reach,
                     open_world=True,
                 ),
                 ToolSpec(

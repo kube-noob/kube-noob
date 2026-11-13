@@ -42,13 +42,12 @@ refused, and the reasons are in [ideation-review.md](ideation-review.md).
 correctness, four adversarial passes, 49 defects, and eight guidance rows (G259-G266). The roadmap's own principle
 says that is the right order, but it means the differentiating work has not started.
 
-The queue, reconciled against the code on 2026-11-11: **23 shipped, 7 partial, 27 not started.**
+The queue, reconciled against the code on 2026-11-11: **24 shipped, 6 partial, 27 not started.**
 
 Sequence, with what each already has:
 
 1. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
-2. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
-3. **I1** Alertmanager receiver, the forwarders. The per-alert report, its storage and the receipt-to-report clock
+2. **I1** Alertmanager receiver, the forwarders. The per-alert report, its storage and the receipt-to-report clock
    shipped on 2026-11-11 (G274), so *alert to evidence pack in a minute* is now a measured number (p95 23 ms for the
    bundled payload here, 5.7 s for the review's worst 500-alert payload, a 30 s budget per post). Left: posting the report on to chat or ITSM (tier W), and whether a
    report should ever read the cluster.
@@ -56,6 +55,10 @@ Sequence, with what each already has:
 I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF
 outputs validated against the vendored OASIS schema. E2 (installed-operator inventory) shipped the same day:
 `operators inventory` over manifests, a must-gather or the cluster, which unblocks E1, R5 and the upgrade pre-mortem.
+
+V3 (blast radius) shipped on 2026-11-11: `posture reach` anchors on the one workload object named, `--format json|yaml` is a capped,
+schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it, and `posture_reach` /
+`cluster_posture_reach` serve it over MCP (G273).
 
 ## The proposals, with what exists today
 

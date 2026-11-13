@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from kube_noob import charts
+from kube_noob import charts, sanitize
 
 #: Rows past this are summarised rather than listed: a 4,000-row table is not a report anybody reads, and the
 #: count says how many are missing rather than letting the table end silently.
@@ -136,7 +136,8 @@ td a.mono, th a.mono { white-space: nowrap; }
 
 def _esc(value: Any) -> str:
     """The only way text enters the page. ``quote=True`` so a value is safe in an attribute as well."""
-    return html.escape("" if value is None else str(value), quote=True)
+    # every character that does not print becomes a space first (G279); newlines stay, as before
+    return html.escape(sanitize.visible_lines("" if value is None else str(value)), quote=True)
 
 
 def _rich(value: Any) -> str:

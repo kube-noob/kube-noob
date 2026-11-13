@@ -58,8 +58,19 @@ flowchart LR
 - MCP clients and model output are untrusted input: every tool validates with Pydantic, YAML is size/alias bounded.
   Text that came from outside is untrusted on the way out too: `kube_noob.sanitize` cleans every MCP result (invisible
   characters, role and tool-call markers, instruction phrases, exfiltrating Markdown) and flags it `untrusted`.
+  Terminal and file output goes through `sanitize.visible` and its variants: every CLI text write to stdout and
+  stderr at one boundary in `cli.main`, the HTML report and the Markdown writers directly. The rule is fixed in
+  `sanitize` (escapes removed, other controls become a space, format characters removed and marked `<U+XXXX>`
+  inside an identifier, ZWJ/ZWNJ stay after non-ASCII text), is shared with the MCP cleaner, and does not depend
+  on the interpreter's Unicode table; an AST test refuses a private control-character list anywhere else. The same
+  boundary breaks CI workflow commands (GitHub's `##[` and line-leading `::`, Azure's `##vso[`, TeamCity's
+  `##teamcity[`) with the markers `<U+005B>` and `<U+003A>` (`sanitize.CommandGuard`), always;
+  `gate --github-annotations` is the one deliberate exception. Documents (JSON, YAML, SARIF, the AdmissionReview,
+  the manifests `fix` and `generate` print) bypass the text boundary and are escaped losslessly by their encoder, so
+  stdout equals `-o`; comment headers kube-noob composes into them are cleaned and broken like text. `serve`, `mcp`
+  and `admission serve` are not wrapped; an unexpected error is one cleaned line and exit 4 (G279).
   Pasted payloads are data too: an Alertmanager payload is read as JSON only (2 MB, 500 alerts, 64 labels, 2,000
-  characters per value, control characters dropped), and only an OpenShift release label sets the version.
+  characters per value, every non-printing character dropped), and only an OpenShift release label sets the version.
 - The Agent Skill (`skill/kube-noob/scripts/kn.py`) is a fourth surface over the same toolkit: it calls
   `kube_noob.tool_runner.call` (the code path `mcp_app.run_tool` uses), loads only the bundled copy of the server
   source next to it, and forces `offline: true`, web and cluster off and no model, whatever the config file or
@@ -78,6 +89,12 @@ flowchart LR
 - The admin lock (`offline: true`) is applied at config load and only tightens: it disables web, refuses corpus
   downloads and allows only loopback or `*.svc` model endpoints. `kube-noob doctor` reports the result.
 - Cluster access is read-only, allowlisted per resource, never Secrets, and redacts values before they reach a model.
+  A failed read is never taken for an absent one: `debug.cluster.classify_read_failure` recognises "not served" and
+  "not found" only as kubectl/oc's own whole stderr line (from the full redacted stderr the error carries) or
+  from the in-cluster client's HTTP status, never for an aggregated API group, and calls everything else
+  forbidden or not read. A body that is not JSON or UTF-8, without an `items` list or with non-object items, is
+  a failed read; `policy reach --live` answers `undetermined` whenever anything a selector or tier needs was not
+  read (G279).
   Diagnoses list read-only steps first; commands that execute or change state are labelled as needing approval.
   A structured playbook ties each root cause to the patterns that point at it, its own read-only steps and fixes
   (`debug.playbooks.Cause`, `debug.diagnose.likely_cause`); with no pattern matching, the first cause is shown.
@@ -109,7 +126,7 @@ flowchart LR
   shipped in an image the chart pins by digest. The init container copies the archive into a scratch volume that the
   server mounts read-only; `serve` validates the whole archive and imports it only when it is newer than the copy
   it has. Trust boundary: the image registry and its signature, checked by the operator with `cosign verify`.
-- The attack-path scan (`posture scan`, tools `posture_scan` and `cluster_posture_scan`) reads RBAC objects (who may do what, no credentials) and the objects that expose and run pods; Secret objects in a bundle are dropped before analysis, and the live allowlist refuses Secrets. It reports paths and fixes and changes nothing.
+- The attack-path scan (`posture scan`, tools `posture_scan` and `cluster_posture_scan`) reads RBAC objects (who may do what, no credentials) and the objects that expose and run pods; Secret objects in a bundle are dropped before analysis, and the live allowlist refuses Secrets. It reports paths and fixes and changes nothing. The blast radius (`posture reach`, tools `posture_reach` and `cluster_posture_reach`) reads the same objects through the same reader and names the Secrets an account may read only by the `resourceNames` and scopes in RBAC rules; its Mermaid output escapes every label and its text output (and the scan's) prints every field on one line, since object names are input that would otherwise reach whatever renders the diagram or forge a row in a terminal; and its result is bounded in bytes (96 KB, diagram included) before it reaches an MCP caller, every list in it included. Of a Secret in the input, the scan keeps only whether its type is `kubernetes.io/service-account-token` and the account its annotation names, so a legacy token mounted by a pod is followed; the Secret's data is never read and the object is then dropped. With cluster access it lists Gateway API HTTPRoutes and GRPCRoutes and Istio VirtualServices (read-only, namespaced) as exposure; a failed list, 404 included, leaves exposure not determined. A route can set or match header values that are credentials (`Authorization`, an API key), so the backend masks every value under a route's header blocks before any reader or MCP caller sees it.
 - Build analytics (`kube_noob.build.analytics`) reads run folders on disk; JUnit XML with a DOCTYPE or entities is refused before parsing, and every file is size-bounded. `kube_noob.build.github_history` is the only code that reads the GitHub token: through `net.Purpose.CI` (on only with `ci.githubEnabled`, GET only, https to the configured API host and port only, no redirects), with a random pause between requests; the Claude plugin does not ship it.
 - The CI gate (`kube_noob.gate`) is offline: it reads the files it is given (and runs `helm template` for `--chart`, with a throwaway Helm home), audits them together so rules that need other objects still work, maps each finding back to its file and line (or chart template), and writes SARIF, Markdown and code quality JSON. The GitHub Action installs kube-noob from its own source with hash-pinned dependencies and a hash-pinned build backend and passes every input through the environment; the Tekton Task mounts the source read-only and passes params through the environment.
 - Build insight (`kube_noob.build`) reads text and files the user gives it and runs nothing: logs are split into steps by each CI system's own markers and classified by bounded patterns; the Containerfile audit parses without running a shell; the OCI layout reader opens blobs only by validated digest, refuses symlinks, checks every blob's sha256, reads layers as tar streams in memory with byte, file and layer budgets, and reports credentials by kind and location only (never their value). Trust boundary: the files on disk.
@@ -194,6 +211,18 @@ flowchart LR
   cluster and fetches nothing. What the policies do is decided by the person who applies them; enforce mode refuses
   requests, so the default is audit. The CEL reads only the admitted object and the requester's name, never other
   objects, and exempts platform namespaces and operators so a cluster upgrade is never blocked by a generated policy.
+- `examples copy` (CLI only; `kube_noob.examples`) writes the example files bundled in the package, and nothing
+  else, into the directory the user names. Every target is checked before any is written: a file already there byte
+  for byte is left alone, one that differs is refused unless `--force`, and a symbolic link (the directory itself,
+  a dangling parent, or a target) or anything that is not a regular file is refused even then; a directory name with
+  a control or invisible character is refused. The directory is opened once (`O_DIRECTORY`, `O_NOFOLLOW`) and every
+  check, write and rename is relative to that descriptor, so a directory swapped for a link after the check is not
+  followed. Files are written under unpredictable temporary names (`O_EXCL`, `O_NOFOLLOW`, umask permissions) and
+  moved into place only when all were written (a hard link, so a name that appeared meanwhile is not replaced, or a
+  checked rename where the file system has no hard links; `os.replace` under `--force`); a failure part way, Ctrl-C
+  included, removes what the run wrote (exit 4, or 130 for Ctrl-C).
+  `demo <name> --keep DIR` writes through the same code. Trust boundary: the user's own directory; the content is
+  the package's.
 - `policy migrate-check` (CLI and the read-only `policy_migrate_check` tool; `kube_noob.kyverno_migrate`) reads legacy
   Kyverno policies as bounded YAML (the `yamlio` caps, Secret documents skipped unread) and rewrites, applies and
   fetches nothing. Its verdicts come from mapping tables pinned to kyverno/website and kyverno/kyverno commits; a draft

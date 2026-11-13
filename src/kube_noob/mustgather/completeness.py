@@ -178,9 +178,21 @@ def _release_notes_leg(report: dict[str, Any]) -> dict[str, str]:
     if verdict == "not-applicable":
         return _leg("release notes", "not-applicable", note or "not OpenShift")
     if verdict == "looked-up":
+        # The index's own statement about this exact version (G277, `knownIssuesCoverage`): matching ran, and the
+        # index cannot answer for a nightly, a pre-release or a z-stream past its notes, so the leg is partial.
+        cov = report.get("knownIssuesCoverage") or {}
+        if cov and cov.get("status") != "determined":
+            return _leg("release notes", "partial", str(cov.get("why") or "not determined for this version"))
         if "was not" in note:
             return _leg("release notes", "partial", note)
-        return _leg("release notes", "complete", note or "the release notes were searched")
+        version = (report.get("cluster") or {}).get("version")
+        if not version:
+            return _leg(
+                "release notes",
+                "partial",
+                "the cluster's OpenShift version is not known, so matches were not narrowed to a release",
+            )
+        return _leg("release notes", "complete", f"findings were matched against the release notes for {version}")
     return _leg("release notes", "partial", f"{verdict}: {note}" if note else str(verdict))
 
 

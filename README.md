@@ -13,14 +13,20 @@
 
 **No AI inside. Works with yours.** kube-noob is a Kubernetes, OpenShift, ROSA HCP, Helm and RHACS/StackRox expert
 in a box: audit rules, read-only-first playbooks, cited docs and graded exercises. Claude, OpenShift Lightspeed or any
-MCP client calls it as tools; the CLI runs it with no AI at all. No network calls unless enabled.
-Browse the rules, the demos and the recordings at **[kube-noob.com](https://kube-noob.com)**.
+MCP client calls it as tools; the CLI runs it with no AI at all.
 
-Two questions it answers that other tools do not, offline, from files you already have:
+Two questions other tools leave unanswered, offline, from files you already have:
 
 ```bash
+kube-noob examples copy examples
 kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f examples/netpol-admin-tiers.yaml
 kube-noob policy explain -f examples/denial-multi.txt
+```
+
+Before `examples copy` (from 0.9.3), download the two files:
+
+```bash
+curl --create-dirs -fsSL -o examples/netpol-admin-tiers.yaml https://raw.githubusercontent.com/kube-noob/kube-noob/main/examples/netpol-admin-tiers.yaml -o examples/denial-multi.txt https://raw.githubusercontent.com/kube-noob/kube-noob/main/examples/denial-multi.txt
 ```
 
 **Which policy governs this traffic?** `AdminNetworkPolicy` → `NetworkPolicy` → `BaselineAdminNetworkPolicy`, in
@@ -32,8 +38,7 @@ smallest fix. `reach` exits 1 when denied; both say what they could not determin
 Also: 93 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
 must-gathers triaged into a case draft that says what could not be read; OpenShift bugs with fix versions; hardened
 manifests and admission policies; 5 tracks, 16 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
-exception list, and a design request runs the 7-step protocol (Clarify, Validate, Research, Audit, Calibrate,
-Generate, Red Team). Answers cite local knowledge as `[kn:<doc>#<n>]`. All of it: [use-cases.md](docs/use-cases.md).
+exception list, and a design request runs the 7-step protocol. All of it: [use-cases.md](docs/use-cases.md).
 
 ## Who does the thinking
 

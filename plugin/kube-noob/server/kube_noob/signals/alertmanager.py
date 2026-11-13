@@ -35,9 +35,6 @@ VERSION_LABELS = ("openshift_version", "version")
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]{0,127}\Z")
 _OCP_RELEASE = re.compile(r"^4\.[0-9]{1,2}(\.[0-9]{1,3})?\Z")
-#: Control characters and lone UTF-16 surrogates. A surrogate decodes from a JSON escape (`"\ud800"`) but cannot be
-#: encoded, so one in any label made every later step that encodes the text fail -- and the whole group with it.
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\ud800-\udfff]")
 #: Names a suggested command may use: a namespace is a DNS-1123 label, a pod, service or claim a DNS-1123 subdomain.
 _NAMESPACE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z")
 _OBJECT = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?\Z")
@@ -86,7 +83,7 @@ def _clean(value: Any, transform: Callable[[str], str] | None = None) -> str:
     characters. ``transform`` (a redactor) runs before the clip, so a value is never cut through a credential and
     then redacted, which left a private key without its END line looking like no key at all."""
     text = value if isinstance(value, str) else ""
-    text = _CONTROL.sub(" ", text[: MAX_TRANSFORMED if transform else MAX_VALUE * 2])
+    text = sanitize.visible(text[: MAX_TRANSFORMED if transform else MAX_VALUE * 2])
     if transform is not None:
         text = transform(text)
     return " ".join(text.split())[:MAX_VALUE]

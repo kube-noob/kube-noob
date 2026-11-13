@@ -317,10 +317,13 @@ def test_a_release_outside_the_index_is_not_evaluated_in_the_report_and_partial_
     files = _settled(**{f"{IMAGE}/cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml": cv})
     rep = _report(ingest.open_bundle(_tar(tmp_path / "414.tgz", files)))
     assert rep["cluster"]["version"] == "4.14.8" and rep["cluster"]["desiredVersion"] == "4.14.9"
-    assert rep["knownIssuesVerdict"] == "not-evaluated" and "4.14" in rep["knownIssuesNote"]
+    # main's vocabulary (G277): matching ran (`looked-up`) and the index's statement for this version says it
+    # cannot answer; the leg reads the statement
+    assert rep["knownIssuesVerdict"] == "looked-up" and rep["knownIssuesCoverage"]["status"] == "not-determined"
     assert rep["knownIssues"] == []
     leg = _legs(rep)["release notes"]
     assert leg["state"] == "partial" and "4.14" in leg["why"] and "4.20, 4.21, 4.22" in leg["why"]
+    assert "NOT DETERMINED" in leg["why"]
     assert rep["completeness"]["complete"] is False
 
 
@@ -348,8 +351,8 @@ def test_the_leg_never_reads_looked_up_by_default(tmp_path: Path) -> None:
     cv = SETTLED_CV.replace("4.20.4", "4.23.0").replace("4.20.3", "4.23.0")
     files = _settled(**{f"{IMAGE}/cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml": cv})
     rep = _report(ingest.open_bundle(_tar(tmp_path / "423.tgz", files)))
-    expected = release_coverage("openshift", "4.23.0", None)
-    assert rep["knownIssuesVerdict"] == expected[0] == "not-evaluated"
+    assert release_coverage("openshift", "4.23.0", None)[0] == "not-evaluated"
+    assert rep["knownIssuesCoverage"]["status"] == "not-determined"
     assert _legs(rep)["release notes"]["state"] == "partial"
 
 

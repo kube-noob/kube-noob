@@ -38,7 +38,7 @@ def test_gate_on_openshift_without_a_version_says_known_issues_were_not_evaluate
     assert rep["knownIssuesVerdict"] == "not-evaluated"
     assert "--version" in rep["knownIssuesNote"]
     (line,) = _not_run_about_issues(rep)
-    assert "--version" in line and "not searched" in line
+    assert "--version" in line and "not looked up" in line
     # the pipeline-facing contract is unchanged: a not-evaluated check is a caveat, not a failure
     assert rep["passed"] and rep["failures"] == []
 
@@ -92,18 +92,26 @@ def test_every_openshift_family_platform_looks_the_release_up(platform: str) -> 
     assert gate.run([CM], platform=platform, version=None)["knownIssuesVerdict"] == "not-evaluated"
 
 
-@pytest.mark.parametrize(
-    "version", ["4.20.0.1", "4.20.3", "4.22", "v4.20", "04.20", "4.20 ", "4.20-rc.1", "4.20.0-0.nightly-2025-10-01-1"]
-)
-def test_a_patch_or_build_suffix_still_resolves_to_its_minor(version: str) -> None:
-    """The minor comes from `catalog.parse_minor`, the parser the audit and the admission policies use, so a version
-    the audit resolves to 4.20 is 4.20 here too (a second parser read `v4.20` as outside the index; round 1, 9)."""
+@pytest.mark.parametrize("version", ["4.20.3", "4.20", "4.22"])
+def test_a_release_or_a_z_stream_inside_the_index_resolves_to_its_minor(version: str) -> None:
     rep = gate.run([CM], platform="openshift", version=version)
-    assert rep["knownIssuesVerdict"] == "looked-up"
-    assert (
-        "OpenShift 4.20 was searched" in rep["knownIssuesNote"]
-        or "OpenShift 4.22 was searched" in rep["knownIssuesNote"]
-    )
+    assert rep["knownIssuesVerdict"] == "looked-up" and rep["knownIssuesCoverage"]["status"] == "determined"
+    assert "was searched" in rep["knownIssuesNote"]
+
+
+@pytest.mark.parametrize(
+    "version", ["v4.20", "04.20", "4.20 ", "4.20.0.1", "4.20-rc.1", "4.20.0-0.nightly-2025-10-01-1"]
+)
+def test_a_value_the_version_grammar_refuses_or_a_pre_release_is_not_evaluated(version: str) -> None:
+    """One version grammar for every surface (`kube_noob.versions`, G277): a leading `v`, a leading zero, white
+    space and a fourth number are not versions, and a pre-release or nightly is one the release notes do not
+    describe. The verdict follows the index's own coverage statement, so the word and the statement cannot disagree:
+    never `looked-up`, and the reason is the coverage's."""
+    rep = gate.run([CM], platform="openshift", version=version)
+    assert rep["knownIssuesVerdict"] == "not-evaluated"
+    assert rep["knownIssuesCoverage"]["status"] != "determined"
+    assert rep["knownIssuesNote"] == rep["knownIssuesCoverage"]["why"]
+    assert _not_run_about_issues(rep) == [f"reported issues: {rep['knownIssuesNote']}"]
 
 
 def test_a_containerfile_only_gate_has_no_manifests_to_look_up() -> None:
@@ -119,14 +127,14 @@ def test_the_gate_and_the_must_gather_report_share_one_coverage_verdict() -> Non
     from kube_noob.known_issues import release_coverage
 
     assert release_coverage("openshift", "4.14", None)[0] == "not-evaluated"
-    assert release_coverage("openshift", "v4.20", None)[0] == "looked-up"
+    assert release_coverage("openshift", "4.20.3", None)[0] == "looked-up"
     assert release_coverage("kubernetes", "1.33", None)[0] == "not-applicable"
     assert release_coverage("openshift", None, None)[0] == "not-evaluated"
 
 
 def test_a_looked_up_result_is_byte_for_byte_what_it_was() -> None:
     rep = gate.run([CM], platform="openshift", version="4.20")
-    assert rep["knownIssues"] == gate._known({"ConfigMap"}, "openshift", "4.20", None)[0]
+    assert rep["knownIssues"] == gate._known({"ConfigMap"}, "openshift", "4.20", None)
     assert len(rep["knownIssues"]) <= 20 and all("ConfigMap" in k["kinds"] for k in rep["knownIssues"])
 
 

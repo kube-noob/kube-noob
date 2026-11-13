@@ -1,7 +1,19 @@
 # Use cases
 
 Pick your role, run the demo, then try it on your own files. Every demo runs offline in under a second and never
-touches your cluster or your saved progress: `kube-noob demo --list`.
+touches your cluster or your saved progress: `kube-noob demo --list`. `kube-noob demo <name> --keep DIR` leaves what
+the demo wrote (its sample input, the bundled examples, any report) in DIR, so the commands it prints run again there.
+
+The commands on this page that name `examples/...` use files that ship inside kube-noob. After a brew, uv or pip
+install, write them where a command line can name them first:
+
+```bash
+kube-noob examples copy examples
+kube-noob examples list
+```
+
+Running the copy again leaves identical files alone; a file you changed is refused unless you pass `--force`. On
+releases without `examples copy` (from 0.9.3), the README shows a one-line `curl` of the two files it uses.
 
 ## No AI inside: three ways to use it
 
@@ -169,6 +181,9 @@ a command in a block of working commands reads as a capability.
    the signals it found (alert names, event and container reasons), the likely cause, then read-only steps (get,
    describe, logs, events).
 2. Commands that run inside a container are listed next, and changes come last. Both are marked as needing approval.
+3. The default is a text view; `--format json` or `--format yaml` gives every field (the rest of the proposed changes,
+   the other playbooks' steps), unchanged from earlier releases. The text view still carries every caveat: what was
+   not determined, notes, memory that could not be read, and which steps need approval.
 
 ```bash
 kube-noob demo diagnose
@@ -257,7 +272,18 @@ kube-noob search 'CVE-2023-44487 openshift haproxy router'
 `known-issues` matches an error or symptom against the issues Red Hat lists in the OpenShift 4.20, 4.21 and 4.22 release
 notes: known issues, and the issues each update fixed. You get the issue link, whether a fix exists and in which
 version, the workaround, and the release-notes file it came from. Pass your version and issues already fixed there are
-left out. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
+left out. A version outside the index (4.16, or a release newer than the snapshot) is answered `versionCoverage:
+not-determined` with the reason, in the text view too: no match there is not "no known issue". So is a
+pre-release or nightly build, an OKD build (the index is OpenShift Container Platform release notes, which do not say
+which OKD build has a fix), and a z-stream newer than the newest one the notes reach (`indexedThrough`). Matches are
+still narrowed by the version's minor and z-stream, and a fix in another release is stated without update advice.
+Every command and tool that takes the cluster's version reads it the same way (`--version` and `operators issues
+--openshift-version` share one grammar): `4.21`, `4.21.3`, `4.21.0-rc.1`, a nightly, an OKD build or a release-image
+tag (`4.21.3-x86_64`, the release 4.21.3), exactly as typed; anything else -- a word, a leading `v`, white space
+around the value -- is refused with one sentence (exit 2). A paste longer than 100,000 characters is matched on its end, as `diagnose`
+reads it, and the result says what was not read (`inputTruncated`). `diagnose`,
+`insight`, `build diagnose`, the incident watch, the must-gather report and the gate carry the same statement as
+`knownIssuesCoverage`. `diagnose` runs the same check, and on a live cluster `debug` and `bundle` read the version themselves.
 A match needs several rare words in common, so everyday errors such as OOMKilled never pull in an unrelated bug;
 an error copied word for word from an issue (seven words in a row, one of them rare) is a match on its own.
 
@@ -600,8 +626,16 @@ reverse, but an answer that holds under both still holds. A Calico version too c
 which does not say whether the cluster is on 3.31 or 3.32) is treated the same way. With `--live` the flag is
 usually unnecessary: Calico publishes its version in `clusterinformations.crd.projectcalico.org` and kube-noob
 reads it, so the answer uses the cluster's real CNI rather than an assumption. A cluster without that CRD is not
-running Calico and behaves as before; a read the token is not allowed to make says so and changes nothing; and an
-explicit `--cni` always wins, because a caller who passes it knows something a forbidden read cannot see.
+running Calico -- recognised only when the API says it does not serve the resource, not from any error that happens
+to say "not found" -- and kube-noob then reads it as Cilium when `ciliumclusterwidenetworkpolicies.cilium.io` is
+served and as OVN-Kubernetes when `egressfirewalls.k8s.ovn.org` is; otherwise the CNI was not identified and an
+answer the admin tier decides is `undetermined`, saying so. A read that failed (forbidden, an expired login, an auth plugin
+missing from PATH) says so and is treated like a CNI nobody documents: the admin tiers are evaluated both ways and
+the verdict is `undetermined` only where the two readings disagree (G279). An explicit `--cni` always wins, because
+a caller who passes it knows something a forbidden read cannot see. Offline (`-f`) without `--cni`, the admin
+tiers are evaluated with OVN-Kubernetes semantics, as they always were, and every such answer now says so in the
+text and in the JSON `notes`: "admin-tier policies evaluated with OVN-Kubernetes semantics; pass --cni <name> for
+your CNI".
 
 `kube-noob audit --cni calico:3.32` turns the same fact into a finding a CI gate fails on: **KN-N014** reports an
 `AdminNetworkPolicy` or `BaselineAdminNetworkPolicy` that this CNI no longer enforces, at HIGH, because a policy
@@ -714,8 +748,11 @@ kube-noob insight -f ceph-health-detail.txt --platform openshift
 
 ## Platform admin: run it inside the cluster, locked down
 
+`kube-noob demo doctor` shows what kube-noob itself can reach and how the lock narrows it (`demo posture` is its old
+name and still works; `kube-noob posture` is the attack-path scan).
+
 ```bash
-kube-noob demo posture
+kube-noob demo doctor
 helm install kube-noob deploy/helm/kube-noob --set auth.existingSecret=kube-noob-token --set config.offline=true
 kube-noob doctor
 ```
@@ -861,7 +898,7 @@ schema in this project's own CI.
 
 With the images' scanner output (`--scanner-report`, plus `--vex` and `--kev`), the gate also lists their
 vulnerabilities after Red Hat VEX, ranked against the manifests; a fixable or known-exploited one at `--fail-on`
-fails it, an unfixable one is reported without blocking.
+fails it, an unfixable one is reported without blocking. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own as `Deployment/shop/web#1`, `#2`, with its own images, rights and token, counted once each, and the output's `ambiguous` list names each copy's ServiceAccount and the fields the copies differ in. `-n` places objects without a namespace as `kubectl apply -n` does (`vuln report -n`, `code report -n`, `gate -n`, and `namespace` on the MCP tools); without it an object with no namespace that bears on a workload is listed in `ambiguous` too.
 
 ```bash
 trivy image -f json --list-all-pkgs -o trivy.json quay.io/acme/shop:1.4
@@ -1024,16 +1061,32 @@ offline lock only an in-cluster Central (`*.svc`).
 
 ### Which exposure leads where? Attack paths
 
-`posture scan` follows what is exposed (a Route, an Ingress, a LoadBalancer, NodePort or externalIPs Service) to the
+`posture scan` follows what is exposed (a Route, an Ingress, a Gateway API HTTPRoute attached to a Gateway, an Istio
+VirtualService bound to a gateway other than `mesh`, a LoadBalancer, NodePort or externalIPs Service) to the
 pods it reaches and what an attacker running code in them could do: take the node (a privileged container, a
-hostPath volume, the host's PID or network namespace, near-root capabilities) or use the pod's ServiceAccount token
-(read Secrets, exec into pods, create workloads that run as any ServiceAccount of the namespace, escalate, bind or
-impersonate, the kubelet API, or on OpenShift a privileged SCC plus the right to create pods). Each path scores
-exposure (internet 3, node network or a restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide
-above one namespace), lists every step with the field that proves it, and ends with a fix. A pod with
-`automountServiceAccountToken: false` has no token step; unexposed pods are not paths. It reads RBAC objects, never
-Secrets (Secret objects in a bundle are dropped unread). `--fail-above` makes it a CI gate. NetworkPolicies on the
-entry edge are not applied: check a path with `policy reach`.
+hostPath volume, the host's PID or network namespace, a capability the audit calls dangerous, an unmasked `/proc`, a
+Windows HostProcess pod) or use the pod's ServiceAccount token, automounted, projected by a volume or mounted from a
+legacy token Secret (read Secrets, exec or attach, add ephemeral containers, create workloads that run as any
+ServiceAccount of the namespace, mint ServiceAccount tokens -- a TokenRequest for another account, or a token
+Secret the account can read back or mount -- escalate, bind or impersonate, the kubelet API, create PersistentVolumes, control admission
+webhooks, issue client certificates, or on OpenShift a privileged SCC plus the right to create pods -- the escalation
+rights the Kubernetes RBAC good-practices page names). Each path scores exposure (internet 3, node network or a
+restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide above one namespace), lists every step
+with the field that proves it, and ends with a fix. A pod with no token, automounted or projected, has no token
+step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret objects in a bundle are dropped
+unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate. NetworkPolicies
+on the entry edge are not applied: check a path with `policy reach`. RBAC resources match as the API server
+matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what the scan could not account for:
+a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway
+API routes), a Route or Ingress whose Service is not in the input, an RBAC object that is not the shape the API
+requires, and a name carried by two different objects (two Services of one name: each candidate's selector is
+followed and the path says which; two Roles of one name: neither is read), and an exposure field that is not
+the shape the API requires (a VirtualService `gateways` string, an HTTPRoute `backendRefs` map, a Service
+`selector` string). Read live, any list the cluster did not answer is in `notRead` -- a 404 included, because
+an Istio older than 1.22 or a Gateway API older than v1.0 answers 404 for the version kube-noob reads, and
+kube-noob does not read API discovery to tell them from a cluster without them. OpenShift's legacy
+`authorization.openshift.io` Roles and bindings are read as the RBAC objects they proxy. A VirtualService
+delegate takes its parent's gateways, and a mirror counts as a route.
 
 A workload whose pod spec is embedded in a CRD is scored per component, named `Kind/namespace/name[component]`: a
 Ray head and each worker group separately, a KServe predictor, transformer and explainer separately. Where the
@@ -1045,6 +1098,69 @@ that input, which is not the same as it being unexposed.
 kube-noob posture scan -f k8s/
 kube-noob posture scan -f k8s/ --fail-above 17
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
+```
+
+### What can this pod reach if it is compromised? Blast radius
+
+`posture scan` starts at what is exposed. `posture reach` starts at the other end: the one workload a scanner just
+flagged or an incident is about, exposed or not. Name it as `Kind/name` with `-n`, or as `Kind/namespace/name` the way
+the scan prints it. The object named is the object answered, from its own spec -- a Pod, because it is what runs;
+an old ReplicaSet or a Job a CronJob made, because it can differ from its owner's template -- with its owner chain
+and anything about it that differs from the top owner (another ServiceAccount, a node escape, the images that
+differ, the labels Services select on); a Pod name that is not in the files gets an error naming the owner to ask
+for instead of a guess, and two different objects with the anchor's name are an error rather than a pick (an
+ambiguous owner is said, and the comparison is not made). The answer is five legs -- exposure, token, RBAC, Secrets, node --
+each `reached`, `none` or `not determined`: the ServiceAccount whose token the pods hold, each binding that names it
+(directly or through `system:serviceaccounts`, `system:serviceaccounts:<namespace>` or `system:authenticated`), what
+each binding allows, the Secrets it may read by RBAC or reach by creating a pod (by name, or every Secret of a
+namespace or of the cluster; contents are never read), the node when the pod spec can escape to it, and which
+namespaces or the whole cluster that covers. Every step names the object and field that prove it, and the paths
+`posture scan` ranks through the workload come along.
+
+What the input does not show is reported, not skipped: a ServiceAccount, Role or aggregated ClusterRole that is not
+in the files, a stand-in for `admin`, `edit` or `view`, a field that is not the shape the API requires, an RBAC
+object it could not read, a bound resource and verb kube-noob does not classify (each rule is read pair by pair, so
+a rule that reads Secrets and patches nodes is both), a projected token for another audience, a token Secret
+mounted at the token path that is not in the files, a routing object it does not read or a Route or Ingress whose
+Service is not in the files, a refused SecurityContextConstraints list for an account that can create pods, or a
+live list the account may not read -- each becomes a `not determined` leg with the reason. A short, named list of
+rights is known to grant nothing ranked: self and access reviews (`selfsubjectaccessreviews`,
+`selfsubjectrulesreviews`, `selfsubjectreviews`, and `subjectaccessreviews`, `localsubjectaccessreviews` and
+`tokenreviews` create, which tell the caller about authorization and identity and grant nothing to act with),
+leases (leader election), events, `<resource>/status` writes except `certificatesigningrequests/status`, role and
+binding writes without `bind` or `escalate`, impersonating only `userextras/*` (OpenShift binds every authenticated
+user to the scope one), and a TokenRequest for the account's own name. Anything else stays not determined. Read
+live, a list the cluster did not answer leaves its leg not determined, 404 or refusal alike, so on a plain
+Kubernetes cluster a workload no Service reaches has its exposure not determined (no Routes, HTTPRoutes or
+VirtualServices could be listed); measured on the sets below read live from such a cluster, 18 of 25 legs are
+determined, against 22 when a 404 counted as an answer. Read with `--read-namespace`, an HTTPRoute or
+VirtualService in a namespace not read can route in, so exposure is not determined unless something read
+reaches the pod. With automount off, a Secret the pod reads by volume, projection or environment that may be
+a token (a token Secret, one the files do not carry, or any Secret read live) leaves the token leg not
+determined. hostPort and hostNetwork put the pod on the node's network, and the exposure leg and the summary say
+so. Two different workloads of one name are both kept, each placed on its own. An object without a namespace is
+placed where `-n` says, as `kubectl apply -n` does; without `-n` its namespace is not known, so its token and
+RBAC legs are not determined (a ServiceAccount subject in any namespace may be its account) and the scan names
+it in `notRead`. GRPCRoutes are read like HTTPRoutes, and an HTTPRoute's `requestMirror` backend is a route; a
+backend that is not a Service (an InferencePool), a Service without a selector and an ExternalName aliasing an
+in-cluster Service are not determined. Read live, exposure is never `none`: TLSRoutes, TCPRoutes, UDPRoutes and
+other routers are not listed. Measured on an app
+with a leader-election Role, an operator with a typical ClusterRole and `system:auth-delegator`, and the bootstrap
+bindings every cluster carries (`--whole-bundle`): 8 of 10 legs are determined, against 6 of 10 before the named
+list; the two still open are the operator's writes to its own custom resource, which kube-noob cannot rank. A set of files cannot show the bindings, Services, Routes or
+Ingresses it leaves out, so for files `none` is only said of what the pod spec decides and the answer is never
+complete unless `--whole-bundle` asserts the files are everything that applies to the workload; `--require-complete`
+exits 5 until then, and a name that matches nothing exits 2. `--format json` prints the graph (schema
+`kube-noob/blast-radius` v1: nodes, edges with their evidence, the not-determined legs, and what was withheld when it
+hit its node, edge or byte cap -- every list is bounded, the open legs first, and a document never exceeds its
+byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
+request or a wiki page, with the undetermined legs dashed and the limitations as notes.
+
+```bash
+kube-noob posture reach deployment/web -n shop -f k8s/
+kube-noob --format mermaid posture reach Deployment/shop/web -f k8s/ > web-reach.mmd
+kube-noob --format json posture reach pod/web-5d8f-x7k2q -n shop -f k8s/ --whole-bundle --require-complete
+kube-noob --cluster-enabled posture reach deployment/web -n shop --live
 ```
 
 ### AI and GPU workloads: the pods an operator runs for you
@@ -1103,7 +1219,7 @@ then removes what Red Hat says does not affect the image's product (or is alread
 and each removed finding cites the statement, its justification and the VEX document. SBOMs carry packages, not
 findings: their RPMs are matched against the same VEX statements. With the CISA KEV catalog (CC0) and the manifests
 that run the images, findings are ranked by base score x exposure (internet 3, node network 2, internal 1) x
-privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path.
+privileges (1 + the workload's blast radius / 10) x known exploitation (2 when listed), each with its attack path. A name carried by two different objects (two Deployments `shop/web` in the files) is not resolved to one: each copy is placed on its own as `Deployment/shop/web#1`, `#2`, with its own images, rights and token, counted once each, and the output's `ambiguous` list names each copy's ServiceAccount and the fields the copies differ in. `-n` places objects without a namespace as `kubectl apply -n` does (`vuln report -n`, `code report -n`, `gate -n`, and `namespace` on the MCP tools); without it an object with no namespace that bears on a workload is listed in `ambiguous` too. `code assess` places its findings the same way.
 
 ```bash
 kube-noob corpus advisories --online --since 2026-10-01
@@ -1173,7 +1289,9 @@ pod to the API through its token, the namespace network), data stores (StatefulS
 images) and identities (the mounted ServiceAccounts and their RBAC). Each threat has a status (open with the failing
 rules as evidence, mitigated, or not assessed), the kube-noob rules, generated admission policies and RHACS policies
 that mitigate it, and MITRE ATT&CK for Containers technique ids. With `-r`, public-facing exploits are assessed from
-the images' scanner reports.
+the images' scanner reports. `ambiguous` lists every name two different objects carry (each copy is modelled,
+and the application's identities are every copy's) and every object without a namespace; `-n` places those in
+a namespace as `kubectl apply -n` does.
 
 ```bash
 kube-noob vuln threat -f k8s/ --platform openshift --version 4.20

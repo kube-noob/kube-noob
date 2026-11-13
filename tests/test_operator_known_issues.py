@@ -1315,11 +1315,7 @@ def test_an_openshift_must_gather_report_still_looks_known_issues_up(tmp_path: P
         bundle = ingest.open_bundle(_okd_must_gather(tmp_path / version, version))
         rep = mg_report.build(bundle, analyse.analyse(bundle), data_dir=tmp_path / "data")
         assert rep["platform"] == platform and rep["knownIssuesVerdict"] == verdict, version
-        # the note now names the release the coverage verdict searched (G285 round 1, 2); it is never None on
-        # looked-up, so the completeness leg has the sentence to carry
-        assert "was searched" in rep[
-            "knownIssuesNote"
-        ] and f"OpenShift Container Platform {version}" in mg_report.markdown(rep)
+        assert rep["knownIssuesNote"] is None and f"OpenShift Container Platform {version}" in mg_report.markdown(rep)
     bare = mgdir(tmp_path / "k", {G % ("p", "clusterserviceversions.yaml"): y(csv("x.v1", "p"))})
     b = ingest.open_bundle(bare)
     k8s = mg_report.build(b, analyse.analyse(b), data_dir=tmp_path / "data")

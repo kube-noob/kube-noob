@@ -6,6 +6,7 @@ Exit codes: 0 ok | 1 findings at/above --fail-on | 2 usage/config error | 3 clar
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -20,8 +21,21 @@ import yaml
 from kube_noob import __version__, completion, sanitize
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
+
+
+_DNS_LABEL = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
+
+
+def _dns_label(value: str | None) -> str | None:
+    """A namespace given with -n, checked as Kubernetes checks one (an RFC 1123 label); exit 2 otherwise."""
+    if value is None:
+        return None
+    if not _DNS_LABEL.fullmatch(value):
+        raise ConfigError(f"-n {value[:80]!r} is not a namespace name (lower-case letters, digits and '-', 1-63)")
+    return value
 
 
 def _read(path: str) -> str:
@@ -197,20 +211,84 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+def _raw_stdout() -> Any:
+    """The stream under the text boundary: a document goes here, byte for byte, so `cmd > f` equals `cmd -o f`."""
+    return getattr(sys.stdout, "_inner", sys.stdout)
+
+
+def _write_document(text: str) -> None:
+    """A whole document to stdout, past the text boundary, in 64 KiB pieces and then flushed HERE, inside the
+    command: a reader that went away mid-document (`| head -c 10`) raises BrokenPipeError where `_main` turns it
+    into exit 141. Written in one piece, the rest of it waited in the buffer for the final flush, the error was
+    lost there, and a truncated document exited 0 or 1 (G279, fourth review)."""
+    out = _raw_stdout()
+    for i in range(0, len(text), 65536):
+        out.write(text[i : i + 65536])
+    out.flush()
+
+
+def _workflow_command(line: str) -> None:
+    """A GitHub workflow command kube-noob builds on purpose (``gate --github-annotations``): the one kind of line
+    the output boundary lets through as a command (G279)."""
+    out = sys.stdout
+    if isinstance(out, _VisibleStream):
+        out.workflow_command(line)
+    else:  # called outside main(): no boundary to pass
+        print(line)
+
+
 def _emit(obj: Any, fmt: str) -> None:
+    """A document (JSON or YAML), written past the text sanitiser: JSON escapes every non-ASCII character
+    (``ensure_ascii``), and the YAML dumper escapes any string holding a character that would not print, so both
+    are terminal-safe and load back to exactly the data (G279)."""
+    from kube_noob.yamlio import dump_yaml
+
     if fmt == "json":
-        print(json.dumps(obj, indent=2, default=str))
+        _write_document(json_document(obj, indent=2, default=str) + "\n")
     else:
-        print(yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True), end="")
+        _write_document(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
 
 
+def _known_issue_line(m: dict[str, Any], width: int = 300) -> str:
+    """One reported issue on one line: the status whole (it carries the version advice and its caveats), the summary
+    cut to what is left of ``width``."""
+    head = f"known issue {m.get('id')} ({m.get('status') or ''})"
+    summary = str(m.get("summary") or "")
+    room = width - len(head) - 2
+    if not summary or room < 8:
+        return head
+    return f"{head}: {summary if len(summary) <= room else summary[: room - 3].rstrip() + '...'}"
+
+
+def _input_cut(total: int, kept: int) -> dict[str, Any] | None:
+    """What a command says when it read only the end of its input: "No playbook matched" for a 1 MB paste was
+    an answer about its last 400,000 characters, and nothing said so (G277)."""
+    if total <= kept:
+        return None
+    return {
+        "characters": total,
+        "read": kept,
+        "why": f"the input is {total:,} characters and only the last {kept:,} were read (failures are usually at "
+        "the end), so nothing before them was diagnosed; pass the part that matters",
+    }
+
+
 def _print_insight(res: dict[str, Any]) -> None:
     _tprint("input: " + "; ".join(f"{k['kind']} ({k['evidence']})" for k in res["kinds"]))
+    if res.get("inputTruncated"):
+        _tprint(f"input cut: {res['inputTruncated']['why']}")
     if res.get("ran"):
         _tprint("ran: " + ", ".join(res["ran"]))
+    from kube_noob.known_issues import coverage_line
+
+    if res.get("versionConflict"):
+        _tprint(f"version conflict: {res['versionConflict']}")
+    listed = any(f.get("source") == "reported-issue" for f in res["findings"])
+    if line := coverage_line(res.get("knownIssuesCoverage"), listed):
+        _tprint(line)
     for f in res["findings"]:
         extra = f.get("verdict") or f.get("severity") or f.get("confidence") or f.get("cite") or ""
         source = "related doc" if f.get("related") else f["source"]
@@ -234,6 +312,22 @@ def _print_insight(res: dict[str, Any]) -> None:
             _tprint(f"  {st.get('command') or st.get('step') or st}")
     for sk in res.get("skipped", []):
         _tprint(f"not analysed ({sk['kind']}): {sk['why']}")
+    if [k["kind"] for k in res["kinds"]] == ["unknown"]:
+        _print_insight_hint()
+
+
+def _print_insight_hint() -> None:
+    """What insight reads, from the router's own table, and one bundled input that works: guessing at text that
+    matched nothing would be a made-up answer, so this says what to paste instead (G277)."""
+    from kube_noob.insight import KIND_DESCRIPTIONS, KINDS, UNRECOGNISED_EXAMPLE
+
+    _tprint()
+    _tprint("kube-noob recognises:")
+    for kind in KINDS:
+        _tprint(f"  {kind:15} {KIND_DESCRIPTIONS[kind]}")
+    _tprint("Try it on a bundled sample:")
+    _tprint("  kube-noob examples copy examples")
+    _tprint(f"  kube-noob insight -f examples/{UNRECOGNISED_EXAMPLE}")
 
 
 def _print_ticket_changes(res: dict[str, Any], opened: dict[str, Any]) -> None:
@@ -275,7 +369,17 @@ def _write_html(path: str | None, report: dict[str, Any]) -> None:
         return
     from kube_noob import report_html
 
-    Path(path).write_text(report_html.render(report), encoding="utf-8", errors="replace")
+    Path(path).write_text(_html_without_commands(report_html.render(report)), encoding="utf-8", errors="replace")
+
+
+#: In HTML, "##[" as "##&#91;" and a line-leading "::" as "&#58;:" render the same and are no workflow command
+#: in a log that prints the file (G279). Entities do not decode inside <style>, which holds only kube-noob's CSS.
+_HTML_COMMAND = re.compile(r"(##[A-Za-z]*)\[|^([^\S\n]*):(?=:)", re.MULTILINE)
+
+
+def _html_without_commands(text: str) -> str:
+    """``##[``, ``##vso[``, ``##teamcity[`` as ``...&#91;`` and a line-leading ``::`` as ``&#58;:``."""
+    return _HTML_COMMAND.sub(lambda m: f"{m.group(1)}&#91;" if m.group(1) else f"{m.group(2)}&#58;", text)
 
 
 def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
@@ -360,6 +464,13 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
 
 
 def _print_known_issues(out: dict[str, Any]) -> None:
+    from kube_noob.known_issues import coverage_line
+
+    if out.get("inputTruncated"):
+        _tprint(f"input cut: {out['inputTruncated']['why']}")
+
+    if line := coverage_line(out.get("versionCoverage"), listed=bool(out["matches"])):
+        _tprint(line)
     for m in out["matches"]:
         _tprint(f"{m['id']}  {m['status']}")
         _tprint(f"  {m['summary']}")
@@ -513,6 +624,29 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
+# Commands whose --version is the cluster's OpenShift version: read by kube_noob.versions here, once, so a value is
+# taken or refused the same way on every one of them and by every tool (G277).
+_OCP_VERSION_COMMANDS = frozenset({"known-issues", "diagnose", "insight", "ticket", "gate"})
+
+
+def _takes_ocp_version(a: argparse.Namespace) -> bool:
+    return (
+        a.cmd in _OCP_VERSION_COMMANDS
+        or (a.cmd == "build" and getattr(a, "build_cmd", None) == "diagnose")
+        or (a.cmd == "memory" and getattr(a, "memory_cmd", None) == "match")
+    )
+
+
+def _version_flag(value: str, flag: str = "--version") -> str:
+    """The version as every reader takes it (``kube_noob.versions``), or exit 2 with the one sentence every command
+    and tool uses for a refused version (never a validation dump)."""
+    from kube_noob.versions import is_version, refusal
+
+    if not is_version(value):
+        raise ConfigError(refusal(flag))
+    return value
+
+
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
@@ -537,7 +671,11 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         code_builds.append(b)
     try:
         sources = gate.collect(a.file, _read) + gate.render(
-            a.chart, a.values, a.namespace, platform=a.platform or s.default_platform, version=a.pversion
+            a.chart,
+            a.values,
+            a.namespace or "default",
+            platform=a.platform or s.default_platform,
+            version=a.pversion,
         )
         report = gate.run(
             sources,
@@ -560,6 +698,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             cni=a.cni,
             require_evaluated=list(getattr(a, "require_evaluated", []) or []),
             partial_bundle=_gate_partial_input(a),
+            default_namespace=_dns_label(a.namespace),
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -569,7 +708,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         # Before the report, and on stdout: Actions reads workflow commands from the step's output, and a caller
         # parsing --format json filters the `::` lines (the test does exactly that).
         for line in gate.github_annotations(report):
-            print(line)
+            _workflow_command(line)
     quiet_pass = getattr(a, "quiet", False) and report["passed"]
     if getattr(a, "oscal", False):
         from kube_noob.oscal import assessment_results, check_import_ap
@@ -628,7 +767,13 @@ def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
             if out["errorTemplate"]:
                 _tprint(f"error template {out['errorTemplate']['id']}: {out['errorTemplate']['text'][:200]}")
             for m in out.get("knownIssues", []):
-                _tprint(f"reported issue {m.get('id')}: {m.get('title')}")
+                _tprint(f"reported issue {m.get('id')}: {m.get('title') or m.get('summary')}")
+                if m.get("status"):
+                    _tprint(f"  {m['status']}")
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(out.get("knownIssuesCoverage"), listed=bool(out.get("knownIssues"))):
+                _tprint(ki_line)
             for m in out.get("memory", []):
                 _tprint(f"team memory {m.get('citation') or m.get('id')}: {m.get('symptom')}")
             for f in out["fix"]:
@@ -783,12 +928,20 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             vulnerable = None
             if a.report:
                 index = vexmod.load(s.data_dir)
-                reach = workload_reach(PathInventory.from_documents(d.data for d in load_documents(text)))
+                reach = workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.threat_namespace)
+                    )
+                )
                 vulnerable = assess.summary_for_workloads(
                     assess.assess(parse_reports(a.report), vex=index, reach=reach)
                 )
             out = threat.model(
-                text, platform=a.platform or s.default_platform, version=a.pversion, vulnerable_images=vulnerable
+                text,
+                platform=a.platform or s.default_platform,
+                version=a.pversion,
+                vulnerable_images=vulnerable,
+                default_namespace=_dns_label(a.threat_namespace),
             )
             if a.format == "text":
                 _tprint(threat.render_markdown(out))
@@ -817,7 +970,13 @@ def _vuln_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         placed: dict[str, Any] | None = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            placed = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            placed = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         out = assess.assess(
             reports,
             vex=index,
@@ -906,7 +1065,13 @@ def _code_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         reach = None
         if a.manifests:
             text = "\n---\n".join(_read(m) for m in a.manifests)
-            reach = dict(workload_reach(PathInventory.from_documents(d.data for d in load_documents(text))))
+            reach = dict(
+                workload_reach(
+                    PathInventory.from_documents(
+                        (d.data for d in load_documents(text)), default_namespace=_dns_label(a.default_namespace)
+                    )
+                )
+            )
         scans = []
         for path in a.scanner_report:
             if Path(path).is_file() and Path(path).stat().st_size > vr.MAX_BYTES:
@@ -959,8 +1124,8 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out = admission.review_bytes(_read(a.file).encode("utf-8"), cfg)
         if a.format == "yaml":
             _emit(out, fmt)
-        else:  # the AdmissionReview the API server would receive
-            print(json.dumps(out, indent=1))
+        else:  # the AdmissionReview the API server would receive: a document, so past the text boundary (G279)
+            _write_document(json_document(out, indent=1) + "\n")
         return 0 if out["response"]["allowed"] else 1
     context = None
     if ad.lookups:
@@ -1058,10 +1223,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--format",
-        choices=["text", "json", "yaml", "sarif"],
+        choices=["text", "json", "yaml", "sarif", "mermaid"],
         default=argparse.SUPPRESS,
         help="output format. `sarif` (SARIF 2.1.0) is for `audit` only: it is a format for findings, and a command "
-        "with none to put in it refuses rather than print something else under that name",
+        "with none to put in it refuses rather than print something else under that name. `mermaid` is for "
+        "`posture reach` only, for the same reason: it draws a graph",
     )
     p = argparse.ArgumentParser(
         prog="kube-noob",
@@ -1160,7 +1326,13 @@ def build_parser() -> argparse.ArgumentParser:
     gt.add_argument("-f", "--file", action="append", default=[], help="manifests: a file, a directory, or -; repeat")
     gt.add_argument("--chart", action="append", default=[], help="a Helm chart directory to render; repeat")
     gt.add_argument("--values", action="append", default=[], help="values file for --chart; repeat")
-    gt.add_argument("--namespace", default="default", help="namespace to render charts into")
+    gt.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="namespace to render charts into (default: default), and where manifests without one are placed for "
+        "--scanner-report ranking, as kubectl apply -n does",
+    )
     gt.add_argument(
         "--containerfile",
         action="append",
@@ -1395,6 +1567,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="YAML that runs the images (a file or a directory); ranks findings by exposure and privileges; repeat",
     )
+    vr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
+    )
     vr.add_argument("--image", default=None, help="treat every report as this image (registry/repo:tag or digest)")
     vr.add_argument("--top", type=int, default=20, help="ranked findings to show (1-200)")
     vr.add_argument(
@@ -1414,6 +1592,12 @@ def build_parser() -> argparse.ArgumentParser:
     vt.add_argument("--platform", choices=PLATFORMS)
     vt.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
     vt.add_argument("-r", "--report", action="append", default=[], help="a scanner report of an image; repeat")
+    vt.add_argument(
+        "-n",
+        "--namespace",
+        dest="threat_namespace",
+        help="the namespace objects without one are placed in, as kubectl apply -n does",
+    )
     cd = sub.add_parser(
         "code",
         help="Code findings from SAST tools (SARIF), the images that ship them, the pods that run them",
@@ -1452,6 +1636,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cr.add_argument(
         "-m", "--manifests", action="append", default=[], help="YAML that runs the images (file or directory); repeat"
+    )
+    cr.add_argument(
+        "-n",
+        "--namespace",
+        dest="default_namespace",
+        help="the namespace objects in -m without one are placed in, as kubectl apply -n does",
     )
     cr.add_argument(
         "-r",
@@ -1802,11 +1992,61 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     psc.add_argument(
-        "-n", "--namespace", dest="namespaces", action="append", default=[], help="with --live: only these; repeat"
+        "-n",
+        "--namespace",
+        dest="namespaces",
+        action="append",
+        default=[],
+        help="with --live: only these namespaces (repeat); with -f: the one namespace objects without one are "
+        "placed in, as kubectl apply -n does",
     )
     psc.add_argument("--top", type=int, default=20, help="paths to show (1-200, default 20)")
     psc.add_argument(
         "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
+    )
+
+    prc = posub.add_parser(
+        "reach",
+        help="Blast radius: what one workload reaches if compromised, as text, a JSON graph or Mermaid",
+        description="Anchored on one workload: the ServiceAccount whose token its pods mount, the bindings that "
+        "name it, what they let it do, the Secrets it may read by RBAC (names and scopes; never their contents), "
+        "the node when the pod spec can escape to it, and which namespaces or the whole cluster that covers. What "
+        "the input cannot show (a ServiceAccount, Role or binding not in it) is reported as not determined. "
+        "--format json|yaml prints the graph (schema kube-noob/blast-radius v1), --format mermaid a flowchart of "
+        "it. Example: kube-noob posture reach deployment/web -n shop -f k8s/",
+    )
+    prc.add_argument(
+        "workload",
+        help="Kind/name with -n (deployment/web), or Kind/namespace/name as posture scan prints it; a Pod is "
+        "scored on its own spec, with its owner chain as context",
+    )
+    prc.add_argument(
+        "-n",
+        "--namespace",
+        default=None,
+        help="the workload's namespace (default: default); with -f also where objects without one are placed, as "
+        "kubectl apply -n does",
+    )
+    prc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    prc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
+    prc.add_argument(
+        "--read-namespace",
+        dest="read_namespaces",
+        action="append",
+        default=[],
+        help="with --live: read only these namespaces (grants elsewhere are then reported as not determined)",
+    )
+    prc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless the answer is complete: every leg determined, nothing truncated, and -- for files -- "
+        "--whole-bundle given, since a set of files cannot show the bindings and Services it leaves out",
+    )
+    prc.add_argument(
+        "--whole-bundle",
+        action="store_true",
+        help="with -f: assert the files are everything that applies to this workload (its RoleBindings, the "
+        "ClusterRoleBindings, its Services, Routes and Ingresses), so an absence in them counts as an answer",
     )
 
     opr = sub.add_parser(
@@ -2247,6 +2487,26 @@ def build_parser() -> argparse.ArgumentParser:
     dm = sub.add_parser("demo", help="Offline walkthroughs of common use cases (no network, no cluster)")
     dm.add_argument("scenario", nargs="?", help="scenario name or 'all' (see --list)")
     dm.add_argument("--list", action="store_true", dest="list_demos")
+    dm.add_argument(
+        "--keep",
+        metavar="DIR",
+        help="keep what the scenario writes (its sample input, the bundled examples and any report) in DIR, so the "
+        "commands it prints can be rerun there; refuses to overwrite",
+    )
+    exs = sub.add_parser(
+        "examples",
+        help="List the bundled example files, or copy them to a directory so the commands in the README run",
+        description="The README and the docs name files under examples/. They ship inside kube-noob; this writes them "
+        "where a command line can name them. Example: kube-noob examples copy examples",
+    )
+    exs_sub = exs.add_subparsers(dest="examples_cmd", required=True)
+    _patch(exs_sub, common)  # `examples list --format json` takes the common options after the subcommand too
+    exs_sub.add_parser("list", help="Name each bundled example and what it is for")
+    exs_copy = exs_sub.add_parser("copy", help="Write the bundled examples into DIR (created if missing)")
+    exs_copy.add_argument("dir", metavar="DIR", help="where to write them, e.g. examples")
+    exs_copy.add_argument(
+        "--force", action="store_true", help="replace files that already exist (never symbolic links)"
+    )
     return p
 
 
@@ -2259,9 +2519,112 @@ def _settings(a: argparse.Namespace) -> Settings:
     return load_settings(a.config, overrides)
 
 
+class _VisibleStream:
+    """stdout or stderr, with every TEXT write passed through ``sanitize.visible_lines`` (G279).
+
+    The boundary kube-noob's own text writers share: the text view, ``--compact``, GitHub workflow commands and
+    every error message. A name from a manifest or a cluster can no longer move the cursor, write the clipboard
+    (OSC 52), hide a link (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate;
+    a hidden character inside a name is shown as ``<U+200B>``. Documents do not go through it: ``_emit`` (JSON,
+    YAML), the manifests ``fix`` and ``generate`` print, ``policy generate`` and ``--format sarif`` write to
+    ``_raw_stdout()``, because their encoders already escape what would not print and the bytes must equal what
+    ``-o`` writes. Argument parsing (help, usage, argparse's colour) happens before the boundary is in place, and
+    the long-running servers (``serve``, ``mcp``, ``admission serve``, ``watch``) are not wrapped at all: their
+    logs are uvicorn's and the MCP transport writes to ``.buffer``. Output with none of these characters is
+    unchanged.
+
+    It also keeps every line from being read as a GitHub Actions workflow command (``sanitize.CommandGuard``:
+    ``##[`` anywhere becomes ``## [``, a line-leading ``::`` becomes ``: :``), always, because a log is replayed.
+    The one deliberate exception is :meth:`workflow_command`, which ``gate --github-annotations`` uses for the
+    annotations it builds and escapes itself."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._guard = sanitize.CommandGuard()
+
+    def write(self, text: str) -> int:
+        self._inner.write(self._guard.feed(sanitize.visible_lines(text, mark=True)))
+        return len(text)
+
+    def workflow_command(self, line: str) -> None:
+        """One workflow command kube-noob wrote on purpose, on a line of its own, past the guard (not past
+        ``visible_lines``)."""
+        held = self._guard.flush()
+        if held:
+            self._inner.write(held)
+        if not self._guard.at_line_start:
+            self._inner.write("\n")
+        self._inner.write(sanitize.visible_lines(line, mark=True) + "\n")
+        self._guard.reset()
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        held = self._guard.flush()  # a line-leading colon held back until the next character was known
+        if held:
+            self._inner.write(held)
+        self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+#: Servers whose stdout is a protocol stream or a server log, not an answer: their streams are left alone, and
+#: each message is made safe where it is built. `watch` prints text views, so it is wrapped (G279, third review).
+_UNWRAPPED = {("serve",), ("mcp",), ("admission", "serve")}
+
+
+def _unexpected(exc: BaseException) -> int:
+    """An error kube-noob did not anticipate: one cleaned line on stderr and exit 4 (a kube-noob error, AGENTS.md),
+    never a raw traceback a pipeline reads as exit 1 (G279, third review). The traceback is printed only with
+    KUBE_NOOB_DEBUG set, and through the same boundary."""
+    import traceback
+
+    if os.environ.get("KUBE_NOOB_DEBUG"):
+        print("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+    msg = sanitize.one_line(str(exc))[:500]
+    print(
+        f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)",
+        file=sys.stderr,
+    )
+    return 4
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    a = parser.parse_args(argv)
+    a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
+    if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
+        try:
+            return _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            out, err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+            try:
+                return _unexpected(exc)
+            finally:
+                sys.stderr.flush()
+                sys.stdout, sys.stderr = out, err
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+    try:
+        try:
+            rc = _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            rc = _unexpected(exc)
+        try:
+            sys.stdout.flush()  # writes a colon held back at the start of a line, and whatever is buffered
+        except BrokenPipeError:
+            return _pipe_closed()  # the reader left: exit 141, never the code of a truncated answer (G279)
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.flush()
+        return rc
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(a: argparse.Namespace) -> int:
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
@@ -2271,6 +2634,14 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"error: --format sarif is for `kube-noob audit`; `{a.cmd}` has no findings to put in a SARIF document "
             "(the gate writes one with `kube-noob gate --sarif PATH`)",
+            file=sys.stderr,
+        )
+        return 2
+    if a.format == "mermaid" and (a.cmd, getattr(a, "posture_cmd", None)) != ("posture", "reach"):
+        sub = getattr(a, f"{a.cmd}_cmd", None)
+        command = f"{a.cmd} {sub}" if isinstance(sub, str) and sub else a.cmd
+        print(
+            f"error: --format mermaid is for `kube-noob posture reach`; `{command}` has no graph to draw",
             file=sys.stderr,
         )
         return 2
@@ -2290,11 +2661,21 @@ def main(argv: list[str] | None = None) -> int:
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         print(f"error: {msg}", file=sys.stderr)
         return 4
+    except KeyboardInterrupt:
+        # Ctrl-C: whatever was half-written has been rolled back by the code that wrote it (examples copy); one line
+        # and the shell's own code for an interrupt, never a traceback.
+        print("interrupted", file=sys.stderr)
+        return 130
     except BrokenPipeError:
-        # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        return 141
+        return _pipe_closed()
+
+
+def _pipe_closed() -> int:
+    """`kube-noob ... | head`: the reader went away; exit quietly with 141, like other CLI tools. What is still
+    buffered goes to /dev/null, so the interpreter's own flush at exit cannot raise again."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    return 141
 
 
 def _dispatch(a: argparse.Namespace, s: Settings) -> int:
@@ -2304,6 +2685,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     kit = tk.Toolkit(s)
     fmt = "yaml" if a.format == "text" else a.format
     platform = getattr(a, "platform", None) or s.default_platform
+    if getattr(a, "pversion", None) is not None and _takes_ocp_version(a):
+        a.pversion = _version_flag(a.pversion)
 
     if a.cmd == "completion":
         print(completion.script(a.shell, build_parser()), end="")
@@ -2356,7 +2739,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
                 # The document carries what was not read and not evaluated as notifications, and the operator
                 # still gets the notice on stderr: a partial audit must not look clean on either channel.
-                print(json.dumps(sarif_of_audit(rep), indent=2))
+                _write_document(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":
@@ -2414,8 +2797,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             )
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
-        else:
-            print(res["manifests"], end="")
+        else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
+            _write_document(res["manifests"])
         print(_fix_verdict_line(res), file=sys.stderr)
         print(
             yaml.safe_dump(
@@ -2464,7 +2847,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
             else:
-                print(out["manifests"], end="")
+                _write_document(out["manifests"])
             print(
                 yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
                 file=sys.stderr,
@@ -2511,6 +2894,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if len(text.strip()) < 3:
             raise ConfigError("nothing to read: pass the text in quotes, a file with -f, or pipe it in")
         found = kit.insight(tk.InsightIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion))
+        if cut := _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT):
+            found["inputTruncated"] = cut
         if a.format == "text":
             _print_insight(found)
         else:
@@ -2522,23 +2907,40 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
         if len(text.strip()) < 3:
             raise ConfigError("nothing to diagnose: pass the error text in quotes, a file with -f, or pipe it in")
+        cut = None
         if len(text) > tk.MAX_DIAGNOSE_TEXT:  # a long Alertmanager payload keeps every alert's labels and summary
-            text = alertmanager.compact(text) or text[-tk.MAX_DIAGNOSE_TEXT :]
-        _emit(
-            kit.diagnose(
-                tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
-            ),
-            fmt,
+            compacted = alertmanager.compact(text)
+            cut = None if compacted else _input_cut(len(text), tk.MAX_DIAGNOSE_TEXT)
+            text = compacted or text[-tk.MAX_DIAGNOSE_TEXT :]
+        result = kit.diagnose(
+            tk.DiagnoseIn(text=text, platform=getattr(a, "platform", None), version=getattr(a, "pversion", None))
         )
+        if cut:
+            result["inputTruncated"] = cut
+        if a.format == "text":  # the family's default, as for policy explain, known-issues and insight (G277)
+            from kube_noob.debug.diagnose import render_text as diagnose_text
+
+            _tprint(diagnose_text(result))
+        else:
+            _emit(result, fmt)
         return 0
 
     if a.cmd == "known-issues":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "known-issues")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
-        out = kit.known_issues(tk.KnownIssuesIn(text=text, platform=a.platform, version=a.pversion, limit=a.limit))
+        total = len(text)
+        out = kit.known_issues(
+            tk.KnownIssuesIn(text=text[-tk.MAX_DIAGNOSE_TEXT :], platform=a.platform, version=a.pversion, limit=a.limit)
+        )
+        if total > tk.MAX_DIAGNOSE_TEXT and out.get("inputTruncated"):
+            from kube_noob.known_issues import truncation
+
+            out["inputTruncated"] = truncation(total)
         if a.format == "text":
             _print_known_issues(out)
         else:
@@ -2621,7 +3023,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "signals":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "signals")
         if len(text) > tk.MAX_SIGNAL_TEXT:
             text = alertmanager.compact(text) or text[-tk.MAX_SIGNAL_TEXT :]
         out = kit.extract_signals(tk.SignalsIn(text=text))
@@ -2701,9 +3103,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.format == "text":
             text = ingest.render_text(bundle) + "\n" + analyse.render_text(analysis, completeness=completeness)
             for m in rep["knownIssues"]:
-                text += f"\nknown issue {m['id']} ({m.get('status') or ''}): {m.get('summary') or ''}"[:300]
+                text += "\n" + _known_issue_line(m)
             if rep["knownIssuesVerdict"] == "not-determined":
                 text += f"\nknown issues: not determined: {rep['knownIssuesNote']}"
+            from kube_noob.known_issues import coverage_line
+
+            if ki_line := coverage_line(rep.get("knownIssuesCoverage"), listed=bool(rep["knownIssues"])):
+                text += f"\n{ki_line}"
             for m in rep["memory"]:
                 text += f"\nteam memory [mem:{m['id']}]: {m.get('symptom', '')}"[:300]
             for path in written:
@@ -2756,8 +3162,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         )
         bundle_dir = Path(a.out)
         bundle_dir.mkdir(parents=True, exist_ok=True)
-        (bundle_dir / "bundle.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-        (bundle_dir / "bundle.md").write_text(bundle_markdown(result), encoding="utf-8")
+        (bundle_dir / "bundle.json").write_text(json_document(result, indent=2, default=str), encoding="utf-8")
+        (bundle_dir / "bundle.md").write_text(
+            sanitize.defuse_workflow_commands(bundle_markdown(result)), encoding="utf-8"
+        )
         _emit(
             {"bundle": str(bundle_dir), "files": ["bundle.md", "bundle.json"], "diagnoses": len(result["diagnoses"])},
             fmt,
@@ -2927,8 +3335,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.out:
             out_dir = Path(a.out)
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "report.md").write_text(md, encoding="utf-8")
-            (out_dir / "report.json").write_text(json.dumps(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
+            (out_dir / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (out_dir / "report.json").write_text(json_document(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
         if a.format == "text":
             _tprint(md.rstrip())
         else:
@@ -2955,19 +3363,28 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
         if a.list_demos or not a.scenario:
             if a.format == "text":
-                for d in demo.listing():
-                    print(f"{d['name']:10} {d['title']}  [{d['for']}]")
+                rows = demo.listing()
+                aliases = [(old, new) for d in rows for old in d.get("aliases", []) for new in [d["name"]]]
+                width = max(len(n) for n in [*(d["name"] for d in rows), *(o for o, _ in aliases)])
+                for d in rows:
+                    print(f"{d['name']:{width}}  {d['title']}  [{d['for']}]")
+                for old, new in aliases:
+                    print(f"{old:{width}}  old name of `{new}`, kept so scripts and links keep working")
                 print("\nRun: kube-noob demo <name>   or   kube-noob demo all")
             else:
                 _emit(demo.listing(), fmt)
             return 0
+        if a.keep and a.scenario == "all":
+            raise ConfigError("--keep keeps one scenario's files: name one scenario, not 'all'")
         names = list(demo.SCENARIOS) if a.scenario == "all" else [a.scenario]
         for n in names:
-            if n not in demo.SCENARIOS:
+            if demo.resolve(n) not in demo.SCENARIOS:
                 raise KeyError(f"unknown demo {n!r}; choose from {', '.join(demo.SCENARIOS)} or 'all'")
-            demo.run(n, s)
+            demo.run(n, s, keep=Path(a.keep) if a.keep else None)
             print()
         return 0
+    if a.cmd == "examples":
+        return _examples_cmd(a, fmt)
     if a.cmd == "doctor":
         from kube_noob.knowledge_status import line, status
         from kube_noob.posture import posture, render_text
@@ -3025,12 +3442,11 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
-_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-
-
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped."""
-    print(_TERMINAL_CONTROL.sub("", text))
+    """Print text that may echo a manifest or a log. It goes to stdout as it is: the output boundary
+    (``_VisibleStream``) cleans and marks it there, once. Cleaning it here first, without marking, removed a
+    character inside a name before the boundary could show it (G279, fourth review)."""
+    print(text)
 
 
 def _print_denials(out: dict[str, Any]) -> None:
@@ -3083,7 +3499,10 @@ def _print_reach(out: dict[str, Any]) -> None:
         # The verdict says UNDETERMINED and the two direction lines can both read "allowed", so without this the
         # terminal shows a conclusion with no reason while the JSON carries both `undeterminedBy` and `summary`.
         # A caveat belongs in the surface that is read, not only in the one that is parsed.
-        _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
+        if out.get("readFrom"):  # live: what decided may be a read that failed, not a kind left unevaluated
+            _tprint(f"  undetermined by: {', '.join(out['undeterminedBy'])} (the summary below says why)")
+        else:
+            _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
     for entry in out.get("inertPolicies", []):
         # The verdict can read ALLOWED while the operator believes an AdminNetworkPolicy is denying it. That gap
         # is the whole finding, so it goes on the line below the verdict, not into the JSON alone.
@@ -3119,7 +3538,9 @@ def _policy(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if a.policy_cmd == "explain":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "policy explain")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to explain: pass the denial in quotes, a file with -f, or pipe it in")
         out = kit.explain_denial(tk.PolicyExplainIn(text=text, platform=getattr(a, "platform", None)))
@@ -3206,7 +3627,7 @@ def _policy_generate(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(body, fmt)
         return 0
     if not a.output:
-        sys.stdout.write(text)
+        _write_document(text)  # the document: its dumper escapes every character that would not print
     rules = sorted({row["ruleId"] for row in g.generated})
     lines = [
         f"{len(g.documents)} policies for {len(rules)} rules ({', '.join(engines)}, mode {a.mode}, {platform})"
@@ -3256,6 +3677,54 @@ def _print_migrate(report: dict[str, Any], show_files: bool) -> None:
     summary = report["summary"]
     counts = ", ".join(f"{n} {v}" for v, n in summary["verdicts"].items())
     _tprint(f"{summary['policies']} policies, {summary['rules']} rules: {counts}. {report['note']}")
+
+
+def _examples_cmd(a: argparse.Namespace, fmt: str) -> int:
+    from kube_noob import examples
+
+    if a.examples_cmd == "list":
+        rows = examples.listing()
+        if a.format != "text":
+            _emit(rows, fmt)
+            return 0
+        width = max(len(r["name"]) for r in rows)
+        for r in rows:
+            print(f"{r['name']:{width}}  {r['what']}")
+        print("\nWrite them where a command can name them: kube-noob examples copy examples")
+        return 0
+    r = examples.copy_report(Path(a.dir), overwrite=a.force)
+    written, present = [p.name for p in r["written"]], [p.name for p in r["present"]]
+    if a.format != "text":
+        _emit({"directory": a.dir, "written": written, "alreadyPresent": present}, fmt)
+        return 0
+    if written:
+        _tprint(f"wrote {len(written)} files to {a.dir}: {', '.join(written)}")
+    if present:
+        _tprint(f"already in {a.dir}, unchanged: {', '.join(present)}")
+    _tprint("Try:")
+    for line in _example_commands(a.dir):
+        _tprint(f"  {line}")
+    return 0
+
+
+def _example_commands(directory: str) -> list[str]:
+    """The commands `examples copy` suggests, with the directory quoted for a POSIX shell: a name with a space or
+    a quote stays one word, and one that starts with `-` is not read as a flag (G277)."""
+    import shlex
+
+    d = directory.rstrip("/") or "/"
+    if d.startswith("-"):
+        d = f"./{d}"
+
+    def path(name: str) -> str:
+        return shlex.quote(f"{d}/{name}")
+
+    return [
+        "kube-noob policy reach --from web/frontend --to shop/payments --port 9090 -f "
+        + path("netpol-admin-tiers.yaml"),
+        f"kube-noob policy explain -f {path('denial-multi.txt')}",
+        f"kube-noob diagnose -f {path('events-scc.txt')}",
+    ]
 
 
 def _write_migration(report: dict[str, Any], out_dir: str) -> int:
@@ -3360,14 +3829,14 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.posture_cmd == "diff":
             rep = drift.diff(drift.load(Path(a.old)), drift.load(Path(a.new)))
             if a.markdown:
-                Path(a.markdown).write_text(drift.markdown(rep), encoding="utf-8")
+                Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
             return 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
-            out.write_text(json.dumps(snap, sort_keys=True), encoding="utf-8")
+            out.write_text(json_document(snap, sort_keys=True), encoding="utf-8")
             out.chmod(0o600)
             summary = {"output": str(out), "objects": len(snap["objects"]), "findings": len(snap["findings"])}
             if a.format == "text":
@@ -3389,11 +3858,50 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         raise ConfigError(str(exc)) from exc
 
 
+def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import attack_paths as ap
+    from kube_noob import blast_radius as br
+
+    try:
+        if a.live:
+            if a.file:
+                raise ConfigError("pass -f manifests or --live, not both")
+            if not s.cluster.enabled:
+                raise ConfigError(
+                    "--live needs read-only cluster access: pass --cluster-enabled or set cluster.enabled"
+                )
+            if a.whole_bundle:
+                raise ConfigError("--whole-bundle is for -f files; a live read says itself what it could not read")
+            from kube_noob.debug.cluster import get_backend
+
+            inv = ap.collect_live(get_backend(s), a.read_namespaces)
+            out = br.reach(inv, a.workload, a.namespace, live=True, namespaces_read=a.read_namespaces)
+        else:
+            if not a.file:
+                raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
+            if a.read_namespaces:
+                raise ConfigError("--read-namespace works with --live; with -f every namespace in the files is read")
+            out = br.reach_manifests(
+                "\n---\n".join(_read(f) for f in a.file), a.workload, a.namespace, whole_bundle=a.whole_bundle
+            )
+    except (ap.ScanError, br.ReachError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if a.format == "text":
+        _tprint(br.render_text(out))
+    elif a.format == "mermaid":
+        print(br.to_mermaid(out))
+    else:
+        _emit(out, fmt)
+    return 5 if a.require_complete and not out["complete"] else 0
+
+
 def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import attack_paths as ap
 
     if a.posture_cmd in {"snapshot", "diff", "report"}:
         return _posture_drift(a, s, fmt)
+    if a.posture_cmd == "reach":
+        return _posture_reach(a, s, fmt)
 
     if not 1 <= a.top <= ap.MAX_PATHS:
         raise ConfigError(f"--top must be 1-{ap.MAX_PATHS}")
@@ -3408,33 +3916,44 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         if not a.file:
             raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
-        if a.namespaces:
-            raise ConfigError("-n works with --live; with -f every namespace in the files is scanned")
+        if len(a.namespaces or []) > 1:
+            raise ConfigError(
+                "with -f, -n is the one namespace objects without a namespace are placed in (as kubectl apply -n); "
+                "every namespace in the files is scanned"
+            )
         try:
-            out = ap.scan_manifests("\n---\n".join(_read(f) for f in a.file), top=a.top)
+            out = ap.scan_manifests(
+                "\n---\n".join(_read(f) for f in a.file),
+                top=a.top,
+                default_namespace=_dns_label((a.namespaces or [None])[0]),
+            )
         except ap.ScanError as exc:
             raise ConfigError(str(exc)) from exc
     if a.format == "text":
-        _tprint(out["summary"])
+        from kube_noob.blast_radius import flat
+
+        # Every field can carry a name or a path from the input, and a newline in one printed a forged row: one line
+        # each, as the blast radius prints them (G273).
+        _tprint(flat(out["summary"]))
         for path in out["paths"]:
             br = path["blastRadius"]
-            head = f"#{path['rank']}  score {path['score']}  {path['exposure']['kind']}"
-            _tprint(f"\n{head} -> {br['capability']} ({br['scope']})")
+            head = f"#{path['rank']}  score {path['score']}  {flat(path['exposure']['kind'])}"
+            _tprint(f"\n{head} -> {flat(br['capability'])} ({flat(br['scope'])})")
             for st in path["steps"]:
-                _tprint(f"    {st['from']} --{st['edge']}--> {st['to']}")
-                _tprint(f"        {st['evidence']}")
-            _tprint("    fix: " + "; or ".join(path["fix"]))
+                _tprint(f"    {flat(st['from'])} --{flat(st['edge'])}--> {flat(st['to'])}")
+                _tprint(f"        {flat(st['evidence'])}")
+            _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
-            _tprint("\nnot read: " + "; ".join(out["notRead"][:10]))
+            _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
         for note in (out.get("assumptions") or [])[:10]:
-            _tprint(f"assumed: {note}")
+            _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:
             _tprint(f"{out['secretsIgnored']} Secret object(s) in the input were ignored, unread.")
         # The input-specific limitations only. The three standing ones are documented; these name objects in THIS
         # scan whose exposure edge could not be traced, and a caveat that lives only in the JSON renderer is the
         # defect G221 was about -- the text reader is the one most likely to act on the number above.
         for line in out["limitations"][len(ap.STANDING_LIMITATIONS) :]:
-            _tprint("\nnote: " + line)
+            _tprint("\nnote: " + flat(line))
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
@@ -3494,11 +4013,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if issues:
         from kube_noob import operator_issues
 
-        if a.openshift_version is not None and operator_issues.parse_version(a.openshift_version) is None:
-            raise ConfigError(
-                "--openshift-version must be an OpenShift version such as 4.21, 4.21.9 or 4.21.0-rc.1 (ASCII digits, "
-                "no leading zeros)"
-            )
+        if a.openshift_version is not None:
+            _version_flag(a.openshift_version, "--openshift-version")
         if not 1 <= a.issues <= operator_issues.MAX_ISSUES_PER_PACKAGE:
             raise ConfigError(f"--issues must be 1-{operator_issues.MAX_ISSUES_PER_PACKAGE}")
         release = operator_issues.Release()
@@ -3757,7 +4273,9 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
     if cmd == "match":
         if a.text and a.file is not None:
             raise ConfigError("pass the text or -f, not both")
-        text = "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-")
+        text = (
+            "\n".join(a.text) if a.text else _read_text_or_file(a.file if a.file is not None else "-", "memory match")
+        )
         if len(text.strip()) < 3:
             raise ConfigError("nothing to match: pass the error text in quotes, a file with -f, or pipe it in")
         dirs = a.dirs or [str(d) for d in s.memory.paths]
@@ -3834,8 +4352,8 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
         if a.out:
             target = Path(a.out)
             target.mkdir(parents=True, exist_ok=True)
-            (target / "report.md").write_text(md, encoding="utf-8")
-            (target / "report.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+            (target / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (target / "report.json").write_text(json_document(out, indent=2) + "\n", encoding="utf-8")
         if a.format == "text":
             print(md, end="")
         else:
@@ -4016,7 +4534,7 @@ def _corpus(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out_dir = s.data_dir / "known_issues"
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "openshift-release-notes.json"
-        target.write_text(json.dumps(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
+        target.write_text(json_document(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
         _emit({"file": str(target), "issues": len(records), "commits": commits}, fmt)
         return 0
     if cc == "build":
@@ -4246,7 +4764,7 @@ def _train(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
     rep = run_benchmark(s, a.tasks.split(",") if a.tasks else None, use_tools=not a.no_tools)
     if a.out:
-        Path(a.out).write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
+        Path(a.out).write_text(json_document(rep, indent=2, default=str), encoding="utf-8")
     _emit({k: v for k, v in rep.items() if k != "results"} if a.out else rep, fmt)
     return 0
 
