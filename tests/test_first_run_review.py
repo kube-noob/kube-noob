@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -230,7 +231,14 @@ def test_a_nightly_or_okd_must_gather_does_not_print_the_old_all_clear(tmp_path:
     assert r["cluster"]["version"] == version
     md, draft = report.markdown(r), report.case_draft(r)
     assert "None of the findings matches a known issue" not in md and "None matched" not in draft
-    assert "NOT DETERMINED" in md and "NOT DETERMINED" in draft
+    # a nightly is "NOT DETERMINED" by the version-coverage statement (G277); an OKD build by the must-gather report's
+    # own verdict, worded as `operators issues --must-gather` words it (R5)
+    assert "not determined" in md.lower() and "not determined" in draft.lower()
+    assert r["knownIssuesVerdict"] == ("not-determined" if "okd" in version else "looked-up")
+    if "okd" in version:
+        assert "OKD version, not OpenShift Container Platform" in md
+    else:
+        assert r["knownIssuesCoverage"]["status"] == "not-determined" and "NOT DETERMINED" in md
     assert all("updating to" not in str(m.get("status")) for m in r["knownIssues"])
 
 
@@ -239,10 +247,16 @@ def test_a_nightly_or_okd_must_gather_does_not_print_the_old_all_clear(tmp_path:
 
 @pytest.mark.parametrize("noisy", [" 4.21.30 ", "4.21.30\n", "4.21.30\u200b", "\t4.21.30"])
 def test_the_statement_and_the_matching_read_the_same_version(noisy: str) -> None:
-    clean = known_issues.match(ETCD, "openshift", "4.21.30")
+    """The grammar takes the value as typed (R5, shared with `operators issues`): a padded one is not a version. The
+    statement and the matching then agree on THAT -- nothing is narrowed, and the statement says why, naming the
+    padding rather than calling a clean-looking "4.21.30" not a version."""
+    unnarrowed = known_issues.match(ETCD, "openshift", None)
     got = known_issues.match(ETCD, "openshift", noisy)
-    assert [m["id"] for m in got["matches"]] == [m["id"] for m in clean["matches"]]
-    assert got["versionCoverage"]["status"] == clean["versionCoverage"]["status"]
+    assert [m["id"] for m in got["matches"]] == [m["id"] for m in unnarrowed["matches"]]
+    assert got["versionCoverage"]["status"] == "not-narrowed"
+    assert got["versionCoverage"]["version"] == "4.21.30"
+    assert "white space or a hidden character" in got["versionCoverage"]["why"]
+    assert "is not an OpenShift version" in known_issues.match(ETCD, "openshift", "latest")["versionCoverage"]["why"]
 
 
 def test_a_huge_z_stream_is_not_a_version_and_raises_nothing() -> None:
@@ -252,19 +266,23 @@ def test_a_huge_z_stream_is_not_a_version_and_raises_nothing() -> None:
     assert known_issues.vkey(huge) and known_issues.coverage(huge)
 
 
-def test_the_gate_reads_a_padded_version_like_a_clean_one(capsys: pytest.CaptureFixture[str]) -> None:
+def test_the_gate_refuses_a_padded_version_and_never_half_reads_one(capsys: pytest.CaptureFixture[str]) -> None:
+    """A padded version is refused by the flag (exit 2, one sentence) and, reaching the library, narrows nothing and
+    says so: the statement and the lookup agree, where once the statement said `determined` for a value the lookup
+    could not match (G277), and the flag silently read " 4.20.0" as 4.20.0 (R5)."""
     from kube_noob import gate
 
     cm = gate.Source("cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: shop}\n")
     clean = gate.run([cm], platform="openshift", version="4.20.0")
     padded = gate.run([cm], platform="openshift", version=" 4.20.0")
-    assert [k["id"] for k in padded["knownIssues"]] == [k["id"] for k in clean["knownIssues"]]
-    assert clean["knownIssues"]
+    assert clean["knownIssues"] and clean["knownIssuesCoverage"]["status"] == "determined"
+    assert padded["knownIssues"] == [] and padded["knownIssuesCoverage"]["status"] == "not-narrowed"
+    assert "white space or a hidden character" in padded["knownIssuesCoverage"]["why"]
     base = ["gate", "-f", str(EXAMPLES / "insecure-deployment.yaml"), "--platform", "openshift", "--format", "json"]
-    assert main([*base, "--version", "4.20." + "9" * 5000]) == 2
-    assert main([*base, "--version", "4.20.0; rm -rf /"]) == 2
-    capsys.readouterr()
-    assert json.loads(_out([*base, "--version", " 4.20.0"], capsys, code=1))["version"] == "4.20.0"
+    for bad in ("4.20." + "9" * 5000, "4.20.0; rm -rf /", " 4.20.0", "4.20.0\n", "v4.20.0"):
+        assert main([*base, "--version", bad]) == 2, bad
+        err = capsys.readouterr().err
+        assert err.count("\n") == 1 and "must be an OpenShift version" in err, err
 
 
 def test_memory_matching_survives_a_huge_version(tmp_path: Path) -> None:
@@ -475,32 +493,56 @@ def test_a_failure_while_placing_removes_the_files_this_run_placed(
 
 # -- 8. the text sanitiser -----------------------------------------------------------------------------------------
 
-# Control, format, surrogate and private-use characters: what `sanitize.visible` handles today. Blank-looking
-# characters of other categories (Braille blank, Hangul fillers, variation selectors) and the script-aware rule for
-# ZWJ and ZWNJ come with the shared fixed table on fix/absent-vs-unread, which `one_line` delegates to.
+# Control, format, surrogate and private-use characters, the Braille blank, Hangul fillers and a variation selector
+# with no base: `sanitize.visible` is the one rule (G279, fixed Unicode tables), and `one_line` is it plus a
+# white-space collapse. A character removed from inside a name is shown as `<U+XXXX>` (an escape as `<ESC>`), never
+# spliced out, so `ab<U+200B>cd` cannot pass for `abcd` (G279, fourth review).
 _HIDDEN = [
     "\x00", "\x07", "\x1b", "\x7f", "\x80", "\x9b", "\x9f", "\ud800", "\ue000", "\xad", "\u200b", "\u200e",
     "\u202e", "\u2066", "\u206a", "\u206f", "\ufeff", "\ufff9", "\ufffb", "\u0600", "\u0605", "\u06dd", "\u070f",
-    "\U000110bd", "\U0001bca0", "\U0001d173", "\U0001d17a", "\U000e0041", "\u200d", "\u200c",
+    "\U000110bd", "\U0001bca0", "\U0001d173", "\U0001d17a", "\U000e0041", "\u200d", "\u200c", "\u2800", "\u3164",
+    "\ufe0f",
 ]  # fmt: skip
 
 
 @pytest.mark.parametrize("ch", _HIDDEN, ids=[f"U+{ord(c):04X}" for c in _HIDDEN])
-def test_one_line_removes_what_a_terminal_would_hide_or_act_on(ch: str) -> None:
-    out = one_line(f"ab{ch}cd")
-    assert ch not in out and out.replace(" ", "") == "abcd"
+def test_one_line_removes_what_a_terminal_would_hide_or_act_on_and_marks_it_inside_a_name(ch: str) -> None:
+    from kube_noob import sanitize
+
+    text = f"ab{ch}cd"
+    out = one_line(text)
+    assert ch not in out
+    assert out != "abcd", "a removed character inside a name must leave a mark or a space, never nothing"
+    assert out == " ".join(sanitize.visible(text).split()), "one_line is visible() plus a white-space collapse"
+    assert one_line(out) == out, "idempotent: a second pass changes nothing"
+    assert out.startswith("ab") and out.endswith("d")
+    if ch in ("\x1b",):
+        assert "<ESC>" in out  # ESC c is a two-byte sequence (RIS): the sequence goes, the mark stays
+    elif unicodedata.category(ch) in ("Cf", "Mn") or ch == "\u3164":
+        assert f"<U+{ord(ch):04X}>" in out, out  # a format or filler character inside a name is shown, not dropped
+    else:
+        assert out == "ab cd"  # a control, a surrogate, a private-use character or the Braille blank becomes a space
 
 
 def test_one_line_keeps_visible_text() -> None:
-    for text in ("caf\u00e9", "\u65e5\u672c\u8a9e", "a b\tc\nd", "\U0001f600 ok"):
-        assert one_line(text) == " ".join(text.split())
+    for text in ("caf\u00e9", "\u65e5\u672c\u8a9e", "a b\tc\nd", "\U0001f600 ok", "\u0928\u200d\u092e"):
+        assert one_line(text) == " ".join(text.split())  # ZWJ after non-ASCII text stays (Hindi, emoji sequences)
 
 
-def test_the_terminal_filter_drops_c1_controls(capsys: pytest.CaptureFixture[str]) -> None:
-    from kube_noob.cli import _tprint
+def test_the_output_boundary_drops_c1_controls_and_marks_an_escape_inside_a_name() -> None:
+    """`_tprint` prints as it is; the boundary every CLI text write passes (`_VisibleStream`, G279) cleans it
+    once, so an 8-bit CSI (U+009B) is as much a control as ESC [ and an escape between two name characters is
+    shown, not spliced out."""
+    import io
 
-    _tprint("a\x9b31mb\x85c\x1b[0md")
-    assert capsys.readouterr().out == "a31mbc[0md\n"
+    from kube_noob.cli import _VisibleStream
+
+    buf = io.StringIO()
+    stream = _VisibleStream(buf)
+    stream.write("a\x9b31mb\x85c\x1b[0md\n")
+    stream.write("a\ud800b\n")  # a lone surrogate from a JSON escape must not fail the write
+    stream.flush()
+    assert buf.getvalue() == "a 31mb c<ESC>d\na b\n"
 
 
 def test_the_diagnose_text_view_carries_no_hidden_character(capsys: pytest.CaptureFixture[str]) -> None:

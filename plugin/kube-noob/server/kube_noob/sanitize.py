@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import functools
 import html
 import json
 import re
@@ -163,23 +164,407 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH) -> Any:
     return json.loads(data)
 
 
-_TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]{0,256}(?:\x07|\x1b\\)?)")
-#: Character categories that never print: controls (Cc), format characters (Cf: bidi marks and overrides,
-#: zero-width characters, the soft hyphen, tag characters), surrogates (Cs), private use (Co), unassigned code points
-#: (Cn), and line and paragraph separators (Zl, Zp).
-_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+# Terminal control sequences, removed whole (to nothing: a space would split what the sequence sat inside): CSI
+# (ESC [ ... final), the string sequences OSC (ESC ], which carries OSC 8 hyperlinks and OSC 52 clipboard writes), DCS
+# (ESC P), SOS (ESC X), PM (ESC ^) and APC (ESC _), each to BEL or ST, and the two-character escapes. A lone ESC that
+# starts none of these is a control character like any other.
+_TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]PX^_][^\x07\x1b]{0,512}(?:\x07|\x1b\\)?|[ -/]*[0-~])")
+
+#: A run of escape sequences; inside a name (`_IDENT` on both sides, the same set format characters use) it is
+#: shown as `<ESC>`, so `api<ESC>.internal` is not `api.internal` (fourth review).
+_ESCAPE_RUN = re.compile("(?:" + _TERMINAL_ESCAPE.pattern + ")+")
 
 
-def visible(text: str) -> str:
-    """``text`` with every character that does not print replaced by a space, and terminal escape sequences
-    removed. The one place a shown string from untrusted input is made printable: a hand-kept list of invisible
-    code points missed U+061C, the soft hyphen and the tag block, so this works on Unicode categories instead.
-    Callers collapse whitespace and cap the length themselves."""
+def _ranges(*spans: tuple[int, int]) -> str:
+    return "".join(re.escape(chr(lo)) + ("-" + re.escape(chr(hi)) if hi != lo else "") for lo, hi in spans)
+
+
+#: Format characters (Unicode general category Cf), FIXED here rather than read from ``unicodedata``: the
+#: interpreter's Unicode table differs across the supported Pythons (3.11 has Unicode 14, 3.13 has 15.1), and output
+#: must not. This is the Cf set of Unicode 15.1 plus the whole tag block; a test fails if this interpreter knows a Cf
+#: character the list lacks.
+_FORMAT_RANGES = (
+    (0x00AD, 0x00AD),  # soft hyphen
+    (0x0600, 0x0605),  # Arabic prepended concatenation marks
+    (0x061C, 0x061C),  # Arabic letter mark
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),  # Mongolian vowel separator
+    (0x200B, 0x200F),  # zero width space, ZWNJ, ZWJ, LRM, RLM
+    (0x202A, 0x202E),  # bidi embeddings and overrides
+    (0x2060, 0x2064),  # word joiner, invisible operators
+    (0x2066, 0x206F),  # bidi isolates, deprecated format characters
+    (0xFEFF, 0xFEFF),  # byte order mark / zero width no-break space
+    (0xFFF9, 0xFFFB),  # interlinear annotation marks
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),  # Egyptian hieroglyph format controls
+    (0x1BCA0, 0x1BCA3),  # shorthand format controls
+    (0x1D173, 0x1D17A),  # musical symbol beam and phrase controls
+    (0xE0000, 0xE007F),  # the tag block
+)
+#: Default-ignorable characters that are not Cf but print nothing, and the unassigned default-ignorable ranges: the
+#: Hangul fillers, the combining grapheme joiner, variation selectors, Mongolian free variation selectors, and
+#: U+2065, U+FFF0-FFF8, U+E0080-E0FFF (reserved by Unicode as default-ignorable). Removed like format characters,
+#: except where the text needs them (see :func:`_keep_in_context`).
+_IGNORABLE_RANGES = (
+    (0x034F, 0x034F),  # combining grapheme joiner
+    (0x115F, 0x1160),  # Hangul choseong and jungseong fillers
+    (0x17B4, 0x17B5),  # Khmer inherent vowels
+    (0x180B, 0x180D),  # Mongolian free variation selectors
+    (0x180F, 0x180F),
+    (0x2065, 0x2065),
+    (0x3164, 0x3164),  # Hangul filler
+    (0xFE00, 0xFE0F),  # variation selectors
+    (0xFFA0, 0xFFA0),  # halfwidth Hangul filler
+    (0xFFF0, 0xFFF8),
+    (0xE0080, 0xE0FFF),  # variation selectors supplement (E0100-E01EF) and the reserved rest
+)
+#: Replaced like controls: line and paragraph separators, surrogates, private use (what it shows is the reader's
+#: font's business), noncharacters, and the braille blank, which prints as a space.
+_REPLACED_RANGES = (
+    (0x2028, 0x2029),
+    (0x2800, 0x2800),
+    (0xD800, 0xF8FF),  # surrogates, then the BMP private use area
+    (0xFDD0, 0xFDEF),
+    (0xFFFE, 0xFFFF),
+    (0xF0000, 0x10FFFF),
+)
+#: Combining marks whose runs are capped: the blocks "Zalgo" text stacks. A run longer than this many is cut.
+_COMBINING_RANGES = ((0x0300, 0x036F), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x20D0, 0x20FF), (0xFE20, 0xFE2F))
+MAX_COMBINING = 4
+
+_FORMAT = frozenset(c for lo, hi in _FORMAT_RANGES for c in range(lo, hi + 1))
+_IGNORABLE = frozenset(c for lo, hi in _IGNORABLE_RANGES for c in range(lo, hi + 1))
+_JOINERS = frozenset({0x200C, 0x200D})  # ZWNJ and ZWJ: kept after a printing non-ASCII character
+_BIDI_CODES = frozenset([*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C])
+_TAG_CODES = frozenset(range(0xE0000, 0xE0080))
+#: Every character the rule may change, as one class: a text without one is returned as it is, in one regex pass.
+_NONASCII_SPECIAL = re.compile(
+    "["
+    + _ranges((0x80, 0x9F), *_FORMAT_RANGES, *_IGNORABLE_RANGES, *_REPLACED_RANGES)
+    + "]|["
+    + _ranges(*_COMBINING_RANGES)
+    + "]{"
+    + str(MAX_COMBINING + 1)
+    + ",}"
+)
+_ASCII_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+@functools.lru_cache(maxsize=16)
+def _controls(keep: str) -> re.Pattern[str]:
+    """The ASCII control characters other than those in ``keep``, as one class."""
+    chars = "".join(re.escape(chr(c)) for c in [*range(0x20), 0x7F] if chr(c) not in keep)
+    return re.compile("[" + chars + "]")
+
+
+#: An ASCII identifier character: a removed character with one of these on both sides sat inside a name, a path or
+#: an id, and is shown as a marker so that "web<U+200B>x" cannot pass for "webx".
+_IDENT = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-")
+
+#: The core's per-call statistics, for tests that count operations instead of timing them.
+STATS = {"special": 0}
+
+
+def _replaced(o: int) -> bool:
+    return o < 0x20 or 0x7F <= o <= 0x9F or any(lo <= o <= hi for lo, hi in _REPLACED_RANGES)
+
+
+def _printing_non_ascii(ch: str) -> bool:
+    """A non-ASCII character that prints: what a joiner or a variation selector can belong to. Not white space
+    (NBSP, U+2000-200A, U+3000): `one_line` strips it, and the selector it kept was then left on its own, so the
+    output failed `has_invisible` (G279, fourth review)."""
+    o = ord(ch)
+    return o > 0x7F and not ch.isspace() and not _replaced(o) and o not in _FORMAT and o not in _IGNORABLE
+
+
+def _keep_in_context(text: str, i: int, o: int) -> bool:
+    """A format or ignorable character the text needs where it stands. ZWJ and ZWNJ after a printing non-ASCII
+    character (emoji sequences; Devanagari, Sinhala, Kannada, Malayalam, Persian). VS15/VS16 after one, or between
+    a keycap base and U+20E3. Other variation selectors after one (standardized and ideographic variation
+    sequences). The Mongolian vowel separator and free variation selectors after a Mongolian letter."""
+    prev = text[i - 1] if i > 0 else ""
+    # a variation selector belongs to the glyph before it: "\u2764\ufe0f" + ZWJ + "\U0001f525" is one emoji
+    j = i - 1
+    while j > 0 and (0xFE00 <= ord(text[j]) <= 0xFE0F or 0xE0100 <= ord(text[j]) <= 0xE01EF):
+        j -= 1
+    base = text[j] if j >= 0 and i > 0 else ""
+    after_non_ascii = bool(base) and _printing_non_ascii(base) and (base == prev or o in _JOINERS)
+    if o in _JOINERS or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF:
+        if after_non_ascii:
+            return True
+        return o in (0xFE0E, 0xFE0F) and prev in "0123456789#*" and text[i + 1 : i + 2] == "\u20e3"
+    if o in (0x180B, 0x180C, 0x180D, 0x180E, 0x180F):
+        return bool(prev) and 0x1820 <= ord(prev) <= 0x18AF
+    return False
+
+
+def _core(text: str, replacement: str, keep: str, mark: bool, stats: dict[str, int] | None = None) -> str:
+    """The one rule every output and every MCP result follows (``visible`` and ``clean`` both call it)."""
+    # Inside a name (an identifier character on both sides) nothing is ever removed without a trace: removing
+    # would join two halves into another name (`web<ESC>x` is not `webx`, `openshift<U+200B>-etcd` is not
+    # `openshift-etcd`). With `mark` the trace is a marker; without, the replacement, or a space (G279, reviews 3-4).
+    gap = replacement or " "
+    if "\x1b" in text:
+        source = text
+
+        def esc(m: re.Match[str]) -> str:
+            a, b = m.start(), m.end()
+            if a > 0 and b < len(source) and source[a - 1] in _IDENT and source[b] in _IDENT:
+                return "<ESC>" if mark else gap
+            return ""
+
+        text = _ESCAPE_RUN.sub(esc, text)
+        if stats is not None:
+            stats["escape"] = stats.get("escape", 0) + 1
+    if "\r\n" in text:
+        text = text.replace("\r\n", "\n" if "\n" in keep else replacement)
+    controls = _controls(keep)
     if text.isascii():
-        stripped = _TERMINAL_ESCAPE.sub(" ", text)
-        return "".join(" " if ch < " " or ch == "\x7f" else ch for ch in stripped)
-    stripped = _TERMINAL_ESCAPE.sub(" ", text)
-    return "".join(" " if unicodedata.category(ch) in _INVISIBLE_CATEGORIES else ch for ch in stripped)
+        if not controls.search(text):
+            return text
+        if replacement:
+            return controls.sub(replacement, text)
+        source = text
+        return controls.sub(lambda m: _dropped(source, m.start(), m.end(), mark, gap), text)
+    has_controls = controls.search(text) is not None
+    if not has_controls and not _NONASCII_SPECIAL.search(text):
+        return text
+    out: list[str] = []
+    pos = 0
+    last = ""  # the last character written, for the marker's left neighbour
+    pattern = _NONASCII_SPECIAL if not has_controls else _ANY_SPECIAL
+    for m in pattern.finditer(text):
+        STATS["special"] += 1
+        start, end = m.span()
+        if start > pos:
+            out.append(text[pos:start])
+            last = text[start - 1]
+        pos = end
+        seg = m.group(0)
+        if len(seg) > 1:  # a run of combining marks: the first MAX_COMBINING stay
+            out.append(seg[:MAX_COMBINING])
+            last = seg[MAX_COMBINING - 1]
+            if stats is not None:
+                stats["combining"] = stats.get("combining", 0) + len(seg) - MAX_COMBINING
+            continue
+        o = ord(seg)
+        if seg in keep:
+            out.append(seg)
+            last = seg
+        elif o < 0x20 or o == 0x7F or _replaced(o):
+            put = replacement or _dropped(text, start, end, mark, gap)
+            out.append(put)
+            last = put[-1:] or last
+            if stats is not None:
+                stats["control"] = stats.get("control", 0) + 1
+        elif _keep_in_context(text, start, o):
+            out.append(seg)
+            last = seg
+        else:
+            if stats is not None:
+                kind = "tag" if o in _TAG_CODES else "bidi" if o in _BIDI_CODES else "format"
+                stats[kind] = stats.get(kind, 0) + 1
+            j = end
+            while j < len(text) and (ord(text[j]) in _FORMAT or ord(text[j]) in _IGNORABLE):
+                j += 1
+            after = text[j : j + 1]
+            if last and after and last in _IDENT and after in _IDENT:
+                out.append(f"<U+{o:04X}>" if mark else gap)
+                last = ">" if mark else gap[-1]
+    out.append(text[pos:])
+    return "".join(out)
+
+
+_ANY_SPECIAL = re.compile(_NONASCII_SPECIAL.pattern + r"|[\x00-\x1f\x7f]")
+
+
+def _dropped(text: str, start: int, end: int, mark: bool, gap: str) -> str:
+    """What a character replaced by "" leaves: nothing, unless it sat inside a name (G279, fourth review)."""
+    if start > 0 and end < len(text) and text[start - 1] in _IDENT and text[end] in _IDENT:
+        return f"<U+{ord(text[start]):04X}>" if mark else gap
+    return ""
+
+
+def visible(text: str, *, replacement: str = " ", keep: str = "", mark: bool = True) -> str:
+    """``text`` as it should reach a terminal or a file a person reads. The rule (G279), shared with ``clean``:
+
+    * terminal control sequences (CSI, OSC -- hyperlinks and clipboard writes --, DCS, APC, PM, SOS) are removed;
+    * C0 and C1 controls, DEL, the line and paragraph separators, lone surrogates, private use, noncharacters and
+      the braille blank are replaced by ``replacement``. CR LF counts as one line break. ``keep`` names characters
+      left alone (the newline and the tab for ``visible_lines``);
+    * format and default-ignorable characters are removed: bidi overrides, embeddings, isolates and marks (LRM,
+      RLM, ALM), the tag block, the soft hyphen, the BOM, zero-width spaces, interlinear annotation marks, the
+      Hangul fillers, the combining grapheme joiner, variation selectors and the reserved default-ignorables. One
+      that sat inside an ASCII name (an identifier character on both sides) is shown as ``<U+200B>`` instead, so
+      ``web<U+200B>x`` cannot pass for ``webx``; an escape sequence there as ``<ESC>``. ``mark=False`` shows the
+      replacement (or a space) there instead -- never nothing, which would splice the name. ``mark`` is the default
+      (fourth review: eight callers that did not pass it spliced names);
+    * kept where the text needs them: ZWJ and ZWNJ, variation selectors after a printing non-ASCII character (emoji
+      sequences, Devanagari, Sinhala, Malayalam, Persian, ideographic variation sequences), VS16 in a keycap, and
+      the Mongolian selectors after a Mongolian letter;
+    * a run of more than four combining marks from the diacritical blocks is cut to four;
+    * everything else is kept, including code points this interpreter does not know yet, so the result is the same
+      on every supported Python.
+
+    Callers collapse whitespace and cap the length themselves. Text with none of these characters is returned as
+    it is, after one regular-expression pass.
+    """
+    return _core(text, replacement, keep, mark)
+
+
+def replace_surrogates(text: str) -> str:
+    """``text`` with every lone surrogate replaced by U+FFFD. A JSON or YAML escape such as ``\\ud800`` decodes to
+    one, and it is not text: encoding it to UTF-8 raises, which made one such name fail a whole audit (G279)."""
+    if text.isascii() or not any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        return text
+    return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text)
+
+
+def visible_lines(text: str, *, mark: bool = True) -> str:
+    """``visible`` for multi-line text -- a terminal line, a log, a whole Markdown document: the newline and the tab
+    are kept (CR LF becomes a newline), everything else that does not print is handled as ``visible`` says."""
+    return _core(text, " ", "\n\t", mark)
+
+
+def visible_squeezed(text: str) -> str:
+    """``visible`` for one line, where each RUN of replaced characters becomes a single space -- what a
+    C0-range substitution did, so a scanner's CR LF still reads as one space. Ordinary spaces are untouched."""
+    v = _core(text, "\x00", "", True)
+    return re.sub("\x00+", " ", v) if "\x00" in v else v
+
+
+def one_line(text: str) -> str:
+    """``visible`` with every run of white space collapsed to one space: a name or a message on one line."""
+    out = " ".join(_core(text, " ", "", True).split())
+    # Idempotent (fourth review): removing a character can join two runs of combining marks into one longer than
+    # the cap, or leave a selector without its base once white space is collapsed. A second pass only cuts.
+    for _ in range(2):
+        again = " ".join(_core(out, " ", "", True).split())
+        if again == out:
+            break
+        out = again
+    return out
+
+
+#: The service-message prefixes CI systems read ANYWHERE in a line: GitHub's legacy ``##[`` (actions/runner
+#: v2.321.0, src/Runner.Common/ActionCommand.cs, TryParse), Azure Pipelines' ``##vso[`` and TeamCity's
+#: ``##teamcity[``. One rule covers all three: ``##``, letters, ``[``.
+_SERVICE_MESSAGE = re.compile(r"(##[A-Za-z]*)\[")
+#: The end of the text already written that a following ``[`` could complete into a service message.
+_SERVICE_TAIL = re.compile(r"(?:##[A-Za-z]*|#)\Z")
+#: How the broken characters are shown: the marker style ``visible`` uses, so nobody reads them as text.
+BRACKET_MARK = "<U+005B>"
+COLON_MARK = "<U+003A>"
+
+
+def defuse_service_messages(text: str) -> str:
+    """``text`` with every ``##[``, ``##vso[`` and ``##teamcity[`` broken by marking its bracket."""
+    return _SERVICE_MESSAGE.sub(r"\1" + BRACKET_MARK, text) if "##" in text else text
+
+
+class CommandGuard:
+    """Keeps text from being read as a CI workflow command (G279, reviews CP3-Q3 and 3).
+
+    A GitHub runner reads a command from every line a step writes: ``TryParseV2`` takes a line that, after leading
+    white space, starts with ``::``; the legacy ``TryParse`` takes ``##[`` anywhere in a line. Azure Pipelines
+    (``##vso[``) and TeamCity (``##teamcity[``) read theirs anywhere too. A ConfigMap key in an audit line
+    (``p##[stop-commands]token``) could stop command processing, forge an annotation, set a step output or a
+    variable, or mask text. This breaks each with a visible marker, in plain ASCII and unambiguously: the bracket
+    of ``##...[`` becomes ``<U+005B>`` and the first colon of a line-leading ``::`` becomes ``<U+003A>``. Nothing
+    else changes. Always on -- not only under GITHUB_ACTIONS, not only off a terminal: a log is replayed, and the
+    same input gives the same bytes.
+
+    Stateful, because a stream is written in pieces (``print`` writes the newline separately): it keeps the end
+    of what was written that a ``[`` could complete, and holds back a colon that starts a line until the next
+    character says whether it begins ``::``. :meth:`flush` writes a held colon."""
+
+    def __init__(self) -> None:
+        self._tail = ""
+        self._lead: str | None = ""  # the current line so far, while it is only white space (or ends ":" written)
+        self._held = False  # a line-leading ":" not yet written
+
+    @property
+    def at_line_start(self) -> bool:
+        return self._lead == "" and not self._held
+
+    def reset(self) -> None:
+        """The next character starts a line (a command written on purpose has just ended one)."""
+        self._tail, self._lead, self._held = "", "", False
+
+    def flush(self) -> str:
+        """What is held back, to be written now: a line-leading colon the next write may still mark."""
+        if not self._held:
+            return ""
+        self._held = False
+        self._lead = (self._lead or "") + ":"
+        self._tail = ":"
+        return ":"
+
+    def feed(self, text: str) -> str:
+        if "[" in text:
+            prev = self._tail
+            # The group re-emits what it matched, so the part that came from `prev` is unchanged and can be cut.
+            text = _SERVICE_MESSAGE.sub(r"\1" + BRACKET_MARK, prev + text)[len(prev) :]
+        lead, held = self._lead, self._held
+        if lead is None and "\n" not in text:  # the common case: the middle of a line
+            out = text
+        else:
+            parts: list[str] = []
+            for i, seg in enumerate(text.split("\n")):
+                if i:
+                    if held:
+                        parts.append(":")
+                        held = False
+                    parts.append("\n")
+                    lead = ""
+                j = 0
+                while lead is not None and j < len(seg):
+                    ch = seg[j]
+                    if held:  # ws ":" so far, the colon not written
+                        held = False
+                        if ch == ":":
+                            parts.append(COLON_MARK + ":")
+                            j += 1
+                        else:
+                            parts.append(":")
+                        lead = None
+                    elif lead.endswith(":"):  # ws ":" so far, the colon written (a flush came between)
+                        if ch == ":":
+                            parts.append(COLON_MARK)
+                            j += 1
+                        lead = None
+                    elif ch.isspace():  # Python's white space is a superset of what .NET's TrimStart() removes
+                        parts.append(ch)
+                        lead += ch
+                        j += 1
+                    elif ch == ":":
+                        held = True
+                        j += 1
+                    else:
+                        lead = None
+                parts.append(seg[j:])
+            out = "".join(parts)
+        self._lead, self._held = lead, held
+        if out:
+            m = _SERVICE_TAIL.search((self._tail + out)[-64:])
+            self._tail = m.group(0) if m else ""
+        return out
+
+
+def defuse_workflow_commands(text: str) -> str:
+    """``text`` (whole lines) with no workflow command in it: see :class:`CommandGuard`."""
+    g = CommandGuard()
+    return g.feed(text) + g.flush()
+
+
+def has_invisible(text: str, *, keep: str = "") -> bool:
+    """Whether ``visible`` would change ``text`` (other than for the characters in ``keep``). For refusing a value
+    outright -- a file name, a remembered command -- rather than cleaning it."""
+    return _core(text, " ", keep, False) != text
 
 
 def _chars(*points: int | tuple[int, int]) -> str:
@@ -195,12 +580,7 @@ def _chars(*points: int | tuple[int, int]) -> str:
 
 ZWJ = chr(0x200D)
 BOM = chr(0xFEFF)
-_TAGS = re.compile("[" + _chars((0xE0000, 0xE007F)) + "]")
-_BIDI = re.compile("[" + _chars((0x202A, 0x202E), (0x2066, 0x2069), 0x200E, 0x200F, 0x061C) + "]")
-_ZERO_WIDTH = re.compile("[" + _chars(0x200B, 0x200C, 0x2060, 0xFEFF, 0x180E, (0x2061, 0x2064)) + "]")
 _SPLITTERS = re.compile("[" + _chars(0x00AD, 0x034F) + "]")  # soft hyphen, combining grapheme joiner
-_EMOJI_JOIN = re.compile(r"(?<=[^\x00-\x7f])" + ZWJ + r"(?=[^\x00-\x7f])")  # inside an emoji sequence: kept
-_VS_AFTER_ASCII = re.compile(r"(?<=[A-Za-z0-9])[" + _chars((0xFE00, 0xFE0F)) + "]")  # never part of an emoji
 _FILLERS = re.compile("[" + _chars(0x3164, 0xFFA0, 0x115F, 0x1160) + "]")  # Hangul fillers look like spaces
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _ENTITY = re.compile(r"&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z]{2,10});")
@@ -407,11 +787,21 @@ def _excerpt(s: str) -> str:
 _WS = re.compile(r"\s+")
 
 
+_MARKER = re.compile(r"<U\+[0-9A-F]{4,6}>|<ESC>")
+
+
 def _normalise(text: str, fold: bool = True) -> tuple[str, list[int]]:
     """A copy for phrase matching and, for each of its characters, the index of the original character it came
     from: colour codes, format characters and hyphenated line breaks dropped, entities decoded, look-alikes folded
     (when ``fold``), white space collapsed."""
-    if text.isascii() and "&" not in text and "\x1b" not in text and "_" not in text and "-\n" not in text:
+    if (
+        text.isascii()
+        and "&" not in text
+        and "\x1b" not in text
+        and "_" not in text
+        and "-\n" not in text
+        and "<" not in text
+    ):
         parts: list[str] = []
         idx: list[int] = []
         pos = 0
@@ -429,6 +819,8 @@ def _normalise(text: str, fold: bool = True) -> tuple[str, list[int]]:
     where: list[int] = []
     skip_until = -1
     ansi = {m.start(): m.end() for m in _ANSI.finditer(text)}
+    # a marker `visible` left where it removed a character inside a name reads as that character did: nothing
+    ansi |= {m.start(): m.end() for m in _MARKER.finditer(text)}
     entities = {m.start(): m for m in _ENTITY.finditer(text)}
     i = 0
     n = len(text)
@@ -498,19 +890,16 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     if head.startswith(BOM):
         head = head[1:]  # a byte-order mark from a Windows editor: dropped, not a finding
-    kept_joins = _EMOJI_JOIN.sub("\x00", head) if ZWJ in head and "\x00" not in head else None
-    work = kept_joins if kept_joins is not None else head
-    for rx, kind in ((_TAGS, "unicode-tags"), (_BIDI, "bidi-override")):
-        n = len(rx.findall(work))
-        if n:
-            findings.append(Finding(kind, f"{n} character(s) removed", field))
-            work = rx.sub("", work)
-    zero = len(_ZERO_WIDTH.findall(work)) + work.count(ZWJ) + len(_VS_AFTER_ASCII.findall(work))
-    split = len(_SPLITTERS.findall(work))
-    if zero or split:
-        findings.append(Finding("zero-width", f"{zero + split} character(s) removed", field))
-        work = _VS_AFTER_ASCII.sub("", _SPLITTERS.sub("", _ZERO_WIDTH.sub("", work.replace(ZWJ, ""))))
-    head = work.replace("\x00", ZWJ) if kept_joins is not None else work
+    # The same rule `visible` applies, from the same function, so an MCP result and a terminal line cannot disagree
+    # about a character (G279): escapes and format characters removed, controls replaced, joiners kept where a
+    # script or an emoji needs them.
+    stats: dict[str, int] = {}
+    # Marked, so a name in a structured result reads `openshift<U+200B>-etcd`, not `openshift-etcd`; the phrase
+    # matcher reads past the markers as it reads past the characters (fourth review).
+    head = _core(head, " ", "\n\t", True, stats)
+    for kind, label in (("tag", "unicode-tags"), ("bidi", "bidi-override"), ("format", "zero-width")):
+        if stats.get(kind):
+            findings.append(Finding(label, f"{stats[kind]} character(s) removed", field))
 
     def sub(rx: re.Pattern[str], kind: str, repl: Any) -> None:
         nonlocal head
@@ -573,13 +962,6 @@ def clean(text: str, field: str = "") -> tuple[str, list[Finding]]:
 def detect(text: str) -> list[Finding]:
     """What :func:`clean` would find in ``text``."""
     return clean(text)[1]
-
-
-def one_line(text: str) -> str:
-    """``text`` for one line of a text view: ``visible`` (the one rule for what reaches a terminal), then every run
-    of whitespace -- the newlines and the spaces ``visible`` put where invisible characters were -- as one space.
-    A value read from input can neither start a forged line nor hide text in one."""
-    return " ".join(visible(text).split())
 
 
 def result(value: Any) -> Any:

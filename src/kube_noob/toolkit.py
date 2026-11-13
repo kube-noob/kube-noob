@@ -14,7 +14,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +40,7 @@ from kube_noob.debug.cluster import cluster_info, get_backend, resolve_resource
 from kube_noob.debug.diagnose import debug_workload, diagnose
 from kube_noob.debug.netpol import Inventory, check_reachability, inventory_from_cluster
 from kube_noob.debug.policy import explain as explain_denials
-from kube_noob.errors import ClarificationNeeded, ConfigError, WebContentRejectedError
+from kube_noob.errors import ClarificationNeeded, ConfigError, ServerBusy, WebContentRejectedError
 from kube_noob.evals.reward import benchmark, grade
 from kube_noob.generate.blueprint import Blueprint, clarify
 from kube_noob.generate.helm import generate_chart
@@ -54,7 +54,7 @@ from kube_noob.signals import alertmanager, for_text, playbooks_for
 from kube_noob.upgrade_risks import parse_version
 from kube_noob.upgrade_risks import risks as upgrade_risk_match
 from kube_noob.versions import MAX_SHOWN as MAX_VERSION
-from kube_noob.versions import VERSION_FIELD_PATTERN, same_release, strip_version
+from kube_noob.versions import VERSION_FIELD_PATTERN, same_release, strict_field
 
 PlatformT = Literal["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 MAX_MANIFEST_CHARS = 1_000_000
@@ -82,7 +82,9 @@ READABLE_CONTENT_TYPES = frozenset(
 
 # Every tool reads a version as the command line does (kube_noob.versions, G277): the same values accepted, the
 # whitespace around one ignored, so a tool never refuses what `kube-noob ... --version` takes.
-VersionT = Annotated[str | None, BeforeValidator(strip_version)]
+#: A version field: the one grammar (``kube_noob.versions``), refused before the pattern with the sentence the CLI
+#: prints, so a padded or prefixed value is a one-line refusal everywhere, never a validation dump (G277, R5).
+VersionT = Annotated[str | None, BeforeValidator(strict_field("version"))]
 
 
 class _In(BaseModel):
@@ -347,6 +349,33 @@ class SignalsIn(_In):
     )
 
 
+MAX_ALERT_PAYLOAD = 2_000_000  # the Alertmanager payload bound (kube_noob.signals.alertmanager.MAX_PAYLOAD)
+
+
+class AlertReportIn(_In):
+    payload: str = Field(
+        ...,
+        min_length=2,
+        max_length=MAX_ALERT_PAYLOAD,
+        description="An Alertmanager webhook body (version 4), the Alertmanager API's alert list or Prometheus's "
+        "/api/v1/alerts, as JSON. Each alert is reported on its own; an openshift_version or version label holding "
+        "an OpenShift release narrows the reported issues to it.",
+    )
+
+
+class AlertReportGetIn(_In):
+    id: str = Field(
+        ...,
+        max_length=64,
+        pattern=r"^[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{24}$",  # pydantic matches with Rust regex: $ is the very end
+        description="A report id as POST /v1/alert-reports returned it, e.g. 20261111T101500.123456Z-<24 hex digits>.",
+    )
+
+
+class AlertReportListIn(_In):
+    limit: int = Field(50, ge=1, le=200, description="How many of the newest reports to list.")
+
+
 class MemorySignalIn(_In):
     kind: Literal["alert", "co_condition", "event_reason", "pod_reason", "admission", "component", "error_template"]
     name: str = Field(..., min_length=1, max_length=260)
@@ -596,6 +625,71 @@ class ClusterPostureIn(_In):
         default_factory=list, max_length=50, description="Namespaces to read (default: all the account can list)."
     )
     top: int = Field(20, ge=1, le=200, description="How many ranked paths to return.")
+
+
+class OperatorInventoryIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="OLM objects as YAML: ClusterServiceVersions, Subscriptions, InstallPlans, OperatorGroups (a "
+        "List, or `oc get csv,sub,ip,og -A -o yaml` output, works). Other kinds are ignored; Secret objects are "
+        "dropped unread.",
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+
+
+class ClusterOperatorInventoryIn(_In):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: every namespace, which needs a cluster-wide grant). With "
+        "namespaces the answer is partial and says so.",
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+
+
+def _ocp_version_field(description: str) -> Any:
+    return Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN, description=description)
+
+
+#: The version exactly as the CLI's --openshift-version takes it (``kube_noob.versions``): runs before the model strips
+#: whitespace and before the pattern, whose ``$`` would accept a trailing newline, so a padded value is refused.
+_strict_ocp_version = strict_field("openshift_version")
+
+
+class OperatorKnownIssuesIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="OLM objects as YAML, as for operator_inventory (`oc get csv,sub -A -o yaml` output works). Secret "
+        "objects are dropped unread.",
+    )
+    openshift_version: str | None = _ocp_version_field(
+        "The cluster's OpenShift version (4.21, 4.21.9 or 4.21.0-rc.1): only that release's notes are searched. "
+        "Without it every indexed release is searched and the answer is incomplete."
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+    issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
+
+    _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
+
+
+class ClusterOperatorKnownIssuesIn(_In):
+    namespaces: list[Annotated[str, Field(pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", max_length=63)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Namespaces to read (default: every namespace). With namespaces the answer is partial and says so.",
+    )
+    openshift_version: str | None = _ocp_version_field(
+        "Used instead of the version the cluster's ClusterVersion gives, which is still read: a disagreement is "
+        "reported."
+    )
+    top: int = Field(200, ge=1, le=500, description="How many operators to return.")
+    issues_per_package: int = Field(50, ge=1, le=200, description="How many issues to return per package.")
+
+    _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
 
 
 class BuildDiagnoseIn(_In):
@@ -911,6 +1005,15 @@ class Toolkit:
         # Central's policies, read at most once per RHACS_CACHE_SECONDS whatever the number of callers.
         self._rhacs_lock = threading.Lock()
         self._rhacs_cache: tuple[float, list[dict[str, Any]], dict[str, Any]] | None = None
+        # Per thread, because a shared server runs requests on several: set while an alert report diagnoses its
+        # alerts one by one, so a 500-alert payload is counted once rather than rewriting learning.json per alert.
+        self._quiet = threading.local()
+        from kube_noob.alert_report import Slots
+
+        # Alert reports built at once, shared by the REST receiver and the MCP tool of this server (G274), and the
+        # receipt time a caller that already holds a slot passes to the report on its own thread.
+        self.report_slots = Slots()
+        self._receipt = threading.local()
 
     # -- helpers ---------------------------------------------------------------------------------------------
     def store(self) -> Any:
@@ -918,7 +1021,7 @@ class Toolkit:
 
     def _observe(self, keys: list[str]) -> None:
         """Count pattern ids (never content) so summaries reflect what this user actually runs into."""
-        if self.settings.learning_enabled:
+        if self.settings.learning_enabled and not getattr(self._quiet, "on", False):
             with contextlib.suppress(Exception):  # counting is best effort; bump() already logs
                 self.learning.bump(keys)
 
@@ -1255,7 +1358,13 @@ class Toolkit:
         payload = alertmanager.parse(p.text)
         text = payload.text if payload else p.text
         version = p.version or (payload.version if payload else None)
-        out = diagnose(text, platform=p.platform, limit=p.limit, signals=for_text(p.text)).as_dict()
+        out = diagnose(
+            text,
+            platform=p.platform,
+            limit=p.limit,
+            signals=for_text(p.text),
+            context=payload.context if payload else None,
+        ).as_dict()
         if payload:
             given: dict[str, Any] = {}
             if p.version and payload.version:
@@ -1421,6 +1530,105 @@ class Toolkit:
         self._observe([f"signal:{c['id']}" for c in catalogue][:20])  # catalogued (public) names only
         return out
 
+    # -- Alertmanager evidence reports ---------------------------------------------------------------------------
+    def _diagnose_alert(self, text: str, version: str | None) -> dict[str, Any]:
+        """The diagnose tool for one alert's payload: what every section of an alert report is made from."""
+        from kube_noob.alert_report import MAX_PLAYBOOKS
+
+        return self.diagnose(DiagnoseIn(text=text, version=version, limit=MAX_PLAYBOOKS))
+
+    def report_wait_seconds(self) -> float:
+        """How long a report waits for a slot before it is refused as busy."""
+        from kube_noob.alert_report import slot_wait
+
+        return slot_wait(self.settings.alert_reports.budget_seconds)
+
+    @contextlib.contextmanager
+    def report_admission(self, received: float) -> Iterator[None]:
+        """For a caller that already holds one of ``report_slots`` (the REST receiver, which takes it before it reads
+        the body): ``alert_report`` on this thread neither takes a second slot nor restarts the clock -- its time
+        budget counts from ``received``, an ``alert_report._now()`` value taken when the request arrived."""
+        self._receipt.at = received
+        try:
+            yield
+        finally:
+            self._receipt.at = None
+
+    def alert_report(self, p: AlertReportIn) -> dict[str, Any]:
+        """The evidence report for a payload, built offline from the payload and local knowledge. This tool keeps no
+        report: the HTTP receiver (POST /v1/alert-reports) stores what it returns. Like diagnose, it counts the ids
+        it matched in the learning file, once per payload rather than once per alert.
+
+        At most ``MAX_CONCURRENT_REPORTS`` are built at once by every surface together; a call that cannot get a slot
+        within ``report_wait_seconds`` raises ServerBusy. The time budget counts from the call (or from the receipt
+        the REST receiver passed), so the wait for a slot is part of it rather than added to it (G274)."""
+        from kube_noob import alert_report
+
+        received: float | None = getattr(self._receipt, "at", None)
+        held = received is not None
+        start = received if received is not None else alert_report._now()
+        if not held:
+            wait = self.report_wait_seconds()
+            if not self.report_slots.acquire(wait):
+                raise ServerBusy(alert_report.busy_message(wait))
+        try:
+            return self._alert_report(p, start + self.settings.alert_reports.budget_seconds)
+        finally:
+            if not held:
+                self.report_slots.release()
+
+    def _alert_report(self, p: AlertReportIn, deadline: float) -> dict[str, Any]:
+        from kube_noob import alert_report
+        from kube_noob.alert_store import body_sha256
+        from kube_noob.known_issues import get_index
+
+        # Each OpenShift minor the local reported issues cover, and the newest release in it: a version outside them
+        # is reported as not evaluated rather than as "no match".
+        coverage: dict[str, str] = {}
+        for issue in get_index(self.settings.data_dir).issues:
+            newest = coverage.get(issue.minor)
+            if newest is None or alert_report._vkey(issue.version) > alert_report._vkey(newest):
+                coverage[issue.minor] = issue.version
+        self._quiet.on = True
+        try:
+            body = alert_report.build(
+                p.payload,
+                self._diagnose_alert,
+                memory_configured=bool(self.settings.memory.paths),
+                max_bytes=self.settings.alert_reports.max_report_bytes,
+                deadline=deadline,
+                coverage=coverage,
+            )
+        finally:
+            self._quiet.on = False
+        seen = {
+            f"playbook:{b['id']}" for a in body["alerts"] for b in (a.get("diagnosis") or {}).get("playbooks") or []
+        }
+        seen |= {
+            f"known-issue:{m['id']}" for a in body["alerts"] for m in (a.get("knownIssues") or {}).get("matches") or []
+        }
+        self._observe(sorted(seen)[:40])
+        return {
+            "report": body,
+            "bodySha256": body_sha256(body),
+            "stored": False,
+            "notStoredReason": "built on request and not kept: only the HTTP receiver (POST /v1/alert-reports) "
+            "stores reports",
+        }
+
+    def alert_report_get(self, p: AlertReportGetIn) -> dict[str, Any]:
+        from kube_noob.alert_store import AlertReportStore
+
+        return AlertReportStore(self.settings.data_dir, self.settings.alert_reports).get(p.id)
+
+    def alert_report_list(self, p: AlertReportListIn) -> dict[str, Any]:
+        from kube_noob.alert_store import AlertReportStore
+
+        out = AlertReportStore(self.settings.data_dir, self.settings.alert_reports).newest(p.limit)
+        if not self.settings.alert_reports.store:
+            out["storing"] = "off: alertReports.store is false, so no new report is kept"
+        return out
+
     def insight(self, p: InsightIn) -> dict[str, Any]:
         from kube_noob.insight import insight
 
@@ -1501,6 +1709,50 @@ class Toolkit:
 
         inv = attack_paths.collect_live(get_backend(self.settings), list(p.namespaces))
         return attack_paths.scan(inv, top=p.top)
+
+    def operator_inventory(self, p: OperatorInventoryIn) -> dict[str, Any]:
+        """Which OLM operators the objects describe, and what they could not say."""
+        from kube_noob import operators
+
+        out = operators.inventory(operators.from_manifests(p.manifests), top=p.top)
+        self._observe([f"operators:{out['verdict']}"])
+        return out
+
+    def cluster_operator_inventory(self, p: ClusterOperatorInventoryIn) -> dict[str, Any]:
+        from kube_noob import operators
+
+        return operators.inventory(operators.collect_live(get_backend(self.settings), list(p.namespaces)), top=p.top)
+
+    def operator_known_issues(self, p: OperatorKnownIssuesIn) -> dict[str, Any]:
+        """Which OLM operators in the objects the OpenShift release notes name in a reported issue."""
+        from kube_noob import operator_issues, operators
+
+        out = operator_issues.assess(
+            operators.from_manifests(p.manifests),
+            release=operator_issues.Release(given=p.openshift_version),
+            surface="mcp",
+            top=p.top,
+            issues_per_package=p.issues_per_package,
+            data_dir=self.settings.data_dir,
+        )
+        self._observe([f"operator-issues:{out['verdict']}"])
+        return out
+
+    def cluster_operator_known_issues(self, p: ClusterOperatorKnownIssuesIn) -> dict[str, Any]:
+        from kube_noob import operator_issues, operators
+
+        backend = get_backend(self.settings)
+        collected = operators.collect_live(backend, list(p.namespaces))
+        release = operator_issues.live_release(backend)
+        release.given = p.openshift_version
+        return operator_issues.assess(
+            collected,
+            release=release,
+            surface="mcp",
+            top=p.top,
+            issues_per_package=p.issues_per_package,
+            data_dir=self.settings.data_dir,
+        )
 
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
@@ -1637,6 +1889,14 @@ class Toolkit:
         out["findings"] = rep["findings"][: p.top]
         if p.case_draft:
             out["caseDraft"] = mg_report.case_draft(rep)
+        from kube_noob import operator_issues, operators
+        from kube_noob.mustgather import operators as mg_operators
+
+        olm = mg_operators.collect(bundle)
+        out["operatorInventory"] = operators.inventory(olm)
+        out["operatorKnownIssues"] = operator_issues.for_must_gather(
+            olm, rep["cluster"], surface="mcp", data_dir=self.settings.data_dir
+        )
         self._observe([f"signal:{s['kind']}:{s['name']}" for s in rep["signals"][:20]])
         return out
 
@@ -1752,11 +2012,16 @@ class Toolkit:
         backend = get_backend(self.settings)
         inv = inventory_from_cluster(backend, p.source, p.destination, p.cni)
         platform = p.platform
+        platform_note = ""
         if platform is None:
             with contextlib.suppress(Exception):  # the platform only picks oc or kubectl in the commands
-                platform = "openshift" if cluster_info(backend).get("openshift") else "kubernetes"
+                info = cluster_info(backend)
+                platform = info.get("platform")
+                platform_note = str(info.get("platformNotRead") or "")
         cli = "oc" if platform in {"openshift", "rosa-classic", "rosa-hcp"} else "kubectl"
         out = check_reachability(inv, p.source, p.destination, p.port, p.protocol, cli)
+        if platform_note:  # an unread platform is not "kubernetes": the commands below say kubectl for want of one
+            out["notes"] = [*out.get("notes", []), f"{platform_note}; the commands are written for kubectl"]
         out["readFrom"] = f"live cluster via {backend.name} (read-only)"
         self._observe([f"netpol:{out['verdict']}"])
         return out
@@ -2118,6 +2383,19 @@ class Toolkit:
                 self.extract_signals,
             ),
             ToolSpec(
+                "alert_report",
+                "Evidence report for an Alertmanager payload",
+                "One report per alert in an Alertmanager payload: the signals it carries, the diagnosis kube-noob's "
+                "playbooks give, the reported OpenShift issues that match for the version its labels name, approved "
+                "team memory when configured, and read-only next steps. Every section says what it could not "
+                "determine and why; an alert kube-noob recognises nothing in is reported as such, never as healthy, "
+                "and a resolved alert is recorded, not diagnosed. Offline, from the payload alone: no cluster is "
+                "read. This tool keeps no report (like diagnose it counts the playbook and issue ids it matched in "
+                "the local learning file); the HTTP receiver POST /v1/alert-reports stores the same report.",
+                AlertReportIn,
+                self.alert_report,
+            ),
+            ToolSpec(
                 "insight",
                 "What is this, and what does it say?",
                 "Start here for anything the user pastes. Names what the input is (events, pod status, logs, an "
@@ -2217,6 +2495,32 @@ class Toolkit:
                 "dropped unread.",
                 PostureScanIn,
                 self.posture_scan,
+            ),
+            ToolSpec(
+                "operator_inventory",
+                "Installed OLM operators in manifests",
+                "Which OLM operators the given ClusterServiceVersions, Subscriptions, InstallPlans and OperatorGroups "
+                "describe: package, version (and whether it was stated or read off the name), catalog, channel, "
+                "approval mode, namespace and the namespaces it serves (copies OLM writes into each target namespace "
+                "are folded into one operator), phase, a pending upgrade or a Manual approval waiting. A Subscription "
+                "with no installed CSV, and a CSV with no Subscription, each get their own state. What the input "
+                "could not show is part of the answer: with no ClusterServiceVersions the verdict is not-determined, "
+                "never zero operators. Secret objects are dropped unread.",
+                OperatorInventoryIn,
+                self.operator_inventory,
+            ),
+            ToolSpec(
+                "operator_known_issues",
+                "Which installed operators the release notes name in a reported issue",
+                "For each OLM operator the objects describe (as operator_inventory reads them), the issues in the "
+                "bundled OpenShift release notes that name its product, for the cluster's release (openshift_version): "
+                "id, link, known or fixed, the OpenShift release of the fix, the release-notes source and the corpus "
+                "date. Matching goes through a table of the names the notes use per package: an operator with no "
+                "entry is 'no-alias', never clean, and a release outside the index is not determined. A fix is "
+                "stated as an OpenShift release, so whether the installed operator carries it is always not "
+                "determined. Secret objects are dropped unread.",
+                OperatorKnownIssuesIn,
+                self.operator_known_issues,
             ),
             ToolSpec(
                 "build_diagnose",
@@ -2426,6 +2730,27 @@ class Toolkit:
                     open_world=True,
                 ),
                 ToolSpec(
+                    "cluster_operator_inventory",
+                    "Installed OLM operators in the cluster (live, read-only)",
+                    "Read ClusterServiceVersions and Subscriptions from the cluster (never Secrets) and list the "
+                    "installed operators like operator_inventory. A 404 says the cluster has no OLM; a 403 says the "
+                    "inventory is not determined. Neither is reported as zero operators.",
+                    ClusterOperatorInventoryIn,
+                    self.cluster_operator_inventory,
+                    open_world=True,
+                ),
+                ToolSpec(
+                    "cluster_operator_known_issues",
+                    "Installed operators named in reported issues (live, read-only)",
+                    "Read ClusterServiceVersions, Subscriptions and the ClusterVersion (never Secrets) and match the "
+                    "installed operators against the OpenShift release notes like operator_known_issues, for the "
+                    "release the cluster runs. A ClusterVersion that cannot be read leaves the release unknown, "
+                    "which the answer says; it is never read as no issues.",
+                    ClusterOperatorKnownIssuesIn,
+                    self.cluster_operator_known_issues,
+                    open_world=True,
+                ),
+                ToolSpec(
                     "cluster_check_namespace",
                     "Check a namespace now (live, read-only)",
                     "Run one watch poll on a namespace: find crash loops, OOM kills, image pulls, policy denials, "
@@ -2486,7 +2811,8 @@ class Toolkit:
                     "Analyse a must-gather",
                     "Open an OpenShift must-gather (or oc adm inspect output) safely and say what is wrong, most "
                     "severe first: the cluster version and update, cluster operators, nodes, machine config pools, "
-                    "OLM operators, pods, warning events and etcd log hints. Each finding has its evidence file, its "
+                    "OLM operators, pods, warning events and etcd log hints, and an installed-operator inventory. Each "
+                    "finding has its evidence file, its "
                     "signals, read-only commands to confirm it, and the known OpenShift bugs and team memory entries "
                     "that match it for the version the cluster runs. Nothing is extracted or run and Secrets are "
                     "never read."
@@ -2553,6 +2879,29 @@ class Toolkit:
                     read_only=self.shared,
                 )
             )
+        # Read-only, like posture_report: they read what `kube-noob serve` kept in this data directory, which on a
+        # laptop is usually nothing, and say so.
+        s.append(
+            ToolSpec(
+                "alert_report_list",
+                "List stored alert reports",
+                "The newest evidence reports the HTTP receiver kept for Alertmanager payloads (POST "
+                "/v1/alert-reports): id, when it was received, the receipt-to-report time, alert names and verdict "
+                "counts.",
+                AlertReportListIn,
+                self.alert_report_list,
+            )
+        )
+        s.append(
+            ToolSpec(
+                "alert_report_get",
+                "Read a stored alert report",
+                "One evidence report the HTTP receiver kept, by the id POST /v1/alert-reports returned. Its text came "
+                "from the payload's senders and is cleaned again as it is read.",
+                AlertReportGetIn,
+                self.alert_report_get,
+            )
+        )
         if self.shared:
             # The flag each tool already carries, not a list of names: a denylist exposes any write tool added
             # later by default, and three had been (learn_lesson, learn_submit and learn_quiz each wrote a progress

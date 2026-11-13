@@ -323,6 +323,75 @@ def _mustgather(kit: Any, emit: Emit, work: Path) -> None:
     emit(f"wrote {', '.join(p.name for p in written)}: every [FILL IN] in the case draft is yours to answer")
 
 
+#: The north-star claim is an alert turned into an evidence pack within a minute. This gate is far tighter: the bundled
+#: two-alert payload, posted to an in-process server, must come back as a stored report within 2 s. Measured on a
+#: 2-core, 7 GB build machine on 2026-11-12: 0.03 s here (the offline step before it has loaded the indexes), 0.09 s
+#: as the first request of a fresh process, then p50 22 ms and p95 23 ms over 250 posts; the reviewer's worst
+#: in-bounds payloads took 4.5 s (150 alerts of five 2,000-character fields) and 5.7 s (500 alerts).
+ALERT_REPORT_BUDGET_SECONDS = 2.0
+
+
+def _alerts(kit: Any, emit: Emit, work: Path) -> None:
+    from starlette.testclient import TestClient
+
+    from kube_noob import toolkit as tk
+    from kube_noob.errors import KubeNoobError
+    from kube_noob.server.http import http_app
+
+    # Loopback, and a token variable nobody sets: the demo's server needs no credential and reads none.
+    server = kit.settings.server.model_copy(
+        update={"host": "127.0.0.1", "auth_token_env": "KUBE_NOOB_DEMO_UNSET", "allowed_hosts": []}
+    )
+    # Storing on, whatever the user's configuration says: the demo shows the receiver keeping a report, in its own
+    # throwaway data directory.
+    reports = kit.settings.alert_reports.model_copy(update={"store": True})
+    settings = kit.settings.model_copy(update={"server": server, "alert_reports": reports})
+    payload = _example("alertmanager-etcd.json")
+    _step(
+        emit,
+        "Offline, with no server and no model: one evidence report per alert in a payload file",
+        "kube-noob alerts report -f examples/alertmanager-etcd.json",
+    )
+    offline = kit.alert_report(tk.AlertReportIn(payload=payload))
+    summary = offline["report"]["summary"]
+    emit(
+        f"{summary['alerts']} alerts, OpenShift {', '.join(summary['versions'])} (from their labels): "
+        f"{summary['byVerdict']}"
+    )
+    _step(
+        emit,
+        "Alertmanager posts a firing group to the receiver; kube-noob answers with an evidence report and keeps it",
+        "curl -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' "
+        "--data @examples/alertmanager-etcd.json http://127.0.0.1:8080/v1/alert-reports",
+    )
+    with TestClient(http_app(settings), base_url="http://127.0.0.1:8080") as client:
+        posted = client.post("/v1/alert-reports", content=payload, headers={"Content-Type": "application/json"})
+        if posted.status_code != 200:
+            raise KubeNoobError(f"the receiver answered {posted.status_code}")
+        out = posted.json()
+        for a in out["report"]["alerts"]:
+            ki = ", ".join(m["id"] for m in a["knownIssues"]["matches"]) or "none"
+            books = ", ".join(p["id"] for p in a["diagnosis"]["playbooks"]) or "none"
+            emit(f"{a['alertname']}: {a['verdict']}; playbook {books}; known issues {ki}")
+        emit(f"report {out['id']}: stored={out['stored']}, receipt to report {out['durationSeconds']:.3f}s")
+        _step(
+            emit,
+            "Read it back later by its id (GET /v1/alert-reports/<id>, or in the pod:)",
+            f"kube-noob alerts show {out['id']}",
+        )
+        again = client.get(f"/v1/alert-reports/{out['id']}")
+        if again.status_code != 200 or again.json().get("bodySha256") != out["bodySha256"]:
+            raise KubeNoobError("the stored report could not be read back unchanged")
+        emit(f"read back: same body (sha256 {out['bodySha256'][:12]}...)")
+    if not out["stored"]:
+        raise KubeNoobError(f"the report was not stored: {out.get('notStoredReason')}")
+    if out["durationSeconds"] > ALERT_REPORT_BUDGET_SECONDS:
+        raise KubeNoobError(
+            f"receipt to report took {out['durationSeconds']:.3f}s, over the {ALERT_REPORT_BUDGET_SECONDS}s budget"
+        )
+    emit(f"within the {ALERT_REPORT_BUDGET_SECONDS:g}s budget (the north-star claim is a minute)")
+
+
 def _doctor(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob.posture import posture, render_text
 
@@ -356,6 +425,12 @@ SCENARIOS: dict[str, Scenario] = {
             "Must-gather pre-flight: what is wrong, the matching bugs, a case draft",
             "support engineers, SREs",
             _mustgather,
+        ),
+        Scenario(
+            "alerts",
+            "Alertmanager payload to stored evidence report, timed against a budget",
+            "SREs, on-call",
+            _alerts,
         ),
         Scenario("doctor", "Show and lock what kube-noob itself can reach", "security, platform admins", _doctor),
     )

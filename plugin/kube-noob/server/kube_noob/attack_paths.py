@@ -1050,6 +1050,7 @@ def scan_manifests(text: str, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     """Read the inventory from the cluster through the read-only backend: never Secrets (not in its allowlist)."""
+    from kube_noob.debug.cluster import list_items
     from kube_noob.errors import KubeNoobError
 
     inv = Inventory()
@@ -1057,10 +1058,10 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                data = backend.get(resource, namespace=ns)
-            except KubeNoobError as exc:  # forbidden or not served (no Routes or SCCs on Kubernetes)
+                items = list_items(backend.get(resource, namespace=ns), resource, ns)
+            except KubeNoobError as exc:  # forbidden, not served (no Routes or SCCs on Kubernetes), or no list
                 inv.not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue
-            for item in _list(data.get("items")) if isinstance(data, dict) else []:
+            for item in items:
                 inv.add(item, kind)
     return inv

@@ -99,13 +99,13 @@ ACCEPTED = {
     "4.21.0-rc.1": "not-determined",
     "4.20.0-okd-scos.6": "not-determined",
     "4.21": "determined",
-    " 4.21 ": "determined",
     "4.16.20": "not-determined",
-    "v4.21.3": "determined",
     NIGHTLY: "not-determined",
     "4.21.3-x86_64": "determined",
 }
-REFUSED = ["latest", "4.20.x", "4.09", "4", "4.21.3; rm -rf /", "4.21." + "9" * 50]
+# The grammar is the one `operators issues --openshift-version` set (R5): a leading `v` and white space around the
+# value are refused like any other text, so what is typed is what is read, on every command and in every tool.
+REFUSED = ["latest", "4.20.x", "4.09", "4", "4.21.3; rm -rf /", "4.21." + "9" * 50, "v4.21.3", " 4.21 ", "4.21\n"]
 
 
 def _memory_repo(tmp: Path) -> Path:
@@ -208,13 +208,44 @@ def test_selftest_takes_every_accepted_version_and_refuses_the_file_for_a_bad_on
 def test_memory_reads_versions_like_the_known_issue_index() -> None:
     from kube_noob.memory.model import vkey
 
-    assert vkey("v4.21.3") == vkey("4.21.3") == (4, 21, 3)
-    assert vkey("4.21.3-x86_64") == (4, 21, 3)
+    assert vkey("4.21.3-x86_64") == vkey("4.21.3") == (4, 21, 3)
+
+
+def test_the_operators_command_and_its_tools_read_the_same_grammar() -> None:
+    """One parser (kube_noob.versions) behind `--version`, `--openshift-version` and every tool model (R5, G277)."""
+    from kube_noob import operator_issues as oi
+    from kube_noob.versions import is_version, refusal
+
+    for v in ACCEPTED:
+        assert oi.parse_version(v) == v and is_version(v), v
+        assert tk.OperatorKnownIssuesIn(manifests="x: 1", openshift_version=v).openshift_version == v
+    for v in REFUSED:
+        assert oi.parse_version(v) is None and not is_version(v), v
+        with pytest.raises(ValidationError) as err:
+            tk.OperatorKnownIssuesIn(manifests="x: 1", openshift_version=v)
+        assert refusal("openshift_version") in str(err.value)
+        with pytest.raises(ValidationError) as err:
+            tk.KnownIssuesIn(text=ETCD, version=v)
+        assert refusal("version") in str(err.value)
+    assert oi.is_okd("4.20.0-okd-scos.6") and oi.is_okd("4.20.0-0.okd-scos-2025-06-20-105747")
+    assert not oi.is_okd("4.20.0-rc.1") and not oi.is_okd("4.21.3-x86_64")
+
+
+def test_a_refused_version_gets_the_one_sentence_on_both_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    from kube_noob.versions import refusal
+
+    assert main(["known-issues", ETCD, "--version", "v4.21"]) == 2
+    assert capsys.readouterr().err.strip() == "error: " + refusal("--version")
+    assert (
+        main(["operators", "issues", "-f", str(EXAMPLES / "insecure-deployment.yaml"), "--openshift-version", "v4.21"])
+        == 2
+    )
+    assert capsys.readouterr().err.strip() == "error: " + refusal("--openshift-version")
 
 
 def test_a_flag_and_a_label_that_name_the_same_release_do_not_conflict(capsys: pytest.CaptureFixture[str]) -> None:
     payload = str(EXAMPLES / "alertmanager-etcd.json")  # its label says 4.21.0
-    for same in ("4.21.0", "v4.21.0", " 4.21.0 "):
+    for same in ("4.21.0", "4.21.0-x86_64"):
         rep = json.loads(_out(["diagnose", "-f", payload, "--version", same, "--format", "json"], capsys))
         assert "versionConflict" not in rep["input"], same
     rep = json.loads(_out(["diagnose", "-f", payload, "--version", "4.21", "--format", "json"], capsys))
@@ -369,13 +400,6 @@ def test_one_line_is_visible_with_whitespace_collapsed() -> None:
         assert sanitize.one_line(text) == " ".join(sanitize.visible(text).split()), repr(text)
 
 
-def test_a_lone_surrogate_prints_as_the_replacement_character(capsys: pytest.CaptureFixture[str]) -> None:
-    from kube_noob.cli import _tprint
-
-    _tprint("a\ud800b")
-    assert capsys.readouterr().out == "a�b\n"
-
-
 # -- 7. team memory in the diagnose text view ------------------------------------------------------------------------
 
 
@@ -451,11 +475,16 @@ def test_a_live_debug_whose_version_could_not_be_read_says_so() -> None:
             raise ClusterAccessError("forbidden: version")
 
         def get(self, resource: str, namespace: str | None = None, name: str | None = None, **_: Any) -> dict[str, Any]:
+            # a list the live reader accepts (G279): a kind, and every item named in the namespace asked for
             if resource == "events":
-                return {"items": [{"type": "Warning", "reason": "Unhealthy", "message": ETCD}]}
+                meta = {"name": "api.1", "namespace": namespace}
+                return {
+                    "kind": "EventList",
+                    "items": [{"metadata": meta, "type": "Warning", "reason": "Unhealthy", "message": ETCD}],
+                }
             if resource == "deployments":
                 return {"metadata": {"name": "api"}, "spec": {"selector": {"matchLabels": {"app": "api"}}}}
-            return {"items": []}
+            return {"kind": "List", "items": []}
 
         def logs(self, *a: Any, **k: Any) -> str:
             return ETCD

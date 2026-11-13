@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from kube_noob import sanitize
-from kube_noob.debug.cluster import Backend, redact_text
+from kube_noob.debug.cluster import Backend, list_items, redact_text
 from kube_noob.debug.playbooks import EXIT_CODES, PLAYBOOKS, Cause, Playbook
 from kube_noob.debug.steps import classify_step, split_comment
 from kube_noob.errors import ClusterAccessError
@@ -414,17 +414,34 @@ _WEAK_WITHOUT_CONTEXT: dict[str, frozenset[str]] = {
 }
 
 
+#: Names an Alertmanager payload's labels alone may set (``kube_noob.signals.alertmanager.label_context``).
+LABEL_ONLY_CONTEXT = ("ns", "pod", "name")
+
+
 def diagnose(
-    text: str, platform: str | None = None, limit: int = 5, signals: list[Signal] | None = None
+    text: str,
+    platform: str | None = None,
+    limit: int = 5,
+    signals: list[Signal] | None = None,
+    context: dict[str, str] | None = None,
 ) -> DiagnoseResult:
     """Rank playbooks for ``text``: one point per matching pattern plus ``SIGNAL_WEIGHT`` when catalogued signals point
     at the playbook (``kube_noob.signals``: an alert name, a container or event reason, a phrase such as "leader
     changed"), times the playbook's weight. ``signals`` overrides the signals read from ``text``, e.g. the ones read
-    from an Alertmanager payload."""
+    from an Alertmanager payload; ``context`` likewise overrides the names steps are filled with."""
     if len(text) > MAX_INPUT:
         text = text[-MAX_INPUT:]
     text = redact_text(text)
     ctx = extract_context(text)
+    if context is not None:
+        # An Alertmanager payload: the namespace and the pod, which decide what every step reads, come from its labels
+        # and never from its annotations, which are prose that anyone writing the alert rule controls (G274). A service
+        # or a claim the labels name wins over the text; one they do not name is still read from the text, and so is
+        # every other name (the verb and resource of a "forbidden" message, its user, a pull secret, a selector):
+        # labels never carry those, and replacing the whole context with the labels' lost them all.
+        for key in LABEL_ONLY_CONTEXT:
+            ctx.pop(key, None)
+        ctx.update(context)
     if signals is None:
         signals = for_text(text)
     linked = playbooks_for(signals)
@@ -612,11 +629,14 @@ def collect_evidence(backend: Backend, namespace: str, kind: str, name: str, log
             )
         sel = (obj.get("spec") or {}).get("selector") or {}
         sel_str = _selector_string(sel) if resource != "jobs" else f"job-name={name}"
-        pods = backend.get("pods", namespace=namespace, selector=sel_str or None).get("items", []) if sel_str else []
+        pods = (
+            list_items(backend.get("pods", namespace=namespace, selector=sel_str), "pods", namespace) if sel_str else []
+        )
     for pod in pods[:10]:
         lines.extend(_pod_summary(pod))
     lines.extend(_service_account_pull_secrets(backend, namespace, pods[:10]))
-    events = backend.get("events", namespace=namespace).get("items", [])
+    # a response without an items list is a failed read, not "no events" (G279)
+    events = list_items(backend.get("events", namespace=namespace), "events", namespace)
     names = {name} | {p.get("metadata", {}).get("name") for p in pods}
     rel = [
         e
@@ -680,7 +700,13 @@ def debug_workload(
     return {
         "backend": backend.name,
         "target": f"{kind}/{namespace}/{name}",
-        "cluster": {k: info.get(k) for k in ("kubernetes", "openshift", "newerThanKnowledge", "warnings") if k in info},
+        # platformNotRead travels too: without it an unread ClusterVersion showed as `openshift: null` and the
+        # known-issue match below silently ran without a platform (G279)
+        "cluster": {
+            k: info.get(k)
+            for k in ("kubernetes", "openshift", "platformNotRead", "newerThanKnowledge", "warnings")
+            if k in info
+        },
         "evidence": ev["summary"],
         "logs": {k: v[-6000:] for k, v in ev["logs"].items()},
         **result.as_dict(),
@@ -696,6 +722,11 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         f"# Diagnostic bundle: {result['target']}",
         "",
         f"Collected read-only via `{result['backend']}`. Secrets were not read; sensitive values are redacted.",
+        *(
+            ["", f"**Platform not known:** {(result.get('cluster') or {})['platformNotRead']}."]
+            if (result.get("cluster") or {}).get("platformNotRead")
+            else []
+        ),
         "",
         "## Evidence",
         *(f"- {e}" for e in result.get("evidence", [])),
@@ -754,7 +785,7 @@ def bundle_markdown(result: dict[str, Any]) -> str:
         lines += ["", "## Recent logs (redacted)"]
         for name, text in result["logs"].items():
             lines += ["", f"### {name}", "```", text[-3000:], "```"]
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)
 
 
 # --- text view (`kube-noob diagnose`, the default --format) -------------------------------------------------
@@ -1032,14 +1063,14 @@ def render_text(result: dict[str, Any]) -> str:
         lines += ["", f"{result['approach']} Here they are marked (needs approval)."]
     while lines and not lines[0]:
         lines.pop(0)
-    # Every element is one line: a newline or an invisible character inside a value from the input (a memory
-    # symptom, an alert name, a denial message) would otherwise forge a line or hide text in one.
-    from kube_noob.sanitize import one_line, visible
 
+    # Every element is one line: a newline or an invisible character inside a value from the input (a memory
+    # symptom, an alert name, a denial message) would otherwise forge a line or hide text in one. ``sanitize``'s
+    # one rule (G279) decides what is shown: a removed character inside a name is marked, never spliced out.
     def shown(x: str) -> str:
         indent = x[: len(x) - len(x.lstrip(" "))]
         if isinstance(x, _Verbatim):
-            return indent + visible(x.lstrip(" ")).replace("\n", " ").replace("\r", " ")
-        return indent + one_line(x)
+            return indent + sanitize.visible(x.lstrip(" ")).replace("\n", " ").replace("\r", " ")
+        return indent + sanitize.one_line(x)
 
     return "\n".join(shown(x) for x in lines)

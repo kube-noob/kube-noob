@@ -35,7 +35,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 
 from kube_noob import sanitize
 from kube_noob.config import Settings
-from kube_noob.versions import MAX_SHOWN, VERSION_FIELD_PATTERN, strip_version
+from kube_noob.versions import MAX_SHOWN, VERSION_FIELD_PATTERN, strict_field
 
 MAX_CASES = 2_000
 MAX_INPUT = 2_000_000
@@ -94,7 +94,7 @@ class Case(BaseModel):
     input: str = Field(..., min_length=3, max_length=MAX_INPUT)
     kind: Literal["auto", "diagnose", "search", "audit", "known-issues"] = "auto"
     platform: PlatformT | None = None
-    version: Annotated[str | None, BeforeValidator(strip_version)] = Field(
+    version: Annotated[str | None, BeforeValidator(strict_field("version"))] = Field(
         None, max_length=MAX_SHOWN, pattern=VERSION_FIELD_PATTERN
     )
     source: str = Field("", max_length=300)

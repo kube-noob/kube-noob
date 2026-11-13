@@ -150,6 +150,133 @@ gh workflow run videos.yml --repo <owner>/<repo> -f tag=v<version>
 If the artifacts have expired, build the wheel, chart, GIFs and skill ZIP from the tag and upload them with
 `gh release upload`; the release step is idempotent, so running the job again after that is safe.
 
+## Alert evidence reports (the Alertmanager receiver)
+
+`kube-noob serve` answers `POST /v1/alert-reports` with one evidence report per alert in an Alertmanager payload
+and, with `alertReports.store`, keeps it in `<dataDir>/alert-reports`: owner-only, the newest
+`alertReports.maxReports` (200), none older than `alertReports.maxAgeDays` (14), each at most
+`alertReports.maxReportBytes` (1 MiB). The report is built from the payload and kube-noob's local knowledge alone; it
+reads no cluster and sends nothing anywhere. One post gets `alertReports.budgetSeconds` (30) of work; alerts not
+reached by then keep a `not-evaluated` row, are named in `notIncluded`, and the stored record says the same.
+
+The chart keeps no report by default (`alertReports.store: false`): it runs two replicas, each with its own volume,
+and a report kept by one is not found through the Service on the other. To keep them set `alertReports.store: true`
+and `replicaCount: 1` (the chart refuses the first without the second, as it does for `watch.enabled` and
+`posture.report.enabled`), and `persistence.enabled` if they should outlive the pod. Off, every POST still answers
+with the report and `stored: false`.
+
+Field names below were checked against Alertmanager v0.28.1 (`docs/configuration.md`: `webhook_config` has `url`,
+`url_file`, `send_resolved`, `http_config`, `max_alerts`, `timeout`; `http_config.authorization` has `type`, default
+`Bearer`, and `credentials` or `credentials_file`; the webhook posts `Content-Type: application/json`,
+`notify/util.go` `PostJSON`) and prometheus-operator v0.80.0 (`pkg/apis/monitoring/v1beta1/alertmanager_config_types.go`:
+`webhookConfigs[].url`, `sendResolved`, `maxAlerts`, `httpConfig.authorization.credentials` as a Secret key selector).
+
+The platform Alertmanager sees every namespace's alerts. Add a receiver to its configuration (on OpenShift, the
+`alertmanager.yaml` key of the `alertmanager-main` Secret in `openshift-monitoring`) and route to it:
+
+```yaml
+receivers:
+  - name: kube-noob
+    webhook_configs:
+      - url: http://kube-noob.kube-noob.svc:8080/v1/alert-reports
+        send_resolved: true
+        max_alerts: 500
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: <the token from the Secret the chart's NOTES name>
+```
+
+A namespace's own alerts can go through an `AlertmanagerConfig` in that namespace instead. The operator adds a
+`namespace` matcher for the object's own namespace to its top route, so this one only ever sees alerts from the
+namespace it lives in; the token Secret has to be in that namespace too:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1beta1
+kind: AlertmanagerConfig
+metadata:
+  name: kube-noob
+  namespace: kube-noob
+spec:
+  route:
+    receiver: kube-noob
+    groupBy: [alertname]
+  receivers:
+    - name: kube-noob
+      webhookConfigs:
+        - url: http://kube-noob.kube-noob.svc:8080/v1/alert-reports
+          sendResolved: true
+          maxAlerts: 500
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                name: kube-noob-token
+                key: token
+```
+
+Two chart settings decide whether the post arrives: the Alertmanager's namespace must be allowed in by the chart's
+NetworkPolicy (`networkPolicy.allowIngressNamespace: openshift-monitoring`, or `openshift-user-workload-monitoring`
+for the user-workload Alertmanager), and the server's body limit is 1.5 MiB (1,572,864 bytes). `max_alerts` bounds
+the count, not the size: 500 alerts fit only while each averages under about 3 KB of labels and annotations, so set
+it from your own alerts (a group of 900 alerts of 1.9 KB each was refused). A post above the limit gets 413 and is
+not read at all. Alertmanager does not retry it: its webhook notifier retries a 5xx answer only and drops any 4xx as
+a failed notification (`notify/util.go`, `Retrier.Check`, v0.28.1). A storage failure is not a 4xx: the POST still
+answers 200 with the report and `stored: false`.
+
+Reading them back, with the same bearer token:
+
+```bash
+curl -sH "Authorization: Bearer $TOKEN" http://kube-noob.kube-noob.svc:8080/v1/alert-reports?limit=20
+curl -sH "Authorization: Bearer $TOKEN" http://kube-noob.kube-noob.svc:8080/v1/alert-reports/<id>
+kubectl -n kube-noob exec deploy/kube-noob -- kube-noob alerts list
+```
+
+What to watch:
+
+- `stored: false` on a POST is the answer, not an error: the report is in the response and `notStoredReason` says why
+  it was not kept (storing is off, the folder is a link or belongs to another user, the disk is full). The server
+  log line `alert report <id> not stored` carries the same reason; the dashboard's "Reports kept, not kept" panel
+  counts them.
+- `kube_noob_alert_report_duration_seconds` is the receipt-to-report time, from the request reaching the route to the
+  report being ready (before it is written), including the time to receive the body and any wait for a slot. Every
+  request body must arrive within 10 s, or the request is answered 408 and holds nothing afterwards; a body over
+  256 KiB holds one of eight large-body places from the moment it is in memory until its tool takes it (an alert
+  report: until it holds a report slot), and a request that finds all eight taken waits for one until its read
+  deadline and is then answered 503. At most two reports are built at once, by the receiver and the `alert_report` MCP
+  tool together; a post takes a slot after its body is read, waits at most 5 s for one (half of
+  `alertReports.budgetSeconds` when that is under 10 s), and is then answered 503 with `Retry-After: 5`, which
+  Alertmanager retries like any 5xx; an MCP call gets a busy tool error (a JSON-RPC error with the same message when
+  the refusal comes before the call is parsed). The budget (30 s) counts from receipt, and no alert starts after it,
+  so a post is answered within the read deadline plus the slot wait plus the budget's remainder plus the alert in
+  progress and the time to keep the report; the histogram's buckets run to 600 s. A post whose sender has gone by the
+  time its report would start, or would be kept, is dropped and kept nowhere -- including a sender that half-closes
+  its connection after sending -- and is answered 499, which the sender never sees;
+  `kube_noob_alert_reports_dropped_total` counts those (`client-gone`) and the refusals (`busy`). Measured on the
+  2-core build machine on 2026-11-12, the server in its own process with 64 connections allowed: 20 worst-case posts
+  at once (below) gave two reports in 11.5 s and eighteen 503s, a server peak of 169 MB and `/healthz` p50 38 ms; 120
+  such posts from senders that gave up after 3 s built and kept nothing, peak 187 MB (410 MB, with four abandoned
+  reports kept, before the second review); 64 such MCP calls at once peaked at 217 MB (624 MB before) with `/healthz`
+  p50 32 ms; two senders trickling a 5 KB alert post a byte every 20 s no longer delay real posts (each answered in
+  under 0.1 s), and eight trickling 300 KB posts no longer refuse large ones; ten parallel 320 KB audits all answer.
+  `kube-noob demo
+  alerts` posts the bundled payload to an in-process server and fails over 2 s. Measured on the 2-core, 7 GB build
+  machine on 2026-11-12, idle apart from one other test run: the bundled payload 0.09 s as the first request of a
+  fresh process, then p50 22 ms and p95 23 ms over 250 posts; the review's worst in-bounds payloads 4.5 s (150 alerts,
+  five 2,000-character fields each, 1.51 MB) and 5.7 s (500 alerts of 2.8 KB, 1.49 MB). Before the redaction fix the
+  first of those took 40.4 s. With other test suites on both cores the same two took about 15 s each, which is what
+  `budgetSeconds` is for.
+- `kube_noob_alert_reports_evicted_total` rising steadily means retention is doing its job; reports you need longer
+  belong in a ticket, not in a larger `maxReports`.
+- A stored report is read only if it is a regular file with one link, owned by the server's user: a backup made with
+  hard links to the store's files elsewhere (`cp -al`, rsnapshot) gives them a second link, and the server then refuses
+  to read them (500, "not a regular file of this server's own, with one link"). Back the folder up by copying.
+- `retentionNotRemoved` on a POST means retention could not remove an older report file: the report was stored, and
+  the log names the count. An entry under a report's name that is not a regular file (a directory, a FIFO, a link)
+  is no report: the list counts it under `ignored`, and nothing reads it or counts it toward `maxReports`. Remove it
+  by hand.
+- To keep nothing: `alertReports.store: false`. To delete what was kept: remove `<dataDir>/alert-reports`.
+
 ## Rollback
 
 - PyPI versions are immutable. Yank the bad version (`pypi.org/manage/project/kube-noob/releases/`), fix forward, and

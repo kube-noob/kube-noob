@@ -17,10 +17,11 @@ The layout, read from openshift/oc (``pkg/cli/admin/mustgather``, ``pkg/cli/admi
 
 Rules: an archive member with an absolute path, a ``..`` segment or a NUL refuses the whole archive (a must-gather
 never has one, so it was tampered with); symbolic links, hard links, devices and FIFOs are never followed or read
-and are reported; files named like Secrets (``secrets.yaml``, anything under a ``secrets`` directory) are never read;
-nested archives are listed, not opened. Caps bound the member count, the bytes processed (header sizes, so a gzip
-bomb stops at the cap), each file, what is kept in memory, and the nesting depth. Resource YAML is kept whole up to
-``MAX_FILE_BYTES``; logs keep their last ``LOG_TAIL_BYTES``.
+and are reported; files named like Secrets (``secrets.yaml``, anything under a ``secrets`` directory) are never
+read, except OLM object files in the layout oc writes (``namespaces/<ns>/operators.coreos.com/...``), whose names
+are operators' and namespaces'; nested archives are listed, not opened. Caps bound the member count, the bytes
+processed (header sizes, so a gzip bomb stops at the cap), each file, what is kept in memory, and the nesting depth.
+Resource YAML is kept whole up to ``MAX_FILE_BYTES``; logs keep their last ``LOG_TAIL_BYTES``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
+from kube_noob import sanitize
+
 MAX_MEMBERS = 300_000
 MAX_TOTAL_BYTES = 16 * 2**30  # processed, uncompressed
 MAX_FILE_BYTES = 64 * 2**20  # a resource YAML kept whole
@@ -46,7 +49,6 @@ MAX_REPORTED = 200
 ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz")
 _NESTED = re.compile(r"\.(?:gz|tgz|tar|zip|xz|bz2|zst|7z|rar)$", re.I)
 _LOG = re.compile(r"\.log$|/logs/(?:rotated/)?[^/]+$")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 GATHER_DIRS = ("cluster-scoped-resources", "namespaces")
 
 
@@ -54,9 +56,21 @@ class MustGatherError(ValueError):
     """Not a must-gather we can open, or one that is unsafe or over the caps."""
 
 
+# An OLM object file as oc adm inspect writes it. Its name is an operator's or a namespace's, never a Secret's, so a
+# CSV named `secrets-store-csi-driver-operator.v4.14.0` or a namespace called `secrets` is read rather than
+# dropped as "Secret data" -- which made the operator inventory answer without a real operator (G270).
+_OLM_OBJECT = re.compile(
+    r"(?:^|/)namespaces/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/operators\.coreos\.com/"
+    r"(?:clusterserviceversions|subscriptions|installplans|operatorgroups)(?:\.(?:ya?ml|json)|/[^/]+\.(?:ya?ml|json))\Z"
+)
+MAX_SKIPPED_PATHS = 20_000
+
+
 def secret_like(path: str) -> bool:
     """A file kube-noob never reads: ``secrets.yaml``, a file under a ``secrets`` directory, or a file named for one
-    Secret (``secret-<name>.yaml``)."""
+    Secret (``secret-<name>.yaml``). An OLM object file in the layout oc adm inspect writes is not one."""
+    if _OLM_OBJECT.search(path):
+        return False
     parts = path.lower().split("/")
     name = parts[-1]
     return (
@@ -116,12 +130,20 @@ class Bundle:
     skipped: Counter[str] = field(default_factory=Counter)
     examples: dict[str, list[str]] = field(default_factory=dict)
     truncated: list[str] = field(default_factory=list)  # logs cut to their tail
+    #: Every skipped path with its reason (up to MAX_SKIPPED_PATHS; past that only counted), so a reader that needs
+    #: a kind of file can tell "not in the must-gather" from "in it, and not read".
+    skipped_paths: list[tuple[str, str]] = field(default_factory=list)
+    skipped_unlisted: int = 0
 
     def skip(self, reason: str, path: str) -> None:
         self.skipped[reason] += 1
+        if len(self.skipped_paths) < MAX_SKIPPED_PATHS:
+            self.skipped_paths.append((path, reason))
+        else:
+            self.skipped_unlisted += 1
         ex = self.examples.setdefault(reason, [])
         if len(ex) < 5:
-            ex.append(_CONTROL.sub("?", path)[:300])
+            ex.append(sanitize.visible(path, replacement="?")[:300])
 
     def text(self, path: str) -> str:
         return self.files[path].decode("utf-8", "replace")
@@ -174,7 +196,7 @@ def _meta(bundle: Bundle, path: str, data: bytes) -> None:
     name = posixpath.basename(path)
     parent = posixpath.dirname(path)
     text = data[:4096].decode("utf-8", "replace")
-    lines = [_CONTROL.sub(" ", x).strip() for x in text.splitlines() if x.strip()][:3]
+    lines = [sanitize.visible(x).strip() for x in text.splitlines() if x.strip()][:3]
     bundle.files[path] = data[:4096]
     for prefix, root in bundle.roots.items():
         own = prefix == parent
@@ -243,7 +265,7 @@ def _visit(bundle: Bundle, path: str, size: int) -> str | None:
     if path.count("/") >= MAX_DEPTH:
         bundle.skip(f"nested deeper than {MAX_DEPTH} directories (not read)", path)
         return None
-    if _CONTROL.search(path):
+    if sanitize.has_invisible(path):  # bidi, tag and format characters too, not only C0 (G279)
         bundle.skip("control characters in the name (not read)", path)
         return None
     if secret_like(path):

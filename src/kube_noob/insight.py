@@ -1423,7 +1423,7 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
     doc = _json(text)
     if isinstance(doc, dict) and doc.get("kind") == "Status" and isinstance(doc.get("message"), str):
         # the denial as the API server wrote it, quotes unescaped; a lone surrogate from a JSON escape is not text
-        tail = f"{doc['message'].encode('utf-8', 'replace').decode('utf-8')}\n{tail}"
+        tail = f"{sanitize.replace_surrogates(doc['message'])}\n{tail}"
     if names & textual or not names:
         d = budget.run(
             "diagnose", lambda: kit.diagnose(tk.DiagnoseIn(text=tail, platform=platform, version=version, limit=5))
