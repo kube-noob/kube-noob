@@ -1951,7 +1951,7 @@
    "post": {
     "operationId": "post_analyze_must_gather",
     "summary": "What is wrong in a must-gather on the server's volume",
-    "description": "Open an OpenShift must-gather (or oc adm inspect output) safely and say what is wrong, most severe first: the cluster version and update, cluster operators, nodes, machine config pools, OLM operators, pods, warning events and etcd log hints, and an installed-operator inventory. Each finding has its evidence file, its signals, read-only commands to confirm it, and the known OpenShift bugs and team memory entries that match it for the version the cluster runs. Nothing is extracted or run and Secrets are never read. Paths must be inside /srv/kube-noob/must-gather.",
+    "description": "Open an OpenShift must-gather (or oc adm inspect output) safely and say what is wrong, most severe first: the cluster version and update, cluster operators, nodes, machine config pools, OLM operators, pods, warning events and etcd log hints, and an installed-operator inventory. Each finding has its evidence file, its signals, read-only commands to confirm it, and the known OpenShift bugs and team memory entries that match it for the version the cluster runs. completeness.legs says what each leg of the run could read (analysers, files, skipped files, operator inventory, release-note lookups); complete is true only when no leg is partial. Nothing is extracted or run and Secrets are never read. Paths must be inside /srv/kube-noob/must-gather.",
     "responses": {
      "200": {
       "description": "The tool's result (always carries knowledgeAsOf)",

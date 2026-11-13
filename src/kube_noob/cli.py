@@ -120,6 +120,25 @@ def _locate(report: dict[str, Any], sources: Sequence[tuple[str, int]]) -> None:
             f["line"] = line - start + 1
 
 
+def _fix_verdict_line(res: dict[str, Any]) -> str:
+    """One line a reader compares: the audit's verdict before and after the fix, the same way `audit` prints it,
+    and the rules the fix introduced, named as such (a rule only a whole-namespace audit would see cannot appear
+    here, because both verdicts share the audit's assumptions; G286)."""
+
+    def part(view: dict[str, Any]) -> str:
+        s = view["summary"]
+        counts = " ".join(f"{k}={v}" for k, v in s["counts"].items() if v and k != "info")
+        return f"score={s['score']}" + (f" | {counts}" if counts else " | no findings")
+
+    d = res["delta"]
+    line = f"before {part(res['before'])} -> after {part(res['after'])}; fixed {len(d['fixed'])} rule(s)"
+    if d["open"]:
+        line += f", {len(d['open'])} still open"
+    if d["introduced"]:
+        line += f"; introduced by the fix: {', '.join(d['introduced'])}"
+    return line
+
+
 def _partial_input(a: argparse.Namespace) -> bool:
     """True when the caller named one file or stdin rather than a directory.
 
@@ -2333,7 +2352,17 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.cmd == "redteam":
             _emit(kit.red_team(tk.ManifestsIn(manifests=text, platform=platform, version=a.pversion)), fmt)
             return 0
-        res = kit.fix(tk.FixIn(manifests=text, platform=platform, version=a.pversion, harden=not a.no_harden))
+        # The same partial-bundle decision `audit -f` makes for the same shape of input, so `before` and `after`
+        # are the audit's own verdict on these bytes (G286).
+        res = kit.fix(
+            tk.FixIn(
+                manifests=text,
+                platform=platform,
+                version=a.pversion,
+                harden=not a.no_harden,
+                partial_bundle=_partial_input(a),
+            )
+        )
         if len(sources) > 1:
             # One stream out of several files in, and the file boundaries are gone: a caller who redirected
             # this over their directory would have one file where they had five. Said on stderr, where the
@@ -2348,9 +2377,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
         else:
             print(res["manifests"], end="")
+        print(_fix_verdict_line(res), file=sys.stderr)
         print(
             yaml.safe_dump(
-                {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
+                {k: res[k] for k in ("changes", "manualFollowUps", "before", "after", "delta")},
                 sort_keys=False,
             ),
             file=sys.stderr,

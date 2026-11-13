@@ -49,6 +49,19 @@ kube-noob helm-chart --name orders-api --namespace shop --image quay.io/acme/ord
 
 To gate pull requests, run `kube-noob audit -f k8s/ --fail-on high` in CI. It exits 1 on any HIGH or CRITICAL finding.
 
+`fix` judges its own output the way `audit` would judge the file it writes: the one-line summary on stderr is the
+audit's verdict before and after, under the same assumptions `audit -f` makes for the same input (one file or stdin
+is part of a namespace; a directory is the whole of it), and the YAML block below it carries `before`, `after` (each
+with the audit's `summary`, `assumptions` and `controlSummary`) and a `delta` of the rules fixed, still open and
+introduced by the fix. `kube-noob audit -f fixed.yaml` prints the same score and counts as `after`.
+
+```console
+$ kube-noob fix -f examples/exercise-answer.yaml -o fixed.yaml
+before score=74.0 | low=6 medium=5 -> after score=84.0 | low=4 medium=3; fixed 4 rule(s), 7 still open
+$ kube-noob audit -f fixed.yaml
+kube-noob audit | platform=kubernetes k8s=1.35 | score=84.0 | low=4 medium=3
+```
+
 If you target a Kubernetes or OpenShift minor newer than the one kube-noob's removed-API data was read at, the
 report says so rather than reporting nothing:
 

@@ -205,6 +205,12 @@ class AuditIn(ManifestsIn):
 
 class FixIn(ManifestsIn):
     harden: bool = Field(True, description="Apply securityContext hardening (restricted profile).")
+    partial_bundle: bool = Field(
+        False,
+        description="The same input `audit_manifests` takes, with the same default: set when these documents are "
+        "only part of a namespace. `before` and `after` are then the verdict `audit_manifests` gives on the same "
+        "bytes with the same value, so the fix is never judged under assumptions the audit did not use (G286).",
+    )
 
 
 class ProtocolIn(_In):
@@ -1239,15 +1245,43 @@ class Toolkit:
             "scenarios": [s.as_dict() for s in r.scenarios],
         }
 
+    def _fix_verdict(self, manifests: str, p: FixIn) -> tuple[dict[str, Any], set[str], int]:
+        """The verdict `audit` gives on these bytes under the same inputs: the same platform, version and
+        `partial_bundle`, the audit's default severity floor (`low`) and the same registry allow-list. `fix` used
+        to call `analyze` bare, so its after-verdict was a whole-namespace audit counting info findings, and the
+        fix on the shipped example scored lower than the audit of its own output (G286)."""
+        r = analyze(
+            manifests,
+            p.platform,
+            p.version,
+            min_severity=Severity.parse(AuditIn.model_fields["min_severity"].default),
+            partial_bundle=p.partial_bundle,
+            allowed_registries=self._allowed_registries(),
+        )
+        d = r.as_dict()
+        view = {"summary": d["summary"], "assumptions": d["assumptions"], "controlSummary": d["controlSummary"]}
+        return view, {str(f["ruleId"]) for f in d["findings"]}, len(d["findings"])
+
     def fix(self, p: FixIn) -> dict[str, Any]:
         k8s = k8s_version_for(p.platform, p.version)
         res = fix_manifests(p.manifests, platform=p.platform, k8s_version=k8s, harden=p.harden)
-        after = analyze(res.yaml(), p.platform, p.version)
+        before, rules_before, n_before = self._fix_verdict(p.manifests, p)
+        after, rules_after, n_after = self._fix_verdict(res.yaml(), p)
         return {
             "manifests": res.yaml(),
             "changes": [c.as_dict() for c in res.changes],
             "manualFollowUps": res.manual,
-            "after": after.as_dict()["summary"],
+            "before": before,
+            "after": after,
+            # By rule id, under the same assumptions on both sides: `introduced` is a rule the fix itself made
+            # fire, never one that fires only under a whole-namespace audit.
+            "delta": {
+                "fixed": sorted(rules_before - rules_after),
+                "open": sorted(rules_before & rules_after),
+                "introduced": sorted(rules_after - rules_before),
+                "findingsBefore": n_before,
+                "findingsAfter": n_after,
+            },
         }
 
     # -- generation ------------------------------------------------------------------------------------------
@@ -2266,8 +2300,10 @@ class Toolkit:
                 "fix_manifests",
                 "Apply safe mechanical fixes",
                 "Migrates removed APIs, fixes wrong API groups, hardens securityContext, adds Route TLS, unblocks "
-                "PDBs, reorders EgressFirewall rules, swaps RWO-only classes for RWX claims. Returns the diff log "
-                "and manual follow-ups. Does not touch any cluster.",
+                "PDBs, reorders EgressFirewall rules, swaps RWO-only classes for RWX claims. Returns the diff log, "
+                "manual follow-ups, and the audit's verdict before and after under the same partial_bundle "
+                "assumption audit_manifests would use on these bytes, with a delta of rules fixed, open and "
+                "introduced. Does not touch any cluster.",
                 FixIn,
                 self.fix,
             ),
