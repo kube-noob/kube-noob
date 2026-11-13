@@ -1412,3 +1412,373 @@ def test_two_thousand_make_targets_are_read_or_refused_quickly(ws: Path) -> None
     start = time.perf_counter()
     assert _verify("make -f t2000.mk deploy", ws)["verdict"] != "allow"
     assert time.perf_counter() - start < 10
+
+
+# -- review 4 (G280): false asks, the shipped allow set, dry runs, targeting, the length cap, encoding ------------
+
+DATA = ROOT / "tests" / "data" / "verify"
+
+
+def _lines(name: str) -> list[str]:
+    return [ln for ln in (DATA / name).read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+@pytest.fixture
+def corpus_ws(ws: Path) -> Path:
+    """The tree the review's corpora name: a clean `k8s/web.yaml` (the only file in `k8s/`), a `k8s-bad/` with a
+    privileged pod, a local chart whose template is that pod, a plain kustomization and a values file."""
+    (ws / "k8s").mkdir()
+    shutil.copy(GOOD, ws / "k8s" / "web.yaml")
+    (ws / "k8s-bad").mkdir()
+    (ws / "k8s-bad" / "priv.yaml").write_text(PRIV_ONE)
+    (ws / "chart" / "templates").mkdir(parents=True)
+    (ws / "chart" / "Chart.yaml").write_text("apiVersion: v2\nname: web\nversion: 0.1.0\n")
+    (ws / "chart" / "templates" / "deploy.yaml").write_text(PRIV_ONE)
+    (ws / "overlays" / "prod").mkdir(parents=True)
+    (ws / "overlays" / "prod" / "kustomization.yaml").write_text("resources:\n  - ../../k8s/web.yaml\n")
+    (ws / "values-prod.yaml").write_text("replicaCount: 2\n")
+    return ws
+
+
+@pytest.mark.parametrize("cmd", _lines("ordinary-allow.txt"), ids=lambda c: c[:60])
+def test_every_ordinary_command_in_the_pinned_corpus_is_allowed(corpus_ws: Path, cmd: str) -> None:
+    """The reviewer's 223 ordinary commands (reads, pipelines, wrappers, day-2 changes, dry runs) and the false asks
+    the fourth review found (port-forward, helm diff, --help, oc adm reads, krew, neat), each pinned as allow."""
+    r = _verify(cmd, corpus_ws)
+    assert r["verdict"] == "allow", (cmd, r["deny"], r["notDetermined"])
+
+
+@pytest.mark.parametrize("cmd", _lines("documented-ask.txt"), ids=lambda c: c[:60])
+def test_every_documented_ask_in_the_pinned_corpus_asks_or_denies(corpus_ws: Path, cmd: str) -> None:
+    """The review's documented asks that the shipped contract asks or denies, with the ones it allows by design
+    moved to the allow table (test_the_documented_allow_ask_deny_table_is_what_the_code_does)."""
+    r = _verify(cmd, corpus_ws)
+    assert r["verdict"] != "allow", cmd
+    assert r["deny"] or r["notDetermined"]
+
+
+def test_the_pinned_corpora_are_the_review_size_and_have_no_duplicates() -> None:
+    allow, ask = _lines("ordinary-allow.txt"), _lines("documented-ask.txt")
+    assert len(allow) >= 223 and len(ask) >= 41
+    assert len(set(allow)) == len(allow) and len(set(ask)) == len(ask)
+    assert not set(allow) & set(ask)
+
+
+def _doc_table() -> list[tuple[str, str, str]]:
+    """(shape, example, verdict) rows of the allow/ask/deny table in docs/use-cases.md."""
+    text = (ROOT / "docs" / "use-cases.md").read_text(encoding="utf-8")
+    heading = "#### What verify allows, asks about and denies"
+    if heading not in text:
+        return []
+    section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    rows: list[tuple[str, str, str]] = []
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not line.startswith("| ") or len(cells) != 3 or cells[0] in {"Change", ""} or set(cells[0]) <= {"-"}:
+            continue
+        example = cells[1].strip("`")
+        rows.append((cells[0], example, cells[2]))
+    return rows
+
+
+DOC_ROWS = _doc_table()
+
+
+def test_the_documented_table_has_a_row_for_every_shape_the_code_decides() -> None:
+    verdicts = {v for _, _, v in DOC_ROWS}
+    assert verdicts == {"allow", "ask", "deny"}, verdicts
+    assert len(DOC_ROWS) >= 40
+    assert len({e for _, e, _ in DOC_ROWS}) == len(DOC_ROWS), "every row has its own example"
+    shapes = " ".join(s for s, _, _ in DOC_ROWS)
+    for word in (
+        "create", "new-project", "expose", "scale", "rollout", "autoscale", "label", "set env", "delete pod",
+        "replace", "patch", "port-forward", "proxy", "attach", "must-gather", "release info", "upgrade", "extract",
+        "login", "krew", "neat", "use-context", "set-context", "dry-run", "diff", "KUBECONFIG", "stdin",
+        "20,000", "help",
+    ):  # fmt: skip
+        assert word in shapes, word
+
+
+@pytest.mark.parametrize(("shape", "example", "verdict"), DOC_ROWS, ids=[e[:60] for _, e, _ in DOC_ROWS])
+def test_the_documented_allow_ask_deny_table_is_what_the_code_does(
+    corpus_ws: Path, shape: str, example: str, verdict: str
+) -> None:
+    """Finding 3: the allow set is the shipped contract, so every row of the table is run; docs and code cannot
+    drift apart without this failing."""
+    r = _verify(example, corpus_ws)
+    want = {"allow": "allow", "ask": "not-determined", "deny": "deny"}[verdict]
+    assert r["verdict"] == want, (shape, example, r["deny"], r["notDetermined"], r["findings"][:1])
+
+
+PORT_FORWARD_ALLOW = [
+    "kubectl port-forward web 8080:80",
+    "oc port-forward web 8080:80",
+    "kubectl port-forward -n default svc/kubernetes 6443:443",
+    "kubectl port-forward web 8080:80 --address 127.0.0.1,::1",
+    "kubectl port-forward --address=localhost deploy/web 8080:80",
+    "kubectl port-forward web 8080:80 --address=127.0.0.1",
+    "kubectl port-forward web 8080:80 --address ::1",
+    "kubectl proxy",
+    "kubectl proxy --port=8001",
+    "kubectl proxy --address=127.0.0.1 --port 8001",
+    "oc proxy --unix-socket=/tmp/p.sock",
+]
+PORT_FORWARD_ASK = [
+    "kubectl port-forward web 8080:80 --address 0.0.0.0",
+    "kubectl port-forward --address=:: web 8080:80",
+    "kubectl port-forward web 8080:80 --address 127.0.0.1,0.0.0.0",
+    "kubectl port-forward web 8080:80 --address=10.0.0.5",
+    "kubectl port-forward web 8080:80 --address $ADDR",
+    "oc port-forward web 8080:80 --address 0.0.0.0",
+    "kubectl proxy --address=0.0.0.0",
+    "kubectl proxy --address 0.0.0.0 --accept-hosts '^.*$'",
+    "kubectl proxy --accept-hosts='.*'",
+    "kubectl proxy --disable-filter",
+    "kubectl proxy --disable-filter=true",
+]
+
+
+@pytest.mark.parametrize("cmd", PORT_FORWARD_ALLOW)
+def test_a_port_forward_or_proxy_on_loopback_is_allowed_as_a_connection(ws: Path, cmd: str) -> None:
+    """Finding 1: port-forward and proxy change no cluster state; they open a local port. Their own class."""
+    r = _verify(cmd, ws)
+    assert (r["verdict"], r["class"]) == ("allow", "connects"), (cmd, r["notDetermined"])
+
+
+@pytest.mark.parametrize("cmd", PORT_FORWARD_ASK)
+def test_a_port_forward_or_proxy_reachable_from_other_hosts_asks(ws: Path, cmd: str) -> None:
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "not-determined" and r["class"] == "connects", cmd
+    assert any("exposes a local port to other hosts" in u for u in r["notDetermined"]), r["notDetermined"]
+
+
+def test_attach_stays_an_ask_like_exec(ws: Path) -> None:
+    r = _verify("kubectl attach web -it", ws)
+    assert r["verdict"] == "not-determined" and r["class"] == "runs-code"
+
+
+DRY_RUN_ALLOW = [
+    "kubectl apply -f good/orders-api.yaml --dry-run=server",
+    "kubectl apply -f bad/deploy.yaml --dry-run=server",
+    "kubectl apply -f bad/deploy.yaml --server-dry-run",
+    "kubectl create -f bad/deploy.yaml --dry-run=server",
+    "kubectl replace -f bad/deploy.yaml --dry-run=server",
+    "kubectl apply -f bad/deploy.yaml --dry-run=client -o yaml",
+    "kubectl delete deploy web --dry-run=server",
+    "kubectl delete ns prod --dry-run=client",
+    "kubectl delete -f bad/deploy.yaml --dry-run=server",
+    "kubectl scale deploy/web --replicas=0 --dry-run=server",
+    "kubectl scale deploy --all --replicas=0 --dry-run=server",
+    'kubectl patch deploy web -p \'{"spec":{"template":{"spec":{"hostNetwork":true}}}}\' --dry-run=server',
+    "kubectl create deployment web --image=nginx --dry-run=client -o yaml",
+    "kubectl run x --image=busybox --dry-run=server",
+    "kubectl label ns shop pod-security.kubernetes.io/enforce=privileged --dry-run=server",
+    "kubectl set image deploy/web web=nginx:2 --dry-run=server",
+    "kubectl taint nodes n1 k=v:NoSchedule --dry-run=server",
+    "kubectl drain n1 --dry-run=server",
+    "kubectl rollout undo deploy/web --dry-run=server",
+    "kubectl expose deploy web --port=80 --type=LoadBalancer --dry-run=server",
+    "kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --dry-run=client",
+    "helm uninstall web --dry-run",
+    "helm upgrade --install web ./chart --dry-run=server",
+    "helm install web ./chart --dry-run",
+    "helm rollback web 1 --dry-run",
+    "kubectl diff -f bad/deploy.yaml",
+]
+
+
+@pytest.mark.parametrize("cmd", DRY_RUN_ALLOW)
+def test_a_dry_run_on_any_verb_persists_nothing_and_is_allowed(ws: Path, cmd: str) -> None:
+    """Finding 2 and 5: `--dry-run=client|server` and `--server-dry-run` store nothing, whatever the verb."""
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "allow", (cmd, r["deny"], r["notDetermined"])
+    assert r["class"] == "read-only"
+    assert verify.exit_code(r) == 0
+
+
+def test_a_server_dry_run_of_a_manifest_a_real_apply_would_deny_carries_a_note(
+    ws: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = _verify("kubectl apply -f bad/deploy.yaml --dry-run=server", ws)
+    assert r["verdict"] == "allow"
+    (note,) = r["note"]
+    assert note.startswith("a real apply of this manifest would be denied: ") and "KN-S013" in note
+    assert "bad/deploy.yaml" in r["files"]
+    assert any(line.startswith("  note: a real apply of this manifest would be denied") for line in verify.text(r).splitlines())
+    clean = _verify("kubectl apply -f good/orders-api.yaml --dry-run=server", ws)
+    assert clean["verdict"] == "allow" and clean["note"] == []
+    assert "note:" not in verify.text(clean)
+    grant = _verify("kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u --dry-run=client", ws)
+    assert grant["verdict"] == "allow" and grant["note"] and "cluster-admin" in grant["note"][0]
+    # the note reaches the CLI's text, JSON and YAML, and the exit code is 0
+    monkeypatch.chdir(ws)
+    cmd = "kubectl apply -f bad/deploy.yaml --dry-run=server"
+    assert main(["verify", "--platform", "openshift", "--version", "4.20", "--command", cmd]) == 0
+    assert "note: a real apply of this manifest would be denied" in capsys.readouterr().out
+    for fmt, load in (("json", json.loads), ("yaml", yaml.safe_load)):
+        assert main(["verify", "--platform", "openshift", "--version", "4.20", "--format", fmt, "--command", cmd]) == 0
+        doc = load(capsys.readouterr().out)
+        assert doc["verdict"] == "allow" and doc["note"] and "KN-S013" in doc["note"][0], fmt
+
+
+def test_a_dry_run_does_not_cover_a_real_run_on_the_same_line_or_a_later_dry_run_none(ws: Path) -> None:
+    assert _verify("kubectl apply -f bad/deploy.yaml --dry-run=server && kubectl apply -f bad/deploy.yaml", ws)[
+        "verdict"
+    ] == "deny"
+    assert _verify("kubectl apply -f bad/deploy.yaml --dry-run=server --dry-run=none", ws)["verdict"] == "deny"
+    assert _verify("kubectl delete ns prod --dry-run=server --dry-run=false", ws)["verdict"] == "not-determined"
+    # a verb kubectl's own command table does not give --dry-run to (exec, a plugin) gets no dry-run credit
+    assert _verify("kubectl exec web --dry-run=server -- rm -rf /", ws)["verdict"] == "not-determined"
+    assert _verify("kubectl someplugin --dry-run=client", ws)["verdict"] == "not-determined"
+    assert _verify("kubectl delete ns prod -- --dry-run=server", ws)["verdict"] == "not-determined"
+
+
+TARGET_SPELLINGS = ["--context=prod", "--context prod", "--cluster=prod", "--kubeconfig=/tmp/kc", "--kubeconfig /tmp/kc"]
+DAY2 = [
+    "scale deploy/web --replicas=2",
+    "rollout restart deploy/web",
+    "delete pod web-abc",
+    "label deploy web tier=web",
+]
+
+
+@pytest.mark.parametrize("target", [*TARGET_SPELLINGS, "KUBECONFIG="])
+@pytest.mark.parametrize("day2", DAY2)
+def test_a_day2_change_is_judged_the_same_with_or_without_an_explicit_cluster(ws: Path, target: str, day2: str) -> None:
+    """Finding 4: a day-2 command carries no manifest, so the platform a target picks changes nothing in how it is
+    judged; with and without a `--context`, `--cluster`, `--kubeconfig` or `KUBECONFIG=` it is allowed alike."""
+    line = f"KUBECONFIG=/tmp/kc kubectl {day2}" if target == "KUBECONFIG=" else f"kubectl {target} {day2}"
+    assert _verify(f"kubectl {day2}", ws)["verdict"] == "allow"
+    r = _verify(line, ws)
+    assert r["verdict"] == "allow", (line, r["notDetermined"])
+
+
+@pytest.mark.parametrize("target", [*TARGET_SPELLINGS, "KUBECONFIG="])
+@pytest.mark.parametrize(
+    "manifest", ["apply -f good/orders-api.yaml", "create -f good/orders-api.yaml", "replace -f good/orders-api.yaml", "apply -k kustom"]
+)
+def test_a_manifest_sent_to_an_explicit_cluster_is_not_determined(ws: Path, target: str, manifest: str) -> None:
+    """The manifest is judged against a platform; an explicit target means that context's platform, which verify
+    does not know."""
+    line = f"KUBECONFIG=/tmp/kc kubectl {manifest}" if target == "KUBECONFIG=" else f"kubectl {target} {manifest}"
+    assert _verify(f"kubectl {manifest}", ws)["verdict"] == "allow"
+    r = _verify(line, ws)
+    assert r["verdict"] == "not-determined", line
+    assert any("picks the cluster" in u for u in r["notDetermined"]), r["notDetermined"]
+
+
+LOW_FALSE_ASK_ALLOW = [
+    "kubectl exec --help",
+    "kubectl debug --help",
+    "oc debug --help",
+    "kubectl delete -h",
+    "kubectl delete ns prod --help",
+    "helm install --help",
+    "helm uninstall -h",
+    "kustomize edit --help",
+    "oc adm node-logs worker-1",
+    "oc adm must-gather",
+    "oc adm must-gather --image=quay.io/example/gather:1 --dest-dir=out",
+    "oc adm release info 4.20.1",
+    "oc adm upgrade",
+    "oc adm upgrade -o yaml",
+    "oc registry info",
+    "kubectl krew list",
+    "kubectl krew info neat",
+    "kubectl krew search",
+    "kubectl get pods -o yaml | kubectl neat",
+    "helm diff upgrade web ./chart -n shop",
+    "helm diff release web web2",
+    "kubectl config set-context --current --namespace=shop",
+]
+LOW_FALSE_ASK_STILL_ASK = [
+    ("oc adm upgrade --to=4.20.2", "upgrade"),
+    ("oc adm upgrade --to-latest", "upgrade"),
+    ("oc adm upgrade --to-image=quay.io/x/release:1", "upgrade"),
+    ("oc adm upgrade channel stable-4.20", "upgrade"),
+    ("oc adm upgrade rollback", "upgrade"),
+    ("oc adm release extract --command=oc", "administrative"),
+    ("oc adm release mirror 4.20.1 --to=registry.example.com/ocp", "administrative"),
+    ("oc adm node-logs worker-1 --help-me", "administrative"),
+    ("kubectl krew install neat", "plugin"),
+    ("kubectl krew upgrade", "plugin"),
+    ("kubectl attach web -it", "runs a program"),
+    ("oc extract secret/x --to=-", "writes Secret or ConfigMap data to disk"),
+    ("oc login https://api.example.com:6443 --token=abc", "credential"),
+    ("oc logout", "token"),
+    ("oc registry login", "credential"),
+    ("helm template web chart | kubectl apply -f -", "piped from"),
+    ("kubectl get pods | grep -v Running | awk '{print $1}' | xargs kubectl delete pod", "xargs"),
+    ("kubectl config use-context staging", "changes which cluster"),
+    ("kubectl delete ns prod -n -h", "deletes objects"),
+    ("kubectl delete ns prod -- -h", "deletes objects"),
+]
+
+
+@pytest.mark.parametrize("cmd", LOW_FALSE_ASK_ALLOW)
+def test_help_and_the_reads_the_fourth_review_named_are_allowed(ws: Path, cmd: str) -> None:
+    """Finding 6: `--help` on any verb prints help; node-logs, must-gather, release info, the upgrade status read,
+    krew's reads, neat and helm diff read."""
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "allow", (cmd, r["notDetermined"])
+
+
+@pytest.mark.parametrize(("cmd", "reason"), LOW_FALSE_ASK_STILL_ASK, ids=[c for c, _ in LOW_FALSE_ASK_STILL_ASK])
+def test_what_the_fourth_review_documents_as_an_ask_still_asks_with_its_reason(ws: Path, cmd: str, reason: str) -> None:
+    r = _verify(cmd, ws)
+    assert r["verdict"] == "not-determined", cmd
+    assert any(reason in u for u in r["notDetermined"]), (cmd, r["notDetermined"])
+
+
+def test_a_command_over_the_length_cap_is_allowed_only_when_it_names_no_kube_tool(ws: Path) -> None:
+    """Finding 7: the 20,000-character cap is a reader bound, not a cluster risk. A line that names no kube tool
+    anywhere is allowed whatever its length (class none); one that names one past the cap is not determined."""
+    from kube_noob.debug import shell
+
+    filler = "a" * (shell.MAX_CHARS + 1_000)
+    for line in (f"echo {filler}", f"cat > run.sh <<'EOF'\n{filler}\nEOF", f"echo {filler} | grep a"):
+        r = _verify(line, ws)
+        assert (r["verdict"], r["class"], r["commands"]) == ("allow", "none", []), line[:40]
+    for line in (
+        f"kubectl get pods {filler}",
+        f"echo {filler} && kubectl delete ns prod",
+        f"echo {filler}; helm3 uninstall x",
+        f"echo {filler}; KUBECTL delete ns prod",
+        f"echo {filler} && k delete ns prod",
+        f"echo {filler} && kapp deploy -a x -f y",
+        f"echo {filler} && gcloud container clusters delete prod",
+        f"echo 'kubectl delete ns prod' | sh; echo {filler}",
+    ):
+        r = _verify(line, ws)
+        assert r["verdict"] == "not-determined", line[-40:]
+        assert any("longer than 20,000 characters" in u for u in r["notDetermined"]), r["notDetermined"]
+    assert _verify("kubectl get pods " + "a" * (shell.MAX_CHARS - 100), ws)["verdict"] == "allow"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"PYTHONIOENCODING": "ascii"}, {"PYTHONUTF8": "0", "LC_ALL": "POSIX", "LANG": "POSIX", "LC_CTYPE": "POSIX"}],
+    ids=["PYTHONIOENCODING=ascii", "LC_ALL=POSIX"],
+)
+def test_output_is_written_whatever_the_terminal_encoding(ws: Path, env: dict[str, str]) -> None:
+    """Finding 8: the text view quotes repository text between « », which an ASCII stdout could not encode, so a
+    plain allow exited 4 and a harness that refuses on non-zero refused everything."""
+    import subprocess
+    import sys
+
+    base = [sys.executable, "-m", "kube_noob", "verify", "--platform", "openshift", "--version", "4.20"]
+    full = {k: v for k, v in os.environ.items() if k not in {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}}
+    full.update(env)
+    for command, code, want in (
+        ("kubectl get pods", 0, "allow"),
+        ("kubectl apply -f good/orders-api.yaml", 0, "allow"),
+        ("kubectl delete ns prod", 5, "deletes objects"),
+        ("kubectl apply -f bad/deploy.yaml", 1, "KN-S013"),
+    ):
+        for fmt in ("text", "json"):
+            p = subprocess.run(
+                [*base, "--format", fmt, "--command", command],
+                cwd=ws, env=full, capture_output=True, text=True, timeout=120, check=False,
+            )  # fmt: skip
+            assert p.returncode == code, (command, fmt, p.stderr)
+            assert want in p.stdout, (command, fmt, p.stdout[:200])

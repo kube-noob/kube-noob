@@ -1,0 +1,50 @@
+kubectl create deployment web --image=nginx
+oc expose svc/web
+oc new-app nginx
+kubectl apply -f k8s-bad/
+kubectl apply -k overlays/missing
+kubectl rollout undo deploy/web
+kubectl delete deploy web
+kubectl delete -f k8s/web.yaml
+kubectl exec -it web -- sh
+kubectl exec web -- ls
+oc rsh web
+oc debug node/worker-1
+kubectl cp web:/tmp/x ./x
+kubectl edit deploy web
+kubectl label ns shop pod-security.kubernetes.io/enforce=privileged
+kubectl taint nodes n1 k=v:NoSchedule
+kubectl cordon n1
+kubectl uncordon n1
+kubectl drain n1 --ignore-daemonsets
+helm install web ./chart
+helm install web ./chart -n shop --create-namespace
+helm upgrade web ./chart
+helm upgrade --install web ./chart
+helm uninstall web
+helm rollback web 1
+kubectl set image deploy/web web=nginx:2
+kubectl apply -f https://example.com/x.yaml
+kubectl run x --image=busybox
+kubectl create clusterrolebinding x --clusterrole=cluster-admin --user=u
+oc adm policy add-cluster-role-to-user cluster-admin u
+kubectl port-forward web 8080:80 --address 0.0.0.0
+kubectl proxy --address=0.0.0.0 --accept-hosts='.*'
+kubectl attach web -it
+oc adm upgrade --to=4.20.2
+oc adm upgrade --to-latest
+oc adm upgrade channel stable-4.20
+oc adm release extract --command=oc
+oc adm release mirror 4.20.1 --to=registry.example.com/ocp
+oc extract secret/x --to=-
+oc login https://api.example.com:6443 --token=abc
+oc logout
+oc registry login
+kubectl krew install neat
+helm template web chart | kubectl apply -f -
+helm template web chart | kubectl apply --dry-run=server -f -
+kubectl get pods | grep -v Running | awk '{print $1}' | xargs kubectl delete pod
+kubectl config use-context staging
+kubectl --context=prod apply -f k8s/web.yaml
+KUBECONFIG=/tmp/kc kubectl apply -f k8s/web.yaml
+kubectl delete ns prod -n -h

@@ -663,3 +663,51 @@ def test_the_plugin_hook_runs_from_the_bundled_copy(ws: Path) -> None:
         check=False,
     )
     assert off.returncode == 0 and off.stderr == ""
+
+
+# -- review 4 (G280) ---------------------------------------------------------------------------------------------
+
+
+def test_the_budget_message_states_the_budget_the_hook_ran_with(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The message said "20-second" whatever the budget was; it states the real one."""
+    import io
+    import re
+
+    def stuck_in_c(*a: object, **k: object) -> None:
+        re.match(r"(a+)+$", "a" * 40 + "b")
+
+    monkeypatch.setattr(verify, "evaluate", stuck_in_c)
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
+    assert hook.main(stdin=stdin, env={}, options=OPTS, budget=0.5, isolate="fork") == 2
+    assert "0.5-second budget" in sys.stderr.getvalue()  # type: ignore[attr-defined]
+    code, _, err = _hook(_input("kubectl apply -f k8s/good.yaml", ws), {}, budget=3)
+    assert code == 2 and "3-second budget" in err
+    assert f"{hook.BUDGET_SECONDS:g}-second budget" in hook._timeout_message(hook.BUDGET_SECONDS)
+
+
+def test_a_long_command_that_names_no_kube_tool_passes_the_hook(ws: Path) -> None:
+    from kube_noob.debug import shell
+
+    filler = "a" * (shell.MAX_CHARS + 1_000)
+    assert _hook(_input(f"echo {filler}", ws), {}) == (0, "", "")
+    code, out, _ = _hook(_input(f"echo {filler} && kubectl delete ns prod", ws), {})
+    assert code == 0 and "longer than 20,000 characters" in _asked(out)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"PYTHONIOENCODING": "ascii"}, {"PYTHONUTF8": "0", "LC_ALL": "POSIX", "LANG": "POSIX", "LC_CTYPE": "POSIX"}],
+    ids=["PYTHONIOENCODING=ascii", "LC_ALL=POSIX"],
+)
+def test_the_hook_answers_under_an_ascii_terminal_encoding(ws: Path, env: dict[str, str]) -> None:
+    """A deny's stderr and an ask's stdout carry « »; under an ASCII encoding they must still be written."""
+    full = {k: v for k, v in os.environ.items() if k not in {"PYTHONIOENCODING", "PYTHONUTF8", "LC_ALL", "LANG", "LC_CTYPE"}}
+    full.update(env, KUBE_NOOB_HOOK="")
+    run = [sys.executable, "-m", "kube_noob", "hook", "claude-code", *CLI_OPTS]
+    denied = subprocess.run(run, input=_input("kubectl apply -f k8s/bad.yaml", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
+    assert denied.returncode == 2 and denied.stdout == "" and "KN-S013" in denied.stderr and "k8s/bad.yaml" in denied.stderr
+    asked = subprocess.run(run, input=_input("kubectl delete ns prod", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
+    assert asked.returncode == 0 and asked.stderr == "" and "deletes objects" in _asked(asked.stdout)
+    passed = subprocess.run(run, input=_input("kubectl get pods", ws), capture_output=True, text=True, env=full, timeout=120, check=False)  # noqa: E501
+    assert (passed.returncode, passed.stdout, passed.stderr) == (0, "", "")

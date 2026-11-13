@@ -1,0 +1,257 @@
+bash -c 'kubectl get pods'
+kubectl get deploy web -o jsonpath='{.spec.replicas}'
+kubectl get deploy web -o yaml | yq '.spec.replicas'
+kubectl get pods -l app=web -o jsonpath='{.items[*].metadata.name}'
+kubectl get pods -n shop --no-headers | awk '{print $1}' | sort
+kubectl get pods -n shop --no-headers | awk '{print $1}'
+kubectl get pods -n shop -o jsonpath='{.items[*].spec.containers[*].image}' | tr ' ' '\\n' | sort -u
+kubectl get pods -o json | jq '.items[].metadata.name'
+kubectl get pods | cut -d' ' -f1
+kubectl get svc web -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+oc get route web -o jsonpath='{.spec.host}'
+KUBECONFIG=/tmp/kc kubectl get ns
+NS=shop kubectl get pods -n $NS
+cd /tmp; kubectl get pods
+cd k8s && kubectl get pods
+echo $(kubectl get pods)
+export NS=shop; kubectl get pods -n $NS
+for p in $(kubectl get pods -o name); do kubectl logs $p; done
+helm dependency build chart
+helm dependency update chart
+helm env
+helm get all web
+helm get manifest web -n shop
+helm get values web -n shop
+helm get values web -o yaml
+helm history web -n shop
+helm lint ./chart --strict
+helm lint chart
+helm list
+helm list -A
+helm list -n shop -o json
+helm package chart
+helm repo list
+helm repo update
+helm search repo nginx
+helm show chart ./chart
+helm show values ./chart
+helm status web
+helm status web -n shop
+helm template chart
+helm template web ./chart
+helm template web ./chart --values values-prod.yaml --set a=b
+helm template web ./chart -f values-prod.yaml
+helm template web chart | kubeconform -
+helm version
+k get pods
+kubectl --context prod -n shop get pods
+kubectl --context=prod get ns
+kubectl --kubeconfig ~/.kube/prod get nodes
+kubectl -n shop get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\\n"}{end}'
+kubectl api-resources
+kubectl api-resources --namespaced=true
+kubectl api-versions
+kubectl apply -f k8s/web.yaml --dry-run=client -o yaml
+kubectl apply -f k8s/web.yaml --dry-run=server
+kubectl auth can-i --list -n shop
+kubectl auth can-i create deployments -n shop
+kubectl auth can-i get pods --as system:serviceaccount:shop:web
+kubectl auth whoami
+kubectl cluster-info
+kubectl completion zsh
+kubectl config current-context
+kubectl config get-contexts
+kubectl config set-context --current --namespace=shop
+kubectl config view --minify
+kubectl describe node worker-1
+kubectl describe pod web
+kubectl describe pod web-abc -n shop
+kubectl describe svc web -n shop
+kubectl diff -f k8s/
+kubectl diff -f k8s/web.yaml
+kubectl diff -f k8s/web.yaml -n shop
+kubectl diff -f k8s/web.yaml | less
+kubectl diff -k overlays/prod
+kubectl explain deploy --api-version=apps/v1
+kubectl explain deployment.spec
+kubectl explain pod.spec.containers --recursive
+kubectl get --help
+kubectl get --raw /healthz
+kubectl get --raw /metrics
+kubectl get --raw /readyz?verbose
+kubectl get --raw=/livez
+kubectl get all -A
+kubectl get all -n shop -l app=web
+kubectl get clusterrolebindings
+kubectl get cm app-config -o yaml
+kubectl get crd
+kubectl get deploy -n shop -o yaml
+kubectl get deployments.apps
+kubectl get events --sort-by=.lastTimestamp
+kubectl get events -A --field-selector type=Warning
+kubectl get events -w
+kubectl get hpa,pdb -n shop
+kubectl get ingress -A
+kubectl get netpol -A
+kubectl get node -o wide --show-labels
+kubectl get nodes -L topology.kubernetes.io/zone
+kubectl get nodes -o name | xargs -I{} kubectl describe {}
+kubectl get ns
+kubectl get po -o yaml --show-managed-fields=false
+kubectl get pod web -o yaml > /tmp/x.yaml
+kubectl get pod web -o yaml > pod.yaml
+kubectl get pod web -o=jsonpath="{.status.podIP}"
+kubectl get pod/web
+kubectl get pods
+kubectl get pods && kubectl get svc
+kubectl get pods --all-namespaces
+kubectl get pods --chunk-size=100
+kubectl get pods --field-selector=status.phase=Running
+kubectl get pods --namespace=shop
+kubectl get pods --no-headers -o custom-columns=":metadata.name"
+kubectl get pods --output=wide
+kubectl get pods --request-timeout=5s
+kubectl get pods --selector=app=web
+kubectl get pods --server-side
+kubectl get pods --show-kind
+kubectl get pods --sort-by=.status.startTime
+kubectl get pods --watch
+kubectl get pods -A -o wide
+kubectl get pods -n "$NS"
+kubectl get pods -n shop # check
+kubectl get pods -n shop | grep Running | wc -l
+kubectl get pods -o custom-columns=NAME:.metadata.name,STATUS:.status.phase
+kubectl get pods -o json | jq -r '.items[] | select(.status.phase!="Running") | .metadata.name'
+kubectl get pods -o name | head -5
+kubectl get pods -o name | xargs -n1 kubectl logs --tail=5
+kubectl get pods -o wide | grep web
+kubectl get pods -o yaml | grep -i image:
+kubectl get pods -o yaml | less
+kubectl get pods -ojson
+kubectl get pods -v=6
+kubectl get pods -w
+kubectl get pods 2>&1 | tee /tmp/p.txt
+kubectl get pods > /dev/null
+kubectl get pods web1 web2
+kubectl get pods | head
+kubectl get pods | less
+kubectl get pods | sed 1d
+kubectl get pods | sort -k3
+kubectl get pods | tail -n 5
+kubectl get pods | tee out.txt
+kubectl get pods; kubectl get svc
+kubectl get pvc -n shop
+kubectl get quota -n shop
+kubectl get rolebindings -A
+kubectl get sa -n shop
+kubectl get secret -n shop
+kubectl get secret x -o json
+kubectl get svc,ep -n shop
+kubectl kustomize ./overlays/prod
+kubectl kustomize k8s/
+kubectl logs -f deploy/web
+kubectl logs -f web-abc -c web --since=10m
+kubectl logs -l app=web --all-containers --tail=50
+kubectl logs deploy/web --tail=100
+kubectl logs web --tail=100 | jq .
+kubectl logs web -c sidecar -n shop --since=1h --timestamps
+kubectl logs web | grep -i error | head
+kubectl logs web | tee /tmp/web.log
+kubectl logs web-abc --previous
+kubectl options
+kubectl plugin list
+kubectl rollout history deploy/web
+kubectl rollout status deploy web
+kubectl rollout status deploy/web && echo ok
+kubectl rollout status deploy/web -n shop
+kubectl rollout status statefulset/db -n shop --timeout=5m
+kubectl top node
+kubectl top nodes
+kubectl top pod
+kubectl top pod --containers -n shop
+kubectl top pod --sort-by=memory
+kubectl top pods -n shop
+kubectl version
+kubectl version --client
+kubectl version --short
+kubectl version -o json
+kubectl wait --for=condition=Ready pod/web -n shop --timeout=60s
+kubectl wait --for=condition=available deploy/web --timeout=120s
+kubectl wait --for=delete pod/web --timeout=60s
+nohup kubectl get pods &
+oc adm inspect ns/shop
+oc adm top nodes
+oc adm top pods -n shop
+oc describe dc web
+oc describe route web -n shop
+oc explain pod.spec
+oc explain route
+oc get bc,build -n shop
+oc get clusteroperators
+oc get clusterversion
+oc get co
+oc get csr
+oc get events -n shop
+oc get is -n shop
+oc get machineconfigpool
+oc get nodes
+oc get pods -n openshift-monitoring
+oc get projects
+oc get route
+oc get routes -n shop
+oc get scc
+oc logs -f pod/web -n shop
+oc logs dc/web
+oc project shop
+oc projects
+oc rollout status dc/web
+oc status
+oc status -n shop
+oc version
+oc whoami
+oc whoami --show-context
+oc whoami --show-server
+sh -c "kubectl get pods -n shop"
+sudo kubectl get pods
+time kubectl get pods
+timeout 30 kubectl get pods
+watch -n 2 kubectl get pods -n shop
+watch kubectl get pods
+kubectl port-forward web 8080:80
+kubectl port-forward -n default svc/kubernetes 6443:443
+oc port-forward web 8080:80
+kubectl port-forward web 8080:80 --address 127.0.0.1,::1
+kubectl port-forward --address localhost deploy/web 8080:80
+kubectl proxy
+kubectl proxy --port=8001
+helm diff upgrade web ./chart -n shop
+helm diff release web web2
+helm uninstall web --dry-run
+kubectl delete deploy web --dry-run=server
+kubectl delete deploy web --dry-run=client
+kubectl exec --help
+kubectl debug --help
+oc debug --help
+kubectl delete -h
+helm install --help
+oc adm node-logs worker-1
+oc adm node-logs --role=master -u kubelet
+oc adm must-gather
+oc adm must-gather --dest-dir=./gather
+oc adm release info
+oc adm release info 4.20.1 --commits
+oc adm upgrade
+oc adm upgrade -o json
+oc adm upgrade --include-not-recommended
+oc registry info
+kubectl krew list
+kubectl krew info neat
+kubectl krew search
+kubectl krew
+kubectl get pods -o yaml | kubectl neat
+kubectl neat -f k8s/web.yaml
+KUBECONFIG=/tmp/kc kubectl scale deploy/web --replicas=2
+kubectl --context=prod scale deploy/web --replicas=2
+kubectl --context prod rollout restart deploy/web
+kubectl --cluster=prod delete pod web-abc
+kubectl --kubeconfig=/tmp/kc label deploy web tier=web
