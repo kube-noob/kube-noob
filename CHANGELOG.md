@@ -115,7 +115,38 @@
   group as well as kind, namespace and name. The apiVersion stamp wins over an empty, null or non-string value
   in every live collector. One intended fixture drift: `tests/fixtures/bad-bundle.yaml` holds an
   `apps.openshift.io/v1 Route`, which 0.9.2 read as a Route and reported under KN-N002; it is now refused and
-  named, KN-V002 still fires on it, and the fixture's verdict is undetermined.
+  named, KN-V002 still fires on it, and the fixture's verdict is undetermined. `apps/` (a group with an empty
+  version) is refused as not well-formed where 0.9.2 read it as `apps` and reported KN-V002.
+
+  A fifth review found the nearest neighbour still passing: a pod spec in a kind with no reader (an Argo
+  Rollout with a privileged container), or a `kind` typo on a real one (`deployment`, `"Deployment "`, `7`
+  under `apps/v1`), was exit 0 and score 100.0 while the same JSON said "1 object not audited". The three
+  kinds of not-read object now come from ONE helper (`AuditContext.not_audited`): a refused apiVersion, a
+  `kind` that is not a kind name (`kind is not well-formed (an UpperCamelCase name)`, `kind is not a string`),
+  and a pod spec in a kind with no reader (`pods are in a kind kube-noob has no reader for`); the engine's
+  `notAudited`, every subject reason and the verdict are built from it, so a reason that says "not audited" is
+  never beside an empty list. An unknown kind in an unknown group (`example.com/v1 Widget`) is neither: nothing
+  claims to read it, it is not listed, and the verdict stays determined. The verdict word is now on the
+  record, from one predicate (`Report.undetermined()`): `summary.score` is `null` and `summary.verdict` is
+  `undetermined` (with `verdictReason`), the text headline says `score=not determined (1 object(s) not
+  audited)`, the gate's Markdown headline is `## kube-noob gate incomplete` and its HTML masthead "The gate is
+  incomplete", `fix.after` carries the same summary, `ksi` exits 1 and the `fedramp_ksi` result carries
+  `verdict` and `notAudited`, and `posture diff`/`report` read `coverage.notAudited` into the report (JSON,
+  Markdown and HTML) and exit 1. An accept path exists: an ExceptionList entry `notAudited: {namespace, kind,
+  name, apiGroup}` with owner, reason and expiry (never a `rule:` entry) accepts one object; the row stays
+  listed with `acceptedBy`, the verdict is determined again, and the SARIF help text points at it. The
+  `notAudited[].object` and the note are cleaned once, where the row is built (`sanitize.one_line`, 120
+  characters), and `resources` and the "No bundled schema" note the same way: a newline in a name forged a
+  second note row in the text view and reached the gate JSON and SARIF raw. KN-V014 keys duplicates on the
+  kind's identity: one object across every group the kind was served under (`extensions/v1beta1` and `apps/v1`
+  Deployment `web`; the two RoleBinding groups OpenShift serves as proxies), the group as well otherwise.
+  `userNames`/`groupNames` entries that are not strings are refused by shape (`userNames[1] is not a string`),
+  never printed as a Python repr; `userNames: []` beside `subjects` says why nobody is bound (the list is set,
+  so subjects are ignored, per openshift/api authorization/v1); `posture scan` reads OpenShift 3.x `v1` RBAC
+  through the same conversion as the audit. A non-string apiVersion (`[]`, `{}`, `0`, `true`, `1.5`) gets
+  exactly one message, "apiVersion is not a string" -- KN-V001's "missing" is for absent, null and "" only.
+  The `KN-NOT-AUDITED` SARIF result is `kind: review` with the object's file and line and a partial
+  fingerprint, so code scanning lists and tracks it.
 
   Measured with the command named, `kube-noob audit -f examples/<file>` (one file, so the partial-bundle guards
   also apply; the count is the `rules:` line of the text view), rules evaluated before and after:

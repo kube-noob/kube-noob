@@ -120,7 +120,7 @@ def _locate(report: dict[str, Any], sources: Sequence[tuple[str, int]]) -> None:
     """
     if not sources:
         return
-    for key in ("findings", "excepted"):
+    for key in ("findings", "excepted", "notAudited"):
         for f in report.get(key) or []:
             if not isinstance(f, dict):
                 continue
@@ -316,6 +316,14 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         out["applicability"],
         "",
     ]
+    if out.get("verdict") == "undetermined":
+        rows = out.get("notAudited") or []
+        lines += [
+            f"verdict: undetermined ({out.get('verdictReason')}); the audit this page projects did not read: "
+            + "; ".join(f"{r.get('object')} ({r.get('why')})" for r in rows[:5])
+            + (f"; and {len(rows) - 5} more" if len(rows) > 5 else ""),
+            "",
+        ]
     if out.get("unmappedControls"):
         lines += [
             "Controls kube-noob maps that no indicator cites, so no finding reaches an indicator through them: "
@@ -468,10 +476,17 @@ def not_audited_lines(rep: dict[str, Any]) -> list[str]:
         return []
     from kube_noob import sanitize
 
-    lines = [f"not audited: {len(rows)} object(s) the rules refused to read; the verdict is undetermined (exit 1)"]
-    lines += [
-        f"  {sanitize.visible(str(r.get('object')))[:120]}: {sanitize.visible(str(r.get('why')))[:200]}" for r in rows
-    ]
+    open_rows = [r for r in rows if not r.get("acceptedBy")]
+    head = (
+        f"not audited: {len(open_rows)} object(s) the rules did not read; the verdict is undetermined (exit 1)"
+        if open_rows
+        else f"not audited: {len(rows)} object(s) the rules did not read, every one accepted by the exception list"
+    )
+    lines = [head]
+    for r in rows:
+        tail = f" (accepted by {sanitize.visible(str(r['acceptedBy']))[:64]})" if r.get("acceptedBy") else ""
+        obj, why = sanitize.visible(str(r.get("object")))[:120], sanitize.visible(str(r.get("why")))[:200]
+        lines.append(f"  {obj}: {why}{tail}")
     return lines
 
 
@@ -502,8 +517,11 @@ def _coverage_lines(summary: dict[str, Any]) -> list[str]:
 
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
+    # The verdict word on the headline, in the score's place: a number beside "undetermined" further down was two
+    # verdicts in one report (review 5, item 3).
+    score = f"not determined ({s.get('verdictReason')})" if s.get("verdict") == "undetermined" else s["score"]
     print(
-        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={s['score']} | "
+        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={score} | "
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
     )
     for a in rep.get("assumptions", []):
@@ -2634,9 +2652,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 _emit(rep, fmt)
             if rep.get("exceptions") and not rep["exceptions"]["gate"]:
                 return 1
-            if rep.get("notAudited"):
-                # An object the rules refused to read is not a pass and not a finding: the verdict is
-                # undetermined, and undetermined is 1, never 0 -- whatever --fail-on says (review 4, R1).
+            if rep["summary"].get("verdict") == "undetermined":
+                # An object the rules did not read, and no exception accepted, is not a pass and not a finding:
+                # the verdict is undetermined, and undetermined is 1, never 0 -- whatever --fail-on says (R1).
                 return 1
             if a.fail_on == "never":
                 return 0
@@ -2846,6 +2864,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         # The exception gate decides the exit code here as it does for `audit`: the page already printed
         # "gate: failed" for an expired or refused entry, and saying so while exiting 0 is two answers (G249).
         gate = (out.get("exceptions") or {}).get("gate")
+        if out.get("verdict") == "undetermined":
+            return 1  # the audit this page projects is undetermined: never 0 (review 5, item 3)
         return 0 if gate is not False else 1
 
     if a.cmd == "upgrade-risks":
@@ -3615,7 +3635,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
-            return 0
+            return 1 if rep.get("verdict") == "undetermined" else 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
@@ -3636,7 +3656,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint(f"\nwrote {paths['report']} and {paths['markdown']}")
         else:
             _emit({**rep, "files": {k: str(v) for k, v in paths.items()}}, fmt)
-        return 0
+        return 1 if rep.get("verdict") == "undetermined" else 0
     except (drift.DriftError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
 

@@ -35,7 +35,8 @@ def _ns(obj: dict[str, Any]) -> str:
 
 def legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None, str]:
     """An authorization.openshift.io object in the rbac.authorization.k8s.io shape the rest of this module reads,
-    converted the way openshift-apiserver converts it; or (None, why) when the server would refuse it."""
+    converted the way openshift-apiserver converts it, with a note when the shape says something a reader needs
+    ("names nobody ..."); or (None, why) when the server would refuse it."""
     if kind in {"Role", "ClusterRole"}:
         return {**obj, "apiVersion": f"{RBAC_GROUP}/v1"}, ""
     ref = obj.get("roleRef")
@@ -48,9 +49,22 @@ def legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None, 
         return None, f"a RoleBinding cannot reference a role in namespace {ref_ns}"
     users, groups = obj.get("userNames"), obj.get("groupNames")
     subjects: list[dict[str, Any]] = []
+    note = ""
     if isinstance(users, list) or isinstance(groups, list):
-        subjects += [{"kind": "User", "name": str(u)} for u in _list(users)]
-        subjects += [{"kind": "Group", "name": str(g)} for g in _list(groups)]
+        # Named by shape, never str()'d: `userNames: [7, null]` printed "User/7, User/None" (review 5, item 6).
+        for field_name, values, kind_name in (("userNames", users, "User"), ("groupNames", groups, "Group")):
+            for i, v in enumerate(_list(values)):
+                if not isinstance(v, str):
+                    return None, f"{field_name}[{i}] is not a string"
+                subjects.append({"kind": kind_name, "name": v})
+        if not subjects and obj.get("subjects"):
+            # OptionalNames distinguishes set from unset: an empty list is SET, and Subjects is then ignored
+            # (openshift/api authorization/v1 types.go). Said, so the reader is not left with a subject list and a
+            # message saying nobody (review 5, item 7).
+            note = (
+                "names nobody (userNames is set and empty; subjects are ignored when userNames is present -- "
+                "openshift/api authorization/v1)"
+            )
     else:
         for s in _list(obj.get("subjects")):
             if not isinstance(s, dict) or s.get("kind") not in LEGACY_SUBJECT_KINDS:
@@ -68,4 +82,4 @@ def legacy_rbac(obj: dict[str, Any], kind: str) -> tuple[dict[str, Any] | None, 
         "subjects": subjects,
         "roleRef": {"apiGroup": RBAC_GROUP, "kind": "Role" if ref_ns else "ClusterRole", "name": str(ref["name"])},
     }
-    return converted, ""
+    return converted, note

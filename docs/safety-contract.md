@@ -283,7 +283,8 @@ Where it is applied (found in the code):
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
 - `kube_noob/alert_report.py` `_str` calls `sanitize.clean`
 - `kube_noob/alert_report.py` `build` calls `sanitize.result`
-- `kube_noob/audit/engine.py` `analyze` calls `sanitize.visible`
+- `kube_noob/audit/engine.py` `_not_audited_row` calls `sanitize.one_line`
+- `kube_noob/audit/engine.py` `analyze` calls `sanitize.one_line`
 - `kube_noob/audit/exceptions.py` `review` calls `sanitize.safe_load_bounded`
 - `kube_noob/build/analytics.py` `load_history` calls `sanitize.loads_bounded`
 - `kube_noob/build/containerfile.py` `audit` calls `sanitize.loads_bounded`
@@ -330,6 +331,7 @@ Where it is applied (found in the code):
 - `kube_noob/operators.py` `_package_property` calls `sanitize.loads_bounded`
 - `kube_noob/report_html.py` `_esc` calls `sanitize.visible_lines`
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
+- `kube_noob/schemas/validate.py` `validate_documents` calls `sanitize.one_line`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
 - `kube_noob/server/mcp_app.py` `build_server.knowledge_doc` calls `sanitize.clean`
 - `kube_noob/server/rest.py` `_arguments_from_body` calls `sanitize.json_nesting_ok`

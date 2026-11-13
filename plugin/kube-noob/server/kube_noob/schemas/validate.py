@@ -16,6 +16,7 @@ from typing import Any
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError
 
+from kube_noob import sanitize
 from kube_noob.audit.model import Finding, Severity, Stage
 from kube_noob.yamlio import Document, fmt_path
 
@@ -99,7 +100,9 @@ def validate_documents(docs: list[Document]) -> tuple[list[Finding], list[str]]:
         group, _, version = d.api_version.rpartition("/")
         validator = _validator_for(group, version, d.kind)
         if validator is None:
-            notes.append(f"No bundled schema for {d.api_version} {d.kind} ({d.ref()}); structural checks skipped.")
+            # Input text on one line: a newline in a name forged a second note row in the text view (review 5).
+            what = sanitize.one_line(f"{d.api_version} {d.kind} ({d.ref()})")[:200]
+            notes.append(f"No bundled schema for {what}; structural checks skipped.")
             continue
         errors = sorted(validator.iter_errors(_drop_nulls(d.data)), key=lambda e: list(e.absolute_path))
         for err in errors[:MAX_ERRORS_PER_DOC]:

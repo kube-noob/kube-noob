@@ -538,10 +538,19 @@ def diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     was_fixed = [old_f[i] for i in sorted(set(old_f) - set(new_f))]
     fixed = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) not in blind]
     undetermined_findings = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) in blind]
+    from kube_noob.audit.model import undetermined_reason
+
+    # The snapshot's objects the rules did not read, and the verdict word they imply: a report built on such a
+    # snapshot said "Drift and policy report" and exited 0 with the note in a bullet (review 5, item 3).
+    not_audited = [r for r in (new.get("coverage") or {}).get("notAudited") or [] if isinstance(r, dict)]
+    why_undetermined = undetermined_reason(not_audited)
     out: dict[str, Any] = {
         "format": REPORT_FORMAT,
         "from": old["takenAt"],
         "to": new["takenAt"],
+        # Only when there is one, so every report that never had one stays byte-identical.
+        **({"notAudited": not_audited} if not_audited else {}),
+        **({"verdict": "undetermined", "verdictReason": why_undetermined} if why_undetermined else {}),
         # What was snapshotted: `live`, or the manifests. Two reports in one folder can describe different
         # populations -- a `-f` run and a `--live` run -- and a trend drawn across them compares things nobody
         # compared, so the series needs to be able to see the difference.
@@ -591,8 +600,24 @@ def markdown(report: dict[str, Any]) -> str:
     o, f = report["objects"], report["findings"]
     since = report["from"] or "the first snapshot"
     lines = [
-        f"# Drift and policy report, {report['to']}",
+        f"# Drift and policy report, {report['to']}"
+        + (" -- verdict undetermined" if report.get("verdict") == "undetermined" else ""),
         "",
+    ]
+    if report.get("notAudited"):
+        rows = report["notAudited"]
+        named = "; ".join(
+            f"{r.get('object')} ({r.get('why')})" + (f", accepted by {r['acceptedBy']}" if r.get("acceptedBy") else "")
+            for r in rows[:10]
+        )
+        lines += [
+            f"**{report.get('verdictReason') or str(len(rows)) + ' object(s) not audited'}**: the rules did not read "
+            + named
+            + (f"; and {len(rows) - 10} more" if len(rows) > 10 else "")
+            + (". The verdict is undetermined." if report.get("verdict") == "undetermined" else "."),
+            "",
+        ]
+    lines += [
         f"Since {since}: {len(o['added'])} added, {len(o['removed'])} removed, {len(o['changed'])} changed, "
         f"{o['unchanged']} unchanged. Findings: {len(f['new'])} new, {len(f['fixed'])} fixed, {f['open']} open"
         + (f", {f['excepted']} excepted" if f["excepted"] else "")

@@ -323,8 +323,8 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
                 f"{'it' if not_run == 1 else 'them'}: that is not a pass, and section 1 says what "
                 f"{'it' if not_run == 1 else 'they'} would have covered."
             )
-        if report.get("notAudited"):
-            verdict = f"The gate did not pass: {len(report['notAudited'])} object(s) not audited, verdict undetermined."
+        if report.get("verdict") == "undetermined":
+            verdict = f"The gate is incomplete: {report.get('verdictReason')}, so the verdict is undetermined."
         else:
             verdict = "The gate passed." if report.get("passed") else "The gate failed."
         return Masthead(tiles, verdict, lede)
@@ -689,12 +689,23 @@ def _gate_sections(report: dict[str, Any], sec: Sections) -> list[str]:
     out: list[str] = []
     rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
     if rows:
-        # Never "passed" with one of these: the rules refused to read the object, so the verdict is undetermined
-        # (review 4, R1). Said before the failures, where a reader looking for the verdict starts.
-        out.append(sec.head(f"Not passed: {len(rows)} object(s) not audited", "not-audited"))
+        # Never "passed" with an open one of these: the rules did not read the object, so the verdict is
+        # undetermined (review 4, R1). Said before the failures, where a reader looking for the verdict starts.
+        open_rows = [r for r in rows if not r.get("acceptedBy")]
+        title = (
+            f"Not passed: {len(open_rows)} object(s) not audited"
+            if open_rows
+            else f"{len(rows)} object(s) not audited, accepted by the exception list"
+        )
+        out.append(sec.head(title, "not-audited"))
         out.append(
             "<ul>"
-            + "".join(f"<li>{_esc(str(r.get('object')))}: {_esc(str(r.get('why')))}</li>" for r in rows)
+            + "".join(
+                f"<li>{_esc(str(r.get('object')))}: {_esc(str(r.get('why')))}"
+                + (f" (accepted by {_esc(str(r['acceptedBy']))})" if r.get("acceptedBy") else "")
+                + "</li>"
+                for r in rows
+            )
             + "</ul>"
         )
     if report.get("failures"):

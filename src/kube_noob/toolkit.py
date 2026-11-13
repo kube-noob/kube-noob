@@ -1140,6 +1140,8 @@ class Toolkit:
         absent: dict[str, list[str]] | None = None
         assumptions: list[str] = []
         ceiling: dict[str, str] | None = None
+        not_audited: list[dict[str, Any]] = []
+        verdict: str | None = None
         excepted: list[dict[str, Any]] = []
         excepted_ids: list[str] = []
         exceptions_block: dict[str, Any] | None = None
@@ -1168,11 +1170,14 @@ class Toolkit:
             if review is not None:
                 kept, excepted, used = self._split_excepted(review, r.findings)
                 r.findings = kept
+                used |= exc_mod.accept_not_audited(review, r.not_audited)
                 excepted_ids = [str(e["ruleId"]) for e in excepted if "ruleId" in e]
                 exceptions_block = {
                     **review.summary(),
                     "unused": [e.id for e in review.active if e.id not in used],
                 }
+            not_audited = [dict(row) for row in r.not_audited]
+            verdict = r.undetermined()
             rule_ids = [f.rule_id for f in r.findings]
             evaluated, fired = sorted(r.evaluated_rules), sorted(r.fired_rules)
             reasons, absent = dict(r.not_evaluated), dict(r.absent_subjects)
@@ -1196,6 +1201,13 @@ class Toolkit:
             out["excepted"] = excepted
         if assumptions:
             out["assumptions"] = assumptions
+        if not_audited:
+            # The objects the audit did not read, and the verdict word: a KSI page built on an audit whose verdict
+            # is undetermined said `audited: true` and nothing else (review 5, item 3).
+            out["notAudited"] = not_audited
+        if verdict:
+            out["verdict"] = "undetermined"
+            out["verdictReason"] = verdict
         rows = out["indicators"]
         total = len(rows)
         hidden: dict[str, Any] = {}
@@ -1280,6 +1292,9 @@ class Toolkit:
         if review is not None:
             kept, excepted, used = self._split_excepted(review, r.findings)
             r.findings = kept
+            # A `notAudited:` entry accepts an object the rules did not read: the row stays listed, marked, and
+            # no longer makes the verdict undetermined (review 5, item 4). Before `as_dict`, which reads it.
+            used |= exc.accept_not_audited(review, r.not_audited)
         out = r.as_dict()
         if review is not None:
             out["excepted"] = excepted

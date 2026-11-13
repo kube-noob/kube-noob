@@ -141,13 +141,8 @@ def test_a_kind_of_the_same_name_in_another_group_is_not_the_subject() -> None:
     assert rep.not_evaluated["KN-S035"] == (
         "1 APIServer not audited (apiVersion names a group kube-noob does not know APIServer under)"
     )
-    assert rep.not_audited == [
-        {
-            "object": "APIServer/cluster",
-            "kind": "APIServer",
-            "why": rep.not_evaluated["KN-S035"][len("1 APIServer not audited (") : -1],
-        }
-    ]
+    why = "apiVersion names a group kube-noob does not know APIServer under"
+    assert [(r["object"], r["kind"], r["why"]) for r in rep.not_audited] == [("APIServer/cluster", "APIServer", why)]
 
 
 def test_the_record_is_the_same_bytes_whatever_the_document_order() -> None:
@@ -825,12 +820,8 @@ def test_a_workload_of_a_group_the_rules_do_not_know_is_named_and_decides_nothin
     assert any("example.com" in a and "Deployment/prod/web" in a and "not audited" in a for a in rep.assumptions), (
         rep.assumptions
     )
-    assert rep.not_audited == [
-        {
-            "object": "Deployment/prod/web",
-            "kind": "Deployment",
-            "why": "apiVersion names a group kube-noob does not know Deployment under",
-        }
+    assert [(r["object"], r["kind"], r["why"]) for r in rep.not_audited] == [
+        ("Deployment/prod/web", "Deployment", "apiVersion names a group kube-noob does not know Deployment under")
     ]
     # A NetworkPolicy's "selects nothing" is the same conclusion from the same gap.
     netpol = (
@@ -980,6 +971,9 @@ def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
             if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "kind":
                 # `d.kind == "Route"` / `d.kind in KINDS` selects kinds: resolved like a `by_kind` argument, or loud.
                 for side in node.comparators:
+                    if isinstance(side, ast.Name) and side.id == "WORKLOAD_KINDS":
+                        out.add(WORKLOAD_SUBJECT)  # membership in the pod-spec kinds is the pod-spec subject
+                        continue
                     try:
                         out |= kinds_of(fn, side)
                     except Exception:  # noqa: BLE001 -- the walk reports, the assertion below decides
@@ -1303,7 +1297,7 @@ def test_a_refused_object_is_undetermined_in_every_format_never_a_pass(
     code, sarif_text = _cli(capsys, "audit", "-f", str(d), "--format", "sarif")
     assert code == 1 and "no pod spec in the input" not in sarif_text
     run = json.loads(sarif_text)["runs"][0]
-    assert run["invocations"][0]["properties"]["notAudited"] == rep["notAudited"]
+    assert [r["object"] for r in run["invocations"][0]["properties"]["notAudited"]] == ["Deployment/shop/web"]
     assert [r["message"]["text"] for r in run["results"] if r["level"] == "note"] == [
         f"Deployment/shop/web: not audited, {rep['notAudited'][0]['why']}"
     ]
@@ -1311,14 +1305,18 @@ def test_a_refused_object_is_undetermined_in_every_format_never_a_pass(
     src = gate.Source(uri="bundle.yaml", text=text, lines=text.count("\n"))
     report = gate.run([src], fail_on="never")
     assert report["passed"] is False
-    assert report["notAudited"] == rep["notAudited"]
+    assert [(r["object"], r["why"]) for r in report["notAudited"]] == [
+        (r["object"], r["why"]) for r in rep["notAudited"]
+    ]
     assert any("not audited" in f and "Deployment/shop/web" in f for f in report["failures"])
     md = gate.markdown(report)
     assert "gate passed" not in md and "Not passed: 1 object(s) not audited" in md and "Deployment/shop/web" in md
     page = report_html.render(report)
     assert "The gate passed" not in page and "Not passed: 1 object(s) not audited" in page
     doc = gate.sarif(report, invocation={"executionSuccessful": True})
-    assert doc["runs"][0]["invocations"][0]["properties"]["notAudited"] == rep["notAudited"]
+    assert [r["object"] for r in doc["runs"][0]["invocations"][0]["properties"]["notAudited"]] == [
+        "Deployment/shop/web"
+    ]
     assert any(
         r["level"] == "note" and "Deployment/shop/web" in r["message"]["text"] for r in doc["runs"][0]["results"]
     )
@@ -1521,3 +1519,345 @@ def test_the_one_intended_fixture_drift_is_the_bad_bundle_route() -> None:
     rep = analyze(text, "openshift", "4.20")
     assert "KN-N002" not in rep.fired_rules and "KN-V002" in rep.fired_rules
     assert any(r["kind"] == "Route" for r in rep.not_audited)
+
+
+# ---------------------------------------------------------------------------
+# Review 5: the nearest neighbours of "a refused object is never a pass"
+# ---------------------------------------------------------------------------
+
+ROLLOUT_PRIV = """
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: {name: canary, namespace: shop}
+spec:
+  selector: {matchLabels: {app: canary}}
+  template:
+    metadata: {labels: {app: canary}}
+    spec:
+      containers:
+        - name: c
+          image: c:latest
+          securityContext: {privileged: true}
+"""
+
+
+def _dep_with_kind(kind_literal: str) -> str:
+    return (
+        f"apiVersion: apps/v1\nkind: {kind_literal}\nmetadata: {{name: web, namespace: shop}}\n"
+        "spec:\n  replicas: 1\n  selector: {matchLabels: {app: web}}\n  template:\n"
+        "    metadata: {labels: {app: web}}\n    spec:\n      containers:\n        - name: web\n"
+        "          image: web:latest\n          securityContext: {privileged: true}\n---\n"
+        "apiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\n"
+        "spec:\n  selector: {app: web}\n  ports: [{port: 80}]\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "why"),
+    [
+        ("rollout", ROLLOUT_PRIV, "pods are in a kind kube-noob has no reader for"),
+        ("kind-lower", _dep_with_kind("deployment"), "kind is not well-formed (an UpperCamelCase name)"),
+        ("kind-trailing-space", _dep_with_kind('"Deployment "'), "kind is not well-formed (an UpperCamelCase name)"),
+        ("kind-int", _dep_with_kind("7"), "kind is not a string"),
+    ],
+)
+def test_a_pod_spec_the_reader_cannot_read_is_not_audited_and_the_verdict_undetermined(
+    name: str, text: str, why: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The neighbour of review 4's fix: a typo in `kind` (or a kind with no reader) carrying a privileged
+    container was exit 0 and score 100.0 while the same JSON said "1 object not audited" (review 5, item 1)."""
+    d = tmp_path / name
+    d.mkdir()
+    (d / "b.yaml").write_text(text, encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    assert code == 1
+    rep = json.loads(out)
+    assert [r["why"] for r in rep["notAudited"]] == [why]
+    assert rep["summary"]["score"] is None and rep["summary"]["verdict"] == "undetermined"
+    assert not any(f["ruleId"] == "KN-V011" for f in rep["findings"])
+    code, text_view = _cli(capsys, "audit", "-f", str(d))
+    assert code == 1 and "score=not determined (1 object(s) not audited)" in text_view.splitlines()[0]
+
+
+def test_not_audited_is_non_empty_whenever_a_reason_says_not_audited() -> None:
+    """The invariant behind item 1: the record and the verdict come from one helper, so a `why` saying "not
+    audited" is never beside an empty `notAudited`."""
+    for text in (ROLLOUT_PRIV, _dep_with_kind("deployment"), _refused_bundle('"v1/"'), CONFIGMAP, DEPLOYMENT):
+        rep = analyze(text, "kubernetes", None)
+        says = any("not audited" in why for why in rep.not_evaluated.values())
+        assert says == bool(rep.not_audited), (text[:40], rep.not_evaluated, rep.not_audited)
+        assert (rep.undetermined() is not None) == bool(rep.not_audited)
+
+
+def test_an_unknown_kind_in_an_unknown_group_is_not_a_refusal() -> None:
+    """`example.com/v1 Widget`: nothing claims to read it, so it is neither audited nor "not audited" (item 4)."""
+    rep = analyze(
+        "apiVersion: example.com/v1\nkind: Widget\nmetadata: {name: w, namespace: a}\nspec: {x: 1}\n"
+        + "---"
+        + DEPLOYMENT,
+        "kubernetes",
+        None,
+    )
+    assert rep.not_audited == [] and rep.undetermined() is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "web\n  Deployment/shop/forged: apiVersion is fine"),
+        ("name", "we\u202eb"),
+        ("namespace", "sh\u202eop"),
+        ("name", "w" * 10_000),
+        ("namespace", "s\n" + "x" * 10_000),
+    ],
+)
+def test_the_not_audited_object_is_cleaned_once_where_it_is_built(
+    field: str, value: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`notAudited[].object` was the raw `d.ref()`: a newline in a name forged a second note row in the text
+    view and reached audit/gate JSON and SARIF; a 10 KB name was a 10 KB field (review 5, item 2). Asserted on
+    PARSED values, not on ASCII-escaped bytes."""
+    import yaml as _yaml
+
+    from kube_noob import gate
+
+    meta = {"name": "web", "namespace": "shop"}
+    meta[field] = value
+    doc = {
+        "apiVersion": "example.com/v1",
+        "kind": "Deployment",
+        "metadata": meta,
+        "spec": {"template": {"spec": {"containers": [{"name": "c", "image": "c:latest"}]}}},
+    }
+    text = _yaml.safe_dump(doc, allow_unicode=True)
+    d = tmp_path / "h"
+    d.mkdir()
+    (d / "h.yaml").write_text(text, encoding="utf-8")
+    _, out = _cli(capsys, "audit", "-f", str(d), "--format", "json")
+    rep = json.loads(out)
+    obj = rep["notAudited"][0]["object"]
+    assert "\n" not in obj and "\u202e" not in obj and len(obj) <= 120
+
+    def clean(value: Any) -> bool:
+        blob = json.dumps(value, ensure_ascii=False)
+        return "\n" not in blob.replace("\\n", "") and "\u202e" not in blob and "forged" not in blob.replace(obj, "")
+
+    # Every surface built from the row: the rows, the assumptions, the gate's failure line, the SARIF note and the
+    # invocation property. (A finding's own `resource` is the audit's older field and is not this row.)
+    assert clean(rep["notAudited"]) and clean(rep["assumptions"]) and clean(rep["resources"])
+    _, text_view = _cli(capsys, "audit", "-f", str(d))
+    notes = [line for line in text_view.splitlines() if "not audited, so this verdict" in line]
+    assert len(notes) == 1
+    assert not any(line.startswith("Deployment/shop/forged") for line in text_view.splitlines())
+    report = gate.run([gate.Source(uri="h.yaml", text=text, lines=text.count("\n"))], fail_on="never")
+    assert clean(report["failures"]) and clean(report["notAudited"]) and clean(report["assumptions"])
+    doc_sarif = gate.sarif(report, invocation={"executionSuccessful": True})
+    run = doc_sarif["runs"][0]
+    assert clean(run["invocations"][0]["properties"]["notAudited"])
+    assert clean([r for r in run["results"] if r["ruleId"] == "KN-NOT-AUDITED"])
+
+
+def test_the_verdict_word_is_on_every_headline_and_the_score_is_withheld(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One predicate, `Report.undetermined()`, drives summary.score/verdict, the text headline, the gate's
+    headline, `fix.after`, `ksi`/`fedramp_ksi` and the posture report (review 5, item 3)."""
+    from kube_noob import drift, gate, report_html
+    from kube_noob.toolkit import FixIn, KsiIn, Toolkit
+
+    knative = (
+        "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: hello, namespace: prod}\n"
+        "spec:\n  template:\n    spec:\n      containers:\n        - image: hello:latest\n"
+    )
+    text = knative + "---" + DEPLOYMENT
+    rep = analyze(text, "kubernetes", None)
+    assert rep.undetermined() == "1 object(s) not audited"
+    summary = rep.as_dict()["summary"]
+    assert summary["score"] is None and summary["verdict"] == "undetermined"
+    d = tmp_path / "v"
+    d.mkdir()
+    (d / "v.yaml").write_text(text, encoding="utf-8")
+    _, text_view = _cli(capsys, "audit", "-f", str(d))
+    assert "score=not determined (1 object(s) not audited)" in text_view.splitlines()[0]
+    report = gate.run([gate.Source(uri="v.yaml", text=text, lines=text.count("\n"))], fail_on="never")
+    assert gate.markdown(report).startswith("## kube-noob gate incomplete")
+    assert "The gate is incomplete" in report_html.render(report)
+    kit = Toolkit.__new__(Toolkit)
+    from kube_noob.config import Settings
+
+    kit = Toolkit(Settings())
+    fixed = kit.fix(FixIn(manifests=text, platform="kubernetes", version=None, harden=True))
+    assert fixed["after"]["score"] is None and fixed["after"]["verdict"] == "undetermined"
+    ksi = kit.fedramp_ksi(KsiIn(manifests=text, platform="kubernetes"))
+    assert ksi["verdict"] == "undetermined" and [r["object"] for r in ksi["notAudited"]] == ["Service/prod/hello"]
+    code, _ = _cli(capsys, "ksi", "-f", str(d))
+    assert code == 1
+    snap = drift.snapshot(_objects(text), source="manifests")
+    posture = drift.first_report(snap)
+    assert posture["verdict"] == "undetermined" and [r["object"] for r in posture["notAudited"]] == [
+        "Service/prod/hello"
+    ]
+    assert "not audited" in drift.markdown(posture) and "undetermined" in drift.markdown(posture)
+    (d / "snap.json").write_text(json.dumps(snap), encoding="utf-8")
+    code, _ = _cli(capsys, "posture", "diff", str(d / "snap.json"), str(d / "snap.json"))
+    assert code == 1
+
+
+EXC_NOT_AUDITED = """
+apiVersion: kube-noob.io/v1
+kind: ExceptionList
+exceptions:
+  - id: EXC-KNATIVE
+    notAudited: {namespace: prod, kind: Service, name: hello, apiGroup: serving.knative.dev}
+    owner: team-web
+    reason: Knative Services are audited by the serving team's own pipeline
+    expires: 2027-11-01
+"""
+
+
+def test_an_exception_list_can_accept_a_known_foreign_object(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A Helm render with an Istio Gateway or a Knative Service had a red gate forever and `--exceptions` could not
+    name it (review 5, item 4): a `notAudited:` entry (owner, reason, expiry; never a `rule:`) accepts the row,
+    which stays listed with `acceptedBy`, and the verdict is determined again."""
+    from kube_noob import gate
+    from kube_noob.audit import exceptions as exc
+
+    knative = (
+        "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: hello, namespace: prod}\n"
+        "spec:\n  template:\n    spec:\n      containers:\n        - image: hello:latest\n"
+    )
+    text = knative + "---" + DEPLOYMENT
+    rev = exc.review(EXC_NOT_AUDITED)
+    assert [e.status for e in rev.entries] == ["active"] and rev.entries[0].as_dict()["notAudited"]["kind"] == "Service"
+    d = tmp_path / "a"
+    d.mkdir()
+    (d / "v.yaml").write_text(text, encoding="utf-8")
+    (d / "exc.yaml").write_text(EXC_NOT_AUDITED, encoding="utf-8")
+    code, out = _cli(capsys, "audit", "-f", str(d / "v.yaml"), "--exceptions", str(d / "exc.yaml"), "--format", "json")
+    assert code == 0, out
+    rep = json.loads(out)
+    assert rep["notAudited"][0]["acceptedBy"] == "EXC-KNATIVE" and rep["summary"].get("verdict") != "undetermined"
+    assert rep["summary"]["score"] is not None and rep["exceptions"]["unused"] == []
+    report = gate.run(
+        [gate.Source(uri="v.yaml", text=text, lines=text.count("\n"))], fail_on="never", exceptions=EXC_NOT_AUDITED
+    )
+    assert report["passed"] is True and report["notAudited"][0]["acceptedBy"] == "EXC-KNATIVE"
+    assert "incomplete" not in gate.markdown(report)
+    # The SARIF help points at the entry, not at removing the object from the gate.
+    doc = gate.sarif(gate.run([gate.Source(uri="v.yaml", text=text, lines=text.count("\n"))], fail_on="never"))
+    rule = next(r for r in doc["runs"][0]["tool"]["driver"]["rules"] if r["id"] == "KN-NOT-AUDITED")
+    assert "notAudited" in rule["help"]["text"] and "remove it from the gate" not in rule["help"]["text"]
+    # A `rule:` entry cannot name it, and an entry with both or neither is refused with the reason.
+    both = EXC_NOT_AUDITED.replace("    notAudited:", "    rule: KN-S001\n    notAudited:")
+    assert exc.review(both).entries[0].status == "refused"
+    other = exc.review(EXC_NOT_AUDITED.replace("name: hello", "name: other"))
+    rep2 = analyze(text, "kubernetes", None)
+    assert exc.accept_not_audited(other, rep2.not_audited) == set() and "acceptedBy" not in rep2.not_audited[0]
+
+
+def test_duplicates_collide_across_the_groups_a_kind_was_served_under() -> None:
+    """R11's neighbour: `extensions/v1beta1` and `apps/v1` Deployment `web` are one stored object, as are the two
+    RoleBinding groups OpenShift serves as proxies; a Knative and a core Service are not (review 5, item 5)."""
+
+    def dep(api: str) -> str:
+        return f"apiVersion: {api}\nkind: Deployment\nmetadata: {{name: web, namespace: shop}}\nspec: {{}}\n"
+
+    assert "KN-V014" in analyze(dep("extensions/v1beta1") + "---\n" + dep("apps/v1"), "kubernetes", "1.15").fired_rules
+
+    def rb(api: str) -> str:
+        return f"apiVersion: {api}\nkind: RoleBinding\nmetadata: {{name: rb, namespace: shop}}\nroleRef: {{name: x}}\n"
+
+    assert (
+        "KN-V014"
+        in analyze(
+            rb("authorization.openshift.io/v1") + "---\n" + rb("rbac.authorization.k8s.io/v1"), "openshift", "4.20"
+        ).fired_rules
+    )
+
+    def svc(api: str) -> str:
+        return f"apiVersion: {api}\nkind: Service\nmetadata: {{name: hello, namespace: shop}}\nspec: {{}}\n"
+
+    assert "KN-V014" not in analyze(svc("serving.knative.dev/v1") + "---\n" + svc("v1"), "kubernetes", None).fired_rules
+
+
+def test_legacy_binding_names_that_are_not_strings_are_refused_by_shape() -> None:
+    """`userNames: [7, null, {a: b}]` printed "User/7, User/None, User/{'a': 'b'}" (review 5, item 6)."""
+    text = (
+        "apiVersion: v1\nkind: ClusterRoleBinding\nmetadata: {name: odd}\nroleRef: {name: cluster-admin}\n"
+        "userNames: [alice, 7, null]\ngroupNames: [{a: b}]\n"
+    )
+    rep = analyze(text, "openshift", "4.20")
+    s016 = next(f for f in rep.findings if f.rule_id == "KN-S016")
+    assert "None" not in s016.message and "{'a'" not in s016.message and "User/7" not in s016.message
+    assert "userNames[1] is not a string" in s016.message
+    out = json.dumps(rep.as_dict())
+    assert "User/None" not in out and "{'a': 'b'}" not in out
+
+
+def test_an_empty_user_names_list_beside_subjects_says_why_nobody_is_bound() -> None:
+    """Per openshift/api, `userNames: []` is SET, so `subjects` is ignored; the reader saw a subject list and a
+    message saying nobody, with no why (review 5, item 7)."""
+    text = (
+        "apiVersion: v1\nkind: ClusterRoleBinding\nmetadata: {name: empty}\nroleRef: {name: cluster-admin}\n"
+        "userNames: []\nsubjects:\n  - {kind: Group, name: system:authenticated}\n"
+    )
+    rep = analyze(text, "openshift", "4.20")
+    s016 = next(f for f in rep.findings if f.rule_id == "KN-S016")
+    assert "names nobody (userNames is set and empty; subjects are ignored when userNames is present" in s016.message
+    assert "openshift/api authorization/v1" in s016.message
+
+
+def test_the_attack_path_scan_reads_openshift_three_rbac_like_the_audit() -> None:
+    """R5's sibling: `posture scan` said "apiVersion v1 is not rbac.authorization.k8s.io, so it was ignored" for
+    the same objects the audit's KN-S016 now reads (review 5, item 8): one reader, `rbac_legacy`."""
+    from kube_noob import attack_paths as ap
+
+    text = (
+        "apiVersion: v1\nkind: ClusterRole\nmetadata: {name: admin}\nrules:\n"
+        "  - {apiGroups: ['*'], resources: ['*'], verbs: ['*']}\n---\n"
+        "apiVersion: v1\nkind: RoleBinding\nmetadata: {name: web-admin, namespace: shop}\n"
+        "roleRef: {name: admin}\nuserNames: [alice]\n---\n"
+        "apiVersion: v1\nkind: ServiceAccount\nmetadata: {name: web, namespace: shop}\n"
+    )
+    inv = ap.Inventory.from_documents(list(yaml.safe_load_all(text)))
+    assert not any("is not rbac.authorization.k8s.io" in n for n in inv.not_read), inv.not_read
+    assert [o["metadata"]["name"] for o in inv.of("RoleBinding")] == ["web-admin"]
+    assert inv.of("RoleBinding")[0]["subjects"] == [{"kind": "User", "name": "alice"}]
+
+
+@pytest.mark.parametrize("value", ["[]", "{}", "0", "true", "1.5"])
+def test_a_non_string_api_version_gets_exactly_one_message(value: str) -> None:
+    """`apiVersion: []` earned KN-V001 "missing apiVersion" AND KN-V002 "not a string" AND a refusal: "missing"
+    is for absent, null and "" only (review 5, item 9)."""
+    rep = analyze(_refused_bundle(value), "kubernetes", None)
+    v001 = [f for f in rep.findings if f.rule_id == "KN-V001" and "apiVersion" in f.message]
+    assert v001 == [], [f.message for f in v001]
+    assert [f.message for f in rep.findings if f.rule_id == "KN-V002"] == [
+        "Deployment's apiVersion is not a string. Use apps/v1."
+    ]
+    assert [r["why"] for r in rep.not_audited] == ["apiVersion is not a string"]
+
+
+def test_the_not_audited_sarif_result_has_a_location_and_a_fingerprint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub code scanning lists a location-less result nowhere; the audit knows the object's line (item 10)."""
+    from kube_noob import gate
+
+    text = CONFIGMAP.lstrip("\n") + "---\n" + _refused_bundle('"v1/"')  # the toolkit strips a leading blank line
+    d = tmp_path / "s"
+    d.mkdir()
+    (d / "b.yaml").write_text(text, encoding="utf-8")
+    _, out = _cli(capsys, "audit", "-f", str(d), "--format", "sarif")
+    note = next(r for r in json.loads(out)["runs"][0]["results"] if r["ruleId"] == "KN-NOT-AUDITED")
+    assert note["kind"] == "review" and note["partialFingerprints"]["kubeNoob/v1"]
+    loc = note["locations"][0]["physicalLocation"]
+    assert loc["artifactLocation"]["uri"].endswith("b.yaml") and loc["region"]["startLine"] == CONFIGMAP.count("\n") + 1
+    report = gate.run([gate.Source(uri="b.yaml", text=text, lines=text.count("\n"))], fail_on="never")
+    note = next(r for r in gate.sarif(report)["runs"][0]["results"] if r["ruleId"] == "KN-NOT-AUDITED")
+    assert (
+        note["kind"] == "review"
+        and note["locations"][0]["physicalLocation"]["region"]["startLine"] == CONFIGMAP.count("\n") + 1
+    )

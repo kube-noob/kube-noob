@@ -482,7 +482,9 @@ class Inventory:
             self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_KIND_GROUPS[k]}, so it was ignored")
             return
         if k in _RBAC_KINDS and isinstance(api, str) and group != _RBAC_GROUP:
-            if group == _OPENSHIFT_RBAC_GROUP:
+            # OpenShift 3.x served these under the ungrouped `v1` as well; one reader, `rbac_legacy`, for the
+            # scan and the audit (review 5, item 8).
+            if group == _OPENSHIFT_RBAC_GROUP or api == "v1":
                 converted, why = _legacy_rbac(obj, k)
                 if converted is None:
                     note = f"{_ref(obj)}: {why}, so it was not read"

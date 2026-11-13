@@ -861,7 +861,13 @@ string, not shaped like an API (`v1/`, `APPS/v1`, a leading space) or in a group
 a fixed reason, printed in the text view, carried by the gate's JSON, Markdown, HTML and SARIF (one `note`
 result per object and the list on the invocation), and the verdict is undetermined: `audit` and `gate` exit 1,
 never 0, whatever `--fail-on` says. The subject reason says `1 Deployment not audited (...)` rather than "no
-pod spec in the input", because that would be false.
+pod spec in the input", because that would be false. A pod spec in a kind with no reader (an Argo Rollout) and a
+`kind` that is not a kind name are not audited the same way; `summary.score` is `null` and `summary.verdict`
+is `undetermined` while any such object is open. To accept one as reviewed, add a `notAudited:` entry to the
+exception list -- `notAudited: {namespace: prod, kind: Service, name: hello, apiGroup: serving.knative.dev}`
+with `owner`, `reason` and `expires` -- and the row stays listed with `acceptedBy` while the verdict is
+determined again. An unknown kind in an unknown group (`example.com/v1 Widget`) is neither audited nor
+listed: nothing claims to read it.
 
 ```bash
 kube-noob audit -f k8s/ --format json | jq '.controlSummary.rulesNotEvaluated'

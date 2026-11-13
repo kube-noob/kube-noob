@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from kube_noob import sanitize
 from kube_noob.audit import detection
 from kube_noob.audit.model import Report, Severity, Stage
 from kube_noob.audit.podspec import operator_supplied_images, unread_pod_specs
 from kube_noob.audit.redteam import red_team
 from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refusal, run_rules
-from kube_noob.catalog import LEGACY_OPENSHIFT_V1, OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
+from kube_noob.catalog import LEGACY_OPENSHIFT_V1, OPENSHIFT_FAMILY, PLATFORMS, api_group, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
 from kube_noob.yamlio import Document, load_documents
@@ -50,6 +52,19 @@ def _group_label(kind: str, group: str) -> str:
     return "the legacy ungrouped API (v1)" if kind in LEGACY_OPENSHIFT_V1 else "core"
 
 
+def _not_audited_row(d: Document, why: str) -> dict[str, Any]:
+    """One `notAudited` row. `object` is `Kind/namespace/name` cleaned to one line and bounded, built HERE and
+    nowhere else; `kind` and `apiGroup` are cleaned the same way (the kind is the input's own text when the rules
+    do not know it); `line` is the document's first line in the input, for the SARIF location."""
+    return {
+        "object": sanitize.one_line(d.ref())[:120],
+        "kind": sanitize.one_line(d.kind)[:63],
+        "apiGroup": sanitize.one_line(api_group(d.api_version))[:253],
+        "why": why,
+        "line": d.start_line,
+    }
+
+
 def analyze(
     manifests: str | list[Document],
     platform: str = "kubernetes",
@@ -67,7 +82,8 @@ def analyze(
         platform=platform,
         kubernetes_version=ctx.k8s_version,
         platform_version=ctx.platform_version,
-        resources=[d.ref() for d in docs],
+        # A display list, cleaned to one line: a bidi override in a name reached every JSON that carried it.
+        resources=[sanitize.one_line(d.ref())[:120] for d in docs],
     )
     if platform in OPENSHIFT_FAMILY and version is None:
         report.assumptions.append(f"No OpenShift version given; assumed Kubernetes {ctx.k8s_version} semantics.")
@@ -109,27 +125,31 @@ def analyze(
             f"{f' and {len(supplied) - 5} more' if len(supplied) > 5 else ''}. The ServingRuntime or operator "
             "that supplies the image decides what actually runs."
         )
-    for d in docs:
-        why = refusal(d)
-        if why is None:
-            continue
-        # An object of a kind the rules know, with an apiVersion they refuse: not a string, not shaped like an
-        # API, or a group the kind is not known under (a `Deployment` in `example.com/v1`, a RayCluster outside
-        # ray.io). Not reading it is right -- another project's CRD of the same name has another schema -- and
-        # saying nothing was the absence-read-as-pass this work is about: a privileged container sat in a
-        # document that reported clean while KN-V011 concluded from its absence (G231, review 3). So it is
-        # named here, listed under `notAudited`, and the verdict is undetermined: never a pass (review 4, R1).
-        # The declared value is shown once, here, cleaned and quoted; no reason the record carries holds it.
+    for d, why in ctx.not_audited():
+        # An object the rules did not read: a kind they know under an apiVersion they refuse (not a string, not
+        # shaped like an API, or a group the kind is not known under), a `kind` that is not a kind name, or a pod
+        # spec in a kind with no reader. Not reading it is right -- another project's CRD of the same name has
+        # another schema -- and saying nothing was the absence-read-as-pass this work is about: a privileged
+        # container sat in a document that reported clean while KN-V011 concluded from its absence (G231, review
+        # 3). So it is named here, listed under `notAudited` from the ONE helper the subject reasons read, and the
+        # verdict is undetermined (reviews 4 and 5). The object is cleaned ONCE, here, and every surface -- the
+        # note, the gate's failure line, the SARIF -- reads this field: a newline in a name forged a second note
+        # row and reached the SARIF raw (review 5, item 2). The declared apiVersion is shown once, quoted.
+        report.not_audited.append(_not_audited_row(d, why))
         raw = d.data.get("apiVersion") if isinstance(d.data, dict) else None
-        shown = (
-            f'"{sanitize.visible(raw)[:80]}"' if isinstance(raw, str) else f"a non-string value ({type(raw).__name__})"
-        )
-        known = ", ".join(_group_label(d.kind, g) for g in sorted(SUBJECT_GROUPS[d.kind]))
+        if refusal(d) is not None:
+            shown = (
+                f'"{sanitize.one_line(raw)[:80]}"'
+                if isinstance(raw, str)
+                else f"a non-string value ({type(raw).__name__})"
+            )
+            known = ", ".join(_group_label(d.kind, g) for g in sorted(SUBJECT_GROUPS[d.kind]))
+            detail = f"declares apiVersion {shown}: {why} (kube-noob knows {d.kind} under {known})"
+        else:
+            detail = why
         report.assumptions.append(
-            f"{d.ref()} declares apiVersion {shown}: {why} (kube-noob knows {d.kind} under {known}); it was not "
-            "audited, so this verdict is undetermined."
+            f"{report.not_audited[-1]['object']} {detail}; it was not audited, so this verdict is undetermined."
         )
-        report.not_audited.append({"object": d.ref(), "kind": d.kind, "why": why})
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
         return report

@@ -142,7 +142,17 @@ class Report:
     # Objects of a kind the rules know that they REFUSED to read (an apiVersion that is not a string, not shaped
     # like an API, or in a group the kind is not known under): `{"object", "kind", "why"}` each. Not a finding and
     # not an absence: the verdict is undetermined while this is non-empty, and `audit` and `gate` exit 1 (R1).
-    not_audited: list[dict[str, str]] = field(default_factory=list)
+    not_audited: list[dict[str, Any]] = field(default_factory=list)
+
+    def undetermined(self) -> str | None:
+        """Why this report's verdict is not a pass and not a fail, or `None` when it is determined.
+
+        The ONE predicate every surface reads (summary.score/verdict, the text headline, the exit code, the gate's
+        headline and `passed`, `fix.after`, the KSI page, the posture report): a record that stops the verdict
+        being a pass -- today an object the rules did not read and no exception accepted (review 5, item 3).
+        """
+        return undetermined_reason(self.not_audited)
+
     # What the cluster's audit configuration can and cannot record, when the bundle carries the object that
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
@@ -172,7 +182,10 @@ class Report:
             "summary": {
                 "counts": self.counts(),
                 "maxSeverity": top.name.lower() if (top := self.max_severity()) is not None else None,
-                "score": round(self.score(), 1),
+                # A number beside "undetermined" was two verdicts in one line: the score is withheld, and the
+                # verdict word is in the summary itself, not only in a note (review 5, item 3).
+                "score": None if (why := self.undetermined()) else round(self.score(), 1),
+                **({"verdict": "undetermined", "verdictReason": why} if why else {}),
             },
             "assumptions": self.assumptions,
             "notAudited": list(self.not_audited),
@@ -193,6 +206,12 @@ class Report:
             # stays byte-identical (R4, G244).
             **({"detectionCoverage": self.detection_coverage} if self.detection_coverage else {}),
         }
+
+
+def undetermined_reason(not_audited: list[dict[str, Any]]) -> str | None:
+    """The verdict word for a list of `notAudited` rows: rows no exception accepted stop the verdict being a pass."""
+    open_rows = [r for r in not_audited if isinstance(r, dict) and not r.get("acceptedBy")]
+    return f"{len(open_rows)} object(s) not audited" if open_rows else None
 
 
 def _sort_key(f: Finding) -> tuple[int, int, int, str]:
