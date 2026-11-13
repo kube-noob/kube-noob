@@ -42,19 +42,23 @@ refused, and the reasons are in [ideation-review.md](ideation-review.md).
 correctness, four adversarial passes, 49 defects, and eight guidance rows (G259-G266). The roadmap's own principle
 says that is the right order, but it means the differentiating work has not started.
 
-The queue, reconciled against the code on 2026-11-11: **23 shipped, 7 partial, 27 not started.**
+The queue, reconciled against the code on 2026-11-11: **24 shipped, 6 partial, 27 not started.**
 
 Sequence, with what each already has:
 
 1. **GOV3** three missing: a named `corpus pack` entry point, `corpus import --verify`, signing instructions.
-2. **V3** blast radius: pod-anchored entry point, JSON graph, Mermaid rendering. The paths are already computed.
-3. **I1** Alertmanager receiver, the rest of it. The only item that makes the north-star claim measurable: *alert
-   to evidence pack in a minute*. The receiver route already ships and returns the signals in a payload; the
-   per-alert report, its storage and the receipt-to-report clock do not exist.
+2. **I1** Alertmanager receiver, the forwarders. The per-alert report, its storage and the receipt-to-report clock
+   shipped on 2026-11-11 (G274), so *alert to evidence pack in a minute* is now a measured number (p95 23 ms for the
+   bundled payload here, 5.7 s for the review's worst 500-alert payload, a 30 s budget per post). Left: posting the report on to chat or ITSM (tier W), and whether a
+   report should ever read the cluster.
 
 I2 (CI surfaces) shipped on 2026-11-11: `audit --format sarif`, NIST controls on the SARIF rules, and both SARIF
 outputs validated against the vendored OASIS schema. E2 (installed-operator inventory) shipped the same day:
 `operators inventory` over manifests, a must-gather or the cluster, which unblocks E1, R5 and the upgrade pre-mortem.
+
+V3 (blast radius) shipped on 2026-11-11: `posture reach` anchors on the one workload object named, `--format json|yaml` is a capped,
+schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it, and `posture_reach` /
+`cluster_posture_reach` serve it over MCP (G273).
 
 ## The proposals, with what exists today
 
@@ -66,7 +70,7 @@ outputs validated against the vendored OASIS schema. E2 (installed-operator inve
 | **N2** | Must-gather node configuration | A standard must-gather carries every rendered `MachineConfig`: `kubelet.conf`, kernel arguments, `fips`, CRI-O config, signature policy |
 | **N8** | API-server configuration from a must-gather | TLS profile, audit policy, effective arguments. Field stability across 4.x needs a real bundle first |
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |
-| **R5** | Operator and add-on vulnerability surface | E2 shipped: each inventoried operator has a `package` and a labelled `version` to match against the known-issue corpus, which ships |
+| **R5** | Operator and add-on vulnerability surface | Shipped as a lookup (G278): `operators issues` lists the release-note issues that name or mention each operator for the cluster's release, for Red Hat's builds, and never decides whether the installed version has the fix. It is not a gate. Open: the join through the local Jira copy (components, fix and affects versions per ticket, `tickets.py`; projects in `jira_catalog.DEFAULT_PROJECTS`), which is the step that would answer for operator versions |
 | **R6** | Admission sees pod specs inside operator CRDs -- policies half | The webhook runs the audit and finds them; the generated policies do not. Needs a kind job |
 | **R8** | A permissive SCC whose own `users`/`groups` name everyone | `KN-S019` reports the SCC, `KN-S028` RBAC bindings to everyone, attack paths one ServiceAccount at a time; no single audit finding for the SCC's own subject list |
 | **P10** | Host-networked pods selected by policies the spec says cannot select them | Found red-teaming P4. Changes shared v1alpha1 primitives, so deliberately not folded in |
@@ -91,7 +95,7 @@ per-request audit record at all. The counter-argument is that the moat items are
 deploy in a regulated environment, or a deployable tool with no moat?
 
 **3. Is I1 the right north-star proof, or a distraction?** The claim is *alert to evidence pack in a minute*, and
-I1 (Alertmanager receiver, already half built) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
+I1 (Alertmanager receiver; its report and clock shipped 2026-11-11) is what makes it measurable. But the roadmap itself calls M6 (`net verify` -- policy
 says allowed, packets say dropped) "the insurance on the policy wedge", and M6 is the harder, more defensible
 thing. Which should be built first, and does proving the north-star claim matter if the wedge is unproven?
 

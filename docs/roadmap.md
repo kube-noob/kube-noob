@@ -122,7 +122,7 @@ already reach, and not a new engine, integration or credential.
 | R4 | ~~A detection-coverage statement for the logging family~~ | **Shipped** (G244, corrected by G249 and G252). From the same `APIServer` object `KN-S035` reads, `kube_noob.audit.detection` states which categories of API activity the cluster's settings can record and which they cannot, per group where a `customRules` entry overrides the top level. Every row is read from the policy manifests `cluster-kube-apiserver-operator` generates the real policy from, not from the API type's summary comment, which is stale on Events -- dropped through 4.17 standalone, through 4.18 on a hosted control plane, because HyperShift vendors its own copy of that generator. Two rows are therefore decided by `--platform` and `--version` together and reported as undecidable without them; a Kubernetes version is mapped rather than compared; and an unknown profile, a malformed `spec.audit`, a non-mapping `metadata` and a bundle with two singletons are all undecidable rather than guessed. It appears in `kube-noob audit` and the `audit_manifests` tool, only on OpenShift and only when the bundle carries the object |
 | R6 | **Admission sees the pod specs inside operator CRDs** -- *webhook done, policies left* | **Half shipped** (G248): the bundled webhook runs the audit, so it could always find a privileged container in a KServe predictor or a Ray head; the chart simply never asked the API server to send those resources, and now it does for `serving.kserve.io` and `ray.io`, with the list asserted against the audit's own table of pod-spec-carrying kinds. What is left is the generated ValidatingAdmissionPolicies and Kyverno policies: each kind's pod spec sits at a different path, a worker-group list needs an `all` over it, and a variable that indexes a path the object does not have fails the policy closed -- under `failurePolicy: Fail` a wrong guess denies every InferenceService in the cluster. It needs the kind-cluster job with CRD stand-ins (scripts/policy_kind_crds.yaml already carries six), not a local test, and the generated file states the gap until then |
 | R7 | ~~`kubectl debug` goes through a subresource nothing matches~~ | **Shipped for the webhook** (G250), and closed for the policies with a reason rather than a change. The webhook evaluates `pods/ephemeralcontainers` and no other subresource: the owner check does not apply there (no owner carries an ephemeral container) and only the findings the request ADDS are reported, so a Pod that already breaks an enforced rule can still be debugged. The generated policies are deliberately not extended to it: a ValidatingAdmissionPolicy has no before-and-after comparison, so one matching the subresource would refuse every debug of an already-failing Pod -- a trap rather than a control |
-| R5 | **Operator and add-on vulnerability surface** | Unblocked: **E2**'s operator inventory shipped (G270), so what is left is matching each operator's `package` and `version` against the known-issue corpus already shipped. Recorded so it is not rediscovered |
+| R5 | **Operator and add-on vulnerability surface** -- *a release-note lookup shipped; the answer about operators did not* | **Shipped as a lookup, not a gate** (G278): `operators issues`, two tools and `operatorKnownIssues` in the must-gather analysis. The 957 release-note records key issues by OpenShift release and text; none carries a component, package or operator version, and fixes are OpenShift releases. Through a table of names it finds 72 records (65 issues) for 13 packages, but only 27 records (23 issues, seven packages) name the product outright and are not about where it meets another product or the platform; the rest are mentions. An adversarial review judged it an honest lookup for about nine packages, limited by the corpus more than by the table. **Next step:** join through the local Red Hat Jira copy, which stores `project`, `components`, `fix`, `affects`, `verdict` and `resolution` per ticket (`src/kube_noob/tickets.py` around lines 431-455 and 646-681), with per-operator projects in `kube_noob.jira_catalog.DEFAULT_PROJECTS`: that keys issues by component and fix version and could say whether an operator version has a fix. The upgrade pre-mortem (`olm.maxOpenShiftVersion`) is a separate follow-on |
 | R8 | **A permissive SCC whose own `users` or `groups` name everyone** | Taken from external review D (2026-11-11, [ideation-review.md](ideation-review.md)). `KN-S019` reports a permissive SCC whoever may use it, `KN-S028` reports RBAC bindings to `system:authenticated` and the other everyone-groups, and the attack-path scan reads an SCC's `users` and `groups` one ServiceAccount at a time; nothing reports, as one audit finding, an SCC that hands privileged containers or host access to every authenticated user through its own subject list. Decidable from the SCC alone |
 | R9 | ~~Control-plane and trust-boundary rules~~ | **Shipped** (G272) as `KN-S037` (APIService without TLS verification), `KN-S038` (kube-apiserver anonymous auth or AlwaysAllow), `KN-S039` (etcd in plaintext or without client certificates), `KN-S040` (OpenShift encryption at rest off) and `KN-S041` (OpenShift LDAP identity provider without TLS). The `http://` identity-provider URL half of the review's proposal is blocked on reading the authentication operator's validation |
 
@@ -130,7 +130,7 @@ already reach, and not a new engine, integration or credential.
 
 The private build queue (M0-M13, 57 items) was last written on 2026-11-02 and its own tally said 21 done and 36
 todo. Re-reading it against the code on 2026-11-05 gave 21 shipped, 7 partial, 29 not started; as of 2026-11-11 it
-is **23 shipped, 7 partial, 27 not started** (I2 and E2 shipped, I1 found partly built). The partials are the finding,
+is **24 shipped, 6 partial, 27 not started** (I2, E2 and V3 shipped, I1 found partly built; I1's report and clock shipped since, its forwarders remain). The partials are the finding,
 because most of them were recorded as untouched and one as finished:
 
 - **`I6` REST API was marked done and is not.** Twelve routes ship with a generated OpenAPI document and a
@@ -142,12 +142,27 @@ because most of them were recorded as untouched and one as finished:
   The OASIS schema is vendored with its provenance and the gate's and the audit's SARIF are both validated against
   it; `audit --format sarif` exists; every rule carries its NIST SP 800-53 controls; and what a partial audit did
   not evaluate travels in the document as notifications instead of staying behind in the report it replaced.
-- **`I1` Alertmanager receiver was recorded as not started and is partly built.** `POST /v1/alertmanager` ships
-  (N11) and returns the signals a payload carries. What the item asks for beyond that does not exist: the per-alert
-  diagnosis and known issues, stored reports with `GET /v1/reports/<id>`, the forwarders, the chart wiring, and the
-  receipt-to-report time that is the north-star number.
-- **`V3` blast radius**: the paths are computed and surfaced by `posture scan`; the pod-anchored entry point, the
-  JSON graph and the Mermaid rendering are missing.
+- **`I1` Alertmanager receiver: the report and the clock shipped 2026-11-11 (G274); the forwarders remain.**
+  `POST /v1/alerts` (N11) returns the signals a payload carries. `POST /v1/alert-reports` returns and keeps one
+  evidence report per alert (signals, playbook diagnosis, reported issues for the labelled version, approved team
+  memory, read-only next steps, and what each section could not determine), `GET /v1/alert-reports[/<id>]` reads them
+  back, the chart wires their retention, `kube-noob alerts report -f` builds the same report offline, and the
+  receipt-to-report time is returned, kept and exported as `kube_noob_alert_report_duration_seconds`. Measured on the
+  2-core build machine on 2026-11-12: p50 22 ms and p95 23 ms over 250 posts of the bundled payload, and 4.5 s and
+  5.7 s for the adversarial review's worst in-bounds payloads (40.4 s before its redaction fix); a post stops starting
+  alerts after `alertReports.budgetSeconds` (30), and `kube-noob demo alerts` fails over 2 s. The stored path is `/v1/alert-reports`, not the item's `/v1/reports/<id>`:
+  `/v1/reports` already answers with the posture report. No PrometheusRule alert on the new histogram yet: a receiver
+  posts a few times an hour, so a quantile over it is mostly empty windows, and the existing error-ratio alert already
+  covers a failing route. **Remainder, not built:** forwarding a report to chat or ITSM (an external write: tier W,
+  its own approval); enriching a report with live cluster reads (it would let anything that can shape a webhook make
+  the server read the cluster, a decision of its own); and caller identity in the stored record (N13).
+- **`V3` blast radius: shipped 2026-11-11** (G273). `posture reach` anchors on one workload (a Pod on its own spec,
+  with its owner chain as context) and answers five legs -- exposure, token, RBAC, Secrets, node -- built from the
+  scan's own reach; `--format json|yaml` is a graph bounded in nodes, edges and bytes, with a versioned schema and
+  `not determined` legs as nodes, `--format mermaid` a flowchart derived from it; MCP tools `posture_reach` and
+  `cluster_posture_reach`. Two adversarial reviews found seventeen defects and then fifteen more before merge, all
+  fixed with a test each; the scan primitives it shares were corrected in the same change. Not done, and not in the item: the HTML report
+  does not draw it (that report carries no script by design).
 - **`GOV1`**: OSCAL shipped; caller identity in audit records did not, and the HTTP server keeps no per-request
   audit record at all. That is N13.
 - **`GOV3`**: the bundle, its checksum manifest, the verifier and image signing ship; the named `corpus pack`
@@ -157,16 +172,17 @@ because most of them were recorded as untouched and one as finished:
 
 Between 2026-11-02 and 2026-11-10 none of the work moved a moat item from todo to shipped: it all belonged to the
 correctness track above. That was the right order by this file's own principle, and worth saying plainly rather
-than leaving the two tallies to imply progress neither of them made. I2 is the first.
+than leaving the two tallies to imply progress neither of them made. I2 is the first; E2 and V3 followed.
 
 **E2** installed-operator inventory shipped on 2026-11-11 (G270): `operators inventory` over manifests, a
 must-gather or the cluster, with `clusterserviceversions` and `subscriptions` on the read-only allowlist. Each
-operator carries a package name and a version labelled with where it came from, which is what R5 needs; E1 and the
-upgrade pre-mortem can now read it too.
+operator carries a package name and a version labelled with where it came from; E1 and the upgrade pre-mortem can
+now read it too. R5 shipped on 2026-11-12 on top of it (G278) as a release-note lookup, because the corpus holds no operator
+versions to compare; the Jira-copy join is its next step.
 
-Next from that queue, in order, with what each already has: **GOV3**'s three missing criteria, **V3**'s pod-anchored entry, and the rest of **I1** -- the
-only item that makes the north-star claim (alert to evidence pack in a minute) measurable. Its receiver route
-already ships and every analyser it needs already works, so what is left is the report and the clock.
+Next from that queue, in order, with what each already has: **GOV3**'s three missing criteria, and **I1**'s forwarders. The
+report and the clock that make the north-star claim (alert to evidence pack in a minute) measurable shipped on
+2026-11-11 (G274).
 
 ### Later, unchanged in intent
 
@@ -188,9 +204,9 @@ remembered:
 ## The surfaces: what is code and what a person actually looks at
 
 Measured 2026-11-06, not estimated, and generated by `scripts/doc_numbers.py` rather than typed. The engine is
-about 69,000 lines across 154 modules with about 50,000 lines of tests (both to the nearest thousand, because a
-line count that changes with every commit is not a claim worth gating on), and exactly 98 rules, 49 MCP tools,
-110 commands and 14 chart templates. The part a human looks at is three things, and only
+about 79,000 lines across 162 modules with about 63,000 lines of tests (both to the nearest thousand, because a
+line count that changes with every commit is not a claim worth gating on), and exactly 98 rules, 54 MCP tools,
+119 commands and 14 chart templates. The part a human looks at is three things, and only
 one of them is in this repository:
 
 | Surface | State | Who renders it |

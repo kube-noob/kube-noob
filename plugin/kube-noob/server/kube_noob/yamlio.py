@@ -8,12 +8,15 @@ Every parsed document keeps a map ``path tuple -> 1-based line`` so findings can
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
 from kube_noob.errors import ManifestError
+from kube_noob.sanitize import has_invisible, replace_surrogates
 
 MAX_INPUT_BYTES = 5_000_000
 MAX_DOCUMENTS = 1000
@@ -111,9 +114,15 @@ def _walk(
     if len(path) > MAX_DEPTH:
         raise ManifestError(f"YAML nesting is too deep: more than {MAX_DEPTH} levels; refusing to process.")
     out.setdefault(path, line if line is not None else node.start_mark.line + 1)
+    if isinstance(node, yaml.ScalarNode) and isinstance(node.value, str):
+        # A YAML escape like "\ud800" decodes to a lone surrogate, which is not text: every encode to UTF-8
+        # (a fingerprint, a SARIF file, the terminal) raised, and one such name failed the whole audit (G279).
+        node.value = replace_surrogates(node.value)
     if isinstance(node, yaml.MappingNode):
         seen: set[str] = set()
         for key_node, value_node in node.value:
+            if isinstance(key_node, yaml.ScalarNode) and isinstance(key_node.value, str):
+                key_node.value = replace_surrogates(key_node.value)
             key = key_node.value if isinstance(key_node, yaml.ScalarNode) else str(key_node.start_mark.line)
             if dups is not None and key != "<<":
                 if key in seen:
@@ -368,7 +377,90 @@ def _flatten_lists(docs: list[Document]) -> list[Document]:
     return out
 
 
-class _Dumper(yaml.SafeDumper):
+#: A ``::`` that a line of the dumped string could start with: at its start; after white space (a block
+#: scalar's line, or where the emitter folds a plain or single-quoted scalar); or after any character the
+#: emitter may ESCAPE in a double-quoted scalar (``"``, ``\``, a control, anything outside printable ASCII),
+#: because PyYAML also folds right after an escape -- the end-to-end fuzz found ``::set-output`` starting a
+#: continuation line that way. ``[::]:80``, ``fe80::1`` and ``std::io`` cannot start a line and keep their
+#: style (G279, third review).
+_LINE_COLONS = re.compile(r'(?:^|[^\x21-\x7e]|["\\])::')
+_SERVICE = re.compile(r"(##[A-Za-z]*)\[")
+
+
+def _command_like(text: str) -> bool:
+    """Whether a string could put a CI workflow command in a log: a ``##[``, ``##vso[`` or ``##teamcity[``
+    anywhere, or a ``::`` a line could start with -- see ``sanitize.CommandGuard``."""
+    if "::" in text and _LINE_COLONS.search(text):
+        return True
+    return "##" in text and _SERVICE.search(text) is not None
+
+
+def json_document(obj: Any, **kwargs: Any) -> str:
+    """``json.dumps``, with the bracket of ``##[``, ``##vso[`` and ``##teamcity[`` written ``\\u005b``: the same
+    JSON, and no line a CI runner reads as a service message (G279). ``#`` occurs only inside JSON strings, so the
+    replacement never touches the syntax, and a pretty-printed line never starts with ``::``."""
+    text = json.dumps(obj, **kwargs)
+    return _SERVICE.sub(r"\1\\u005b", text) if "##" in text else text
+
+
+class TerminalSafeDumper(yaml.SafeDumper):
+    """``yaml.SafeDumper`` whose output is safe on a terminal AND loses nothing (G279).
+
+    A string holding a character ``sanitize.visible`` would change -- an escape sequence, a control, a bidi
+    override, a format character -- is written double-quoted with every non-ASCII character escaped, so the bytes
+    carry no such character and load back to exactly the same string. A string that could put a GitHub workflow
+    command in a log (``##[``, ``::``) is written double-quoted on one line, ``[`` after ``##`` as ``\\x5B``. Every
+    other string is written as before, Unicode included, so output without those characters is byte-identical."""
+
+    def analyze_scalar(self, scalar: str) -> Any:
+        analysis = super().analyze_scalar(scalar)
+        if has_invisible(scalar, keep="\n\t") or _command_like(scalar):
+            analysis.allow_flow_plain = analysis.allow_block_plain = False
+            analysis.allow_single_quoted = analysis.allow_block = False
+        return analysis
+
+    def write_double_quoted(self, text: str, split: bool = True) -> None:
+        if _command_like(text):
+            self._write_one_line_double_quoted(text)
+            return
+        if not has_invisible(text, keep="\n\t"):
+            super().write_double_quoted(text, split)
+            return
+        saved, self.allow_unicode = self.allow_unicode, False
+        try:
+            super().write_double_quoted(text, split)
+        finally:
+            self.allow_unicode = saved
+
+    def _write_one_line_double_quoted(self, text: str) -> None:
+        """A double-quoted scalar on ONE line (never folded, so no line starts with ``::``), printable ASCII only,
+        ``[`` after ``##`` escaped. Loads back to exactly ``text``."""
+        out = []
+        for ch in text:
+            o = ord(ch)
+            if ch in '"\\':
+                out.append("\\" + ch)
+            elif 0x20 <= o < 0x7F:
+                out.append(ch)
+            elif o <= 0xFF:
+                out.append(f"\\x{o:02X}")
+            elif o <= 0xFFFF:
+                out.append(f"\\u{o:04X}")
+            else:
+                out.append(f"\\U{o:08X}")
+        data = _SERVICE.sub(r"\1\\x5B", "".join(out))
+        self.write_indicator('"', True)
+        self.column += len(data)
+        self.stream.write(data.encode(self.encoding) if self.encoding else data)
+        self.write_indicator('"', False)
+
+
+def dump_yaml(obj: Any, **kwargs: Any) -> str:
+    """``yaml.safe_dump`` through :class:`TerminalSafeDumper`: the YAML kube-noob prints and writes."""
+    return str(yaml.dump(obj, Dumper=TerminalSafeDumper, **kwargs))
+
+
+class _Dumper(TerminalSafeDumper):
     pass
 
 

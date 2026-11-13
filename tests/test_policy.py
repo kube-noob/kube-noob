@@ -594,7 +594,7 @@ class FakeCluster:
             and (kind == "Namespace" or namespace is None or o["metadata"].get("namespace") == namespace)
         ]
         if name is None:
-            return {"items": [{k: v for k, v in o.items() if k != "kind"} for o in hits]}
+            return {"kind": "List", "items": [{k: v for k, v in o.items() if k != "kind"} for o in hits]}
         if not hits:
             raise ClusterAccessError(f"{resource} {name} not found")
         return hits[0]
@@ -628,10 +628,13 @@ def test_live_reachability_reads_only_what_it_needs() -> None:
     for tier in ("adminnetworkpolicies", "baselineadminnetworkpolicies"):
         reads = [c for c in cluster.calls if c[0] == tier]
         assert len(reads) == 1 and reads[0][2] is None, reads
-    # Without permission to read namespaces, kubernetes.io/metadata.name still works and the gap is stated.
+    # Without permission to read namespaces, kubernetes.io/metadata.name still works and the gap is stated -- and
+    # because shop/orders-api admits only namespaces labelled team=web, an answer from unread labels is a guess:
+    # it read "denied" while web may well carry that label (G279).
     inv2 = inventory_from_cluster(FakeCluster(objects, readable_namespaces=False), "web/frontend", "shop/orders-api")
     out = check_reachability(inv2, "web/frontend", "shop/orders-api", 8080)
-    assert out["verdict"] == "denied" and "could not read namespace" in out["notes"][0]
+    assert out["verdict"] == "undetermined" and "could not read namespace" in out["notes"][0]
+    assert "labels of namespace web" in out["undeterminedBy"]
 
 
 def test_cli_policy_commands(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

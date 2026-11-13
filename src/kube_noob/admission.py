@@ -267,7 +267,15 @@ def review(
         if meta.get("deletionTimestamp") or (not sub and obj.get("kind") in OWNED_KINDS and _owned(obj)):
             return _response(uid, True, [])
         extra = context(ns) if (cfg.lookups and context is not None and ns) else []
+        # A cross-object rule over a list that was never read, or whose last refresh failed, would read "none
+        # exist" -- a NetworkPolicy list forbidden from the start made KN-N001 deny a clean Deployment (G279).
+        # Those rules are not evaluated, and the response says so instead of warning.
+        unread_lists: list[str] = []
+        if cfg.lookups and context is not None and ns and hasattr(context, "unread"):
+            unread_lists = list(context.unread(ns))
         found = _findings(obj, ns, cfg, extra)
+        if unread_lists:
+            found = [f for f in found if f[0] not in CROSS_OBJECT]
         before: set[tuple[str, str]] | None = None
         if op == "UPDATE" and isinstance(request.get("oldObject"), dict):
             before = {(r, p) for r, p, _, _ in _findings(request["oldObject"], ns, cfg, extra)}
@@ -280,6 +288,13 @@ def review(
         if enforced and before is not None:
             enforced = [f for f in enforced if (f[0], f[1]) not in before]
         warnings = [w for _, _, w, _ in found[: cfg.max_warnings]]
+        if unread_lists:
+            warnings.append(
+                _warning(
+                    "kube-noob: rules that need other objects of the namespace were not evaluated: "
+                    f"{', '.join(unread_lists)} could not be read"
+                )
+            )
         if len(found) > cfg.max_warnings:
             warnings.append(_warning(f"kube-noob: {len(found) - cfg.max_warnings} more findings: kube-noob audit"))
         if enforced:
@@ -310,9 +325,10 @@ def review_bytes(
 
 class Lookups:
     """Cached objects that cross-object rules need, per namespace. A request never waits for the API server: a
-    namespace seen for the first time gets no context (fewer warnings, never a denial) and is read by the background
-    refresher, which re-reads the most recent namespaces every ``ttl`` seconds +/- 10% with a random pause between
-    reads."""
+    namespace seen for the first time has every list unread, so its cross-object rules are not evaluated (the
+    response says so; never a warning, never a denial), and it is read by the background refresher, which re-reads
+    the most recent namespaces every ``ttl`` seconds +/- 10% with a random pause between reads. ``unread`` names
+    the lists that are not a current, complete read (G279)."""
 
     def __init__(
         self,
@@ -325,7 +341,13 @@ class Lookups:
         self.backend, self.ttl, self.max_namespaces, self.sleep = backend, ttl, max_namespaces, sleep
         self.rng = rng or random.Random()  # noqa: S311 - pacing jitter, not crypto
         self._lock = threading.Lock()
-        self._cache: dict[str, list[dict[str, Any]]] = {}
+        # per namespace, per resource: the last list that was read whole. A failed refresh of one resource keeps its
+        # last good list and marks it stale; a list never read is absent. Either way `unread` names it and `review`
+        # does not evaluate a cross-object rule over it -- it is never read as "none exist" (G279).
+        self._cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._stale: dict[str, set[str]] = {}
+        self._cluster_read = False
+        self._cluster_stale = False
         self._cluster: list[dict[str, Any]] = []
         self._wanted: deque[str] = deque(maxlen=max_namespaces)
         self.reads = 0
@@ -335,36 +357,65 @@ class Lookups:
         with self._lock:
             if namespace not in self._wanted:
                 self._wanted.append(namespace)
-            return [*self._cache.get(namespace, []), *self._cluster]
+            cached = self._cache.get(namespace, {})
+            return [*(o for r in CONTEXT_RESOURCES for o in cached.get(r, [])), *self._cluster]
+
+    def stale(self, namespace: str) -> list[str]:
+        """The resources whose last refresh in ``namespace`` failed, so their objects are the last good copy."""
+        with self._lock:
+            return sorted(self._stale.get(namespace, set()))
+
+    def unread(self, namespace: str) -> list[str]:
+        """Every list a cross-object rule would read for ``namespace`` that is not a current, complete read:
+        never read (a namespace seen for the first time, a list forbidden from the start), or stale (its last
+        refresh failed). ``review`` does not evaluate a cross-object rule over these: a list that was not read is
+        not "none exist" (G279)."""
+        with self._lock:
+            kept = self._cache.get(namespace, {})
+            out = {r for r in CONTEXT_RESOURCES if r not in kept} | self._stale.get(namespace, set())
+            if not self._cluster_read or self._cluster_stale:
+                out.add("storageclasses")
+            return sorted(out)
 
     def _list(self, resource: str, namespace: str | None) -> list[dict[str, Any]]:
         self.reads += 1
-        data = self.backend.get(resource, namespace=namespace)
-        items = data.get("items") if isinstance(data, dict) else None
+        from kube_noob.debug.cluster import list_items
+
+        # A response that is not a complete list (no items, non-objects, another kind, a partial page) raises, so
+        # the refresher records the list as unread or stale instead of storing it as empty (G279)
+        items = list_items(self.backend.get(resource, namespace=namespace), resource, namespace)
         kind = CONTEXT_KINDS[resource]
-        return [{**i, "kind": kind} for i in items or [] if isinstance(i, dict)][:500]
+        return [{**i, "kind": kind} for i in items][:500]
 
     def refresh(self) -> None:
         with self._lock:
             namespaces = list(self._wanted)
+        cluster_ok = True
         try:
             cluster = self._list("storageclasses", None)
-        except Exception as exc:  # noqa: BLE001 - forbidden or unreachable: keep the old copy
+        except Exception as exc:  # noqa: BLE001 - forbidden or unreachable: keep the old copy, marked stale
             self.errors.append(f"storageclasses: {type(exc).__name__}")
             cluster = self._cluster
-        fresh: dict[str, list[dict[str, Any]]] = {}
+            cluster_ok = False
+        fresh: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        failed: dict[str, set[str]] = {}
         for ns in namespaces:
-            items: list[dict[str, Any]] = []
+            fresh[ns], failed[ns] = {}, set()
             for resource in CONTEXT_RESOURCES:
                 self.sleep(self.rng.uniform(0.05, 0.2))
                 try:
-                    items.extend(self._list(resource, ns))
+                    fresh[ns][resource] = self._list(resource, ns)
                 except Exception as exc:  # noqa: BLE001 - one failed read must not stop the refresher
                     self.errors.append(f"{resource} in {ns}: {type(exc).__name__}")
-            fresh[ns] = items
+                    failed[ns].add(resource)
         with self._lock:
             self._cluster = cluster
-            self._cache.update(fresh)
+            self._cluster_read = self._cluster_read or cluster_ok
+            self._cluster_stale = not cluster_ok
+            for ns, lists in fresh.items():
+                kept = self._cache.setdefault(ns, {})
+                kept.update(lists)  # resources that failed keep their last good list
+                self._stale[ns] = {r for r in failed[ns] if r in kept}
             self.errors = self.errors[-50:]
 
     def start(self) -> threading.Thread:

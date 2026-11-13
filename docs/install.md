@@ -6,7 +6,7 @@ pipx installed with Homebrew uses Homebrew's.
 
 | Method | Commands | Upgrade |
 |---|---|---|
-| Homebrew (Apple silicon macOS, Linux) | `brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` | `brew update && brew upgrade kube-noob` |
+| Homebrew (Apple silicon macOS, Linux) | `brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` | `brew update && brew upgrade kube-noob` |
 | uv (downloads a Python if yours is too old) | `uv tool install kube-noob` | `uv tool upgrade kube-noob` |
 | pipx | `pipx install kube-noob` | `pipx upgrade kube-noob` |
 | pip, in a virtual environment | `python3.13 -m venv ~/.venvs/kube-noob`, then `~/.venvs/kube-noob/bin/pip install kube-noob` | `~/.venvs/kube-noob/bin/pip install -U kube-noob` |
@@ -37,6 +37,13 @@ which -a kube-noob
 one: remove it with the tool that installed it (`pipx uninstall kube-noob`, `uv tool uninstall kube-noob` or
 `brew uninstall kube-noob`).
 
+The README's first commands name files under `examples/`. They ship inside kube-noob; write them to a folder a
+command line can name, then run the README's commands from the folder that holds it:
+
+```bash
+kube-noob examples copy examples
+```
+
 ## Agent Skill
 
 The same tools as the MCP server, as an [Agent Skill](https://claude.com/docs/skills/how-to): a folder with
@@ -65,8 +72,9 @@ python3 -I -B skill/kube-noob/scripts/kn.py audit_manifests --text-file manifest
 
 | You see | Why | Fix |
 |---|---|---|
-| `No available formula with the name "kube-noob"` | The tap is not added | `brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
-| `Refusing to load formula aashishmahajan/kube-noob/kube-noob from untrusted tap` | Homebrew 6 requires trust for third-party taps | `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
+| `No available formula with the name "kube-noob"` | The tap is not added | `brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob`, then `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
+| `Refusing to load formula kube-noob/kube-noob/kube-noob from untrusted tap` | Homebrew 6 requires trust for third-party taps | `brew trust --formula kube-noob/kube-noob/kube-noob`, then `brew install kube-noob` |
+| `brew tap` lists `aashishmahajan/kube-noob` | You tapped it under the name these instructions used before the project moved into the `kube-noob` organisation, so two taps carry the same formula | `brew uninstall kube-noob`, then `brew untap aashishmahajan/kube-noob`, then the three commands in the first row |
 | `Requires-Python >=3.11.4` and `No matching distribution found for kube-noob` | Your `python3` is older than 3.11.4 (3.11.0 through 3.11.3 are not enough) | Use Homebrew, uv or pipx above, or a virtual environment made with Python 3.11.4+ |
 | `error: externally-managed-environment` | Homebrew's or the system's Python refuses packages installed into it (PEP 668) | Use pipx, uv or a virtual environment; do not add `--break-system-packages` |
 | `zsh: command not found: pip` | macOS has no `pip` command, only `pip3` | Use pipx or uv, or `python3 -m pip` inside a virtual environment |
