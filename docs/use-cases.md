@@ -1256,7 +1256,11 @@ the same line may have written, a deployer it does not model (`helmfile`, `argoc
 that cannot add a manifest finding -- a restart, a scale, a label, deleting pods by name -- is allowed. `port-forward`
 and `proxy` open a local port and change nothing in the cluster, so they are allowed (class `connects`) unless
 `--address` names an address other than loopback, or the proxy's `--accept-hosts` is widened or its filter turned
-off, which exposes the port to other hosts; `attach` runs in the container and asks like `exec`. It sees through `sh -c`, `bash -lc`, `eval` of a
+off, which exposes the port to other hosts; `attach` runs in the container and asks like `exec`. A dry run
+(`--dry-run=client` or `=server`, `--server-dry-run`) on any verb that defines the flag -- `apply`, `create`,
+`delete`, `patch`, `scale`, `helm uninstall` ... -- is allowed, like `kubectl diff`, because nothing persists; when a
+real apply of the same manifest would be denied, the answer carries a `note` saying so, with the rules, in text and
+JSON alike. It sees through `sh -c`, `bash -lc`, `eval` of a
 literal, `env`, `sudo`, `timeout`, `xargs`, `find -exec`, `watch`, backslash-newlines, quotes inside a word, a full
 path, the `k` alias, a here-document and a script file in the working tree. With `--against` (the current state of the
 same objects) only what the change adds counts. Exit 0 allow, 1 deny, 5 not determined (`--allow-undetermined`: 0).

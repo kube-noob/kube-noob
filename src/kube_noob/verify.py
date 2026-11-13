@@ -41,9 +41,11 @@ from typing import Any
 from kube_noob import sanitize
 from kube_noob.debug import shell
 from kube_noob.debug.steps import (
+    DRY_RUN_VERBS,
     KUBE_CLIS,
     KUBE_GLOBAL_VALUE_FLAGS,
     classify_argv,
+    dry_run,
     kube_root,
     kube_subcommand,
     runs_local_code,
@@ -203,6 +205,7 @@ _NO_MANIFEST = {
 }
 _DESTRUCTIVE = frozenset({"delete", "drain", "uninstall", "rollback"})
 _EXEC_REASON = "runs a program (in the cluster or on this machine) or opens a connection to the cluster"
+_HELM_DRY_RUN_VERBS = frozenset({"install", "upgrade", "uninstall", "delete", "rollback"})
 #: Subcommands that open a local listening port to the cluster and change nothing in it (class `connects`).
 _CONNECTS = frozenset({"port-forward", "proxy"})
 #: An address only this machine can reach: what `--address` defaults to (port-forward: localhost; proxy: 127.0.0.1).
@@ -269,6 +272,10 @@ class _Read:
     namespace: str | None = None
     ran: list[str] = field(default_factory=list)  # programs verify started (helm template), named in the output
     sends: bool = False  # some command on the line sends manifests (apply, create -f, replace, patch, helm, kapp)
+    # What a dry run WOULD send or grant, judged for the `note` only: a `--dry-run=client|server` persists nothing,
+    # so it is allowed, and the note says when a real run of the same line would have been denied.
+    dry_sources: list[Any] = field(default_factory=list)
+    dry_deny: list[str] = field(default_factory=list)
 
 
 def show(text: Any, limit: int = 200) -> str:
@@ -421,6 +428,25 @@ def _class_of(kind: str, sub: str, tool: str, args: list[str]) -> str:
     if tool == "kustomize":
         return "local"
     return "changes-state"
+
+
+def _is_dry_run(name: str, sub: str, args: list[str]) -> bool:
+    """Whether this kubectl/oc or helm command is a dry run: the last `--dry-run` before `--` is client or server
+    (`none`/`false` is no dry run), or the removed `--server-dry-run` is given, on a verb that defines the flag
+    (``DRY_RUN_VERBS``: a client dry run never reaches the API server, a server one runs admission and persists
+    nothing; `exec`, `debug` and a plugin get no dry-run credit, the flag is not theirs)."""
+    if name in KUBE_CLIS:
+        if sub not in DRY_RUN_VERBS:
+            return False
+        before = args[: args.index("--")] if "--" in args else args
+        server = any(
+            a == "--server-dry-run" or (a.startswith("--server-dry-run=") and a.split("=", 1)[1].lower() != "false")
+            for a in before
+        )
+        return server or dry_run(args) in {"client", "server"}
+    if name == "helm":
+        return sub in _HELM_DRY_RUN_VERBS and dry_run(args) in {"client", "server"}
+    return False
 
 
 def _exposure(cmd: shell.Command, args: list[str]) -> str | None:
@@ -886,7 +912,13 @@ def _kube_command(
             "later helm command"
         )
         return
+    real_cls = cls
+    dry = _is_dry_run(name, sub, args)
+    if dry:
+        cls = "read-only"  # nothing is stored, like `kubectl diff`; what a real run would do goes in the note
     shown = _entry(out, cmd, name, cls)
+    if dry:
+        out.commands[-1]["dryRun"] = True
     if name in KUBE_CLIS and (
         any(a == "--kuberc" or a.startswith("--kuberc=") for a in args) or "KUBERC" in line.assignments
     ):
@@ -915,8 +947,43 @@ def _kube_command(
         if why:
             out.undetermined.append(f"{shown}: {why}")
         return
+    if dry:
+        # Judged as a real run would be, into a scratch result: what it would deny becomes the note, what it
+        # would not determine is dropped (nothing persists, so there is nothing to ask about), and a program
+        # verify started to find out (helm template) is still named.
+        scratch = _Read()
+        _kube_effect(cmd, line, tool, name, sub, args, real_cls, shown, scratch, tree, base, stdin, inline, written,
+                     platform, version)  # fmt: skip
+        out.ran.extend(scratch.ran)
+        out.dry_sources.extend(scratch.sources)
+        out.dry_deny.extend(scratch.deny)
+        return
     if cls in {"read-only", "local"}:
         return
+    _kube_effect(
+        cmd, line, tool, name, sub, args, cls, shown, out, tree, base, stdin, inline, written, platform, version
+    )
+
+
+def _kube_effect(
+    cmd: shell.Command,
+    line: shell.Line,
+    tool: str,
+    name: str,
+    sub: str,
+    args: list[str],
+    cls: str,
+    shown: str,
+    out: _Read,
+    tree: _Tree,
+    base: Path | None,
+    stdin: str | None,
+    inline: dict[str, str] | None,
+    written: list[str],
+    platform: str,
+    version: str | None,
+) -> None:
+    """What a command that changes something sends, grants or cannot be read for."""
     if base is None:
         out.undetermined.append(f"{shown}: the line changes directory in a way verify cannot follow")
         return
@@ -2386,6 +2453,24 @@ def evaluate(
     added: list[dict[str, Any]] = []
     preexisting = 0
     kept: list[dict[str, Any]] = []  # findings the baseline already had: the change leaves them in place
+    floor = None if fail_on == "never" else Severity.parse(fail_on)
+    note = [f"a real run of this command would be denied: {show(d, 400)}" for d in cmd.dry_deny]
+    if cmd.dry_sources:
+        # A dry run is allowed whatever its manifest holds; the note says what a real apply of it would meet.
+        try:
+            dry = gate.run(
+                cmd.dry_sources, platform=platform, version=version, exceptions=exceptions, fail_on=fail_on, cni=cni
+            )
+        except (gate.GateError, ManifestError) as exc:
+            note.append(f"a real apply of this manifest could not be checked: {frame(str(exc), 300)}")
+        else:
+            failing = [f for f in dry["findings"] if floor is not None and Severity.parse(f["severity"]) >= floor]
+            if failing:
+                rules = ", ".join(sorted({str(f["ruleId"]) for f in failing}))
+                note.append(
+                    f"a real apply of this manifest would be denied: {len(failing)} finding(s) at {fail_on} or "
+                    f"above ({show(rules, 300)})"
+                )
     if sources:
         try:
             report = gate.run(
@@ -2440,7 +2525,6 @@ def evaluate(
                 kept.append(f)
                 continue
             added.append(f)
-        floor = None if fail_on == "never" else Severity.parse(fail_on)
         failing = [f for f in added if floor is not None and Severity.parse(f["severity"]) >= floor]
         if failing:
             deny.append(f"{len(failing)} finding(s) at {fail_on} or above that this change adds")
@@ -2450,7 +2534,6 @@ def evaluate(
             if not exception_list.review(exceptions).summary()["gate"]:
                 deny.append("the exception list has expired or refused entries (kube-noob exceptions check)")
     verdict = "deny" if deny else ("not-determined" if undetermined else "allow")
-    floor = None if fail_on == "never" else Severity.parse(fail_on)
     shown = [_finding(f, floor) for f in added if floor is None or Severity.parse(f["severity"]) >= floor]
     below = len(added) - len(shown)
     klass = max((c["class"] for c in cmd.commands), key=CLASSES.index, default="none")
@@ -2463,13 +2546,14 @@ def evaluate(
         "commands": cmd.commands,
         "deny": sorted(dict.fromkeys(show(d, 400) for d in deny)),
         "notDetermined": list(dict.fromkeys(show(u, 400) for u in undetermined)),
+        "note": list(dict.fromkeys(note)),
         "findings": shown,
         "belowThreshold": below,
         "preexisting": preexisting,
         # What the change leaves in place, most severe first and capped: a count alone hid that a change "with no
         # new findings" left a privileged container running.
         "preexistingFindings": [_finding(f, floor) for f in kept[:MAX_PREEXISTING]],
-        "files": [show(s.uri) for s in sources],
+        "files": [show(s.uri) for s in [*sources, *cmd.dry_sources]],
         "ran": [show(r, 300) for r in cmd.ran],
         "notEvaluated": not_evaluated,
         "next": _next(shown, sources, platform, version, verdict, fail_on),
@@ -2562,6 +2646,8 @@ def text(result: dict[str, Any], top: int = MAX_SHOWN) -> str:
         lines.append(f"  denied: {d}")
     for u in result["notDetermined"]:
         lines.append(f"  not determined: {u}")
+    for n in result.get("note") or []:
+        lines.append(f"  note: {n}")
     findings = result["findings"]
     if findings:
         lines.append(f"findings this change adds at {result['failOn']} or above ({len(findings)}):")

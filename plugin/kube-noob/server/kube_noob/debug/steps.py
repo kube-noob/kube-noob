@@ -171,6 +171,13 @@ KUBE_CLIS = frozenset({"oc", "kubectl", "k", "kubecolor"})
 #: "unchanged" -> DryRunClient, and the deprecated boolean `true` -> DryRunClient). `server` still sends the request
 #: with dryRun=All, which kube-noob treats as the dry-run tier (D), so it stays a change.
 _DRY_RUN_CLIENT = frozenset({"client", "unchanged", "true"})
+#: kubectl verbs whose own command table defines `--dry-run` (kubernetes/kubectl pkg/cmd/*, master, read 2026-11-13),
+#: plus `oc new-app`. Only on these does the flag mean a dry run: on `exec`, `debug` or a plugin it is an argument
+#: of whatever runs (`kubectl someplugin --dry-run=client` was read as a read).
+DRY_RUN_VERBS = frozenset(
+    {"apply", "create", "delete", "patch", "replace", "scale", "autoscale", "label", "annotate", "set", "expose",
+     "run", "rollout", "taint", "drain", "cordon", "uncordon", "new-app"}
+)  # fmt: skip
 
 
 #: kubectl's root flags that take no value: pflag bool flags, whose no-option default is "true", so cobra does not
@@ -310,7 +317,7 @@ def classify_argv(toks: list[str]) -> StepKind:
             ):
                 return "read"  # without --confirm, oc adm prune only lists what it would remove
             return "change"
-        if dry_run(rest) == "client":
+        if sub in DRY_RUN_VERBS and dry_run(rest) == "client":
             return "read"  # apply, create, patch, delete ... --dry-run=client send nothing that is stored
         return "change"
     if tool == "helm":
