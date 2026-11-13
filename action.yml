@@ -84,8 +84,23 @@ inputs:
     default: "true"
 outputs:
   result:
-    description: passed or failed.
+    description: >-
+      The gate's exit code by name, always set: passed (0), failed (1), config-error (2), clarification (3),
+      internal-error (4) or evidence-incomplete (5); any other code is internal-error. Merge status only: a
+      passed gate can still have evidence incomplete.
     value: ${{ steps.gate.outputs.result }}
+  exit-code:
+    description: The gate's exit code as a number.
+    value: ${{ steps.gate.outputs.exit-code }}
+  evidence:
+    description: >-
+      complete, incomplete or not-run, read from the gate's report: incomplete when a check did not run (no
+      Containerfile, no scanner report, no SARIF, an unreadable file); not-run when there is no report to read
+      (exit 2, 3 or 4). With fail-on never or continue-on-error, this is the output to gate on.
+    value: ${{ steps.gate.outputs.evidence }}
+  because:
+    description: Why the evidence is incomplete or not-run, as one line; empty when complete.
+    value: ${{ steps.gate.outputs.because }}
   sarif:
     description: The SARIF file written.
     value: ${{ inputs.sarif }}
@@ -127,33 +142,10 @@ runs:
         KN_FAIL_ON: ${{ inputs.fail-on }}
         KN_SARIF: ${{ inputs.sarif }}
         KN_ANNOTATIONS: ${{ inputs.annotations }}
-      run: |
-        set -euo pipefail
-        args=(--platform "$KN_PLATFORM" --fail-on "$KN_FAIL_ON" --namespace "$KN_NAMESPACE")
-        for p in $KN_PATHS; do args+=(-f "$p"); done
-        if [ -n "$KN_CHART" ]; then args+=(--chart "$KN_CHART"); fi
-        for v in $KN_VALUES; do args+=(--values "$v"); done
-        for c in $KN_CONTAINERFILES; do args+=(--containerfile "$c"); done
-        for r in $KN_SCANNER_REPORTS; do args+=(--scanner-report "$r"); done
-        for x in $KN_VEX; do args+=(--vex "$x"); done
-        if [ -n "$KN_KEV" ]; then args+=(--kev "$KN_KEV"); fi
-        if [ "$KN_TRUST_REPORT_VEX" = "true" ]; then args+=(--trust-report-vex); fi
-        for s in $KN_SARIF_REPORTS; do args+=(--sarif-report "$s"); done
-        if [ -n "$KN_VERSION" ]; then args+=(--version "$KN_VERSION"); fi
-        if [ -n "$KN_EXCEPTIONS" ]; then args+=(--exceptions "$KN_EXCEPTIONS"); fi
-        if [ "$KN_ANNOTATIONS" != "false" ]; then args+=(--github-annotations); fi
-        rc=0
-        # Workflow commands and the JSON report both come out on stdout, so the stream is captured once and split:
-        # the `::` lines are echoed to the log, where Actions turns them into annotations, and the rest is the
-        # report. Leaving them in the .json file would hand the next person a file that does not parse.
-        raw="$RUNNER_TEMP/kube-noob-gate.out"
-        kube-noob gate "${args[@]}" --sarif "$KN_SARIF" --summary "$RUNNER_TEMP/kube-noob-summary.md" \
-          --format json > "$raw" || rc=$?
-        grep '^::' "$raw" || true
-        # `|| true` on both: grep exits 1 when nothing matches, and under `set -e` that aborted the step before
-        # `exit "$rc"` below -- so a configuration error (gate exit 2, which prints nothing on stdout) came out
-        # as exit 1, and the summary and the result output were skipped.
-        grep -v '^::' "$raw" > "$RUNNER_TEMP/kube-noob-gate.json" || true
-        if [ -f "$RUNNER_TEMP/kube-noob-summary.md" ]; then cat "$RUNNER_TEMP/kube-noob-summary.md" >> "$GITHUB_STEP_SUMMARY"; fi
-        if [ "$rc" = 0 ]; then echo "result=passed" >> "$GITHUB_OUTPUT"; elif [ "$rc" = 1 ]; then echo "result=failed" >> "$GITHUB_OUTPUT"; fi
-        exit "$rc"
+        KN_WORK: ${{ runner.temp }}
+        KN_SUMMARY: ${{ runner.temp }}/kube-noob-summary.md
+        KN_REPORT: ${{ runner.temp }}/kube-noob-gate.json
+      # One script for the action, the Tekton Task and the GitLab template; it writes result, exit-code, evidence
+      # and because to GITHUB_OUTPUT for every exit code, and the headline plus the gate's summary to the step
+      # summary (G291).
+      run: sh "$GITHUB_ACTION_PATH/scripts/ci/gate.sh"
