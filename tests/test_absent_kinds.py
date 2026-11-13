@@ -581,6 +581,11 @@ def test_a_snapshot_names_the_resource_for_a_grouped_kind_the_cluster_refused() 
 
 # The shape the in-cluster backend returns: API list items carry NO apiVersion of their own, and `collect_live`
 # sets only `kind`. Refusing these as "a kind of another group" evaluated three rules on a live cluster.
+LIVE_KINDS: dict[str, str] = {
+    "Pod": "pods", "Service": "services", "Deployment": "deployments", "Ingress": "ingresses", "Job": "jobs",
+    "Role": "roles", "ClusterServiceVersion": "clusterserviceversions", "Subscription": "subscriptions",
+}  # fmt: skip
+
 LIVE_NOAPI: list[dict[str, Any]] = [
     {
         "kind": "Deployment",
@@ -634,26 +639,65 @@ def test_an_object_with_no_api_version_is_an_unknown_group_not_a_contradiction()
         assert rid in snap["coverage"]["evaluatedRules"]
 
 
+class _NoApiVersionBackend:
+    """The in-cluster backend's shape: a `<Kind>List` whose items carry no apiVersion of their own."""
+
+    def __init__(self, items: dict[str, list[dict[str, Any]]]) -> None:
+        self.items = items
+
+    def get(self, resource: str, namespace: str | None = None, selector: str | None = None) -> dict[str, Any]:
+        from kube_noob.debug.cluster import ALLOWED_RESOURCES
+
+        kind = {v: k for k, v in LIVE_KINDS.items()}.get(resource)
+        gv = ALLOWED_RESOURCES[resource].group_version if resource in ALLOWED_RESOURCES else "v1"
+        items = [dict(i) for i in self.items.get(resource, [])]
+        return {"kind": f"{kind}List" if kind else "List", "apiVersion": gv, "items": items}
+
+
 def test_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:
     """The record is complete on its own: a stored object says which API it came from, as kubectl's output does."""
     from kube_noob import drift
     from kube_noob.debug.cluster import ALLOWED_RESOURCES
 
-    class Backend:
-        def get(self, resource: str, namespace: str | None = None) -> dict[str, Any]:
-            if resource == "deployments":
-                return {"items": [{"metadata": {"name": "web", "namespace": namespace}, "spec": {}}]}
-            if resource == "ingresses":
-                # A backend that already says (kubectl fills apiVersion in): its own word is kept.
-                item = {"apiVersion": "extensions/v1beta1", "metadata": {"name": "i", "namespace": namespace}}
-                return {"items": [item]}
-            return {"items": []}
-
-    objects, not_read = drift.collect_live(Backend(), ["shop"])
+    backend = _NoApiVersionBackend(
+        {
+            "deployments": [{"metadata": {"name": "web", "namespace": "shop"}, "spec": {}}],
+            # A backend that already says (kubectl fills apiVersion in): its own word is kept.
+            "ingresses": [{"apiVersion": "extensions/v1beta1", "metadata": {"name": "i", "namespace": "shop"}}],
+            # An empty, null or non-string apiVersion is not the backend's word: the stamp wins (review 4, R8).
+            "services": [{"apiVersion": "", "metadata": {"name": "s", "namespace": "shop"}}],
+            "pods": [{"apiVersion": None, "metadata": {"name": "p", "namespace": "shop"}}],
+            "jobs": [{"apiVersion": 7, "metadata": {"name": "j", "namespace": "shop"}}],
+        }
+    )
+    objects, not_read = drift.collect_live(backend, ["shop"])
     assert not_read == []
     by_kind = {o["kind"]: o for o in objects}
     assert by_kind["Deployment"]["apiVersion"] == ALLOWED_RESOURCES["deployments"].group_version == "apps/v1"
     assert by_kind["Ingress"]["apiVersion"] == "extensions/v1beta1"
+    assert by_kind["Service"]["apiVersion"] == "v1"
+    assert by_kind["Pod"]["apiVersion"] == "v1"
+    assert by_kind["Job"]["apiVersion"] == "batch/v1"
+
+
+def test_a_list_the_structural_check_refuses_is_a_failed_read_and_never_stamped() -> None:
+    """`list_items` (G279) runs first: a response with no `kind` is not a list of the resource, so it lands in
+    `notRead` named, and nothing in it is stamped or stored (review 4, R2)."""
+    from kube_noob import attack_paths as ap
+    from kube_noob import drift
+
+    class Backend:
+        def get(self, resource: str, namespace: str | None = None, selector: str | None = None) -> dict[str, Any]:
+            if resource == "deployments":  # no kind: a proxy's own JSON, not the API server's list
+                return {"items": [{"metadata": {"name": "web", "namespace": namespace}, "spec": {}}]}
+            return {"kind": "List", "apiVersion": "v1", "items": []}
+
+    objects, not_read = drift.collect_live(Backend(), ["shop"])
+    assert objects == []
+    assert any(e.startswith("deployments in shop: ") and "no kind" in e for e in not_read), not_read
+    inv = ap.collect_live(Backend(), ["shop"])
+    assert inv.of("Deployment") == []
+    assert any(e.startswith("deployments in shop: ") and "no kind" in e for e in inv.not_read), inv.not_read
 
 
 LEGACY = """
@@ -1082,28 +1126,18 @@ def test_openshift_three_legacy_v1_kinds_are_read_not_refused() -> None:
     assert rep_route_only.not_evaluated["KN-S001"].startswith("no pod spec in the input")
 
 
-class _NoApiVersionBackend:
-    """The in-cluster backend's shape: list items with no apiVersion, except one kubectl-like resource."""
-
-    def __init__(self, items: dict[str, list[dict[str, Any]]]) -> None:
-        self.items = items
-
-    def get(self, resource: str, namespace: str | None = None, selector: str | None = None) -> dict[str, Any]:
-        return {"items": [dict(i) for i in self.items.get(resource, [])]}
-
-
 def test_attack_paths_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:
     from kube_noob import attack_paths as ap
 
     backend = _NoApiVersionBackend(
         {
             "pods": [{"metadata": {"name": "p", "namespace": "shop"}, "spec": {"containers": [{"name": "c"}]}}],
-            "roles": [{"apiVersion": "authorization.openshift.io/v1", "metadata": {"name": "r", "namespace": "shop"}}],
+            "ingresses": [{"apiVersion": "networking.k8s.io/v1beta1", "metadata": {"name": "i", "namespace": "shop"}}],
         }
     )
     inv = ap.collect_live(backend, ["shop"])
     assert inv.of("Pod")[0]["apiVersion"] == "v1"
-    assert inv.of("Role")[0]["apiVersion"] == "authorization.openshift.io/v1"  # the backend's own word is kept
+    assert inv.of("Ingress")[0]["apiVersion"] == "networking.k8s.io/v1beta1"  # the backend's own word is kept
 
 
 def test_operators_collect_live_stamps_the_api_version_the_resource_was_listed_under() -> None:

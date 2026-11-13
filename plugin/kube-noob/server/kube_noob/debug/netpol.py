@@ -50,6 +50,11 @@ WORKLOAD_KINDS = (
 _KIND_RANK = {k.lower(): i for i, k in enumerate(WORKLOAD_KINDS)}
 ANP_KIND = "AdminNetworkPolicy"
 BANP_KIND = "BaselineAdminNetworkPolicy"
+#: Said in every offline answer whose input holds an admin-tier policy and no --cni (G279, third review).
+ADMIN_TIER_DEFAULT_NOTE = (
+    "admin-tier policies evaluated with OVN-Kubernetes semantics; pass --cni <name> for your CNI "
+    "(Calico 3.32 and later ignore AdminNetworkPolicy; Cilium states no support for it)"
+)
 # Cluster-scoped kinds that sit ABOVE NetworkPolicy and that this evaluator does not read yet. A NetworkPolicy
 # cannot override one, so when any of these is in the input, a namespace-scoped fix may be applied and change
 # nothing -- the caveat below says so. `ClusterNetworkPolicy` (policy.networking.k8s.io/v1alpha2) is the API under
@@ -103,7 +108,6 @@ _LABEL_VALUE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
 _DNS = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?\Z")
 _PORT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 _LABEL_KEY = re.compile(r"^([a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?\Z")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def _shell_safe_selector(labels: dict[str, str]) -> str | None:
@@ -212,6 +216,11 @@ def policy_problem(pol: dict[str, Any]) -> str | None:
     why = selector_problem(spec.get("podSelector"))
     if why:
         return f"spec.podSelector: {why}"
+    types = spec.get("policyTypes")
+    # A scalar is not a list of directions: iterating "Ingress" yields letters, so the policy read as selecting no
+    # direction and the answer as allowed (G279). The API server accepts only these two values.
+    if types is not None and (not isinstance(types, list) or any(t not in ("Ingress", "Egress") for t in types)):
+        return f"spec.policyTypes is {types!r:.60}, not a list of Ingress and Egress"
     for direction in ("ingress", "egress"):
         rules = spec.get(direction)
         if rules is None:
@@ -222,13 +231,18 @@ def policy_problem(pol: dict[str, Any]) -> str | None:
             if not isinstance(rule, dict):
                 return f"spec.{direction}[{i}] is {type(rule).__name__}, not a mapping"
             peers = rule.get("from") if direction == "ingress" else rule.get("to")
+            side = "from" if direction == "ingress" else "to"
+            if peers is not None and not isinstance(peers, list):
+                return f"spec.{direction}[{i}].{side} is {type(peers).__name__}, not a list"
+            ports = rule.get("ports")
+            if ports is not None and not isinstance(ports, list):
+                return f"spec.{direction}[{i}].ports is {type(ports).__name__}, not a list"
             for j, peer in enumerate(peers or []):
                 if not isinstance(peer, dict):
                     continue
                 for sel_field in ("podSelector", "namespaceSelector"):
                     why = selector_problem(peer.get(sel_field))
                     if why:
-                        side = "from" if direction == "ingress" else "to"
                         return f"spec.{direction}[{i}].{side}[{j}].{sel_field}: {why}"
     return None
 
@@ -285,9 +299,20 @@ class Inventory:
     """NetworkPolicies, workloads and namespace labels: what the evaluation reads."""
 
     def __init__(
-        self, objects: list[dict[str, Any]], default_namespace: str = "default", cni: str | None = None
+        self,
+        objects: list[dict[str, Any]],
+        default_namespace: str = "default",
+        cni: str | None = None,
+        *,
+        cni_unread: bool = False,
+        cni_unknown: str = "could not be read",
     ) -> None:
         self.default_namespace = default_namespace
+        # Set when the live read of the CNI failed (G279). Not the same as no CNI being named: with no name the
+        # OVN-Kubernetes semantics are the documented default, and with a failed read this may be the Calico
+        # 3.32 cluster that ignores the admin tier. See _cni_not_read.
+        self.cni_unread = cni_unread
+        self.cni_unknown = cni_unknown  # "could not be read", or "was not identified" (G279)
         self.policies: list[dict[str, Any]] = []
         self.workloads: dict[tuple[str, str, str], Endpoint] = {}
         self.namespace_labels: dict[str, dict[str, str]] = {}
@@ -306,6 +331,15 @@ class Inventory:
         # and then NOT evaluated: see _apply_cni.
         self.inert: list[dict[str, str]] = []
         self.enforcement_unknown: list[str] = []
+        self.enforcement_unknown_why = "whether this CNI enforces that tier is not documented either way"
+        # Which policy APIs have no stated enforcement: "v1alpha1" (AdminNetworkPolicy, BaselineAdminNetworkPolicy)
+        # and "v1alpha2" (ClusterNetworkPolicy). A CNI enforces one, the other, both or neither, so every
+        # combination is a reading check_reachability evaluates (G279).
+        self.unknown_apis: set[str] = set()
+        # Namespaces whose labels a live read could not get (G279); see _reads_namespace_labels.
+        self.namespace_unread: list[str] = []
+        # Namespaces whose NetworkPolicy list a live read could not get: a direction there is not evaluated (G279).
+        self.np_unread: list[str] = []
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
@@ -366,6 +400,12 @@ class Inventory:
         enforcement and ignoring guesses the reverse. ``kube_noob.debug.cni`` holds the table and its sources.
         """
         if not cni:
+            if self.cni_unread:
+                self._cni_not_read()
+            elif self.admin or self.baseline:
+                # Offline, with no --cni, the admin tier is evaluated as OVN-Kubernetes enforces it (the owner's
+                # default, G207). That stays; what changes is that the answer says so (G279, third review).
+                self.notes.append(ADMIN_TIER_DEFAULT_NOTE)
             return
         from kube_noob.debug.cni import REPLACEMENT, admin_tier_reason, admin_tier_support, parse_cni
 
@@ -394,7 +434,38 @@ class Inventory:
         # same under both readings either: check_reachability evaluates the tier and withholds it, and only calls
         # the question unanswerable when the two disagree.
         self.enforcement_unknown = refs
+        self.unknown_apis.add("v1alpha1")
         self.notes.append(f"{', '.join(refs)}: {reason}.")
+
+    def _cni_not_read(self) -> None:
+        """The live read of the CNI failed, so no tier above NetworkPolicy is known to be enforced or ignored.
+
+        Withheld exactly like a tier whose enforcement upstream does not document: evaluated, then the answer is
+        undetermined only where the enforced and the ignored readings disagree. Before G279 a failed read kept the
+        OVN-Kubernetes assumption, which on a Calico 3.32 cluster is a deny that is not happening (roadmap P7).
+        """
+        refs = [
+            f"{kind}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            for kind, tier in ((ANP_KIND, self.admin), (BANP_KIND, self.baseline))
+            for pol in tier
+        ] + [
+            f"{_CNP_KIND}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            for tier in (self.cnp_admin, self.cnp_baseline)
+            for pol in tier.policies
+        ]
+        if not refs:
+            return
+        if self.admin or self.baseline:
+            self.unknown_apis.add("v1alpha1")
+        if self.cnp_admin.policies or self.cnp_baseline.policies:
+            self.unknown_apis.add("v1alpha2")
+        self.enforcement_unknown += refs
+        self.enforcement_unknown_why = (
+            f"the cluster's CNI {self.cni_unknown}, so whether it enforces that tier is not known"
+        )
+        self.notes.append(
+            f"{', '.join(refs)}: the cluster's CNI {self.cni_unknown}, so whether it enforces this tier is not known."
+        )
 
     def _apply_cni_to_cnp(self, name: str, version: str | None) -> None:
         """The same question for the v1alpha2 tiers, and NOT the inverse of the one above.
@@ -427,7 +498,23 @@ class Inventory:
         # Kept and evaluated, then withheld where it changes the answer: the same treatment the v1alpha1 tiers
         # get when nobody states whether the CNI applies them.
         self.enforcement_unknown += refs
+        self.unknown_apis.add("v1alpha2")
         self.notes.append(f"{', '.join(refs)}: {reason}.")
+
+    def with_tiers(self, v1alpha1: bool, v1alpha2: bool) -> Inventory:
+        """A shallow view of this inventory with the v1alpha1 pair, the v1alpha2 pair, or both emptied: one
+        enforcement reading. ``True`` keeps that API's policies as they are."""
+        import copy
+
+        import kube_noob.debug.cnp as _cnp_mod
+
+        view = copy.copy(self)
+        if not v1alpha1:
+            view.admin, view.baseline = [], []
+        if not v1alpha2:
+            view.cnp_admin = _cnp_mod.Tier("Admin", ())
+            view.cnp_baseline = _cnp_mod.Tier("Baseline", ())
+        return view
 
     def without_admin_tier(self) -> Inventory:
         """A shallow view of this inventory with EVERY admin tier empty, for the second reading above.
@@ -703,6 +790,17 @@ def _networkpolicy_tier(
             "allowed": True,
             "reason": f"{subject.describe()} is outside the cluster; no NetworkPolicy governs its {word}.",
         }
+    if subject.namespace in inv.np_unread:
+        # The list that would decide this direction was never read. "No NetworkPolicy selects it, so all traffic
+        # is allowed" was the reason this direction gave, under an undetermined verdict (G279).
+        return {
+            "evaluated": False,
+            "tier": "NetworkPolicy",
+            "allowed": None,
+            "undetermined": True,
+            "reason": f"The NetworkPolicies in {subject.namespace} could not be read, so whether they let this "
+            f"{word} through is not known.",
+        }
     if subject.host_network:
         return {
             "evaluated": False,
@@ -841,6 +939,36 @@ def _same_answer(a: dict[str, Any], b: dict[str, Any]) -> bool:
     )
 
 
+def _selector_reads_labels(sel: Any) -> bool:
+    """A label selector that needs a namespace's labels: any key but ``kubernetes.io/metadata.name``, which is the
+    namespace's own name and known without a read. ``{}`` matches every namespace and reads nothing."""
+    if not isinstance(sel, dict):
+        return False
+    keys = set((sel.get("matchLabels") or {}) if isinstance(sel.get("matchLabels"), dict) else {})
+    for expr in sel.get("matchExpressions") or []:
+        keys.add(expr.get("key") if isinstance(expr, dict) else None)
+    return bool(keys - {"kubernetes.io/metadata.name"})
+
+
+def _reads_namespace_labels(inv: Inventory) -> bool:
+    """Whether any evaluated policy selects namespaces by label: a NetworkPolicy ``namespaceSelector``, or the
+    ``namespaces`` selector of an admin-tier subject or peer (v1alpha1 and v1alpha2)."""
+
+    def walk(node: Any) -> bool:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"namespaceSelector", "namespaces"} and _selector_reads_labels(value):
+                    return True
+                if walk(value):
+                    return True
+        elif isinstance(node, list):
+            return any(walk(v) for v in node)
+        return False
+
+    tiers = [*inv.policies, *inv.admin, *inv.baseline, *inv.cnp_admin.policies, *inv.cnp_baseline.policies]
+    return any(walk(pol.get("spec")) for pol in tiers if isinstance(pol, dict))
+
+
 def check_reachability(
     inv: Inventory, source: str, destination: str, port: int | str, protocol: str = "TCP", cli: str = "kubectl"
 ) -> dict[str, Any]:
@@ -864,20 +992,40 @@ def check_reachability(
     # of this made every question unanswerable as long as one AdminNetworkPolicy existed anywhere.
     enforcement_unknown = list(inv.enforcement_unknown)
     if enforcement_unknown:
-        bare = inv.without_admin_tier()
-        withheld = (
-            _direction(bare, src, dst, "Egress", port, protocol, dst),
-            _direction(bare, dst, src, "Ingress", port, protocol, dst),
+        # Every enforcement reading a CNI could have, not only "all enforced" and "none": Calico 3.32 enforces
+        # ClusterNetworkPolicy and ignores AdminNetworkPolicy, OVN-Kubernetes the reverse, and comparing only the
+        # two extremes let a mixed cluster read as "both readings agree" while the real one denied (G279).
+        import itertools
+
+        apis = sorted(inv.unknown_apis) or ["v1alpha1", "v1alpha2"]
+        readings = []
+        for combo in itertools.product((True, False), repeat=len(apis)):
+            on = dict(zip(apis, combo, strict=True))
+            view = inv.with_tiers(on.get("v1alpha1", True), on.get("v1alpha2", True))
+            readings.append(
+                (
+                    _direction(view, src, dst, "Egress", port, protocol, dst),
+                    _direction(view, dst, src, "Ingress", port, protocol, dst),
+                )
+            )
+        agree = (
+            all(_same_answer(r[0], readings[0][0]) and _same_answer(r[1], readings[0][1]) for r in readings[1:])
+            and _same_answer(readings[0][0], egress)
+            and _same_answer(readings[0][1], ingress)
         )
-        agree = all(_same_answer(a, b) for a, b in zip((egress, ingress), withheld, strict=True))
-        # The withheld reading is the one reported either way: the tier may not apply, so its reason must not be
-        # the one the operator reads.
-        egress, ingress = withheld
+        # The reading with every unknown tier ignored is the one reported either way: the tier may not apply, so
+        # its reason must not be the one the operator reads.
+        egress, ingress = readings[-1]
         if agree:
             enforcement_unknown = []
             inv.notes.append(
                 "Both readings of that tier -- enforced and ignored -- give the same answer here, so the verdict "
                 "stands either way."
+                if len(apis) == 1
+                else "Every reading of those tiers -- "
+                + " and ".join(apis)
+                + " each enforced or ignored, in every combination a CNI could have -- gives the same answer here, "
+                "so the verdict stands either way."
             )
     allowed = bool(egress["allowed"] and ingress["allowed"])
     # A direction whose deciding tier has no determinate answer is neither allowed nor denied. Calling it either
@@ -888,6 +1036,10 @@ def check_reachability(
     # The namespace-scoped chart cannot read these, so treating that 403 as a NetworkPolicy-only allow
     # is the answer an operator gets by default.
     unreadable = list(inv.tier_unreadable) + list(inv.invalid_policies)
+    # A namespace whose labels were not read decides nothing only where no selector reads its labels; where one
+    # does, the subject or the peer it would have matched is unknown, and an answer from it is a guess (G279).
+    if inv.namespace_unread and _reads_namespace_labels(inv):
+        unreadable += [f"labels of namespace {ns}" for ns in inv.namespace_unread]
     # A cluster-scoped kind that sits above NetworkPolicy and that this evaluator cannot read yet decides BEFORE
     # any NetworkPolicy and has the last word. Naming it under `notEvaluated` was not enough: the verdict still
     # read "allowed" and the CLI still exited 0, so a gate merged on an answer a ClusterNetworkPolicy `Deny` may
@@ -1009,8 +1161,8 @@ def check_reachability(
         plural = len(enforcement_unknown) != 1
         out["summary"] = (
             f"Undetermined: {', '.join(enforcement_unknown)} "
-            f"{'were' if plural else 'was'} read and not evaluated, because whether this CNI enforces that tier is "
-            f"not documented either way, so {tail}"
+            f"{'were' if plural else 'was'} read and not evaluated, because {inv.enforcement_unknown_why}, "
+            f"so {tail}"
         ).rstrip(".") + "."
         if plural:
             out["summary"] = out["summary"].replace("was read and not evaluated", "were read and not evaluated")
@@ -1102,9 +1254,8 @@ def check_reachability(
         # The withheld tier is the case where a proposed NetworkPolicy is MOST likely to change nothing, and the
         # first version of this was the only branch that left the caveat off.
         caveat = (
-            "kube-noob withheld " + ", ".join(enforcement_unknown[:10]) + ", because whether this CNI enforces "
-            "that tier is not documented either way. If it does and one of them denies this traffic, the "
-            "NetworkPolicy above is applied and changes nothing."
+            "kube-noob withheld " + ", ".join(enforcement_unknown[:10]) + f", because {inv.enforcement_unknown_why}. "
+            "If it does and one of them denies this traffic, the NetworkPolicy above is applied and changes nothing."
         )
         for change in changes:
             if change.get("manifest"):
@@ -1178,79 +1329,153 @@ def check_reachability(
     return out
 
 
-def _tier_absent(message: str) -> bool:
-    """A missing CRD is a 404. A 403, a timeout, or anything else is a read that failed."""
-    text = message.lower()
-    if "forbidden" in text or "403" in text:
-        return False
-    return (
-        "not found" in text
-        or "notfound" in text
-        or "could not find the requested resource" in text
-        or "doesn't have a resource type" in text
-        or "does not have a resource type" in text
-    )
-
-
-def _cni_from_cluster(backend: Any) -> tuple[str | None, str]:
+def _cni_from_cluster(backend: Any) -> tuple[str | None, str, bool]:
     """Read the CNI and its version from the cluster, or say why not. Never guesses.
 
-    Returns a `NAME:VERSION` string for :func:`kube_noob.debug.cni.parse_cni`, and a note for the caller to show.
-    Four things deliberately return no version:
+    Returns a `NAME[:VERSION]` string for :func:`kube_noob.debug.cni.parse_cni`, a note for the caller to show, and
+    whether the CNI could not be established at all. What each answer means:
 
-    * a 404 -- the CRD is absent, so Calico is not installed; no note, because nothing changed;
-    * a 403 or any other failed read -- a note, and the behaviour it had before, since assuming a CNI from a read
-      that failed is exactly the shape G209 fixed;
-    * an object with no `calicoVersion`, or one that does not parse as a version;
+    * the API answering that `clusterinformations.crd.projectcalico.org` is not served -- Calico is not
+      installed; no note, because nothing changed. Recognised only in the words a backend writes for it
+      (:func:`kube_noob.debug.cluster.classify_read_failure`): an auth plugin "not found" on PATH is not it;
+    * a 403, any other failed read, a response without an `items` list or with items that are not objects -- the
+      CNI is not known (G279): the admin tiers are withheld where they decide the answer instead of being
+      evaluated with the OVN-Kubernetes semantics, because a failed read may be hiding the Calico 3.32 cluster
+      that ignores them;
+    * the CRD served but empty, an object with no `calicoVersion`, or one that does not parse as a version --
+      Calico is installed and its version is not known, which is `calico` with no version: G209's `unknown`;
     * a `variant` other than open-source Calico, whose versions run on their own schedule, so the open-source
-      table does not apply to them.
+      table does not apply to them -- the CNI's enforcement is not known.
     """
+    from kube_noob.debug.cluster import classify_read_failure, list_items, read
     from kube_noob.errors import ClusterAccessError
 
     try:
-        items = backend.get("clusterinformations", namespace=None).get("items", [])
+        items = list_items(read(backend, "clusterinformations", namespace=None), "clusterinformations")
     except ClusterAccessError as exc:
-        if _tier_absent(str(exc)):
-            return None, ""  # no Calico on this cluster
-        return None, (
-            f"the cluster's CNI could not be read ({exc}); AdminNetworkPolicy and BaselineAdminNetworkPolicy are "
-            "evaluated with the OVN-Kubernetes semantics kube-noob assumes by default. Pass --cni if you know it"
+        if classify_read_failure("clusterinformations", exc) == "not-served":
+            return None, "", False  # no Calico on this cluster
+        return (
+            None,
+            f"the cluster's CNI could not be read ({exc}); whether it enforces AdminNetworkPolicy, "
+            "BaselineAdminNetworkPolicy and ClusterNetworkPolicy is not known, so an answer one of them decides is "
+            "undetermined. Pass --cni if you know it",
+            True,
         )
+    from kube_noob.debug.cni import parse_cni
+
+    unknown_version = (
+        "Calico is installed (clusterinformations.crd.projectcalico.org is served) but {why}, so whether it "
+        "enforces AdminNetworkPolicy or ClusterNetworkPolicy is not known and an answer one of them decides is "
+        "undetermined. Pass --cni if you know it"
+    )
     for item in items:
-        if not isinstance(item, dict):
-            continue
         raw = item.get("spec")
         spec: dict[str, Any] = raw if isinstance(raw, dict) else {}
         version = str(spec.get("calicoVersion") or "").strip()
         variant = str(spec.get("variant") or "").strip()
+        if variant and variant.lower() not in {"calico", "calico-oss", "oss"}:
+            return (
+                None,
+                f"this cluster runs Calico variant {variant!r} at {version!r}, whose versions are numbered on "
+                "their own schedule, so kube-noob does not read it against the open-source support table and does "
+                "not know whether it enforces AdminNetworkPolicy. Pass --cni if you know it",
+                True,
+            )
         if not version:
             continue
-        if variant and variant.lower() not in {"calico", "calico-oss", "oss"}:
-            return None, (
-                f"this cluster runs Calico variant {variant!r} at {version!r}, whose versions are numbered on "
-                "their own schedule, so kube-noob does not read it against the open-source support table. Pass "
-                "--cni if you know whether it enforces AdminNetworkPolicy"
-            )
         try:
-            from kube_noob.debug.cni import parse_cni
-
             parse_cni(f"calico:{version}")
         except ValueError:
-            return None, (
-                f"this cluster reports Calico version {version!r}, which kube-noob could not read as a version, "
-                "so the admin tier is evaluated as before. Pass --cni if you know it"
+            return "calico", unknown_version.format(why=f"reports version {version!r}, which is not a version"), False
+        return f"calico:{version}", f"CNI read from the cluster: Calico {version}", False
+    return "calico", unknown_version.format(why="it reports no calicoVersion"), False
+
+
+#: The kinds `ns/name` may name, in the order they are looked for. A kind that is not there is the next kind's
+#: turn; a kind that could not be READ ends the search, because the object asked about is then not established.
+_WORKLOAD_PLURALS = {
+    "deployment": "deployments",
+    "statefulset": "statefulsets",
+    "daemonset": "daemonsets",
+    "pod": "pods",
+    "replicaset": "replicasets",
+    "job": "jobs",
+    "cronjob": "cronjobs",
+}
+_PLURAL_KIND = {
+    "deployments": "Deployment",
+    "statefulsets": "StatefulSet",
+    "daemonsets": "DaemonSet",
+    "pods": "Pod",
+    "replicasets": "ReplicaSet",
+    "jobs": "Job",
+    "cronjobs": "CronJob",
+}
+
+
+def _read_workload(backend: Any, ns: str, name: str, kinds: list[str], explicit: bool) -> dict[str, Any]:
+    from kube_noob.debug.cluster import classify_read_failure, read_object
+    from kube_noob.errors import ClusterAccessError
+
+    for kind in kinds:
+        resource = _WORKLOAD_PLURALS.get(kind, kind)
+        expected = _PLURAL_KIND.get(resource, "")
+        try:
+            return (
+                read_object(backend, resource, expected, name, namespace=ns)
+                if expected
+                else backend.get(resource, name=name, namespace=ns)
             )
-        return f"calico:{version}", f"CNI read from the cluster: Calico {version}"
-    return None, ""
+        except ClusterAccessError as exc:
+            if classify_read_failure(resource, exc, name=name) in {"not-found", "not-served"}:
+                continue
+            # Not "not there": with this kind unread, a lower-ranked kind of the same name would be answered about
+            # in place of the object asked about (G279). Unless the caller named the kind, nothing is established.
+            raise ClusterAccessError(
+                f"could not read {ns}/{name}: {resource}: {exc}"
+                + ("" if explicit else f"; name the kind (for example {ns}/pod/{name}) to read only that kind")
+            ) from exc
+    return {}
+
+
+def _namespace_labels_read(backend: Any, ns: str) -> tuple[dict[str, Any] | None, str]:
+    from kube_noob.debug.cluster import read_object
+    from kube_noob.errors import ClusterAccessError
+
+    try:
+        return read_object(backend, "namespaces", "Namespace", ns), ""
+    except ClusterAccessError as exc:
+        return None, str(exc)
+
+
+def _serves(backend: Any, resource: str, namespace: str) -> bool:
+    """Whether a list of ``resource`` in ``namespace`` was read: the API is served. A failed read says nothing."""
+    from kube_noob.debug.cluster import list_items, read
+    from kube_noob.errors import ClusterAccessError
+
+    try:
+        list_items(read(backend, resource, namespace=namespace), resource, namespace)
+    except ClusterAccessError:
+        return False
+    return True
 
 
 def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str | None = None) -> Inventory:
-    """Read (never write) the NetworkPolicies, namespaces and workloads the two endpoints need."""
+    """Read (never write) the NetworkPolicies, namespaces and workloads the two endpoints need.
+
+    Every read that did not happen is part of the answer: a NetworkPolicy list that failed, namespace labels a
+    selector needs, a tier, the CNI. None of them is taken for "nothing there" (G279).
+    """
+    from kube_noob.debug.cluster import classify_read_failure, list_items, read
     from kube_noob.errors import ClusterAccessError
 
     objects: list[dict[str, Any]] = []
     namespaces: list[str] = []
     notes: list[str] = []
+    unreadable: list[str] = []
+    namespace_unread: list[str] = []
+    np_unread: list[str] = []
     for spec in (source, destination):
         s = spec.strip()
         if ":" in s and "=" in s:
@@ -1265,55 +1490,46 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
             namespaces.append(ns)
         parts = s.split("/")
         if len(parts) in (2, 3) and "=" not in s:
-            name = parts[-1]
-            kinds = [parts[1].lower()] if len(parts) == 3 else ["deployments", "statefulsets", "daemonsets", "pods"]
-            plural = {
-                "deployment": "deployments",
-                "statefulset": "statefulsets",
-                "daemonset": "daemonsets",
-                "pod": "pods",
-                "replicaset": "replicasets",
-                "job": "jobs",
-                "cronjob": "cronjobs",
-            }
-            for kind in kinds:
-                try:
-                    obj = backend.get(plural.get(kind, kind), name=name, namespace=ns)
-                except ClusterAccessError:
-                    continue
-                if isinstance(obj, dict) and obj.get("kind"):
-                    objects.append(obj)
-                    break
+            explicit = len(parts) == 3
+            kinds = [parts[1].lower()] if explicit else ["deployments", "statefulsets", "daemonsets", "pods"]
+            obj = _read_workload(backend, ns, parts[-1], kinds, explicit)
+            if obj:
+                objects.append(obj)
     for ns in namespaces:
-        for item in backend.get("networkpolicies", namespace=ns).get("items", []):
-            objects.append({**item, "kind": "NetworkPolicy"})
+        # A NetworkPolicy read that failed -- forbidden, a timeout, no list -- names the namespace and withholds the
+        # verdict, as an unreadable tier does: a namespace-scoped token reads one namespace and not the other, and
+        # naming the one it could not read is more use than an error (G279).
         try:
-            nso = backend.get("namespaces", name=ns)
-            objects.append({**nso, "kind": "Namespace"})
-        except ClusterAccessError:
+            policies = list_items(read(backend, "networkpolicies", namespace=ns), "networkpolicies", ns)
+        except ClusterAccessError as exc:
+            notes.append(f"NetworkPolicies in namespace {ns} could not be read ({exc})")
+            unreadable.append(f"NetworkPolicy in namespace {ns}")
+            np_unread.append(ns)
+            policies = []
+        objects += [{**item, "kind": "NetworkPolicy"} for item in policies]
+        nso, why = _namespace_labels_read(backend, ns)
+        if nso is None:
+            namespace_unread.append(ns)
             notes.append(
-                f"could not read namespace {ns}'s labels; only kubernetes.io/metadata.name is used for "
-                "namespaceSelector matches"
+                f"could not read namespace {ns}'s labels ({why}); only kubernetes.io/metadata.name is known, so an "
+                "answer a selector on any other namespace label decides is undetermined"
             )
-    # The admin tiers are cluster-scoped: read once, not per namespace. A cluster without the CRD answers 404,
-    # which means the tier is not installed - not that the read failed. ClusterNetworkPolicy, Cilium's
-    # clusterwide policy and Calico's GlobalNetworkPolicy are read even though this evaluator does not parse
-    # them: collecting one is what puts it in `other_policies`. Without the read, the live answer was allowed
-    # in exactly the way the file answer no longer is. A 403 stays a failed read.
-    unreadable: list[str] = []
-    # A tier this CNI does not enforce is still read, and a failed read of it must not withhold the verdict.
-    # Two earlier versions each got half of this. The first let a 403 on the admin tier make the answer
-    # undetermined even where the caller had just said that tier is inert -- and the namespace-scoped RBAC that
-    # produces that 403 is the common `--live` case. The second stopped reading the tier at all, which dismissed
-    # the 403 and lost the finding that matters most: "this AdminNetworkPolicy is in your cluster and decides
-    # nothing" needs the policy in hand, and two API calls are a small price for it.
+        else:
+            objects.append({**nso, "kind": "Namespace"})
+    # The admin tiers are cluster-scoped: read once, not per namespace. Only the API saying it does not serve the
+    # kind is "not installed"; ClusterNetworkPolicy, Cilium's clusterwide policy and Calico's GlobalNetworkPolicy are
+    # read even though some are not parsed, because collecting one is what puts it in `other_policies`.
+    # A tier this CNI does not enforce is still read, and a failed read of it must not withhold the verdict: the
+    # namespace-scoped RBAC that produces that 403 is the common `--live` case, and "this AdminNetworkPolicy is in
+    # your cluster and decides nothing" needs the policy in hand.
     admin_tier_inert = False
+    cni_unread = False
+    caller_cni = bool(cni)
+    ccnp_served = False
     if not cni:
         # `--cni` is the caller's claim; on a live cluster the fact is readable. Calico publishes its version in
-        # `clusterinformations.crd.projectcalico.org` ("set automatically by calico/node"). A 404 means Calico is
-        # not installed, which is not an error and gets no note: the answer is what it was. A 403 does get one,
-        # because "I could not look" and "there is nothing there" are the two states this project never merges.
-        cni, why = _cni_from_cluster(backend)
+        # `clusterinformations.crd.projectcalico.org` ("set automatically by calico/node").
+        cni, why, cni_unread = _cni_from_cluster(backend)
         if why:
             notes.append(why)
     if cni:
@@ -1329,16 +1545,14 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
         ("baselineadminnetworkpolicies", BANP_KIND),
     ):
         try:
-            items = backend.get(tier_plural, namespace=None).get("items", [])
+            items = list_items(read(backend, tier_plural, namespace=None), tier_plural)
         except ClusterAccessError as exc:
-            if _tier_absent(str(exc)):
+            if classify_read_failure(tier_plural, exc) == "not-served":
                 notes.append(
-                    f"{tier_kind} is not installed on this cluster, or could not be read; "
-                    "the answer is NetworkPolicy only"
+                    f"{tier_kind} is not installed on this cluster (its API is not served), so no policy of that "
+                    "kind can decide this answer"
                 )
             elif admin_tier_inert and tier_kind in {ANP_KIND, BANP_KIND}:
-                # This CNI does not enforce that tier, so what it holds cannot change the answer. Withholding
-                # the verdict over an unreadable tier that decides nothing is the 403 trap in reverse.
                 notes.append(
                     f"{tier_kind} could not be read ({exc}), and this CNI does not enforce it, so it cannot "
                     "change this answer"
@@ -1349,8 +1563,30 @@ def inventory_from_cluster(backend: Any, source: str, destination: str, cni: str
                 )
                 unreadable.append(tier_kind)
             continue
-        objects += [{**item, "kind": tier_kind} for item in items if isinstance(item, dict)]
-    inv = Inventory(objects, cni=cni)
+        ccnp_served = ccnp_served or tier_plural == "ciliumclusterwidenetworkpolicies"
+        objects += [{**item, "kind": tier_kind} for item in items]
+    cni_unknown = "could not be read"
+    if not caller_cni and not cni and not cni_unread:
+        # No Calico. "So OVN-Kubernetes" was the assumption here, and on Cilium -- which states no support for
+        # AdminNetworkPolicy -- or kindnet, flannel or OpenShift SDN it decided an answer the CNI may not enforce
+        # (G279). The CNI is identified from what the cluster serves, or it is not identified.
+        if ccnp_served:
+            cni = "cilium"
+            notes.append("CNI read from the cluster: Cilium (ciliumclusterwidenetworkpolicies.cilium.io is served)")
+        elif namespaces and _serves(backend, "egressfirewalls", namespaces[0]):
+            cni = "ovn-kubernetes"
+            notes.append("CNI read from the cluster: OVN-Kubernetes (egressfirewalls.k8s.ovn.org is served)")
+        else:
+            cni_unread, cni_unknown = True, "was not identified"
+            notes.append(
+                "the cluster's CNI was not identified: none of Calico's clusterinformations, Cilium's clusterwide "
+                "policy or OVN-Kubernetes' EgressFirewall is served (or readable), so whether it enforces "
+                "AdminNetworkPolicy, BaselineAdminNetworkPolicy and ClusterNetworkPolicy is not known and an answer "
+                "one of them decides is undetermined. Pass --cni if you know it"
+            )
+    inv = Inventory(objects, cni=cni, cni_unread=cni_unread, cni_unknown=cni_unknown)
     inv.notes.extend(notes)
     inv.tier_unreadable = unreadable
+    inv.namespace_unread = namespace_unread
+    inv.np_unread = np_unread
     return inv

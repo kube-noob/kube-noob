@@ -83,6 +83,7 @@ def _fake_kubectl(tmp_path: Path) -> Path:
     script = tmp_path / "bin" / "kubectl"
     script.parent.mkdir()
     pods = {
+        "kind": "List",
         "items": [
             {
                 "metadata": {"name": "api-1", "namespace": "orders"},
@@ -103,7 +104,7 @@ def _fake_kubectl(tmp_path: Path) -> Path:
                     ],
                 },
             }
-        ]
+        ],
     }
     deploy = {
         "metadata": {"name": "api"},
@@ -111,15 +112,17 @@ def _fake_kubectl(tmp_path: Path) -> Path:
         "status": {"replicas": 1, "unavailableReplicas": 1},
     }
     events = {
+        "kind": "List",
         "items": [
             {
                 "type": "Warning",
                 "reason": "BackOff",
                 "message": "Back-off restarting failed container",
+                "metadata": {"name": "ev-1", "namespace": "orders"},
                 "involvedObject": {"kind": "Pod", "name": "api-1"},
                 "lastTimestamp": "2026-10-27T00:00:00Z",
             }
-        ]
+        ],
     }
     script.write_text(f"""#!/usr/bin/env python3
 import json, sys

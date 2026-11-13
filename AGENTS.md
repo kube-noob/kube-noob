@@ -105,6 +105,10 @@ A behaviour change updates, in the same commit:
 | 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
 | 141 | the output pipe closed |
 
+An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line
+on stderr with exit 4, never a raw traceback that exits 1; set `KUBE_NOOB_DEBUG=1` to print the traceback too,
+through the same output boundary (G279).
+
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations.
 

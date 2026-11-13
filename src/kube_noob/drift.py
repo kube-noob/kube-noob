@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from kube_noob import sanitize
 from kube_noob.attack_paths import LIVE_RESOURCES
 from kube_noob.audit.controls import rules_evaluated_without, rules_not_evaluated
 from kube_noob.audit.podspec import LONG_RUNNING_EMBEDDED_KINDS
@@ -693,7 +694,7 @@ def markdown(report: dict[str, Any]) -> str:
             lines.append("")
     for note in report.get("notes") or []:
         lines += [f"> {note}", ""]
-    return "\n".join(lines)
+    return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -713,7 +714,7 @@ def load(path: Path) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     """Objects for a live snapshot through the read-only backend (never Secrets), and what could not be read."""
-    from kube_noob.debug.cluster import stamp_api_version
+    from kube_noob.debug.cluster import list_items, stamp_api_version
     from kube_noob.errors import KubeNoobError
 
     objects: list[dict[str, Any]] = []
@@ -724,11 +725,11 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
         scopes: list[str | None] = [None] if cluster or not namespaces else list(namespaces)
         for ns in scopes:
             try:
-                data = backend.get(resource, namespace=ns)
+                items = list_items(backend.get(resource, namespace=ns), resource, ns)
             except KubeNoobError as exc:
                 not_read.append(f"{resource}{' in ' + ns if ns else ''}: {str(exc)[:160]}")
                 continue
-            for item in data.get("items") or [] if isinstance(data, dict) else []:
+            for item in items:
                 if isinstance(item, dict):
                     # The record says which API the object was listed under, as a manifest would (review 3, N1).
                     objects.append({**stamp_api_version(resource, item), "kind": kind})
