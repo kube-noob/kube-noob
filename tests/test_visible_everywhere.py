@@ -663,6 +663,7 @@ NOT_DRIVEN: dict[str, str] = {
             "config",
             "demo",
             "doctor",
+            "examples list",
             "explain",
             "generate",
             "rules",
@@ -679,6 +680,9 @@ NOT_DRIVEN: dict[str, str] = {
         ],
         "prints kube-noob's own bundled text, not text from the input",
     ),
+    "examples copy": "takes a directory, not a file: driven with a hostile directory name in "
+    "test_a_hostile_directory_name_is_refused_and_not_echoed (G277 refuses it with exit 2, so the table's 0/1/3 rule "
+    "does not fit)",
     **dict.fromkeys(
         [
             "admission review",
@@ -700,6 +704,37 @@ NOT_DRIVEN: dict[str, str] = {
         "AdmissionReview) this table has no hostile fixture for; its writers are covered by the module tests above",
     ),
 }
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["examples", "copy", "D"],
+        ["demo", "diagnose", "--keep", "D"],
+        ["known-issues", "etcd leader changed", "--version", "T"],
+        ["operators", "issues", "-f", "M", "--openshift-version", "T"],
+    ],
+    ids=str,
+)
+def test_a_hostile_directory_name_is_refused_and_not_echoed(
+    argv: list[str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first-run commands that take a value on the command line (G277): a directory name or a version holding
+    hidden characters, a clipboard-writing OSC 52 or a lone surrogate is refused with exit 2 and one line, and what
+    that line echoes has passed the output boundary -- marked inside a name, never spliced into a name it is not."""
+    from kube_noob.cli import main
+
+    inputs = _hostile_inputs(tmp_path)
+    inputs["D"] = str(tmp_path / f"ex{inputs['T']}\ud800")
+    rc = main([inputs.get(x, x) for x in argv])
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert rc == 2, (rc, text[-500:])
+    assert text.strip() and text.strip().count("\n") == 0, ascii(text)[:400]
+    assert _clean(text) and "\ud800" not in text and "\x07" not in text, ascii(text)[:400]
+    assert "ZWNobyBwd25k" not in text  # the OSC 52 payload is gone with its sequence
+    assert "xxx" not in text, "the hostile name spliced into a plain one"
+    assert not (tmp_path / "ex").exists() and not any(tmp_path.glob("ex*")), "nothing was written under a refused name"
 
 
 def test_every_command_is_driven_or_named_with_a_reason() -> None:

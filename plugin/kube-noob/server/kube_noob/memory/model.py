@@ -74,8 +74,15 @@ def _whole(pattern: re.Pattern[str]) -> str:
 
 
 def vkey(version: str) -> tuple[int, ...]:
-    """Numeric parts of a version, ignoring a build suffix ("4.16.0-202410011135" -> (4, 16, 0))."""
-    return tuple(int(p) for p in re.findall(r"\d+", version.split("-", 1)[0].lstrip("v"))[:3])
+    """Numeric parts of a version, ignoring a build suffix ("4.16.0-202410011135" -> (4, 16, 0)): read as the
+    known-issue index reads it (kube_noob.versions), so "4.21.3-x86_64" is 4.21.3 here too. Text the grammar does
+    not accept (an entry's free-form field) keeps the numbers before its first hyphen."""
+    from kube_noob.versions import read_version
+
+    cv = read_version(version)
+    if cv is not None:
+        return tuple(int(p) for p in cv.numeric.split("."))
+    return tuple(int(p[:9]) for p in re.findall(r"\d+", version[:200].split("-", 1)[0].lstrip("v"))[:3])
 
 
 def _prose(field: str, value: str, limit: int) -> str:

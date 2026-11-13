@@ -30,7 +30,7 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_demo_list(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["demo", "--list", "--format", "json"]) == 0
     names = [d["name"] for d in json.loads(capsys.readouterr().out)]
-    assert len(names) >= 5 and {"audit", "diagnose", "learn", "posture"} <= set(names)
+    assert len(names) >= 5 and {"audit", "diagnose", "learn", "doctor"} <= set(names)
 
 
 @pytest.mark.parametrize("name", list(demo.SCENARIOS))

@@ -3,7 +3,9 @@
 Every scenario runs in-process against the bundled ``examples/`` with web and cluster access forced off and a
 throwaway data directory, so a demo never touches the network, a cluster or the user's progress and learning file.
 Each step prints the equivalent CLI command, so a viewer can repeat it. The VHS tapes in ``demos/`` record these
-scenarios as GIFs for every release.
+scenarios as GIFs for every release. With ``--keep DIR`` what a scenario writes (its sample input, a copy of the
+bundled examples, a report) stays in DIR instead of the throwaway directory, so the printed commands can be rerun
+there.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ class Scenario:
     name: str
     title: str
     audience: str
-    run: Callable[[Any, Emit], None]
+    run: Callable[[Any, Emit, Path], None]
 
 
 def _step(emit: Emit, why: str, command: str) -> None:
@@ -54,7 +56,7 @@ def _step(emit: Emit, why: str, command: str) -> None:
     emit(f"$ {command}")
 
 
-def _audit(kit: Any, emit: Emit) -> None:
+def _audit(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
     text = _example("insecure-deployment.yaml")
@@ -83,7 +85,7 @@ def _audit(kit: Any, emit: Emit) -> None:
         emit(_wrap(f"- {m}", "  "))
 
 
-def _diagnose(kit: Any, emit: Emit) -> None:
+def _diagnose(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
     for name, why in (
@@ -110,7 +112,7 @@ def _diagnose(kit: Any, emit: Emit) -> None:
             emit(_wrap(d["proposedChanges"][0]["change"], "     "))
 
 
-def _protocol(kit: Any, emit: Emit) -> None:
+def _protocol(kit: Any, emit: Emit, work: Path) -> None:
     import yaml
 
     from kube_noob import toolkit as tk
@@ -140,7 +142,7 @@ def _protocol(kit: Any, emit: Emit) -> None:
         emit(f"  {cmd}")
 
 
-def _learn(kit: Any, emit: Emit) -> None:
+def _learn(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
     _step(emit, "Open the first lesson", "kube-noob learn lesson k8s-101-objects")
@@ -161,7 +163,7 @@ def _learn(kit: Any, emit: Emit) -> None:
         emit(_wrap(f"- {fb['ruleId']}: {fb['message']} fix: {fb['fix']}", "  "))
 
 
-def _search(kit: Any, emit: Emit) -> None:
+def _search(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
     _step(
@@ -174,7 +176,7 @@ def _search(kit: Any, emit: Emit) -> None:
         emit(f"[{r['chunkId']}] {r['title']}")
 
 
-def _learning(kit: Any, emit: Emit) -> None:
+def _learning(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob import toolkit as tk
 
     note = {
@@ -200,11 +202,11 @@ def _learning(kit: Any, emit: Emit) -> None:
         emit(f"[{r['chunkId']}] {r['title']}")
 
 
-def _memory(kit: Any, emit: Emit) -> None:
+def _memory(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob.memory import dump_entry, repo, verify
     from kube_noob.memory import match as mmatch
 
-    root = Path(kit.settings.data_dir) / "team-memory"
+    root = work / "team-memory"
     _step(emit, "Keep your team's fixes as code, in your own repository", "kube-noob memory init team-memory")
     for rel in repo.init_repo(root)["created"]:
         emit(f"created {rel}")
@@ -288,11 +290,11 @@ def _memory(kit: Any, emit: Emit) -> None:
     emit(f"version {out['query']['version']} from the alert's {out['query'].get('versionFrom', '')}")
 
 
-def _mustgather(kit: Any, emit: Emit) -> None:
+def _mustgather(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob.mustgather import analyse, ingest, sample
     from kube_noob.mustgather import report as mg_report
 
-    case = Path(kit.settings.data_dir) / "case-01"
+    case = work
     archive = sample.write(case)
     _step(
         emit,
@@ -329,7 +331,7 @@ def _mustgather(kit: Any, emit: Emit) -> None:
 ALERT_REPORT_BUDGET_SECONDS = 2.0
 
 
-def _alerts(kit: Any, emit: Emit) -> None:
+def _alerts(kit: Any, emit: Emit, work: Path) -> None:
     from starlette.testclient import TestClient
 
     from kube_noob import toolkit as tk
@@ -390,7 +392,7 @@ def _alerts(kit: Any, emit: Emit) -> None:
     emit(f"within the {ALERT_REPORT_BUDGET_SECONDS:g}s budget (the north-star claim is a minute)")
 
 
-def _posture(kit: Any, emit: Emit) -> None:
+def _doctor(kit: Any, emit: Emit, work: Path) -> None:
     from kube_noob.posture import posture, render_text
 
     # As the MCP server and plugin run it: the server itself never calls a model (llm.provider: none).
@@ -430,16 +432,30 @@ SCENARIOS: dict[str, Scenario] = {
             "SREs, on-call",
             _alerts,
         ),
-        Scenario("posture", "Show and lock the security posture", "security, platform admins", _posture),
+        Scenario("doctor", "Show and lock what kube-noob itself can reach", "security, platform admins", _doctor),
     )
 }
+# Old demo names, kept because a demo name is a public id (scripts, recordings, docs). `posture` showed `doctor`
+# while `kube-noob posture` is the attack-path scan, so it was renamed (G277); the old name still runs it.
+ALIASES = {"posture": "doctor"}
 
 
-def run(name: str, settings: Settings, emit: Emit = print) -> float:
-    """Run one scenario offline in a throwaway data dir; returns the elapsed seconds."""
+def resolve(name: str) -> str:
+    """The scenario a name runs: itself, or the scenario an old name now points at."""
+    return ALIASES.get(name, name)
+
+
+def run(name: str, settings: Settings, emit: Emit = print, keep: Path | None = None) -> float:
+    """Run one scenario offline in a throwaway data dir; returns the elapsed seconds. With ``keep``, what the
+    scenario writes and a copy of the bundled examples go to that directory instead, so its commands can be rerun
+    there; existing files are never replaced (``kube_noob.examples.ExamplesError``)."""
+    from kube_noob import examples
     from kube_noob import toolkit as tk
 
-    scenario = SCENARIOS[name]
+    scenario = SCENARIOS[resolve(name)]
+    if keep is not None:
+        _refuse_existing(keep)
+        examples.copy(keep / "examples")
     with tempfile.TemporaryDirectory(prefix="kube-noob-demo-") as tmp:
         safe = settings.model_copy(
             update={
@@ -451,9 +467,46 @@ def run(name: str, settings: Settings, emit: Emit = print) -> float:
         )
         start = time.monotonic()
         emit(f"== kube-noob demo: {scenario.title} ==")
-        scenario.run(tk.Toolkit(safe), emit)
+        if name in ALIASES:
+            emit(
+                f"(`kube-noob demo {name}` is now `kube-noob demo {scenario.name}`: it shows what kube-noob itself can "
+                "reach. `kube-noob posture` is the attack-path scan.)"
+            )
+        work = keep if keep is not None else Path(tmp) / "work"
+        scenario.run(tk.Toolkit(safe), emit, work)
+        if keep is not None:
+            import shlex
+
+            emit(f"\nKept in {keep}: cd {shlex.quote(str(keep))} to rerun the commands above.")
         return time.monotonic() - start
 
 
-def listing() -> list[dict[str, str]]:
-    return [{"name": s.name, "title": s.title, "for": s.audience} for s in SCENARIOS.values()]
+# What a kept scenario may write at the top of its directory; checked before anything is written, so a second run
+# into the same directory refuses instead of mixing two runs.
+_KEPT = ("examples", "team-memory", "must-gather.tar.gz", "report")
+
+
+def _refuse_existing(keep: Path) -> None:
+    from kube_noob.examples import ExamplesError
+
+    if keep.exists() and not keep.is_dir():
+        raise ExamplesError(f"--keep {keep}: exists and is not a directory")
+    kept = list(_KEPT)
+    try:
+        from kube_noob.mustgather.sample import TOP
+
+        kept.append(TOP)
+    except ImportError:  # a build without the must-gather modules has no must-gather scenario to keep
+        pass
+    taken = sorted(n for n in kept if (keep / n).exists() or (keep / n).is_symlink())
+    if taken:
+        raise ExamplesError(f"--keep {keep}: already holds {', '.join(taken)}; nothing was written. Pick a new DIR")
+
+
+def listing() -> list[dict[str, Any]]:
+    """One row per scenario; an old name is listed under the scenario it runs (``aliases``), not as a demo."""
+    rows: list[dict[str, Any]] = []
+    for s in SCENARIOS.values():
+        old = sorted(k for k, v in ALIASES.items() if v == s.name)
+        rows.append({"name": s.name, "title": s.title, "for": s.audience, **({"aliases": old} if old else {})})
+    return rows

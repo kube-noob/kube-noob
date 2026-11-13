@@ -115,12 +115,13 @@ class Watcher:
                 }
                 for d in denials[:3]
             ]
-        known = known_issue_match(text, self.platform, self.version, 2, self.settings.data_dir, require_context=True)[
-            "matches"
-        ]
+        reported = known_issue_match(text, self.platform, self.version, 2, self.settings.data_dir, require_context=True)
+        known = reported["matches"]
         if known:
             keep = ("id", "url", "status", "kind", "verdict", "fixedIn", "workaround")  # kind: known, fixed or ticket
             out["knownIssues"] = [{k: m[k] for k in keep if m.get(k) is not None} for m in known]
+        if "versionCoverage" in reported:  # no knownIssues for a release the index does not hold is not "none" (G277)
+            out["knownIssuesCoverage"] = reported["versionCoverage"]
         changed = what_changed(obs.workload, snap.get("replicasets", []), now)
         if changed:
             out["whatChanged"] = changed

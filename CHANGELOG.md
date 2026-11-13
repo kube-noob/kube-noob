@@ -3,6 +3,87 @@
 ## Unreleased
 
 - **The defect classes adversarial review keeps finding are now a document in the repository, and AGENTS.md sends every author to it before they push (G296).** Eleven branches went through about thirty read-only review rounds this week; every one had passed the gate with tests, and about three hundred confirmed defects fell into twenty-six recurring classes -- a skipped input read as complete, a refusal read one layer up as an absence, the container's own metadata dropped while its contents were checked, a fix applied to one surface and not its siblings, a cap set above the resource it protects. The brief the reviewers worked from lived in a chat session and would have vanished with it. `docs/review-classes.md` keeps each class with the shape it took and the test shape that holds it; the numbers are stable (append, never renumber) and a test keeps the table gapless and the count in AGENTS.md true. Nothing in the code changes.
+- **The first five minutes: four things a new user hit before any feature mattered (G277).** A version outside the
+  known-issue index read as "no known issue": `known-issues 'etcd leader changed' --version 4.16.20` exited 0 with
+  `"matches": []` and a note naming the releases the index holds, and nothing a program reads said 4.16 was not one of
+  them. Results now carry `versionCoverage` with three values -- `determined` (the release is indexed, so an empty list
+  is an answer), `not-determined` (it is not, with the reason) and `not-narrowed` (no usable version) -- in the text
+  view, JSON, YAML and the MCP result. `diagnose`, `build diagnose`, `insight`, the incident watch, the live
+  diagnostic bundle, the must-gather report and case draft, and the gate carry the same statement as
+  `knownIssuesCoverage`, and the gate lists the lookup under "Not run". A version the index cannot answer for does
+  not change an exit code (`known-issues` has no `--require-complete`, and exit 5 means unreadable evidence, not a
+  dated index, as for `notCheckedBeyond`); the exit codes that did change are listed at the end of this entry.
+
+  The README's headline commands named `examples/...` files that exist only in a checkout, so after `brew install`
+  the first command a stranger copied answered `No such file or directory`. `kube-noob examples copy DIR` writes the
+  examples the package already ships (never replacing a file without `--force`, never writing through a symbolic
+  link, checking every target before writing any), `examples list` says what each one is for, and the README now
+  starts with that step; a test runs every README command that names `examples/` from a directory that is not the
+  checkout. `demo <name> --keep DIR` keeps what a demo writes (`demo must-gather` printed "wrote report.md" into a
+  directory it then deleted), so its printed commands rerun there.
+
+  `diagnose` had no text view: it printed about 216 lines of YAML whatever `--format` said, while `demo diagnose`
+  showed the ten lines a person acts on. It now defaults to text like `policy explain`, `known-issues` and `insight`:
+  the likely playbook, read-only steps first, then what needs approval labelled as such, denials, reported issues and
+  every caveat the structured result carries. **If a script reads `kube-noob diagnose` output as YAML without
+  `--format`, add `--format yaml`**; JSON and YAML under their flag are byte-for-byte what they were (every consumer
+  in this repository already passes `--format json`). `insight` given text it does not recognise now lists what it
+  recognises, from the router's own table, and a bundled sample that works, instead of only "nothing recognised".
+  `demo --list` keeps its columns aligned past `must-gather`, and `demo doctor` is the new name of the demo that runs
+  `doctor` (`kube-noob posture` is the attack-path scan); `demo posture` still runs it and says so, and its recording
+  is now `doctor.gif` (`demos/posture.tape` is gone).
+
+  A review of the above found seventeen more ways to get the same wrong answer, all fixed. A pre-release, nightly or
+  OKD version (`4.16.0-0.nightly-...`, `4.15.0-0.okd-...`) was "not narrowed" and printed nothing, so a nightly
+  must-gather printed the old "None of the findings matches a known issue"; versions are now read once, by their
+  minor and z-stream, for the statement, the matching and the gate alike, and such builds are `not-determined` (OKD
+  is never answered from OpenShift Container Platform release notes). A z-stream newer than the newest one the
+  notes reach (4.22.40 against 4.22.18) is `not-determined` with `indexedThrough`. " 4.20.0" matched nothing while
+  the statement said `determined`, and a 5,000-digit z-stream exited 4; `gate --version` is now checked. A fix in
+  another release is no longer phrased as update advice for a version the index cannot answer for. `selftest
+  --cases` scores such a case `not-determined` rather than passed. `build diagnose`, the incident headline and every
+  other text view say it, and a test finds every consumer of the index in the code. `examples copy` turns a full disk,
+  a dangling link or a control character into exit 4 or 2 with nothing left behind (it wrote a 0-byte file before),
+  leaves identical files alone so running it twice works, and quotes the directory in the commands it suggests.
+  The diagnose text view puts every value from the input on one line (`sanitize.one_line`, the G279 rule: a hidden
+  character inside a name is shown as `<U+200B>`, never spliced out), names causes
+  the input did not single out "possible" rather than "likely", counts the causes and evidence it does not show,
+  prints the approach and any injection flags, keeps an Alertmanager payload's own version beside a `--version`
+  that overrides it, and says when only the end of a long input was read.
+
+  A second review found what the first round left. The matcher read the HEAD of a long paste while `diagnose` and
+  `insight` read its end, so an issue described at the end of 105,515 characters answered "no reported issue"; it now
+  matches the last 100,000 characters, as they do, and says so (`inputTruncated`, coverage `not-determined`). Every
+  tool model and `selftest --cases` refused the pre-release, nightly and OKD versions this entry teaches the matcher
+  to read, with a raw validation dump: one version grammar (`kube_noob.versions`) now decides on every command and
+  tool -- the grammar `operators issues --openshift-version` set (R5): `x.y` or `x.y.z`, ASCII digits without leading
+  zeros, optionally a build after `-` or `+`, taken exactly as typed, so a leading `v` or white space around the value
+  (`"4.21\n"` from an unstripped variable) is refused, not read as the version it resembles -- plus a release-image
+  tag (`4.21.3-x86_64` is the release 4.21.3). `--version` and `--openshift-version` share the parser and R5's one
+  sentence (exit 2), and the tools' `version` and `openshift_version` fields refuse the same values with it; a padded
+  value that reaches the index through a label narrows nothing and the coverage statement names the padding. `4.21`
+  and `4.21.0` are the same release for `versionConflict`; `4.21` gets no z-stream
+  update advice. `examples copy` rolls back on Ctrl-C too, works relative to the directory it opened (so one swapped
+  for a link after the check is not followed), falls back to a rename where hard links are not supported, and refuses
+  invisible characters in the directory name. The README's fallback for releases without `examples copy` is now a
+  plain `curl` of the two files, which works in bash, zsh and fish whatever installed kube-noob; the earlier one
+  needed an absolute shebang and failed under `#!/usr/bin/env`, pyenv shims, pip's `/bin/sh` launcher and fish.
+  `sanitize.one_line` is `sanitize.visible` plus a whitespace collapse, with no rule of its own (G279's); the diagnose text
+  view shows team memory's cause, commands (verbatim, needs-approval labelled), versions and risk acceptance; the gate
+  with an OpenShift platform and no `--version` says reported issues were not looked up; a live `debug` whose version
+  read failed says so instead of "No version was given"; `insight` carries an Alertmanager payload's version and any
+  conflict, and lists what it recognises in JSON too; `demo --list --format json` lists `posture` under `doctor`
+  (`aliases`) rather than as a demo of its own.
+
+  Exit codes that changed, measured against main: `known-issues`, `diagnose`, `insight`, `build diagnose` and
+  `ticket` with `--version 4.21.0-rc.1`, `4.20.0-okd-scos.6` or `4.21.3-x86_64` exited 4 with a
+  validation dump and now run (0; `ticket` 1 when the key is not in the local copy, as for any version). With text
+  that is not a version (`latest`, `4`, `4.20.x`, `v4.21.3`, `" 4.21"`) they exited 4 and now exit 2, the code for a
+  bad flag value; `gate` did the same for `latest` and `4` (4 to 2) and accepted `4.20.x` (1, findings) and now
+  refuses it (2).
+  `selftest --cases --gate N` can now fail (1) where it passed (0), because a case whose answer depends on reported
+  issues for a version the index cannot answer for is scored `not-determined`, counted and not passed. Ctrl-C during
+  `examples copy` exits 130 with one line and nothing left behind; a write failure there exits 4.
 - **KN-S010 is critical for more host paths: `audit` and `gate --fail-on critical` exit 1 where they are mounted (G273).** A hostPath volume was critical only for `/`, `/etc`, `/var/lib/kubelet`, `/proc` exactly and the docker, containerd, cri-o and cri-dockerd sockets. It is now also critical for `/etc/kubernetes`, `/var/lib/kubelet/pki`, `/var/lib/kubelet/pods`, `/root` and `/var/lib/etcd` and anything under each; for the podman and dockershim sockets wherever they are mounted from; for a runtime's socket directory (`/run`, `/var/run`, `/run/containerd`, `/var/run/containerd`, the cri-o, podman, docker and cri-dockerd ones); for any directory that holds one of those (`/var`, `/var/lib`); and for `/proc/<pid>/root`, read as the path under it (`/proc/1/root` is the host's `/`). `//etc`, `/etc/` and `/etc/../etc` resolve to `/etc` first. **This makes `/run` and `/var/run` critical, which they were not on main: they hold every runtime socket, so that is correct.** Measured on 49 single-volume DaemonSets against main: `audit --fail-on critical` and `gate --fail-on critical` go from 0 to 1 for `/etc/`, `//etc`, `/etc/../etc`, `/etc/kubernetes`, `/etc/kubernetes/pki`, `/var/lib/kubelet/pki`, `/var/lib/kubelet/pods`, `/var/lib/etcd`, `/root`, `/root/.ssh`, `/run/podman/podman.sock`, `/var/run/dockershim.sock`, `/run/containerd`, `/var/run`, `/var/lib`, `/var` and `/proc/1/root` (17), stay 1 for `/`, `/proc` and the docker, containerd and cri-o sockets, and stay 0 for the other 27 -- among them kube-proxy's `/run/xtables.lock`, CNI state (`/var/run/calico`, `/var/run/cilium`, `/run/flannel`, `/etc/cni/net.d`), CA bundles, `/etc/localtime`, `/etc/machine-id`, `/proc/sys/net`, `/var/run/secrets`, `/var/lib/containerd`, `/var/lib/docker`, `/var/log`, `/dev`, `/sys`, `/boot`, `/home`, the kubelet's device-plugin and plugin-registry directories, `/ETC`, a relative `etc` and the Windows paths. Two directories under `/etc/kubernetes` are carved out, exactly and with what is under them, as `/etc/cni/net.d` is not `/etc`: `/etc/kubernetes/node-feature-discovery` (the node-feature-discovery worker chart and the OpenShift NFD operator) and `/etc/kubernetes/secrets-store-csi-providers` (the GCP secrets-store CSI provider), neither of which holds a credential. A readOnly mount is not downgraded: read-only `/var` still reads the kubelet's credentials and every pod's Secrets. On well-known charts and manifests (hostPath paths read from their templates): critical, and real, for the secrets-store CSI driver and the AWS provider (`/var/lib/kubelet/pods`: every pod's mounted Secrets), Velero's node-agent (the same), the EBS CSI node and Multus (`/var/lib/kubelet`, and Multus's `/` and `/run`), KubeArmor (runtime sockets and `/run`, `/var`), Calico, Cilium, Falco and Datadog (`/proc`, and Falco's `/etc`, Datadog's `/`) and the NVIDIA container toolkit (`/`); not critical for the NFD worker, the GCP, Azure and Vault CSI providers, node-problem-detector, or Multus thin. `explain KN-S010` lists the rule. The attack-path scan labels the same paths, and only those, "node takeover".
 
 - **Privacy: route and Ingress credentials are masked before they leave the cluster backend (G273).** `cluster_get` (and every live reader) returned in clear: an OpenShift Route's header actions (`spec.httpHeaders.actions.request|response[].action.set.value`, an `Authorization: Bearer` set at the router) and an nginx Ingress annotation whose snippet sets a credential header (`proxy_set_header Authorization ...`) -- both on main too -- and, on this branch, Gateway API and Istio query-parameter values and a `user:password@` in a redirect hostname. Every value under a route's header or query-parameter block, a Route's header actions, a snippet that sets an Authorization, Cookie, API-key or token header, and a userinfo in a route string are now masked; header and parameter names stay.
