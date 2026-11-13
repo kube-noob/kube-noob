@@ -587,9 +587,13 @@ def _service_account_pull_secrets(backend: Backend, namespace: str, pods: list[d
         try:
             obj = backend.get("serviceaccounts", name=sa, namespace=namespace)
         except ClusterAccessError as exc:
-            # The events already name the missing pull secret; the reader is still told this read did not happen,
-            # rather than seeing nothing where a line would be (G293, review).
-            out.append(f"serviceaccounts/{sa}: not read ({str(exc)[:300]})")
+            # A ServiceAccount that does not exist (NotFound, in the backend's own words) is an answer and adds no
+            # line. A read that failed -- forbidden, a timeout, a 500 -- is named: the events already name the
+            # missing pull secret, but the reader is told this read did not happen (G293, review).
+            from kube_noob.debug.cluster import classify_read_failure
+
+            if classify_read_failure("serviceaccounts", exc, name=sa) != "not-found":
+                out.append(f"serviceaccounts/{sa}: not read ({str(exc)[:300]})")
             continue
         names = [str(s.get("name")) for s in obj.get("imagePullSecrets") or [] if isinstance(s, dict)]
         out.append(f"serviceaccount/{sa} imagePullSecrets={names}")

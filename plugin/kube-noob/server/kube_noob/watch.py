@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kube_noob.config import Settings
-from kube_noob.debug.cluster import list_items
+from kube_noob.debug.cluster import classify_read_failure, list_items
 from kube_noob.errors import ClusterAccessError, ConfigError
 from kube_noob.incidents import IncidentLedger, Observation, observe, what_changed
 
@@ -101,8 +101,11 @@ class Watcher:
             try:
                 logs = self.backend.logs(obs.namespace, pod, container, 50, True)
             except ClusterAccessError as exc:
-                # The diagnosis runs on the events alone; the reader is told the log was not part of it (G293).
-                not_read.append(f"{obs.namespace}/pods/log {pod}/{container}: not read ({str(exc)[:300]})")
+                # A pod that is gone by now (NotFound, in the backend's own words) is an answer, not a failed
+                # read: there is no log to have read. Anything else -- forbidden, a timeout, a 500 -- is named,
+                # because the diagnosis then ran on the events alone (G293).
+                if classify_read_failure("pods", exc, name=pod) != "not-found":
+                    not_read.append(f"{obs.namespace}/pods/log {pod}/{container}: not read ({str(exc)[:300]})")
         text = "\n".join(obs.evidence) + "\n" + logs + f"\nNamespace: {obs.namespace}\n"
         dx = diagnose(text, platform=self.platform, limit=1).as_dict()
         out: dict[str, Any] = {"analyzedAt": now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")}

@@ -223,3 +223,66 @@ def test_the_watch_and_the_debugger_name_their_bonus_reads_when_forbidden(
         assert main(["--format", "json", *args]) == 0
         blob = capsys.readouterr().out
         assert forbidden in blob and "not read (" in blob, (forbidden, blob[:800])
+
+
+# -- an absence is not a refusal (CI run 43451396337, e2e-kind on kubectl 1.37) ----------------------------------
+
+NEW_KUBECTL_NOT_SERVED = (
+    "kubectl get clusterversions.config.openshift.io version failed: error: the server doesn't have a resource "
+    'type "clusterversions" in group "config.openshift.io"'
+)
+
+
+class _AbsentBackend(pd.RecordingBackend):
+    """A plain Kubernetes cluster: ClusterVersion is not served (kubectl's own sentence, in the wording kubectl
+    1.37 prints), the crashing pod is gone by the time its log is asked for, and its ServiceAccount does not
+    exist. Each is a fact about the cluster, not a read that failed."""
+
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
+        from kube_noob.debug.cluster import BackendReadError, resolve_resource
+
+        plural, _ = resolve_resource(resource)
+        if plural == "clusterversions":
+            self.reads.add(("config.openshift.io", plural))
+            raise BackendReadError(NEW_KUBECTL_NOT_SERVED, stderr=NEW_KUBECTL_NOT_SERVED.split("failed: ", 1)[1])
+        if plural == "serviceaccounts" and name:
+            line = f'Error from server (NotFound): serviceaccounts "{name}" not found'
+            raise BackendReadError(f"kubectl get serviceaccounts {name} failed: {line}", stderr=line)
+        return super().get(resource, name=name, namespace=namespace, **kw)
+
+    def logs(self, namespace: str, pod: str, container: str | None, tail: int, previous: bool) -> str:
+        from kube_noob.debug.cluster import BackendReadError
+
+        line = f'Error from server (NotFound): pods "{pod}" not found'
+        raise BackendReadError(f"kubectl logs {pod} failed: {line}", stderr=line)
+
+
+def test_kubectl_s_newer_sentence_for_an_api_that_is_not_served_is_recognised() -> None:
+    """kubectl 1.37 says `... resource type "clusterversions" in group "config.openshift.io"`; the classifier knew
+    only `"clusterversions"` and `"clusterversions.config.openshift.io"`, so a plain cluster read as not-read."""
+    from kube_noob.debug.cluster import classify_read_failure
+
+    line = NEW_KUBECTL_NOT_SERVED.split("failed: ", 1)[1]
+    for failure in (line, NEW_KUBECTL_NOT_SERVED):
+        assert classify_read_failure("clusterversions", failure, name="version") == "not-served"
+    other = line.replace("config.openshift.io", "example.com")
+    assert classify_read_failure("clusterversions", other, name="version") == "not-read", "another group's absence"
+    quoted = f"Error from server (InternalError): upstream said: {line}"
+    assert classify_read_failure("clusterversions", quoted, name="version") == "not-read", "not a whole line"
+
+
+def test_an_absent_api_a_gone_pod_and_a_missing_serviceaccount_are_not_read_failures(tmp_path: Path) -> None:
+    """The e2e assertion `errors == []` on a plain kind cluster is right: not served and not found are answers.
+    One case per read the review made loud for a 403."""
+    from kube_noob.debug.cluster import cluster_info
+    from kube_noob.debug.diagnose import debug_workload
+    from kube_noob.watch import Watcher
+
+    info = cluster_info(_AbsentBackend())
+    assert info["platform"] == "kubernetes" and "platformNotRead" not in info
+    poll = Watcher(pd._settings(tmp_path / "w"), _AbsentBackend(), [pd.NS]).poll()
+    assert poll["errors"] == [], poll["errors"]
+    assert all("notRead" not in (row.get("analysis") or {}) for row in poll["open"])
+    assert "not read" not in json.dumps(poll).lower()
+    out = debug_workload(_AbsentBackend(), pd.NS, "deployment", "web", None, 50, tmp_path / "d")
+    assert not any("not read" in line for line in out["evidence"]), out["evidence"]
