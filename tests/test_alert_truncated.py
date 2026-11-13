@@ -152,3 +152,27 @@ def test_the_cli_list_and_show_views_say_truncated(
     assert "2 truncated by Alertmanager" in capsys.readouterr().out
     assert main(["--config", str(config), "alerts", "show", out["id"]]) == 0
     assert "2 truncated by Alertmanager (max_alerts)" in capsys.readouterr().out
+
+
+# -- round 1 (10, 12) ------------------------------------------------------------------------------------------------
+
+
+def test_the_group_count_includes_items_not_read_as_alerts(tmp_path: Path) -> None:
+    items: list[Any] = [_alert("KubeNodeNotReady", "resolved", node=f"w{i}") for i in range(600)] + ["junk"]
+    text = json.dumps({"version": "4", "status": "firing", "truncatedAlerts": 2, "alerts": items})
+    body = _report(tmp_path, text)
+    s = body["summary"]
+    assert s["alerts"] == 500 and s["alertsInGroup"] == 603 and s["truncatedByAlertmanager"] == 2
+    assert s["alertsNotRead"] == 101
+    assert any("500 of 603" in c and "101 not read" in c and "2 truncated" in c for c in body["caveats"])
+
+
+def test_a_truncated_count_over_the_cap_is_named_apart_from_a_type_error(tmp_path: Path) -> None:
+    huge = _report(tmp_path, _payload(_alert("A", namespace="shop"), truncatedAlerts=10**9))
+    why = _truncated_entries(huge)[0]["why"]
+    assert "exceeds the cap" in why and "1,000,000" in why and "not a non-negative integer" not in why
+    assert huge["summary"]["truncatedByAlertmanager"] is None and huge["summary"]["complete"] is False
+    typed = _report(tmp_path, _payload(_alert("A", namespace="shop"), truncatedAlerts="2"))
+    assert "not a non-negative integer" in _truncated_entries(typed)[0]["why"]
+    ok = _report(tmp_path, _payload(_alert("A", namespace="shop"), truncatedAlerts=1_000_000))
+    assert ok["summary"]["truncatedByAlertmanager"] == 1_000_000

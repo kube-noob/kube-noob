@@ -348,6 +348,8 @@ class Split:
     #: ``truncated_unreadable`` saying why -- an unreadable count is not a zero (G289).
     truncated: int | None = 0
     truncated_unreadable: str | None = None
+    #: Every item of the payload's alert list, read or not: the group Alertmanager sent is this plus `truncated`.
+    items: int = 0
 
 
 def split(text: str, transform: Callable[[str], str] | None = None) -> Split | None:
@@ -398,7 +400,10 @@ def split(text: str, transform: Callable[[str], str] | None = None) -> Split | N
             )
         )
     truncated, unreadable = _truncated(doc)
-    return Split(payload, tuple(out), not_read, truncated, unreadable)
+    return Split(payload, tuple(out), not_read, truncated, unreadable, len(items))
+
+
+MAX_TRUNCATED = 1_000_000
 
 
 def _truncated(doc: Any) -> tuple[int | None, str | None]:
@@ -406,11 +411,14 @@ def _truncated(doc: Any) -> tuple[int | None, str | None]:
     if not isinstance(doc, dict) or "truncatedAlerts" not in doc:
         return 0, None
     value = doc["truncatedAlerts"]
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 10_000_000:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         shown = (
             json.dumps(value, ensure_ascii=False)[:40] if not isinstance(value, dict | list) else type(value).__name__
         )
         return None, f"truncatedAlerts is not a non-negative integer ({shown})"
+    if value > MAX_TRUNCATED:
+        # an integer, and one no receiver can have truncated: said apart from a type error (round 1, 12)
+        return None, f"truncatedAlerts ({value:,}) exceeds the cap ({MAX_TRUNCATED:,}) this reads"
     return value, None
 
 
