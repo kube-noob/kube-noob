@@ -171,6 +171,8 @@ def build(
         "coverage": a["coverage"],
         "completeness": mg_completeness.fold(analysis, bundle, inventory, operator_issues, head),
         "unparsed": a["unparsed"],
+        "conflicts": a["conflicts"],
+        "duplicates": a["duplicates"],
         "skipped": bundle.as_dict()["skipped"],
         "signals": a["signals"],
         "knowledge": knowledge,
@@ -229,11 +231,15 @@ def _environment(r: dict[str, Any]) -> list[str]:
         out.append(f"- Platform: {_md(c['platform'])}{topo}")
     n = c.get("nodes")
     if n:
-        out.append(f"- Nodes: {n['total']} ({n.get('controlPlane', 0)} control plane), {n.get('ready', 0)} Ready")
+        conflicting = f", {n['conflicting']} conflicting" if n.get("conflicting") else ""
+        out.append(
+            f"- Nodes: {n['total']} ({n.get('controlPlane', 0)} control plane), {n.get('ready', 0)} Ready{conflicting}"
+        )
     o = c.get("clusterOperators")
     if o:
         out.append(
             f"- Cluster operators: {o['total']}, {o.get('available', 0)} Available, {o.get('degraded', 0)} Degraded"
+            + (f", {o['conflicting']} conflicting" if o.get("conflicting") else "")
         )
     ops = c.get("operators")
     if ops:
@@ -335,6 +341,17 @@ def markdown(r: dict[str, Any]) -> str:
         lines.append(f"| {cov['analyser']} | {cov['files']} | {cov['objects']} | {cov['findings']} | {_md(note)} |")
     extra = [f"- Skipped {s['count']}: {_md(s['reason'])}" for s in r["skipped"]]
     extra += [f"- Not read: `{_md(u['path'])}` ({_md(u['reason'])})" for u in r["unparsed"][:20]]
+    for c in (r.get("conflicts") or [])[:20]:
+        where = ", ".join(f"`{_md(p)}`" for p in c["paths"][:2])
+        differs = _md(", ".join(c["differs"][:4]) or "content")
+        extra.append(
+            f"- Conflict: {_md(c['object'])} was collected twice with different content ({where}; differs: "
+            f"{differs}): not determined, read from neither copy"
+        )
+    if r.get("duplicates"):
+        extra.append(
+            f"- Duplicates: {len(r['duplicates'])} object(s) collected twice with identical content, read once"
+        )
     c = r.get("completeness") or {}
     if c.get("legs"):
         # One line, every leg: the table above is the analysers' view only, and "complete" has to mean every leg

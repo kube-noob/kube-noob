@@ -24,6 +24,7 @@ from kube_noob.mustgather.ingest import Bundle, root_of
 LEGS = (
     "analysers",
     "files",
+    "objects",
     "skipped files",
     "secrets",
     "operator inventory",
@@ -87,7 +88,27 @@ def _analyser_legs(analysis: Analysis) -> list[dict[str, str]]:
         files = _leg("files", "partial", f"{c['unreadableFiles']} file(s) could not be read: {first}{more}")
     else:
         files = _leg("files", "complete", "every file an analyser opened was read")
-    return [analysers, files]
+    return [analysers, files, _objects_leg(analysis)]
+
+
+def _objects_leg(analysis: Analysis) -> dict[str, str]:
+    """Objects collected more than once (G288): a conflict (different content) is a gap, because the object is read
+    from neither copy; an identical duplicate is read once and noted."""
+    dup = f"{len(analysis.duplicates)} object(s) collected twice with identical content, read once"
+    if analysis.conflicts:
+        shown = "; ".join(
+            f"{c['object']} ({', '.join(c['paths'][:2])}; differs: {', '.join(c['differs'][:3]) or 'content'})"
+            for c in analysis.conflicts[:3]
+        )
+        more = f"; and {len(analysis.conflicts) - 3} more" if len(analysis.conflicts) > 3 else ""
+        n = len(analysis.conflicts)
+        why = f"{n} object(s) collected twice with different content, read from neither: {shown}{more}"
+        if analysis.duplicates:
+            why += f"; {dup}"
+        return _leg("objects", "partial", why)
+    if analysis.duplicates:
+        return _leg("objects", "complete", dup)
+    return _leg("objects", "complete", "every object was collected once")
 
 
 def _skipped_legs(bundle: Bundle) -> list[dict[str, str]]:

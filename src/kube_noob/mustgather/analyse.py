@@ -187,6 +187,10 @@ class Analysis:
     coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
     unparsed: list[dict[str, str]] = field(default_factory=list)
     signals: list[Signal] = field(default_factory=list)
+    #: Objects collected more than once with different content (G288): neither copy is read by any analyser, the
+    #: object is not determined, and the headline counts it apart. Identical duplicates are `duplicates`, a note.
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    duplicates: list[dict[str, Any]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         c = Counter(f.severity for f in self.findings)
@@ -219,6 +223,8 @@ class Analysis:
             "findings": [f.as_dict() for f in self.findings],
             "coverage": [{"analyser": a, **self.coverage[a]} for a in ANALYSERS if a in self.coverage],
             "unparsed": self.unparsed,
+            "conflicts": self.conflicts,
+            "duplicates": self.duplicates,
             "signals": [s.as_dict() for s in self.signals],
         }
 
@@ -424,11 +430,47 @@ def _route(path: str) -> tuple[str, str, str] | None:
     return (*hit, ns) if hit else None
 
 
-def _collect(bundle: Bundle, loader: _Loader) -> tuple[dict[str, dict[tuple[str, str], _Obj]], Counter[str]]:
-    """Objects per analyser bucket, keyed (namespace, name); the first file (in path order) wins when several
-    gather images collected the same object."""
+MAX_CONFLICTS = 200
+MAX_DIFFERING_FIELDS = 12
+
+
+@dataclass
+class _Collected:
+    objects: dict[str, dict[tuple[str, str], _Obj]]
+    files: Counter[str]
+    #: bucket -> the keys collected more than once with different content; no analyser reads them (G288)
+    conflicting: dict[str, set[tuple[str, str]]]
+    conflicts: list[dict[str, Any]]
+    duplicates: list[dict[str, Any]]
+
+
+def _differing_fields(a: Any, b: Any, prefix: str = "", depth: int = 0, out: list[str] | None = None) -> list[str]:
+    """Dotted paths (two levels deep at most) where two readings of one object differ, so a reader knows whether
+    it is `status.conditions` or a label that disagrees."""
+    out = [] if out is None else out
+    if len(out) >= MAX_DIFFERING_FIELDS:
+        return out
+    if isinstance(a, dict) and isinstance(b, dict) and depth < 2:
+        for key in sorted(set(a) | set(b), key=str):
+            if a.get(key) != b.get(key):
+                _differing_fields(a.get(key), b.get(key), f"{prefix}{_text(key, 64)}.", depth + 1, out)
+        return out
+    out.append(prefix.rstrip(".") or "(document)")
+    return out
+
+
+def _collect(bundle: Bundle, loader: _Loader) -> _Collected:
+    """Objects per analyser bucket, keyed (namespace, name). An object several files hold with the same content is a
+    duplicate, noted; one they hold with different content is a conflict: it is taken out of its bucket, so no
+    analyser answers from either copy, and reported with both paths and the fields that differ. The first file in
+    path order used to win silently, so a Node Ready in one gather directory and NotReady in another read as Ready
+    (G288)."""
     objects: dict[str, dict[tuple[str, str], _Obj]] = {}
     files: Counter[str] = Counter()
+    seen: dict[tuple[str, tuple[str, str]], _Obj] = {}
+    conflicting: dict[str, set[tuple[str, str]]] = {}
+    conflicts: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
     for path in sorted(bundle.files):
         routed = _route(path)
         if routed is None:
@@ -443,9 +485,53 @@ def _collect(bundle: Bundle, loader: _Loader) -> tuple[dict[str, dict[tuple[str,
                     continue
                 ns = _d(obj.get("metadata")).get("namespace")
                 key = (ns if isinstance(ns, str) else path_ns, name)
-                if key not in store:
-                    store[key] = _Obj(path, obj)
-    return objects, files
+                first = seen.get((bucket, key))
+                if first is None:
+                    seen[(bucket, key)] = store[key] = _Obj(path, obj)
+                    continue
+                if first.path == path:
+                    continue  # the same file listing one object twice is one reading, not two
+                entry = _conflict_or_duplicate(conflicts, duplicates, kind, key, first, path, obj)
+                if entry == "conflict":
+                    store.pop(key, None)
+                    conflicting.setdefault(bucket, set()).add(key)
+    return _Collected(objects, files, conflicting, conflicts, duplicates)
+
+
+def _conflict_or_duplicate(
+    conflicts: list[dict[str, Any]],
+    duplicates: list[dict[str, Any]],
+    kind: str,
+    key: tuple[str, str],
+    first: _Obj,
+    path: str,
+    obj: dict[str, Any],
+) -> str:
+    ns, name = key
+    shown_ns = _text(ns, 63)
+    shown = f"{kind}/{shown_ns + '/' if shown_ns else ''}{_shown(name)}"
+    rows = conflicts if first.doc != obj else duplicates
+    existing = next((r for r in rows if r["object"] == shown), None)
+    if existing is not None:
+        if path not in existing["paths"] and len(existing["paths"]) < 8:
+            existing["paths"].append(path)
+        if rows is conflicts:
+            for f in _differing_fields(first.doc, obj):
+                if f not in existing["differs"] and len(existing["differs"]) < MAX_DIFFERING_FIELDS:
+                    existing["differs"].append(f)
+        return "conflict" if rows is conflicts else "duplicate"
+    if len(rows) >= MAX_CONFLICTS:
+        return "conflict" if rows is conflicts else "duplicate"
+    row: dict[str, Any] = {"kind": kind, "name": _shown(name), "object": shown, "paths": [first.path, path]}
+    if shown_ns:
+        row["namespace"] = shown_ns
+    if rows is conflicts:
+        row["differs"] = _differing_fields(first.doc, obj)
+        row["why"] = "collected twice with different content: not determined"
+    else:
+        row["why"] = "collected twice with identical content: read once"
+    rows.append(row)
+    return "conflict" if rows is conflicts else "duplicate"
 
 
 def _logs(bundle: Bundle) -> dict[tuple[str, str, str], list[str]]:
@@ -1157,14 +1243,33 @@ def analyse(bundle: Bundle) -> Analysis:
     """Run every analyser over a bundle opened by ``ingest.open_bundle``. Deterministic: the same bundle gives the
     same findings in the same order."""
     loader = _Loader(bundle)
-    objects, files = _collect(bundle, loader)
+    collected = _collect(bundle, loader)
+    objects, files = collected.objects, collected.files
     logs = _logs(bundle)
     cluster: dict[str, Any] = {}
     raw: list[Finding] = []
     _infrastructure(objects.get("infrastructure", {}), cluster)
     updating = _clusterversion(objects.get("clusterversion", {}), raw, cluster)
+    if ("", "version") in collected.conflicting.get("clusterversion", set()):
+        # Two readings of the singleton with different content: picking either would make the version an accident
+        # of file order (G288). The cluster is still OpenShift; only the version is not determined.
+        paths = next(
+            c["paths"] for c in collected.conflicts if c["kind"] == "ClusterVersion" and c["name"] == "version"
+        )
+        cluster.pop("version", None)
+        cluster.pop("desiredVersion", None)
+        cluster["clusterVersionNote"] = (
+            f"the ClusterVersion named version was collected twice with different content ({', '.join(paths[:2])}): "
+            "the version is not determined"
+        )
     _clusteroperators(objects.get("clusteroperators", {}), raw, cluster, updating)
     _nodes(objects.get("nodes", {}), raw, cluster)
+    for bucket, field_name in (("nodes", "nodes"), ("clusteroperators", "clusterOperators")):
+        n = len(collected.conflicting.get(bucket, set()))
+        if n:
+            summary = cluster.setdefault(field_name, {"total": 0})
+            summary["total"] = int(summary.get("total", 0)) + n
+            summary["conflicting"] = n
     _machineconfigpools(objects.get("machineconfigpools", {}), raw)
     _olm(objects.get("olm", {}), raw, cluster)
     _pods(objects.get("pods", {}), raw, bundle, logs)
@@ -1172,7 +1277,9 @@ def analyse(bundle: Bundle) -> Analysis:
     etcd_logs = _etcd(bundle, logs, raw)
     files["etcd"] = etcd_logs
 
-    analysis = Analysis(cluster=cluster, unparsed=loader.unparsed)
+    analysis = Analysis(
+        cluster=cluster, unparsed=loader.unparsed, conflicts=collected.conflicts, duplicates=collected.duplicates
+    )
     per: Counter[str] = Counter()
     dropped: Counter[str] = Counter()
     for f in sorted(raw, key=Finding.key):
@@ -1184,6 +1291,8 @@ def analyse(bundle: Bundle) -> Analysis:
     for a in ANALYSERS:
         objs = etcd_logs if a == "etcd" else len(objects.get(a, {}))
         entry: dict[str, Any] = {"files": files.get(a, 0), "objects": objs, "findings": per[a]}
+        if collected.conflicting.get(a):
+            entry["conflicting"] = len(collected.conflicting[a])
         if dropped[a]:
             entry["notShown"] = dropped[a]
         if not files.get(a):
@@ -1207,6 +1316,11 @@ def failing(analysis: Analysis, fail_on: str) -> list[Finding]:
     return [f for f in analysis.findings if f.severity != "info" and _SEV[f.severity] <= _SEV[fail_on]]
 
 
+def _conflicting(summary: dict[str, Any]) -> str:
+    n = summary.get("conflicting")
+    return f", {n} conflicting" if n else ""
+
+
 def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) -> str:
     """``completeness``: the fold of every leg (``mustgather.completeness.fold``) when the caller has it; without it
     the line says what the analysers alone can say."""
@@ -1222,11 +1336,12 @@ def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) 
         head.append(f"platform {c['platform']}")
     nodes = c.get("nodes")
     if nodes:
-        head.append(f"{nodes.get('ready', 0)}/{nodes['total']} nodes Ready")
+        head.append(f"{nodes.get('ready', 0)}/{nodes['total']} nodes Ready" + _conflicting(nodes))
     ops = c.get("clusterOperators")
     if ops:
         head.append(
             f"{ops.get('available', 0)}/{ops['total']} cluster operators Available, {ops.get('degraded', 0)} Degraded"
+            + _conflicting(ops)
         )
     counts = analysis.counts()
     if c.get("clusterVersionNote"):
@@ -1245,6 +1360,18 @@ def render_text(analysis: Analysis, completeness: dict[str, Any] | None = None) 
             lines.append(f"           log: {hint}")
         if f.next:
             lines.append(f"           next: {f.next[0]}")
+    for conflict in analysis.conflicts[:20]:
+        lines.append(
+            f"conflicting: {conflict['object']} collected twice with different content "
+            f"({', '.join(conflict['paths'][:2])}; differs: {', '.join(conflict['differs'][:4]) or 'content'}): "
+            "not determined, read from neither copy"
+        )
+    if len(analysis.conflicts) > 20:
+        lines.append(f"conflicting: and {len(analysis.conflicts) - 20} more")
+    if analysis.duplicates:
+        lines.append(
+            f"duplicates: {len(analysis.duplicates)} object(s) collected twice with identical content, read once"
+        )
     missing = [a for a, e in analysis.coverage.items() if e.get("note")]
     if missing:
         lines.append("not collected: " + ", ".join(missing))
