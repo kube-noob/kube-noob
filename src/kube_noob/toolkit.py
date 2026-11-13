@@ -1245,7 +1245,7 @@ class Toolkit:
             "scenarios": [s.as_dict() for s in r.scenarios],
         }
 
-    def _fix_verdict(self, manifests: str, p: FixIn) -> tuple[dict[str, Any], set[str], int]:
+    def _fix_verdict(self, manifests: str, p: FixIn, partial: bool) -> tuple[dict[str, Any], set[str], int, set[str]]:
         """The verdict `audit` gives on these bytes under the same inputs: the same platform, version and
         `partial_bundle`, the audit's default severity floor (`low`) and the same registry allow-list. `fix` used
         to call `analyze` bare, so its after-verdict was a whole-namespace audit counting info findings, and the
@@ -1255,34 +1255,56 @@ class Toolkit:
             p.platform,
             p.version,
             min_severity=Severity.parse(AuditIn.model_fields["min_severity"].default),
-            partial_bundle=p.partial_bundle,
+            partial_bundle=partial,
             allowed_registries=self._allowed_registries(),
         )
         d = r.as_dict()
         # `after` has always been the summary itself (`counts`, `maxSeverity`, `score`), and callers read
         # `after.score`; the audit's assumptions and control summary sit beside those keys, not above them.
         view = {**d["summary"], "assumptions": d["assumptions"], "controlSummary": d["controlSummary"]}
-        return view, {str(f["ruleId"]) for f in d["findings"]}, len(d["findings"])
+        return view, {str(f["ruleId"]) for f in d["findings"]}, len(d["findings"]), set(r.undecided)
 
     def fix(self, p: FixIn) -> dict[str, Any]:
+        from kube_noob.audit.engine import refuse_if_not_manifests
+
+        # What the audit refuses, the fix refuses: a values file scored 90 with a before/after line (round 1, 3).
+        refuse_if_not_manifests(p.manifests)
         k8s = k8s_version_for(p.platform, p.version)
         res = fix_manifests(p.manifests, platform=p.platform, k8s_version=k8s, harden=p.harden)
-        before, rules_before, n_before = self._fix_verdict(p.manifests, p)
-        after, rules_after, n_after = self._fix_verdict(res.yaml(), p)
+        before, rules_before, n_before, _ = self._fix_verdict(p.manifests, p, p.partial_bundle)
+        # `after` is the written file audited the way `audit -f that-file` audits it: alone, as part of a
+        # namespace. For a one-file or pasted input both sides share that assumption; for a directory `before` is
+        # the directory audited whole, and a rule that fires only on a whole namespace is absent from `after` by
+        # assumption, not fixed (round 1, 4).
+        after, rules_after, n_after, undecided_after = self._fix_verdict(res.yaml(), p, True)
+        by_assumption = sorted((rules_before - rules_after) & undecided_after)
+        if p.partial_bundle:
+            note = (
+                "before and after share the same assumption: the input and the written file are each audited as "
+                "part of a namespace"
+            )
+        else:
+            note = (
+                "after is the written file audited alone (partial: `audit -f` on one file audits part of a namespace); "
+                "before is the directory audited whole, so a rule that fires only on a whole namespace is listed under "
+                "notEvaluatedAfter, not under fixed"
+            )
         return {
             "manifests": res.yaml(),
             "changes": [c.as_dict() for c in res.changes],
             "manualFollowUps": res.manual,
             "before": before,
             "after": after,
-            # By rule id, under the same assumptions on both sides: `introduced` is a rule the fix itself made
-            # fire, never one that fires only under a whole-namespace audit.
+            # By rule id: `introduced` is a rule the fix itself made fire; `notEvaluatedAfter` a rule that fired on
+            # the whole directory and declined on the written file alone.
             "delta": {
-                "fixed": sorted(rules_before - rules_after),
+                "fixed": sorted((rules_before - rules_after) - undecided_after),
                 "open": sorted(rules_before & rules_after),
                 "introduced": sorted(rules_after - rules_before),
+                "notEvaluatedAfter": by_assumption,
                 "findingsBefore": n_before,
                 "findingsAfter": n_after,
+                "note": note,
             },
         }
 

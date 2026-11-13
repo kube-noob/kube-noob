@@ -134,6 +134,8 @@ def _fix_verdict_line(res: dict[str, Any]) -> str:
     line = f"before {part(res['before'])} -> after {part(res['after'])}; fixed {len(d['fixed'])} rule(s)"
     if d["open"]:
         line += f", {len(d['open'])} still open"
+    if d.get("notEvaluatedAfter"):
+        line += f"; not evaluated on the written file alone: {', '.join(d['notEvaluatedAfter'])}"
     if d["introduced"]:
         line += f"; introduced by the fix: {', '.join(d['introduced'])}"
     return line
@@ -2374,6 +2376,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             return 0
         # The same partial-bundle decision `audit -f` makes for the same shape of input, so `before` and `after`
         # are the audit's own verdict on these bytes (G286).
+        from kube_noob.audit.engine import refuse_if_not_manifests
+
+        refuse_if_not_manifests(text)  # exit 2 before anything is written, as `audit` does (round 1, 3)
         res = kit.fix(
             tk.FixIn(
                 manifests=text,

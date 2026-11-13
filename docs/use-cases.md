@@ -50,10 +50,14 @@ kube-noob helm-chart --name orders-api --namespace shop --image quay.io/acme/ord
 To gate pull requests, run `kube-noob audit -f k8s/ --fail-on high` in CI. It exits 1 on any HIGH or CRITICAL finding.
 
 `fix` judges its own output the way `audit` would judge the file it writes: the one-line summary on stderr is the
-audit's verdict before and after, under the same assumptions `audit -f` makes for the same input (one file or stdin
-is part of a namespace; a directory is the whole of it), and the YAML block below it carries `before`, `after` (each
-with the audit's `score`, `counts` and `maxSeverity`, its `assumptions` and its `controlSummary`) and a `delta` of the rules fixed, still open and
-introduced by the fix. `kube-noob audit -f fixed.yaml` prints the same score and counts as `after`.
+audit's verdict before and after. `before` is the input under the assumption `audit -f` makes for it (one file or
+stdin is part of a namespace; a directory is the whole of it); `after` is the written file audited alone, as
+`audit -f fixed.yaml` audits it, so that command prints the same score, counts and assumptions as `after`. The YAML
+block below carries `before` and `after` (each with the audit's `score`, `counts` and `maxSeverity`, its
+`assumptions` and its `controlSummary`) and a `delta` of the rules fixed, still open, introduced by the fix and --
+for a directory -- `notEvaluatedAfter`: rules that fired on the whole directory and decline on one file alone, which
+are not fixed and are not counted as such. What `audit` refuses (a values file, no Kubernetes object) `fix` refuses
+too, with exit 2 and nothing written.
 
 ```console
 $ kube-noob fix -f examples/exercise-answer.yaml -o fixed.yaml
