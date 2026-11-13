@@ -53,6 +53,32 @@ flowchart LR
 7. **Red Team** - nine adversarial scenarios evaluated on the final output; remaining HIGH/CRITICAL findings mark the
    result `blocked`.
 
+## What the audit says when it did not read something
+
+Every reader in the audit engine records a gap in one of five places, and every renderer reads them through one
+predicate, so a gap can neither hide in a format nor read as a pass (G272, seventh review):
+
+1. `AuditContext.cannot_decide(rule_id, why, resource=None)` records that a RULE declined on an OBJECT. `why` is a
+   fixed phrase (never the input's text; the input lives only in `resource`, cleaned), and `Report.declined`
+   carries the per-object detail, bounded, per rule.
+2. `Report.not_audited` is the list of `{object, kind, why}` records that an OBJECT was not audited without a rule
+   declining on it: a pod spec in a kind with no reader, a container image an operator supplies, an object in an
+   API group the reader refuses. `why` is a fixed phrase. JSON key `notAudited`.
+3. `Report.not_evaluated` maps a RULE to why it reached no verdict at all: "stage not requested", or "declined on N
+   objects" (the summary of `declined`). A rule with a finding on one object and a decline on another is partly
+   evaluated, stays in `evaluated_rules`, and is listed in `controlSummary.partlyEvaluatedRules` instead. JSON key
+   `notEvaluated`.
+4. `Report.undetermined()` is the one predicate: not None exactly when `declined` or `not_audited` is non-empty.
+   Then `summary.score` is null with the reason beside it as `summary.scoreWithheld`, `audit` and `gate` exit 1
+   whatever `--fail-on` says, the gate is `incomplete: true` and `passed: false` with the headline "gate
+   incomplete" (JSON, Markdown, HTML, and in the SARIF as an invocation property plus one note-level result), the
+   MCP tools carry the same dictionary, `fix`'s `after` is withheld, and the eval grader marks every
+   finding-derived check (`forbidRules`, `maxSeverity`, `schemaValid`, `minScore`) not evaluated with the reason.
+   A stage the caller did not ask for, and the quiet declines of a partial bundle, are not an unread object.
+5. Every renderer prints it once: the text headline (`score=not determined (...)`), JSON and YAML, the SARIF
+   notifications, the HTML and Markdown "Not evaluated in full" section (the "Assumed" label is an allowlist of
+   the assumed-version lines), the gate's verdict, the MCP results and the grader.
+
 ## Trust boundaries
 
 - MCP clients and model output are untrusted input: every tool validates with Pydantic, YAML is size/alias bounded.

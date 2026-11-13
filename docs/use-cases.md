@@ -71,8 +71,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 374 to
-74 961 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 392 to
+74 979 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1169,9 +1169,10 @@ not audited -- a rule declined on an object, a pod spec in a kind kube-noob has 
 image an operator supplies, an object in a group the reader refuses -- the headline score is withheld:
 `summary.score` is `null`, `summary.scoreWithheld` names the rules and the objects, and the text view prints
 `score=not determined (N rules not evaluated in full and M pod specs not audited)` -- a number above "was not
-evaluated in full" or "were NOT audited" would be a verdict on what was not read. Every output reads the same
-predicate (`fix`'s `after`, the gate, the MCP tools and the eval grader's `minScore` included). The per-control
-counts stay as they are.
+evaluated in full" or "were NOT audited" would be a verdict on what was not read. Undetermined is exit 1 whatever
+`--fail-on` says, and the gate is `incomplete` rather than passed; `notAudited` and `notEvaluated` in the JSON name
+the objects and the rules. Every output reads the same predicate (`fix`'s `after`, the gate, the MCP tools and
+every finding-derived check of the eval grader included). The per-control counts stay as they are.
 
 ```bash
 kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33
