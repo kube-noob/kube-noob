@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from kube_noob.audit.argv import _quoted, _shown
+from kube_noob.audit.argv import _quoted, _shown, k3s_arg
 from kube_noob.yamlio import Document, PathT
 
 #: How large an embedded YAML string (a ConfigMap value, a kind patch) is parsed; a larger one is not read.
@@ -163,6 +163,20 @@ def _cluster_configuration(
         )
 
 
+def _kubeadm_config_spec(data: Any, base: PathT, out: ConfigRead) -> None:
+    """What a Cluster API KubeadmConfigSpec can do to the control plane besides its `clusterConfiguration`, named
+    as unread: `files` written to the node (one may be the static pod manifest itself) and the
+    `preKubeadmCommands` / `postKubeadmCommands` scripts, which run as root on the node and may rewrite the
+    manifest kubeadm wrote. The fifth review named `files` on KubeadmControlPlane only (G272)."""
+    for key, what in (
+        ("files", "files written to the node"),
+        ("preKubeadmCommands", "scripts that may rewrite the manifest"),
+        ("postKubeadmCommands", "scripts that may rewrite the manifest"),
+    ):
+        if _get(data, *base, key) is not None:
+            out.unread.append(f"{'.'.join(str(p) for p in (*base, key))} ({what}) is not read")
+
+
 def _embedded(text: Any, path: PathT, component: str, out: ConfigRead, where: str) -> None:
     """A ClusterConfiguration inside a YAML string: every document of that kind in it is read, at ``path``."""
     from kube_noob.errors import ManifestError
@@ -191,26 +205,31 @@ def _embedded(text: Any, path: PathT, component: str, out: ConfigRead, where: st
 
 
 def _key_values(value: Any, path: PathT, out: ConfigRead, what: str) -> None:
-    """RKE2's `kube-apiserver-arg` / `etcd-arg`: a list of `key=value` strings (or one string)."""
+    """RKE2's `kube-apiserver-arg` / `etcd-arg`: a list of `key=value` strings (or one string), each read exactly
+    as k3s's GetArgs reads the argv form (`argv.k3s_arg`: one `--` trimmed, `+=` and `-=` are a second flag, a bare
+    key is `key=true`), so the two readers of one syntax cannot disagree (G272, sixth review)."""
     items = [value] if isinstance(value, str) else value if isinstance(value, list) else None
     if items is None:
         if value is not None:
             out.unread.append(f"{what} is neither a string nor a list")
         return
     for i, item in enumerate(items):
-        if isinstance(item, str) and "=" in item:
-            # `key+=value` appends to a flag k3s/RKE2 already pass (pkg/util/args.go GetArgs): read as a second
-            # occurrence of the flag, which pflag appends to a slice such as --authorization-mode (G272).
-            k, _, v = item.partition("=")
-            out.pairs.append(
-                (
-                    k.strip().lstrip("-").rstrip("+").replace("_", "-"),
-                    v,
-                    (*path, i) if isinstance(value, list) else path,
-                )
-            )
+        if isinstance(item, str) and item.strip():
+            k, v = k3s_arg(item.strip())
+            out.pairs.append((k, v, (*path, i) if isinstance(value, list) else path))
         else:
             out.unread.append(f"{what}[{i}] is not a key=value string")
+
+
+def _selects_every_machine(selector: Any) -> bool:
+    """An absent or empty LabelSelector matches every machine, and `{matchLabels: {}}` is the same empty selector
+    spelled out: both put the config on the control plane. Anything with a term, or a key this reader does not
+    know, may not (G272, sixth review)."""
+    if selector is None or selector == {}:
+        return True
+    if not isinstance(selector, dict):
+        return False
+    return all(k in {"matchLabels", "matchExpressions"} and not v for k, v in selector.items())
 
 
 def read_config(doc: Document, component: str) -> ConfigRead | None:
@@ -237,8 +256,7 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
             if kind == "KubeadmControlPlane"
             else ("spec", "template", "spec", "kubeadmConfigSpec")
         )
-        if _get(data, *base, "files") is not None:
-            out.unread.append(".".join(str(p) for p in (*base, "files")) + " (files written to the node) is not read")
+        _kubeadm_config_spec(data, base, out)
         _cluster_configuration(
             _get(data, *base, "clusterConfiguration") or {},
             (*base, "clusterConfiguration"),
@@ -249,6 +267,7 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
     elif group == "bootstrap.cluster.x-k8s.io" and kind in {"KubeadmConfig", "KubeadmConfigTemplate"}:
         out.tool = "kubeadm (Cluster API)"
         base = ("spec",) if kind == "KubeadmConfig" else ("spec", "template", "spec")
+        _kubeadm_config_spec(data, base, out)
         _cluster_configuration(
             _get(data, *base, "clusterConfiguration") or {},
             (*base, "clusterConfiguration"),
@@ -294,22 +313,30 @@ def read_config(doc: Document, component: str) -> ConfigRead | None:
             f"machineGlobalConfig.{key}",
         )
         selectors = _get(rke, "machineSelectorConfig")
-        for i, sel in enumerate(selectors if isinstance(selectors, list) else []):
+        # A mapping is read as the one selector it is; anything else that is not a list is named (G272).
+        entries: list[tuple[PathT, str, Any]] = (
+            [
+                (("spec", "rkeConfig", "machineSelectorConfig", i), f"machineSelectorConfig[{i}]", sel)
+                for i, sel in enumerate(selectors)
+            ]
+            if isinstance(selectors, list)
+            else [(("spec", "rkeConfig", "machineSelectorConfig"), "machineSelectorConfig", selectors)]
+            if isinstance(selectors, dict)
+            else []
+        )
+        if selectors is not None and not isinstance(selectors, (list, dict)):
+            out.unread.append("machineSelectorConfig is neither a list nor a mapping, so it was not read")
+        for sel_path, label, sel in entries:
             selector = _get(sel, "machineLabelSelector")
-            if selector:
+            if not _selects_every_machine(selector):
                 # Which machines the selector picks is not in the object: these arguments may never reach a
                 # control-plane node, so they decide nothing (G272).
                 out.unread.append(
-                    f"machineSelectorConfig[{i}] applies only to machines matching machineLabelSelector "
+                    f"{label} applies only to machines matching machineLabelSelector "
                     f"{_quoted(selector, 120)}, which may not include the control plane, so its {key} is not read"
                 )
                 continue
-            _key_values(
-                _get(sel, "config", key),
-                ("spec", "rkeConfig", "machineSelectorConfig", i, "config", key),
-                out,
-                f"machineSelectorConfig[{i}].config.{key}",
-            )
+            _key_values(_get(sel, "config", key), (*sel_path, "config", key), out, f"{label}.config.{key}")
     elif group == "operator.openshift.io" and kind == "KubeAPIServer" and component == "kube-apiserver":
         out.tool = "the OpenShift operator"
         out.unread.append("its overrides are written by the OpenShift kube-apiserver operator and are not read")

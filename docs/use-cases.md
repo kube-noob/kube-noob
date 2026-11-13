@@ -1164,10 +1164,14 @@ reached no verdict at all, so every rule not evaluated in full is in exactly one
 says how many objects the rule read in full beside the ones it declined. An
 input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
 "not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
-`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While any rule
-declined on an object, the headline score is withheld: `summary.score` is `null`, `summary.scoreWithheld` names the
-rules, and the text view prints `score=not determined (N rules not evaluated in full)` -- a number above "was not
-evaluated in full" would be a verdict on what was not read. The per-control counts stay as they are.
+`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While anything was
+not audited -- a rule declined on an object, a pod spec in a kind kube-noob has no reader for, a container whose
+image an operator supplies, an object in a group the reader refuses -- the headline score is withheld:
+`summary.score` is `null`, `summary.scoreWithheld` names the rules and the objects, and the text view prints
+`score=not determined (N rules not evaluated in full and M pod specs not audited)` -- a number above "was not
+evaluated in full" or "were NOT audited" would be a verdict on what was not read. Every output reads the same
+predicate (`fix`'s `after`, the gate, the MCP tools and the eval grader's `minScore` included). The per-control
+counts stay as they are.
 
 ```bash
 kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33

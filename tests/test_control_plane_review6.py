@@ -351,6 +351,84 @@ def test_a_bare_boolean_value_in_a_kubeadm_configuration_declines(fixture: str) 
     assert "not a string" in line and "refuses" in line
 
 
+# --- F11 / F12: k3s's `--` prefix and `-=` suffix ---
+
+
+def test_the_k3s_argv_reads_a_double_dash_inside_the_value_and_the_prepend_suffix() -> None:
+    assert [h.severity for h in _hits(_r("q4-01-k3s-arg-doubledash-inside.yaml"), KAS)] == [Severity.CRITICAL]
+    assert [h.severity for h in _hits(_r("q4-02-k3s-arg-minus-suffix-prepend.yaml"), KAS)] == [Severity.CRITICAL]
+    text = (
+        (FX / "q4-02-k3s-arg-minus-suffix-prepend.yaml")
+        .read_text(encoding="utf-8")
+        .replace("authorization-mode-=AlwaysAllow", "authorization-mode+=Node")
+    )
+    assert not _hits(_t(text), KAS)
+
+
+def test_the_rancher_config_reads_the_same_k3s_syntax() -> None:
+    assert [h.severity for h in _hits(_r("q4r-03-global-list-doubledash.yaml"), KAS)] == [Severity.CRITICAL]
+    assert [h.severity for h in _hits(_r("q4r-04-global-list-minus-suffix.yaml"), KAS)] == [Severity.CRITICAL]
+    text = (
+        (FX / "q4r-04-global-list-minus-suffix.yaml")
+        .read_text(encoding="utf-8")
+        .replace("authorization-mode-=AlwaysAllow", "authorization-mode+=Node")
+    )
+    assert not _hits(_t(text), KAS)
+
+
+def test_a_bare_k3s_key_is_the_flag_set_true() -> None:
+    # k3s pkg/util/args.go GetArgs: no `=` means value "true".
+    text = (
+        (FX / "q4r-04-global-list-minus-suffix.yaml")
+        .read_text(encoding="utf-8")
+        .replace("authorization-mode-=AlwaysAllow", "anonymous-auth")
+    )
+    assert [h.severity for h in _hits(_t(text), KAS)] == [Severity.MEDIUM]
+
+
+# --- F13: pflag trims an IP value ---
+
+
+def test_a_leading_space_in_an_insecure_address_is_trimmed_as_pflag_does() -> None:
+    report = _r("q4-16-insecure-addr-space-1.19.yaml", version="1.19")
+    hits = [h for h in _hits(report, KAS) if h.severity == Severity.CRITICAL]
+    assert len(hits) == 1 and "insecure port" in hits[0].message and "'0.0.0.0'" in hits[0].message
+    assert "pflag refuses" not in _declined(report, KAS)
+
+
+# --- F14: a flag kube-apiserver does not define ---
+
+
+@pytest.mark.parametrize("fixture", ["q4-39-flag-trailing-dash-name.yaml", "q4-41-flag-name-digits-only.yaml"])
+def test_a_flag_name_no_server_defines_declines_the_container_rather_than_reporting_defaults(fixture: str) -> None:
+    report = _r(fixture)
+    assert not _hits(report, KAS)
+    line = _declined(report, KAS)
+    assert "no such flag" in line and "not start" in line
+
+
+# --- F15: Cluster API scripts and files that may rewrite the manifest ---
+
+
+def test_cluster_api_files_and_kubeadm_commands_are_named_as_unread() -> None:
+    line = _declined(_r("q3-31-kubeadmconfig-files.yaml"), KAS)
+    assert "files" in line and "not read" in line
+    line = _declined(_r("q3-30-kcp-prekubeadm-sed.yaml"), KAS)
+    assert "postKubeadmCommands" in line and "may rewrite" in line
+
+
+# --- F16: a Rancher selector given as a mapping, and an empty selector ---
+
+
+def test_a_rancher_selector_config_given_as_a_mapping_is_read_as_one_selector() -> None:
+    assert [h.severity for h in _hits(_r("q4r-12-selector-list-not-list.yaml"), KAS)] == [Severity.CRITICAL]
+
+
+def test_an_empty_match_labels_selector_selects_every_machine_like_an_empty_selector() -> None:
+    assert [h.severity for h in _hits(_r("q4r-06-selector-matchlabels-empty.yaml"), KAS)] == [Severity.CRITICAL]
+    assert [h.severity for h in _hits(_r("q4r-05-selector-empty-map.yaml"), KAS)] == [Severity.CRITICAL]
+
+
 # --- what round six verified clean stays so ---
 
 

@@ -107,6 +107,20 @@ _COMMAND_POSITION = (
 )
 
 
+def k3s_arg(item: str) -> tuple[str, str]:
+    """One `--kube-apiserver-arg` / `--etcd-arg` value as k3s and RKE2 read it (pkg/util/args.go GetArgs,
+    fetched 2026-11-13): one leading `--` is trimmed (`strings.TrimPrefix`, exactly once), the first `=` splits
+    name from value, no `=` means the value "true", and a trailing run of `-` and `+` on the name
+    (`strings.TrimRight(arg, "-+")`) is the append (`+`) or prepend (`-`) marker, either of which puts the value
+    on the flag beside the distribution's own default -- a second occurrence, which pflag appends to a slice such
+    as --authorization-mode. Returns (name with `_` read as `-`, as kube-apiserver's pflag does; value). Both
+    readers of this syntax -- the k3s argv and the Rancher config -- call this one function (G272, sixth review).
+    """
+    body = item[2:] if item.startswith("--") else item
+    name, eq, value = body.partition("=")
+    return name.rstrip("-+").replace("_", "-"), value if eq else "true"
+
+
 def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
@@ -526,11 +540,15 @@ def _flag_values(
             return out, f"has an argument {_quoted(t, 80)} that is not a flag (a subcommand, or a stray value)"
         name, eq, value = body.partition("=")
         if long and _FLAG_NAME.fullmatch(name) is None:
-            # Every kube-apiserver and etcd flag is lowercase letters, digits and dashes (pflag adds `_`, which
-            # WordSepNormalizeFunc turns into `-`): a name with an uppercase letter, a dot or anything else is
-            # one neither binary defines, and pflag's parseLongArg (v1.0.5 flag.go L962-979) errors on an
-            # unknown flag -- UnknownFlags is not whitelisted -- so the server does not start. Before G272's
-            # fifth review `--Anonymous-Auth=true` was read as a MEDIUM finding.
+            # Every kube-apiserver and etcd flag is words of lowercase letters and digits, starting with a
+            # letter, joined by single dashes (pflag adds `_` as a separator, which WordSepNormalizeFunc turns
+            # into `-`): a name with an uppercase letter, a dot, a trailing dash (`--anonymous-auth-`), digits
+            # alone (`--123`) or anything else is one neither binary defines, and pflag's parseLongArg (v1.0.5
+            # flag.go L962-979) errors on an unknown flag -- UnknownFlags is not whitelisted -- so the server
+            # does not start. Before G272's fifth review `--Anonymous-Auth=true` was read as a MEDIUM finding,
+            # and before the sixth `--anonymous-auth-=true` was skipped and the defaults reported. A misspelling
+            # of that shape (`--anonymous-ath`) is still read as a stray flag: the full flag table is per release
+            # and is not carried here.
             binary = "kube-apiserver" if pflag else "etcd"
             return out, (
                 f"has {_quoted(t, 80)}: {binary} has no such flag; its flag parser refuses it, so this server does "
@@ -612,8 +630,10 @@ INSECURE_PORT_REMOVED = (1, 24)
 _INSECURE_PORT_FLAGS = ("insecure-port", "port")
 _INSECURE_ADDRESS_FLAGS = ("insecure-bind-address", "address")
 INSECURE_FLAGS = frozenset({*_INSECURE_PORT_FLAGS, *_INSECURE_ADDRESS_FLAGS})
-#: What a flag name both parsers define may contain (G272).
-_FLAG_NAME = re.compile(r"[a-z0-9_-]+")
+#: The shape of every flag name kube-apiserver (pflag, `_` normalised to `-`) and etcd (Go's flag package, no
+#: normaliser) define: words of lowercase letters and digits, the first starting with a letter, joined by single
+#: separators -- never a leading digit, a trailing separator or two separators in a row (G272).
+_FLAG_NAME = re.compile(r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*")
 _GO_INT = re.compile(
     r"[+-]?(?:0[xX](?:_?[0-9a-fA-F])+|0[bB](?:_?[01])+|0[oO](?:_?[0-7])+|0(?:_?[0-7])*|[1-9](?:_?[0-9])*)"
 )
@@ -632,10 +652,13 @@ def _pflag_int(value: str) -> int | None:
 
 
 def _pflag_ip(value: str) -> bool | None:
-    """pflag IPVar's parse (net.ParseIP): None when refused, else whether the address is loopback. Go's
-    net.ParseIP takes no zone (`fe80::1%eth0` is refused), where Python's ip_address would accept one."""
+    """pflag IPVar's parse, `net.ParseIP(strings.TrimSpace(s))` (pflag ip.go, ipValue.Set): None when refused,
+    else whether the address is loopback. Surrounding whitespace is trimmed, as pflag trims it -- `= 0.0.0.0`
+    serves on 0.0.0.0 and was declined as refused (G272, sixth review). Go's net.ParseIP takes no zone
+    (`fe80::1%eth0` is refused), where Python's ip_address would accept one."""
     import ipaddress
 
+    value = value.strip()
     if "%" in value:
         return None
     try:
@@ -700,7 +723,7 @@ def insecure_serving(
             )
         return None
     effective_port = 8080 if port is None else port
-    address = addrs[-1][0] if addrs else "127.0.0.1"
+    address = addrs[-1][0].strip() if addrs else "127.0.0.1"
     if effective_port <= 0 or _pflag_ip(address):
         return None
     index = ports[-1][1] if ports else addrs[-1][1]

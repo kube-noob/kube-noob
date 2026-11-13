@@ -26,6 +26,7 @@ from kube_noob.audit.argv import (
     _quoted,
     _shown,
     insecure_serving,
+    k3s_arg,
 )
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
@@ -4459,10 +4460,10 @@ def _embedded_always_allow(r: Rule, d: Document, c: ContainerRef, where: str, la
             value, at = t.partition("=")[2], i
         if value is None:
             continue
-        name, _, setting = value.partition("=")
-        # `key+=value` appends to a flag the distribution already passes (k3s pkg/util/args.go GetArgs): a
-        # second --authorization-mode, which pflag appends to the slice (G272).
-        if name.rstrip("+").replace("_", "-") == "authorization-mode":
+        # One leading `--`, `key+=value` (append) and `key-=value` (prepend) as k3s's GetArgs reads them: each
+        # is a second --authorization-mode beside the distribution's own, which pflag appends to the slice (G272).
+        name, setting = k3s_arg(value)
+        if name == "authorization-mode":
             modes.extend(setting.split(","))
             last = at
     if "AlwaysAllow" not in modes:
