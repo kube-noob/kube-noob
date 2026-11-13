@@ -438,7 +438,8 @@ def live_release(backend: Any) -> Release:
         cv = backend.get("clusterversions", name="version")
     except KubeNoobError as exc:
         message = str(exc)
-        if ops._not_served("clusterversions", message, group="config.openshift.io", version="v1"):
+        # the exception, not its message: it carries the full stderr or the HTTP status (G279)
+        if ops._not_served("clusterversions", exc, group="config.openshift.io", version="v1"):
             return Release(
                 detected_from="live",
                 not_openshift=True,

@@ -19,6 +19,7 @@ from typing import Any
 
 import yaml
 
+from kube_noob import sanitize
 from kube_noob.memory.importers import Ticket, parse
 from kube_noob.memory.model import MemoryEntry
 
@@ -158,4 +159,4 @@ def markdown(report: dict[str, Any]) -> str:
         for m in report["matched"][:200]:
             useful = {True: "yes", False: "no"}.get(m.get("useful"), "")
             lines.append(f"| {m['ticket']} | {m['entry']} | {', '.join(m['matchedBy'])} | {useful} |")
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)

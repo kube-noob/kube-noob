@@ -72,7 +72,6 @@ def _sync_running(data_dir: Path) -> bool:
 
 
 _WORD = re.compile(r"[a-z0-9]+")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 _ERRORISH = re.compile(
     r"(?i)\b(error|errors|failed|failure|fails|denied|forbidden|panic|unable|cannot|timeout|timed out|refused|"
     r"invalid|x509|oomkilled|backoff|back-off|not found|exceeded|unauthorized|rejected|conflict|deadline|crash)\b"
@@ -184,7 +183,7 @@ def verdict(issue_type: str | None, status: str | None, resolution: str | None) 
 
 
 def _clip(text: str, limit: int = 280) -> str:
-    text = re.sub(r"\s+", " ", _CONTROL.sub(" ", text)).strip()
+    text = re.sub(r"\s+", " ", sanitize.visible(text)).strip()
     return text if len(text) <= limit else text[: limit - 3].rsplit(" ", 1)[0] + "..."
 
 

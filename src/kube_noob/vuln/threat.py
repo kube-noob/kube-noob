@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from kube_noob import sanitize
 from kube_noob.attack_paths import Inventory, Reach, workload_reach
 from kube_noob.vuln import attack
 
@@ -518,4 +519,4 @@ def render_markdown(out: dict[str, Any]) -> str:
             lines.append("| " + " | ".join(cells) + " |")
         lines.append("")
     lines.append(out["attribution"])
-    return "\n".join(lines) + "\n"
+    return sanitize.visible_lines("\n".join(lines) + "\n")  # nothing that does not print reaches the file (G279)

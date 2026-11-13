@@ -6,6 +6,7 @@ Exit codes: 0 ok | 1 findings at/above --fail-on | 2 usage/config error | 3 clar
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -20,6 +21,7 @@ import yaml
 from kube_noob import __version__, completion, sanitize
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
 
@@ -167,11 +169,42 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+def _raw_stdout() -> Any:
+    """The stream under the text boundary: a document goes here, byte for byte, so `cmd > f` equals `cmd -o f`."""
+    return getattr(sys.stdout, "_inner", sys.stdout)
+
+
+def _write_document(text: str) -> None:
+    """A whole document to stdout, past the text boundary, in 64 KiB pieces and then flushed HERE, inside the
+    command: a reader that went away mid-document (`| head -c 10`) raises BrokenPipeError where `_main` turns it
+    into exit 141. Written in one piece, the rest of it waited in the buffer for the final flush, the error was
+    lost there, and a truncated document exited 0 or 1 (G279, fourth review)."""
+    out = _raw_stdout()
+    for i in range(0, len(text), 65536):
+        out.write(text[i : i + 65536])
+    out.flush()
+
+
+def _workflow_command(line: str) -> None:
+    """A GitHub workflow command kube-noob builds on purpose (``gate --github-annotations``): the one kind of line
+    the output boundary lets through as a command (G279)."""
+    out = sys.stdout
+    if isinstance(out, _VisibleStream):
+        out.workflow_command(line)
+    else:  # called outside main(): no boundary to pass
+        print(line)
+
+
 def _emit(obj: Any, fmt: str) -> None:
+    """A document (JSON or YAML), written past the text sanitiser: JSON escapes every non-ASCII character
+    (``ensure_ascii``), and the YAML dumper escapes any string holding a character that would not print, so both
+    are terminal-safe and load back to exactly the data (G279)."""
+    from kube_noob.yamlio import dump_yaml
+
     if fmt == "json":
-        print(json.dumps(obj, indent=2, default=str))
+        _write_document(json_document(obj, indent=2, default=str) + "\n")
     else:
-        print(yaml.safe_dump(obj, sort_keys=False, width=120, allow_unicode=True), end="")
+        _write_document(dump_yaml(obj, sort_keys=False, width=120, allow_unicode=True))
 
 
 _REMARK_LABELS = {"cause": "cause", "expected": "why closed", "fix": "fix note"}
@@ -245,7 +278,17 @@ def _write_html(path: str | None, report: dict[str, Any]) -> None:
         return
     from kube_noob import report_html
 
-    Path(path).write_text(report_html.render(report), encoding="utf-8", errors="replace")
+    Path(path).write_text(_html_without_commands(report_html.render(report)), encoding="utf-8", errors="replace")
+
+
+#: In HTML, "##[" as "##&#91;" and a line-leading "::" as "&#58;:" render the same and are no workflow command
+#: in a log that prints the file (G279). Entities do not decode inside <style>, which holds only kube-noob's CSS.
+_HTML_COMMAND = re.compile(r"(##[A-Za-z]*)\[|^([^\S\n]*):(?=:)", re.MULTILINE)
+
+
+def _html_without_commands(text: str) -> str:
+    """``##[``, ``##vso[``, ``##teamcity[`` as ``...&#91;`` and a line-leading ``::`` as ``&#58;:``."""
+    return _HTML_COMMAND.sub(lambda m: f"{m.group(1)}&#91;" if m.group(1) else f"{m.group(2)}&#58;", text)
 
 
 def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
@@ -537,7 +580,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         # Before the report, and on stdout: Actions reads workflow commands from the step's output, and a caller
         # parsing --format json filters the `::` lines (the test does exactly that).
         for line in gate.github_annotations(report):
-            print(line)
+            _workflow_command(line)
     quiet_pass = getattr(a, "quiet", False) and report["passed"]
     if getattr(a, "oscal", False):
         from kube_noob.oscal import assessment_results, check_import_ap
@@ -915,8 +958,8 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out = admission.review_bytes(_read(a.file).encode("utf-8"), cfg)
         if a.format == "yaml":
             _emit(out, fmt)
-        else:  # the AdmissionReview the API server would receive
-            print(json.dumps(out, indent=1))
+        else:  # the AdmissionReview the API server would receive: a document, so past the text boundary (G279)
+            _write_document(json_document(out, indent=1) + "\n")
         return 0 if out["response"]["allowed"] else 1
     context = None
     if ad.lookups:
@@ -2201,9 +2244,112 @@ def _settings(a: argparse.Namespace) -> Settings:
     return load_settings(a.config, overrides)
 
 
+class _VisibleStream:
+    """stdout or stderr, with every TEXT write passed through ``sanitize.visible_lines`` (G279).
+
+    The boundary kube-noob's own text writers share: the text view, ``--compact``, GitHub workflow commands and
+    every error message. A name from a manifest or a cluster can no longer move the cursor, write the clipboard
+    (OSC 52), hide a link (OSC 8), reorder a line with a bidi override, or crash the print with a lone surrogate;
+    a hidden character inside a name is shown as ``<U+200B>``. Documents do not go through it: ``_emit`` (JSON,
+    YAML), the manifests ``fix`` and ``generate`` print, ``policy generate`` and ``--format sarif`` write to
+    ``_raw_stdout()``, because their encoders already escape what would not print and the bytes must equal what
+    ``-o`` writes. Argument parsing (help, usage, argparse's colour) happens before the boundary is in place, and
+    the long-running servers (``serve``, ``mcp``, ``admission serve``, ``watch``) are not wrapped at all: their
+    logs are uvicorn's and the MCP transport writes to ``.buffer``. Output with none of these characters is
+    unchanged.
+
+    It also keeps every line from being read as a GitHub Actions workflow command (``sanitize.CommandGuard``:
+    ``##[`` anywhere becomes ``## [``, a line-leading ``::`` becomes ``: :``), always, because a log is replayed.
+    The one deliberate exception is :meth:`workflow_command`, which ``gate --github-annotations`` uses for the
+    annotations it builds and escapes itself."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._guard = sanitize.CommandGuard()
+
+    def write(self, text: str) -> int:
+        self._inner.write(self._guard.feed(sanitize.visible_lines(text, mark=True)))
+        return len(text)
+
+    def workflow_command(self, line: str) -> None:
+        """One workflow command kube-noob wrote on purpose, on a line of its own, past the guard (not past
+        ``visible_lines``)."""
+        held = self._guard.flush()
+        if held:
+            self._inner.write(held)
+        if not self._guard.at_line_start:
+            self._inner.write("\n")
+        self._inner.write(sanitize.visible_lines(line, mark=True) + "\n")
+        self._guard.reset()
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        held = self._guard.flush()  # a line-leading colon held back until the next character was known
+        if held:
+            self._inner.write(held)
+        self._inner.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+#: Servers whose stdout is a protocol stream or a server log, not an answer: their streams are left alone, and
+#: each message is made safe where it is built. `watch` prints text views, so it is wrapped (G279, third review).
+_UNWRAPPED = {("serve",), ("mcp",), ("admission", "serve")}
+
+
+def _unexpected(exc: BaseException) -> int:
+    """An error kube-noob did not anticipate: one cleaned line on stderr and exit 4 (a kube-noob error, AGENTS.md),
+    never a raw traceback a pipeline reads as exit 1 (G279, third review). The traceback is printed only with
+    KUBE_NOOB_DEBUG set, and through the same boundary."""
+    import traceback
+
+    if os.environ.get("KUBE_NOOB_DEBUG"):
+        print("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
+    msg = sanitize.one_line(str(exc))[:500]
+    print(
+        f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)",
+        file=sys.stderr,
+    )
+    return 4
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    a = parser.parse_args(argv)
+    a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
+    if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
+        try:
+            return _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            out, err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+            try:
+                return _unexpected(exc)
+            finally:
+                sys.stderr.flush()
+                sys.stdout, sys.stderr = out, err
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _VisibleStream(out), _VisibleStream(err)
+    try:
+        try:
+            rc = _main(a)
+        except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
+            rc = _unexpected(exc)
+        try:
+            sys.stdout.flush()  # writes a colon held back at the start of a line, and whatever is buffered
+        except BrokenPipeError:
+            return _pipe_closed()  # the reader left: exit 141, never the code of a truncated answer (G279)
+        with contextlib.suppress(OSError, ValueError):
+            sys.stderr.flush()
+        return rc
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(a: argparse.Namespace) -> int:
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(a, key):
             setattr(a, key, value)
@@ -2233,10 +2379,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 4
     except BrokenPipeError:
-        # `kube-noob ... | head`: the reader went away; exit quietly like other CLI tools.
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        return 141
+        return _pipe_closed()
+
+
+def _pipe_closed() -> int:
+    """`kube-noob ... | head`: the reader went away; exit quietly with 141, like other CLI tools. What is still
+    buffered goes to /dev/null, so the interpreter's own flush at exit cannot raise again."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    return 141
 
 
 def _dispatch(a: argparse.Namespace, s: Settings) -> int:
@@ -2298,7 +2449,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
                 # The document carries what was not read and not evaluated as notifications, and the operator
                 # still gets the notice on stderr: a partial audit must not look clean on either channel.
-                print(json.dumps(sarif_of_audit(rep), indent=2))
+                _write_document(json_document(sarif_of_audit(rep), indent=2) + "\n")  # ASCII, escaped
                 for b in unreadable:
                     print(f"not read: {b['path']} ({b['why']})", file=sys.stderr)
             elif a.format == "text":
@@ -2343,8 +2494,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             )
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
-        else:
-            print(res["manifests"], end="")
+        else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
+            _write_document(res["manifests"])
         print(
             yaml.safe_dump(
                 {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
@@ -2392,7 +2543,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
             else:
-                print(out["manifests"], end="")
+                _write_document(out["manifests"])
             print(
                 yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
                 file=sys.stderr,
@@ -2682,8 +2833,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         )
         bundle_dir = Path(a.out)
         bundle_dir.mkdir(parents=True, exist_ok=True)
-        (bundle_dir / "bundle.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-        (bundle_dir / "bundle.md").write_text(bundle_markdown(result), encoding="utf-8")
+        (bundle_dir / "bundle.json").write_text(json_document(result, indent=2, default=str), encoding="utf-8")
+        (bundle_dir / "bundle.md").write_text(
+            sanitize.defuse_workflow_commands(bundle_markdown(result)), encoding="utf-8"
+        )
         _emit(
             {"bundle": str(bundle_dir), "files": ["bundle.md", "bundle.json"], "diagnoses": len(result["diagnoses"])},
             fmt,
@@ -2853,8 +3006,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.out:
             out_dir = Path(a.out)
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "report.md").write_text(md, encoding="utf-8")
-            (out_dir / "report.json").write_text(json.dumps(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
+            (out_dir / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (out_dir / "report.json").write_text(json_document(prep, indent=2, ensure_ascii=False) + "\n", "utf-8")
         if a.format == "text":
             _tprint(md.rstrip())
         else:
@@ -2951,12 +3104,11 @@ def _model_conflicts(llm: Any, what: str) -> list[str]:
     return out
 
 
-_TERMINAL_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-
-
 def _tprint(text: str = "") -> None:
-    """Print text that may echo a manifest or a log: control characters (terminal escapes) are dropped."""
-    print(_TERMINAL_CONTROL.sub("", text))
+    """Print text that may echo a manifest or a log. It goes to stdout as it is: the output boundary
+    (``_VisibleStream``) cleans and marks it there, once. Cleaning it here first, without marking, removed a
+    character inside a name before the boundary could show it (G279, fourth review)."""
+    print(text)
 
 
 def _print_denials(out: dict[str, Any]) -> None:
@@ -3009,7 +3161,10 @@ def _print_reach(out: dict[str, Any]) -> None:
         # The verdict says UNDETERMINED and the two direction lines can both read "allowed", so without this the
         # terminal shows a conclusion with no reason while the JSON carries both `undeterminedBy` and `summary`.
         # A caveat belongs in the surface that is read, not only in the one that is parsed.
-        _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
+        if out.get("readFrom"):  # live: what decided may be a read that failed, not a kind left unevaluated
+            _tprint(f"  undetermined by: {', '.join(out['undeterminedBy'])} (the summary below says why)")
+        else:
+            _tprint(f"  unknown because: {', '.join(out['undeterminedBy'])} is not evaluated here")
     for entry in out.get("inertPolicies", []):
         # The verdict can read ALLOWED while the operator believes an AdminNetworkPolicy is denying it. That gap
         # is the whole finding, so it goes on the line below the verdict, not into the JSON alone.
@@ -3132,7 +3287,7 @@ def _policy_generate(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(body, fmt)
         return 0
     if not a.output:
-        sys.stdout.write(text)
+        _write_document(text)  # the document: its dumper escapes every character that would not print
     rules = sorted({row["ruleId"] for row in g.generated})
     lines = [
         f"{len(g.documents)} policies for {len(rules)} rules ({', '.join(engines)}, mode {a.mode}, {platform})"
@@ -3286,14 +3441,14 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         if a.posture_cmd == "diff":
             rep = drift.diff(drift.load(Path(a.old)), drift.load(Path(a.new)))
             if a.markdown:
-                Path(a.markdown).write_text(drift.markdown(rep), encoding="utf-8")
+                Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
             return 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
-            out.write_text(json.dumps(snap, sort_keys=True), encoding="utf-8")
+            out.write_text(json_document(snap, sort_keys=True), encoding="utf-8")
             out.chmod(0o600)
             summary = {"output": str(out), "objects": len(snap["objects"]), "findings": len(snap["findings"])}
             if a.format == "text":
@@ -3754,8 +3909,8 @@ def _memory(a: argparse.Namespace, s: Settings, kit: Any, fmt: str) -> int:
         if a.out:
             target = Path(a.out)
             target.mkdir(parents=True, exist_ok=True)
-            (target / "report.md").write_text(md, encoding="utf-8")
-            (target / "report.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+            (target / "report.md").write_text(sanitize.defuse_workflow_commands(md), encoding="utf-8")
+            (target / "report.json").write_text(json_document(out, indent=2) + "\n", encoding="utf-8")
         if a.format == "text":
             print(md, end="")
         else:
@@ -3936,7 +4091,7 @@ def _corpus(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         out_dir = s.data_dir / "known_issues"
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "openshift-release-notes.json"
-        target.write_text(json.dumps(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
+        target.write_text(json_document(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
         _emit({"file": str(target), "issues": len(records), "commits": commits}, fmt)
         return 0
     if cc == "build":
@@ -4166,7 +4321,7 @@ def _train(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
     rep = run_benchmark(s, a.tasks.split(",") if a.tasks else None, use_tools=not a.no_tools)
     if a.out:
-        Path(a.out).write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
+        Path(a.out).write_text(json_document(rep, indent=2, default=str), encoding="utf-8")
     _emit({k: v for k, v in rep.items() if k != "results"} if a.out else rep, fmt)
     return 0
 

@@ -37,6 +37,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from kube_noob import sanitize
 from kube_noob.errors import ManifestError
 from kube_noob.yamlio import MAX_DOCUMENTS, MAX_INPUT_BYTES, Document, PathT, dump_documents, fmt_path, load_documents
 
@@ -2252,12 +2253,9 @@ def _ref_of(kind: str, name: str, ns: str | None) -> str:
     return f"{kind}/{ns}/{name}" if ns else f"{kind}/{name}"
 
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f  \x85]")
-
-
 def _header(lines: list[str]) -> str:
     """YAML comment lines. Names from the input reach them, so a newline in a name can never start a YAML line."""
-    return "".join("# " + " ".join(_CONTROL.sub(" ", line).split()) + "\n" for line in lines)
+    return "".join("# " + " ".join(sanitize.visible(line).split()) + "\n" for line in lines)
 
 
 def _draft_text(source: str, obj: dict[str, Any], notes: list[str]) -> str:

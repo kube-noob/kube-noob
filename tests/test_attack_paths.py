@@ -335,7 +335,7 @@ class FakeBackend:
             for i in self.by_plural.get(resource, [])
             if namespace is None or (i.get("metadata") or {}).get("namespace") == namespace
         ]
-        return {"items": items}
+        return {"kind": "List", "items": items}
 
 
 def test_live_scan_reads_the_allowlist_only_and_reports_what_it_could_not_read() -> None:
