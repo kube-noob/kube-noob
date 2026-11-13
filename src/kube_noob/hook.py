@@ -290,8 +290,6 @@ def main(
     fork) or "thread" (tests only: not bounded against C code)."""
     limit = BUDGET_SECONDS + 1.0 if budget is None else budget
     try:
-        from kube_noob.cli import tolerant_streams
-
         tolerant_streams()  # the deny's stderr and the ask's reason carry « »; an ASCII terminal still gets them
         raw = (stdin or sys.stdin.buffer).read(MAX_INPUT + 1)
         mode = isolate or ("fork" if hasattr(os, "fork") else "spawn")
@@ -403,6 +401,18 @@ def _only_ask(out: str) -> bool:
         return set(doc) == {"hookSpecificOutput"} and doc["hookSpecificOutput"].get("permissionDecision") == "ask"
     except (ValueError, TypeError, AttributeError, KeyError):
         return False
+
+
+def tolerant_streams() -> None:
+    """stdout and stderr write under any terminal encoding: a character the encoding lacks (the « » around text
+    from the repository, under `PYTHONIOENCODING=ascii` or `LC_ALL=POSIX`) is written as an escape such as `\\xab`
+    rather than raising, which turned a verify allow into exit 4 and a harness that refuses on non-zero refused
+    every command. `kube-noob verify` calls this too; it lives here so the plugin's copy needs nothing of the CLI."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(OSError, ValueError, TypeError):  # a stream that cannot be reconfigured
+                reconfigure(errors="backslashreplace")
 
 
 def _write(stream: Any, text: str) -> bool:

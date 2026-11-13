@@ -566,23 +566,10 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     return 0 if report["passed"] else 1
 
 
-def tolerant_streams() -> None:
-    """stdout and stderr write under any terminal encoding: a character the encoding lacks (the « » around text
-    from the repository, under `PYTHONIOENCODING=ascii` or `LC_ALL=POSIX`) is written as an escape such as `\\xab`
-    rather than raising, which turned an allow into exit 4 and a harness that refuses on non-zero refused every
-    command. The hook does the same (G280)."""
-    import contextlib
-
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            with contextlib.suppress(OSError, ValueError, TypeError):  # a stream that cannot be reconfigured
-                reconfigure(errors="backslashreplace")
-
-
 def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     from kube_noob import gate, verify
     from kube_noob.audit.exceptions import ExceptionsError
+    from kube_noob.hook import tolerant_streams
 
     tolerant_streams()
     if bool(a.file) == (a.change_command is not None):
