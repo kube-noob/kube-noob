@@ -51,7 +51,9 @@ from kube_noob.debug.steps import (
 from kube_noob.errors import ManifestError
 
 VERDICTS = ("allow", "deny", "not-determined")
-CLASSES = ("none", "read-only", "local", "runs-code", "changes-state", "destructive")
+#: Least to most consequential. `connects`: a local listening port to the cluster (`port-forward`, `proxy`), which
+#: changes no cluster state and runs nothing in it; asked about only when the port is reachable from other hosts.
+CLASSES = ("none", "read-only", "local", "connects", "runs-code", "changes-state", "destructive")
 MAX_FILE_BYTES = 5_000_000
 MAX_FILES = 2_000
 MAX_TOTAL_BYTES = 5_000_000
@@ -201,6 +203,12 @@ _NO_MANIFEST = {
 }
 _DESTRUCTIVE = frozenset({"delete", "drain", "uninstall", "rollback"})
 _EXEC_REASON = "runs a program (in the cluster or on this machine) or opens a connection to the cluster"
+#: Subcommands that open a local listening port to the cluster and change nothing in it (class `connects`).
+_CONNECTS = frozenset({"port-forward", "proxy"})
+#: An address only this machine can reach: what `--address` defaults to (port-forward: localhost; proxy: 127.0.0.1).
+_LOOPBACK = re.compile(r"^(localhost|127(\.\d{1,3}){3}|::1|\[::1\])\Z")
+#: kubectl proxy's default `--accept-hosts` (kubernetes/kubectl pkg/cmd/proxy/proxy.go, master, read 2026-11-13).
+_PROXY_ACCEPT_HOSTS = r"^localhost$,^127\.0\.0\.1$,^\[::1\]$"
 # Workload resource names (and short names, as kubectl api-resources prints them) to kinds, for `patch TYPE NAME`
 # against a baseline. A type not listed is not determined rather than guessed.
 _RESOURCE_KINDS = {
@@ -413,6 +421,39 @@ def _class_of(kind: str, sub: str, tool: str, args: list[str]) -> str:
     if tool == "kustomize":
         return "local"
     return "changes-state"
+
+
+def _exposure(cmd: shell.Command, args: list[str]) -> str | None:
+    """Why a `port-forward` or `proxy` is asked about: the local port it opens is reachable from other hosts
+    (`--address` names a non-loopback address, `--accept-hosts` is widened, `--disable-filter`), or that is only
+    known when the line runs. None when the port is loopback-only, which is the default of both."""
+    words = cmd.words[1:]
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t == "--":
+            return None
+        name, eq, value = t.partition("=")
+        dynamic = i < len(words) and words[i].dynamic
+        if name in {"--address", "--accept-hosts"} and not eq:
+            i += 1
+            value = args[i] if i < len(args) else ""
+            dynamic = i < len(words) and words[i].dynamic
+        if name == "--address":
+            if dynamic:
+                return "exposes a local port to other hosts, maybe: --address is only known when the line runs"
+            if not all(_LOOPBACK.match(part.strip()) for part in value.split(",")):
+                return f"exposes a local port to other hosts (--address {frame(value, 60)})"
+        elif name == "--accept-hosts":
+            if dynamic or value != _PROXY_ACCEPT_HOSTS:
+                return (
+                    f"exposes a local port to other hosts (--accept-hosts {frame(value, 60)} widens which hosts the "
+                    "proxy accepts)"
+                )
+        elif name == "--disable-filter" and value.lower() != "false":
+            return "exposes a local port to other hosts (--disable-filter turns off the proxy's host and path filter)"
+        i += 1
+    return None
 
 
 def _destructive_apply(args: list[str]) -> bool:
@@ -828,6 +869,8 @@ def _kube_command(
     else:
         sub = kube_subcommand(args)[0]
     cls = _class_of(kind, sub, name, args)
+    if name in KUBE_CLIS and sub in _CONNECTS:
+        cls = "connects"
     if name in KUBE_CLIS and cls == "destructive" and _day2(cmd, name, sub, args, cls, "", _Read(), probe=True):
         cls = "changes-state"  # deleting pods by name: their controller recreates them from a spec already judged
     if name in KUBE_CLIS and sub == "diff":
@@ -866,6 +909,11 @@ def _kube_command(
             return
     if cmd.args_from_stdin and name in KUBE_CLIS | {"helm"} and (not sub or cls not in {"read-only", "local"}):
         out.undetermined.append(f"{shown}: arguments arrive at run time ({', '.join(cmd.via)})")
+        return
+    if cls == "connects":
+        why = _exposure(cmd, args)
+        if why:
+            out.undetermined.append(f"{shown}: {why}")
         return
     if cls in {"read-only", "local"}:
         return
