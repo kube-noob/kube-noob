@@ -510,7 +510,8 @@ def fix_manifests(
     harden: bool = True,
     openshift_ids: bool = True,
 ) -> FixResult:
-    docs = load_documents(text)
+    # A List wrapper kept for its duplicate keys is not an object to fix or to write back (G287).
+    docs = [d for d in load_documents(text) if not d.list_wrapper]
     fx = _Fixer(platform, k8s_version, harden, openshift_ids)
     objs = [copy.deepcopy(d.data) for d in docs]
     classes = dict(KNOWN_STORAGE_CLASSES)

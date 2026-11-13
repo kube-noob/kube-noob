@@ -30,6 +30,10 @@ class Document:
     lines: dict[PathT, int] = field(default_factory=dict)
     start_line: int = 1
     duplicate_keys: list[tuple[PathT, int]] = field(default_factory=list)
+    #: A `kind: List` (or `<Kind>List`) wrapper kept only because it carries duplicate keys of its own; its items
+    #: are flattened out as usual and `data` holds the wrapper without them. Nothing but the rule that reports the
+    #: duplicate reads it: a wrapper is not an object (G287).
+    list_wrapper: bool = False
     #: Per-list memo for `locator`: the keys a list's items share, computed once per list rather than once
     #: per finding (G252). Out of `repr` and `==` so a Document still prints and compares as its content.
     ambiguous_keys: dict[PathT, frozenset[str]] = field(default_factory=dict, repr=False, compare=False)
@@ -142,10 +146,32 @@ def load_documents(text: str) -> list[Document]:
     return _flatten_lists(docs)
 
 
+def is_list_wrapper(data: Any) -> bool:
+    """`kind: List`, the shape `kubectl get -o yaml` writes for several objects, with a list of items."""
+    return isinstance(data, dict) and data.get("kind") == "List" and isinstance(data.get("items"), list)
+
+
 def _flatten_lists(docs: list[Document]) -> list[Document]:
     out: list[Document] = []
     for d in docs:
-        if isinstance(d.data, dict) and d.data.get("kind") == "List" and isinstance(d.data.get("items"), list):
+        if is_list_wrapper(d.data):
+            # The wrapper's own duplicate keys (a second `items:`, `kind:` or `apiVersion:`) used to be dropped
+            # with the wrapper, so a List whose first `items: []` was silently replaced by its second passed the
+            # gate while the same duplicate inside an item was CRITICAL (G287). The wrapper stays as a document
+            # only then, without its items, so the rule has something to report against.
+            own = [(k, ln) for k, ln in d.duplicate_keys if not (k[:1] == ("items",) and len(k) > 1)]
+            if own:
+                shell = {k: v for k, v in d.data.items() if k != "items"}
+                out.append(
+                    Document(
+                        index=len(out),
+                        data=shell,
+                        lines={k: v for k, v in d.lines.items() if k[:1] != ("items",) or len(k) == 1},
+                        start_line=d.start_line,
+                        duplicate_keys=own,
+                        list_wrapper=True,
+                    )
+                )
             for i, item in enumerate(d.data["items"]):
                 prefix: PathT = ("items", i)
                 sub = {k[len(prefix) :]: v for k, v in d.lines.items() if k[: len(prefix)] == prefix}

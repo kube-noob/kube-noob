@@ -435,6 +435,8 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
 )
 def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
+        if d.list_wrapper:  # a List wrapper is not an object; it is here for its duplicate keys only (G287)
+            continue
         if not isinstance(d.data, dict):
             yield r.finding(
                 d, (), "Document is not a mapping; it cannot be a Kubernetes object.", resource=f"doc[{d.index}]"
