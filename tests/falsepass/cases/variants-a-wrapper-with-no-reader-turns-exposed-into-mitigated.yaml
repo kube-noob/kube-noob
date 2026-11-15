@@ -1,0 +1,51 @@
+id: variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated
+class: 13
+verdict: not-evaluated
+summary: 'The bundle of its parent -- a Deployment and two PodDisruptionBudgets, one with `selector: 7` -- wrapped
+  in a `List` kube-noob has no reader for. The parent answers seven scenarios, every one `exposed`. Wrapped, there
+  is one scenario and its verdict is `mitigated`: the red team reports the upgrade path as mitigated for a bundle
+  whose containers it says, in the assumption line directly beside it, were NOT audited and whose structural
+  checks it skipped. Exit 0 either way. Nothing was read, and the word for that is not `mitigated`.'
+provenance: 'neighbour variants of shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated:
+  nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G302). Found by the law over the enforced
+  cases after main (a090ac9) merged, which is what put the parent in scope. The parent is itself open on main; this
+  is a further false pass on the same surface and stands on its own. Open on main and no branch owns the fix, so
+  it waits. The probe holds when a scenario over a bundle nothing could read is no longer `mitigated`.'
+expected_on: main
+probe:
+  json:
+    argv:
+    - redteam
+    - -f
+    - '{probes}/redteam-wrapped-bundle.yaml'
+    - --platform
+    - kubernetes
+    - --version
+    - '1.35'
+    - --format
+    - json
+    path: scenarios[*].verdict
+    value:
+      in:
+      - undecided
+      - exposed
+inputs: variants-redteam-wrapped-bundle
+cli:
+  argv:
+  - redteam
+  - -f
+  - '{inputs}/pdb.yaml'
+  - --platform
+  - kubernetes
+  - --version
+  - '1.35'
+  - --format
+  - json
+expect:
+  json_any:
+    assumptions[*]:
+      contains: structural checks skipped
+forbid:
+  what: 'one scenario, verdict mitigated, beside "their containers were NOT audited"'
+  json_any:
+    scenarios[*].verdict: mitigated

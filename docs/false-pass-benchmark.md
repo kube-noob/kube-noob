@@ -51,7 +51,7 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 10 | tests that fail only in CI | 0 | 0 | 0 | 0 |
 | 11 | the object asked about is not the object answered | 3 | 3 | 0 | 12 |
 | 12 | quadratic loops inside caps | 0 | 0 | 0 | 0 |
-| 13 | the verdict word contradicts the counts | 5 | 2 | 3 | 20 |
+| 13 | the verdict word contradicts the counts | 6 | 2 | 4 | 24 |
 | 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 | 16 |
 | 15 | a match tier hides what it did not match | 2 | 2 | 0 | 8 |
 | 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 | 28 |
@@ -61,7 +61,7 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 | 0 |
 | 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 | 20 |
 | 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 | 36 |
-| | **total** | **94** | **63** | **31** | **328** |
+| | **total** | **95** | **63** | **32** | **332** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -76,7 +76,7 @@ Classes with no case, and where the shape is held instead:
 
 | Source | Cases | Classes |
 |---|---|---|
-| `main` | 67 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
+| `main` | 68 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
 | `plugin/directory-engine` | 5 | 4, 13, 16, 21 |
 | `rules/control-plane` | 10 | 7, 13, 14, 21, 22 |
 | `verify/pre-action` | 12 | 1, 4, 22 |
@@ -135,7 +135,7 @@ The cap is not a taste: it is the SMALLEST number of neighbours per case at whic
 | 25 | `crlf` | no | The same bytes with CRLF line endings, which is what a checkout on Windows and a pasted manifest both produce: a block scalar's content now ends in a carriage return the parser keeps. |
 | 26 | `utf8-bom` | no | A UTF-8 byte order mark before the first document: a file a Windows editor saved, where the first key's name begins with a character no comparison expects. |
 
-The corpus derives **328** neighbours over 82 of its 94 cases, at most 4 per case; the law runs the ones whose case enforces today. A case whose input no transformation can read is listed here rather than skipped, because a skipped input reading as covered is class 1 pointed at this generator:
+The corpus derives **332** neighbours over 83 of its 95 cases, at most 4 per case; the law runs the ones whose case enforces today. A case whose input no transformation can read is listed here rather than skipped, because a skipped input reading as covered is class 1 pointed at this generator:
 
 - `alerts-the-cap-drops-info-detail-before-the-critical-alert`: the input is generated in code, not a file in the corpus
 - `diagnose-carries-the-known-issue-coverage-statement`: the inputs hold no YAML or JSON file a transformation can read
@@ -156,6 +156,7 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
 |---|---|---|
 | `variants-a-byte-order-mark-moves-the-namespace-to-the-prose` | `injection-diagnose-reads-names-from-labels-not-prose` | `bidi-in-the-api-version`, `hidden-characters-in-the-wrapper-kind`, `list-item-not-an-object`, `list-items-empty`, `list-items-mapping`, `list-items-null`, `list-items-scalar`, `list-wrap`, `nested-list-wrap`, `utf8-bom` |
 | `variants-a-clusterversion-that-could-not-be-read-is-not-not-okd` | `issues-an-okd-must-gather-is-not-openshift` | `hidden-characters-in-the-wrapper-kind`, `list-items-mapping`, `nested-list-wrap` |
+| `variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated` | `shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated` | `hidden-characters-in-the-wrapper-kind`, `nested-list-wrap` |
 | `variants-a-wrapper-with-no-schema-drops-the-structural-check` | `control-plane-a-list-with-an-item-that-is-not-an-object-declines` | `hidden-characters-in-the-wrapper-kind`, `nested-list-wrap`, `typed-list-wrap` |
 
 ## The cases
@@ -489,6 +490,11 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
   - `kube-noob redteam -f {inputs}/pdb.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: a traceback with exit 1, or RT-UPGRADE-BLOCK mitigated
   - found: plugin/directory-engine reviews one and two (G276)
+- **`variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated`** (not-evaluated -- known failing on main)
+  - The bundle of its parent -- a Deployment and two PodDisruptionBudgets, one with `selector: 7` -- wrapped in a `List` kube-noob has no reader for. The parent answers seven scenarios, every one `exposed`. Wrapped, there is one scenario and its verdict is `mitigated`: the red team reports the upgrade path as mitigated for a bundle whose containers it says, in the assumption line directly beside it, were NOT audited and whose structural checks it skipped. Exit 0 either way. Nothing was read, and the word for that is not `mitigated`.
+  - `kube-noob redteam -f {inputs}/pdb.yaml --platform kubernetes --version 1.35 --format json`
+  - forbidden: one scenario, verdict mitigated, beside "their containers were NOT audited"
+  - found: neighbour variants of shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated: nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G302). Found by the law over the enforced cases after main (a090ac9) merged, which is what put the parent in scope. The parent is itself open on main; this is a further false pass on the same surface and stands on its own. Open on main and no branch owns the fix, so it waits. The probe holds when a scenario over a bundle nothing could read is no longer `mitigated`.
 
 ### Class 14: a rule about a kind that is absent counts as evaluated and clean
 
