@@ -12,22 +12,17 @@ spec:
     model and no network. Findings name the NIST SP 800-53 Rev. 5 controls they are evidence for, and a verdict
     it cannot reach is reported as undetermined rather than as a pass.
 
-    This plugin forwards every argument to the kube-noob CLI unchanged:
-
-      kubectl noob audit -f k8s/ --platform openshift --version 4.22
-      kubectl get deploy api -o yaml | kubectl noob audit -f -
-      kubectl noob policy explain --from web/frontend --to shop/orders-api --port 8080
-
-    It uses kube-noob from your PATH when it is there, and otherwise runs this pinned release through uvx, so
-    the plugin is usable on a machine with no Python environment set up.
+    The plugin forwards every argument to the kube-noob CLI unchanged, so `kubectl noob --help` lists what it
+    can do. It uses kube-noob from your PATH when it is there, and otherwise runs this pinned release through
+    uvx, so the plugin is usable on a machine with no Python environment set up.
   caveats: |
-    Needs either kube-noob on PATH (pipx install kube-noob, or brew install kube-noob/tap/kube-noob) or uv
-    installed, in which case the pinned release is fetched on first use. Nothing in kube-noob reaches the
-    network or your cluster unless you enable it explicitly.
+    Needs either kube-noob on PATH (pipx install kube-noob==0.9.2) or uv installed, in which case the pinned
+    release is fetched from PyPI on first use. Nothing in kube-noob reaches the network or your cluster unless
+    you enable it explicitly.
   platforms:
     - bin: kubectl-noob
       uri: https://github.com/kube-noob/kube-noob/releases/download/v0.9.2/kubectl-noob-v0.9.2.tar.gz
-      sha256: 5c7219b515da3257ec6924b2930cd07dcf954c8a73c94250c445f7347715a004
+      sha256: a9b7ee5c8b55a96e83aa5050007004a19dc314af176171be732e45c09dc9064c
       selector:
         matchExpressions:
           - key: os

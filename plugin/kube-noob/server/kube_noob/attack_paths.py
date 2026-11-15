@@ -24,10 +24,19 @@ mutation (an SCC adding a UID).
 
 The built-in ClusterRoles cluster-admin, admin, edit and view stand in by their documented meaning when a bundle
 does not carry them (https://kubernetes.io/docs/reference/access-authn-authz/rbac/#user-facing-roles: edit and admin
-can read Secrets and run pods as any ServiceAccount of the namespace; view cannot read Secrets). admin, edit and view
-also aggregate every ClusterRole labelled ``rbac.authorization.k8s.io/aggregate-to-<name>``, which the input applies
-when it carries one. The inventory is put in one canonical order before anything is read, so the same objects give
-the same bytes whatever order the documents came in.
+can read Secrets and run pods as any ServiceAccount of the namespace; view cannot read Secrets), and so do the two
+every aggregated API server binds: ClusterRole system:auth-delegator and Role
+kube-system/extension-apiserver-authentication-reader (G276). admin, edit and view also aggregate every ClusterRole
+labelled ``rbac.authorization.k8s.io/aggregate-to-<name>``, which the input applies when it carries one. The
+inventory is put in one canonical order before anything is read, so the same objects give the same bytes whatever
+order the documents came in.
+
+What was not read is two lists. ``notRead`` is everything: an object or a read that was REFUSED (a field of the wrong
+shape, a read the cluster forbade or did not answer, a response that is not a list) and everything that is merely
+ABSENT, unmodelled or ambiguous (a role not in the input, a type the cluster does not serve, a routing object this
+scan has no reader for, a name two different objects carry). ``refused`` is the first part alone: what a gate fails
+on by itself, because the gate did not see everything it was given; the rest fails a gate only with
+``--require-complete`` (G276). ``Inventory.unread`` is the one place that decides which list an entry goes to.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ import json
 import posixpath
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from kube_noob.audit.podspec import (
     EMBEDDED_CONTAINER_KEYS,
@@ -66,8 +75,9 @@ UNREAD_NAMESPACES_NOTE = (
 STANDING_LIMITATIONS: tuple[str, ...] = (
     "NetworkPolicies on the entry edge are not applied: check a path with `kube-noob policy reach`.",
     "Cloud IAM and admission-time mutation are not modelled.",
-    "Roles that are not in the input are reported in notRead; cluster-admin, admin, edit and view stand in by their "
-    "documented rules, and admin, edit and view aggregate rules the input may not carry.",
+    "Roles that are not in the input are reported in notRead; cluster-admin, admin, edit, view, system:auth-delegator "
+    "and kube-system/extension-apiserver-authentication-reader stand in by their documented rules, and admin, edit "
+    "and view aggregate rules the input may not carry.",
     "Exposure is read from Services, OpenShift Routes, Ingresses, Gateway API HTTPRoutes and Istio VirtualServices; "
     "other routing objects in files are named in notRead, and a live scan does not list them.",
     "One token per pod is followed: the automounted one, else a projected one, else a mounted token Secret; a "
@@ -77,6 +87,7 @@ STANDING_LIMITATIONS: tuple[str, ...] = (
 MAX_OBJECTS = 50_000
 MAX_PATHS = 200
 DEFAULT_TOP = 20
+NOT_READ_LISTED = 50  # entries of notRead and refused a document carries; the rest is counted (G276)
 
 # kind of each list the live scan reads (API list items carry no kind of their own)
 LIVE_RESOURCES: dict[str, str] = {
@@ -160,7 +171,62 @@ BUILTIN_CLUSTER_ROLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "view": [{"apiGroups": ["", "apps", "batch"], "resources": ["pods", "services", "deployments"], "verbs": ["get"]}],
+    # What every aggregated API server (metrics-server, kube-prometheus's adapter) binds: create TokenReviews and
+    # SubjectAccessReviews, nothing else. On every cluster, so a bundle that binds it is not missing anything (G276).
+    "system:auth-delegator": [
+        {"apiGroups": ["authentication.k8s.io"], "resources": ["tokenreviews"], "verbs": ["create"]},
+        {"apiGroups": ["authorization.k8s.io"], "resources": ["subjectaccessreviews"], "verbs": ["create"]},
+    ],
 }
+# The one built-in Role in the same position: read the ConfigMap that carries the front proxy's client CA.
+BUILTIN_ROLES: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ("kube-system", "extension-apiserver-authentication-reader"): [
+        {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "resourceNames": ["extension-apiserver-authentication"],
+            "verbs": ["get", "list", "watch"],
+        }
+    ],
+}
+
+
+# Kinds that carry a pod spec: the ones kube-noob reads, and well-known workload CRDs it reports as unread when their
+# pods are there to see (Argo, Kubeflow, Spark). A spec of the wrong shape in any of them is a refused object, not a
+# custom resource that happens to have a list for a spec (G276).
+_POD_SPEC_KINDS = (
+    frozenset(POD_SPEC_PATHS)
+    | frozenset(EMBEDDED_POD_SPEC_PATHS)
+    | frozenset(
+        {
+            "Rollout",
+            "Workflow",
+            "CronWorkflow",
+            "WorkflowTemplate",
+            "ClusterWorkflowTemplate",
+            "Notebook",
+            "PyTorchJob",
+            "TFJob",
+            "MPIJob",
+            "XGBoostJob",
+            "SparkApplication",
+            "ScheduledSparkApplication",
+        }
+    )
+)
+
+#: Why an entry is under notRead. Only a refusal fails a gate on its own (G276); the others are reported, make what
+#: depends on them not determined, and fail a gate only with --require-complete:
+#: - ``refused``: an object of the wrong shape, a read the cluster forbade or did not answer, a response that is not
+#:   a list of what was asked for -- the scan was given something and could not take it;
+#: - ``absent``: a role the input does not carry, a resource type the cluster says it does not serve;
+#: - ``unmodelled``: present, and this scan has no reader for it (a routing object of another kind, a CRD's Role, a
+#:   Knative Route, a workload CRD's pod spec);
+#: - ``unplaced``: a namespaced object with no namespace, which -n would place;
+#: - ``ambiguous``: a name carried by two different objects, or a role aggregated from what the input does not show.
+UnreadCause = Literal["refused", "absent", "unmodelled", "unplaced", "ambiguous"]
+UNREAD_CAUSES: tuple[UnreadCause, ...] = ("refused", "absent", "unmodelled", "unplaced", "ambiguous")
+GATED_CAUSES: frozenset[str] = frozenset({"refused"})
 
 
 class ScanError(ValueError):
@@ -248,6 +314,7 @@ def _ref(obj: dict[str, Any]) -> str:
     return f"{obj.get('kind')}/{ns}/{meta.get('name')}" if ns else f"{obj.get('kind')}/{meta.get('name')}"
 
 
+UNREADABLE_NAME = "<metadata not readable>"
 object_ref = _ref  # Kind/namespace/name (Kind/name without a namespace), as audit findings name resources
 
 
@@ -451,6 +518,10 @@ def _backend_namespaces(obj: dict[str, Any]) -> set[str]:
 class Inventory:
     objects: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     not_read: list[str] = field(default_factory=list)
+    #: The part of not_read that was REFUSED -- an object of the wrong shape, a read the cluster forbade or did not
+    #: answer -- as opposed to absent, unmodelled, unplaced or ambiguous (see ``UnreadCause``). A gate fails on these
+    #: by default; on the rest only with --require-complete (G276). Filled only through ``unread``.
+    refused: list[str] = field(default_factory=list)
     dropped_unread: int = 0
     #: RBAC objects (or lists of them) in the input that could not be read: each one opens the RBAC leg (G273).
     rbac_unread: list[str] = field(default_factory=list)
@@ -474,12 +545,29 @@ class Inventory:
     #: The namespace `-n` gave, where objects without one are placed, as `kubectl apply -n` does.
     default_namespace: str | None = None
 
+    def unread(self, entry: str, cause: UnreadCause) -> None:
+        """Record something the scan could not read, and decide whether a gate fails on it: the one rule (G276).
+        Every entry goes to ``not_read``; a ``refused`` one goes to ``refused`` as well."""
+        if cause not in UNREAD_CAUSES:
+            raise ValueError(f"not a cause for notRead: {cause!r}")
+        self.not_read.append(entry)
+        if cause in GATED_CAUSES:
+            self.refused.append(entry)
+
+    def refuse(self, entry: str) -> None:
+        self.unread(entry, "refused")
+
     def add(self, obj: Any, kind: str | None = None) -> None:
         if not isinstance(obj, dict):
             return
         k = kind or str(obj.get("kind") or "")
         api = obj.get("apiVersion")
         group = api.split("/")[0] if isinstance(api, str) and "/" in api else ""
+        # Every reader here takes metadata and spec as mappings (G276). Metadata that is not one only costs the name:
+        # the object is still ranked, under a name that says so. A spec that is not one cannot be ranked at all.
+        meta_ok = isinstance(obj.get("metadata") or {}, dict)
+        if not meta_ok:
+            obj = {**obj, "metadata": {"name": UNREADABLE_NAME}}
         meta = obj.get("metadata")
         if (
             not self.live
@@ -506,9 +594,14 @@ class Inventory:
         if k in UNMODELLED_EXPOSURE.get(group, ()):
             self.unmodelled.append(_ref(obj))
             self.unmodelled_ns[_ref(obj)] = _backend_namespaces(obj)
-            self.not_read.append(
-                f"{_ref(obj)}: a routing object this scan does not read, so exposure through it is not known"
+            self.unread(
+                f"{_ref(obj)}: a routing object this scan does not read, so exposure through it is not known",
+                "unmodelled",
             )
+            return
+        if k in _POD_SPEC_KINDS and k not in KINDS and not isinstance(obj.get("spec") or {}, dict):
+            # A Rollout with `spec: 7` used to vanish here unmentioned: the check below only knew the kinds it ranks.
+            self.unread(f"{_ref(obj)}: spec is not a mapping, so it was not read", "refused")
             return
         if k not in KINDS:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
@@ -518,21 +611,22 @@ class Inventory:
             from kube_noob.yamlio import Document
 
             if unread_pod_specs(Document(index=0, data=obj)):
-                self.not_read.append(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked")
+                self.unread(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked", "unmodelled")
             return
         if k in _KIND_GROUPS and isinstance(api, str) and group and group != _KIND_GROUPS[k]:
             # A Knative `Route` (serving.knative.dev) routes traffic too, to objects this scan does not model: it is
             # not read as an OpenShift Route, and its namespace's exposure is not determined rather than none.
             self.unmodelled.append(_ref(obj))
             self.unmodelled_ns[_ref(obj)] = _backend_namespaces(obj)
-            self.not_read.append(f"{_ref(obj)}: apiVersion {api} is not {_KIND_GROUPS[k]}, so it was ignored")
+            self.unread(f"{_ref(obj)}: apiVersion {api} is not {_KIND_GROUPS[k]}, so it was ignored", "unmodelled")
             return
         if k in _RBAC_KINDS and isinstance(api, str) and group != _RBAC_GROUP:
             if group == _OPENSHIFT_RBAC_GROUP:
                 converted, why = _legacy_rbac(obj, k)
                 if converted is None:
+                    # The server would refuse this binding: an object of the wrong shape, not an absence.
                     note = f"{_ref(obj)}: {why}, so it was not read"
-                    self.not_read.append(note)
+                    self.unread(note, "refused")
                     self.rbac_unread.append(note)
                     return
                 obj = converted
@@ -540,9 +634,14 @@ class Inventory:
                 # A CRD that happens to be called Role is not RBAC: reading it as one would invent rights (G270's
                 # lesson). It still opens the RBAC leg: an RBAC-shaped object this scan could not read.
                 note = f"{_ref(obj)}: apiVersion {api} is not {_RBAC_GROUP}, so it was ignored"
-                self.not_read.append(note)
+                self.unread(note, "unmodelled")
                 self.rbac_unread.append(note)
                 return
+        if not isinstance(obj.get("spec") or {}, dict):
+            self.unread(f"{_ref(obj)}: spec is not a mapping, so it was not read", "refused")
+            return
+        if not meta_ok:
+            self.unread(f"{_ref(obj)}: metadata is not a mapping, so it is ranked without its name", "refused")
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:
             raise ScanError(f"more than {MAX_OBJECTS} objects; scan fewer namespaces")
         obj = {**obj, "kind": k}
@@ -609,14 +708,14 @@ class Inventory:
                 item_kind = kind.removesuffix("List") or None
                 if not isinstance(items, list):
                     note = f"{kind}: items is not a list, so none of its objects were read"
-                    inv.not_read.append(note)
+                    inv.unread(note, "refused")
                     if item_kind in _RBAC_KINDS or item_kind is None:
                         inv.rbac_unread.append(note)
                     continue
                 for item in items:
                     if not isinstance(item, dict) and item_kind in _RBAC_KINDS:
                         note = f"{kind}: an item is a {type(item).__name__}, not an object, so it was not read"
-                        inv.not_read.append(note)
+                        inv.unread(note, "refused")
                         inv.rbac_unread.append(note)
                         continue
                     inv.add(item, None if isinstance(item, dict) and item.get("kind") else item_kind)
@@ -1448,6 +1547,11 @@ def _role_book(inv: Inventory) -> RoleBook:
             stand_ins.add(ref)
             if name in BUILTIN_AGGREGATION:
                 selectors[ref] = BUILTIN_AGGREGATION[name]
+    for (ns, name), rules in BUILTIN_ROLES.items():
+        ref = f"Role/{ns}/{name}"
+        if ref not in book.rules:  # on every cluster, so a bundle that binds it is not missing anything (G276)
+            book.rules[ref] = list(rules)
+            stand_ins.add(ref)
     # Aggregation to a fixed point: a role's rules are its own plus those of every ClusterRole its selectors reach,
     # directly or through another aggregated role. A reachability walk, so the answer cannot depend on the order the
     # roles or their label names sort in. The own rules are kept too: the control plane overwrites them in a
@@ -1554,8 +1658,9 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
             gaps.append(Gap(_ref(b), who, at, role_ref, reason))
         if unread:
             # Something the input carries and this scan could not read: the scan says so in notRead, instead of
-            # scoring the binding as nothing with an empty notRead (as main did for `verbs: "*"`, G273).
-            inv.not_read.append(f"{reason} (bound by {_ref(b)})" if _ref(b) not in reason else reason)
+            # scoring the binding as nothing with an empty notRead (as main did for `verbs: "*"`, G273). A field of
+            # the wrong shape is a refusal: a gate fails on it (G276).
+            inv.unread(f"{reason} (bound by {_ref(b)})" if _ref(b) not in reason else reason, "refused")
 
     for b in inv.of("RoleBinding", "ClusterRoleBinding"):
         cluster = b.get("kind") == "ClusterRoleBinding"
@@ -1615,17 +1720,18 @@ def _grants(inv: Inventory, sa_ns: str, sa: str, gaps: list[Gap] | None = None) 
                     f"{kind_name} has no namespace: whether it is the {role_ref} this binding names is not known; "
                     "pass -n"
                 )
-                inv.not_read.append(f"{unplaced_why} (bound by {_ref(b)})")
+                inv.unread(f"{unplaced_why} (bound by {_ref(b)})", "unplaced")
                 gap(b, who, f"subjects[{j}]", role_ref, unplaced_why)
                 continue
-            inv.not_read.append(f"{role_ref} (bound by {_ref(b)}) is not in the input")
+            inv.unread(f"{role_ref} (bound by {_ref(b)}) is not in the input", "absent")
             gap(b, who, f"subjects[{j}]", role_ref, f"{role_ref} is not in the input")
             continue
         if role_ref in book.open:
             reason = book.open[role_ref]
             if role_ref in book.empty:
-                inv.not_read.append(
-                    f"{role_ref} (bound by {_ref(b)}) aggregates ClusterRoles by label and none in the input matches"
+                inv.unread(
+                    f"{role_ref} (bound by {_ref(b)}) aggregates ClusterRoles by label and none in the input matches",
+                    "ambiguous",
                 )
             gap(b, who, f"subjects[{j}]", role_ref, reason, unread=role_ref in book.unreadable)
         for i, rule in enumerate(rules):
@@ -2654,6 +2760,12 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
             "do IS listed here, but no path is scored for them. Scan the Deployments and Services the operator "
             "created alongside them -- `--live` reads those -- to complete the picture."
         )
+    # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
+    # Service is not in the input: each is something the paths above could not account for (G273).
+    not_read = sorted(
+        set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
+    )
+    refused = refused_lines(inv)
     return {
         "paths": out_paths,
         "total": len(paths),
@@ -2662,14 +2774,22 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         # and four pod specs in the paths (G229).
         "workloads": len({id(site.obj) for site in sites}),
         "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
-        # Read failures, objects present but not modelled, names carried by two different objects, and fronts whose
-        # Service is not in the input: each is something the paths above could not account for (G273).
-        "notRead": sorted(
-            set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
-        )[:50],
+        "notRead": not_read[:NOT_READ_LISTED],
+        # The list is capped; how many it leaves out is part of the answer (G276).
+        **({"notReadWithheld": len(not_read) - NOT_READ_LISTED} if len(not_read) > NOT_READ_LISTED else {}),
+        # What a gate fails on: objects refused on shape and reads the cluster refused. Also in notRead.
+        "refused": refused[:NOT_READ_LISTED],
+        **({"refusedWithheld": len(refused) - NOT_READ_LISTED} if len(refused) > NOT_READ_LISTED else {}),
         "secretsIgnored": inv.dropped_unread,
         "limitations": limitations,
     }
+
+
+def refused_lines(inv: Inventory) -> list[str]:
+    """Everything under notRead that a gate fails on by itself (G276): what the inventory refused -- an object of
+    the wrong shape, a read the cluster forbade or did not answer -- and every exposure field that is not the shape
+    the API requires. Complete only after the scan ran, since RBAC is read as the accounts come up."""
+    return sorted(set(inv.refused) | {line for _, line in _malformed_fronts(inv)})
 
 
 def scan_manifests(text: str, *, top: int = DEFAULT_TOP, default_namespace: str | None = None) -> dict[str, Any]:
@@ -2697,23 +2817,30 @@ def collect_live(backend: Any, namespaces: list[str]) -> Inventory:
     without Istio, the same for Gateway API before v1.0.0, and an unavailable openshift-apiserver drops Routes from
     discovery; telling those apart needs API discovery, which kube-noob does not read. Reading any of them as "not
     served" said `exposure none, complete` for a pod behind a VirtualService (third review of G273)."""
-    from kube_noob.debug.cluster import list_items
+    from kube_noob.debug.cluster import list_items, says_not_served
     from kube_noob.errors import KubeNoobError
 
     inv = Inventory(live=True, namespaces_read=list(namespaces))
     for resource, kind in LIVE_RESOURCES.items():
         scopes: list[str | None] = [None] if resource in CLUSTER_SCOPED or not namespaces else list(namespaces)
         for ns in scopes:
+            where = f"{resource}{' in ' + ns if ns else ''}"
             try:
                 # A response that is not a complete list of this resource is a failed read, not an empty list
                 # (G270's lesson, G279's structural check).
                 items = list_items(backend.get(resource, namespace=ns), resource, ns)
             except KubeNoobError as exc:
-                where = f"{resource}{' in ' + ns if ns else ''}"
                 why = _clip_words(str(exc))
                 if why.startswith(f"{resource}: "):  # the structural check names the resource itself
                     why = why[len(resource) + 2 :]
-                inv.not_read.append(f"{where}: {why}")
+                # Every one of these is not read and leaves its leg not determined. Which ones a gate fails on: a
+                # read the cluster forbade, timed out on or answered with something that is not a list is REFUSED;
+                # the backend's own words that this type is not served (no KServe, no Ray, no Routes on plain
+                # Kubernetes) are an absence, or a gate could pass on no live cluster that lacked a CRD (G276).
+                inv.unread(f"{where}: {why}", "absent" if says_not_served(resource, exc) else "refused")
+                continue
+            except ValueError as exc:  # an answer that is not JSON
+                inv.unread(f"{where}: the answer was not JSON ({_clip_words(str(exc), 120)})", "refused")
                 continue
             for item in items:
                 inv.add(item, kind)

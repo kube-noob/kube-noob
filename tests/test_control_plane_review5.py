@@ -60,7 +60,10 @@ def _statuses(report: Report) -> dict[str, str]:
             out[rid] = "finding"
         elif rid in report.evaluated_rules:
             out[rid] = "clean"
-        elif any(a.startswith(f"{rid} was not evaluated") for a in report.assumptions):
+        elif rid in report.not_evaluated or any(a.startswith(f"{rid} was not evaluated") for a in report.assumptions):
+            # The one not-evaluated record, not the assumption prose: G276's rules that could not read the input
+            # are in `not_evaluated` without a per-rule assumption line, and reading only the prose classified
+            # them "quiet", which is the invisible state this helper exists to catch.
             out[rid] = "declined"
         else:
             out[rid] = "quiet"
@@ -93,14 +96,21 @@ def test_a_list_with_a_non_mapping_item_is_still_opened_and_every_rule_answers(l
     assert statuses[decisive] == "finding", label
     stray = any(not isinstance(i, dict) for i in yaml.safe_load(text)["items"])
     assert statuses["KN-V001"] == ("finding" if stray else "clean"), label  # the item that is not an object
-    # The same bundle without the stray item: every OTHER rule reaches the same verdict, so the stray item changed
-    # nothing but its own line (the control-plane rules decline on it: it may be a pod they cannot read).
+    # The same bundle without the stray item. Every OTHER rule either reaches the same verdict or declines: the
+    # stray item must never make a rule WEAKER than it was without it, and "clean" is the weakest word there is.
+    # A rule going clean -> declined is G276 working as intended -- the stray item is an object the rule could not
+    # read, and a rule whose answer rests on reading every object is then undecided, never "no Service here". A
+    # rule going finding -> anything, or declined -> clean, would be the stray item laundering an answer, and no
+    # rule may become clean BECAUSE something could not be read.
     clean_items = [i for i in yaml.safe_load(text)["items"] if isinstance(i, dict)]
     reference = _statuses(_r(_list("List", clean_items)))
     for rid, status in statuses.items():
         if rid in {"KN-V001", KAS, ETCD}:
             continue
-        assert status == reference[rid], (label, rid, status, reference[rid])
+        if status == reference[rid]:
+            continue
+        assert (reference[rid], status) == ("clean", "declined"), (label, rid, status, reference[rid])
+        assert rid in report.not_evaluated, (label, rid, "declined without a not-evaluated record")
 
 
 def test_the_control_plane_rules_decline_a_document_that_is_not_a_mapping() -> None:

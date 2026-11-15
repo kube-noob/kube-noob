@@ -680,6 +680,7 @@ def classify_read_failure(
     *,
     group: str | None = None,
     version: str | None = None,
+    _aggregated_can_be_absent: bool = False,
 ) -> ReadFailure:
     """Say what a backend's failed read means, recognising absence only in the exact words a backend uses for it.
 
@@ -708,7 +709,7 @@ def classify_read_failure(
     if (group is not None and group != own_group) or (version is not None and version != own_version):
         return "not-read"
     group = own_group
-    aggregated = group in AGGREGATED_GROUPS
+    aggregated = group in AGGREGATED_GROUPS and not _aggregated_can_be_absent
     status = getattr(failure, "status", None)
     if isinstance(status, int):  # the in-cluster client: decided by the status it received, not by text
         if status == 403:
@@ -761,6 +762,23 @@ def classify_read_failure(
     if any(obj.match(line) for line in lines):
         return "not-found"
     return "not-served" if served_absent else "not-read"
+
+
+def says_not_served(
+    resource: str, failure: str | BaseException, *, group: str | None = None, version: str | None = None
+) -> bool:
+    """Whether the backend's OWN WORDS say the cluster serves no such resource type: what `classify_read_failure`
+    calls ``not-served``, and the same words for a resource in an :data:`AGGREGATED_GROUPS` group, which the
+    classifier refuses to call absent because there they can also mean that API server is down.
+
+    For one decision only: whether a gate fails on a failed list because the read was REFUSED (a 403, a timeout, a
+    response that is not a list) rather than ANSWERED (``posture scan --fail-above``, G276). The verdict is not
+    decided here -- a list the cluster did not answer stays not read and what depends on it not determined, for an
+    aggregated group and a CRD alike (G279) -- so nothing that acts on absence may call this."""
+    return (
+        classify_read_failure(resource, failure, group=group, version=version, _aggregated_can_be_absent=True)
+        == "not-served"
+    )
 
 
 def _names_kind(kind: str, plural: str) -> bool:

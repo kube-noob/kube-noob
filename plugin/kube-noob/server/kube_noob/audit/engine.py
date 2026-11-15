@@ -12,7 +12,7 @@ from kube_noob.audit.podspec import (
 )
 from kube_noob.audit.redteam import red_team
 from kube_noob.audit.rules import RULES, AuditContext, run_rules
-from kube_noob.catalog import OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
+from kube_noob.catalog import KIND_API_VERSIONS, OPENSHIFT_FAMILY, PLATFORMS, k8s_version_for
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
 from kube_noob.yamlio import Document, is_empty_list, load_documents
@@ -140,6 +140,28 @@ def analyze(
                 f"to be ({', '.join(sorted(EMBEDDED_POD_SPEC_GROUPS[d.kind]))}); the pods it may carry were not "
                 "audited."
             )
+    unaudited = [f"document {d.index + 1} ({why})" for d in docs if (why := _not_an_object(d.data)) is not None]
+    if unaudited:
+        # `kind: [Pod]`, `kind: pod`, a document with no kind or one that is a bare number all used to count as an
+        # audited resource with nothing found: no rule recognised the kind, so none fired (G276).
+        report.assumptions.append(
+            f"{len(unaudited)} document(s) are not Kubernetes objects any rule can read, so they are NOT audited: "
+            f"{', '.join(unaudited[:10])}{f' and {len(unaudited) - 10} more' if len(unaudited) > 10 else ''}."
+        )
+    odd_api = [
+        f"document {d.index + 1}"
+        for d in docs
+        if isinstance(d.data, dict)
+        and isinstance(d.data.get("kind"), str)
+        and _not_an_object(d.data) is None
+        and not isinstance(d.data.get("apiVersion"), str | None)
+    ]
+    if odd_api:
+        # The rules key on the kind, so these were audited; the API server would still refuse them.
+        report.assumptions.append(
+            f"{len(odd_api)} document(s) have an apiVersion that is not a string: {', '.join(odd_api[:10])}. They "
+            "were audited by their kind, but kubectl and oc would refuse to apply them."
+        )
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
         return report
@@ -186,6 +208,23 @@ def analyze(
             "withheld": max(0, len(entries) - MAX_DECLINED_ENTRIES),
             "decided": decided,
         }
+    if ctx.unreadable_shapes:
+        # A field of the wrong type (`resources: 1`) used to crash the whole audit, exit 1 (G276). Now each rule that
+        # cannot read it is named here and left out of the evaluated list; the schema check reports the field.
+        # `shapes_named`, not `named`: the G272 loop above holds a set of that name in the same scope, and one
+        # name for a set of objects and a joined string is how a merge turns two correct blocks into one wrong one.
+        shapes_named = ", ".join(f"{rid} ({kind})" for rid, kind in sorted(ctx.unreadable_shapes.items()))
+        report.assumptions.append(
+            f"{len(ctx.unreadable_shapes)} rule(s) were not evaluated because a field in the input has the wrong type "
+            f"for what the rule reads: {shapes_named}. Fix the field (the schema findings name it) and audit again."
+        )
+        # And into the ONE not-evaluated record every surface reads (G272), not the assumption line alone. Left out
+        # of `evaluated_rules` and absent from `not_evaluated`, a rule G276 could not run was neither checked nor
+        # not-checked: the control summary, the KSI page, the OSCAL document and the gate each had a rule they did
+        # not account for, which is the gap this release exists to close. A rule already there from a decline keeps
+        # that reason; `why` is the reason G276 computed, with its partner note folded in.
+        for rid, why in sorted(ctx.unreadable_shapes.items()):
+            report.not_evaluated.setdefault(rid, f"could not read the input: {why}")
     # A projection of what was already read, not a rule: the audit configuration says which categories of API
     # activity this cluster can record, where `KN-S035` reports only the two settings that record nothing (R4).
     # Gated exactly as that rule is gated. Off OpenShift the resource does not exist, and a report that
@@ -302,3 +341,22 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
         f"nothing here is a Kubernetes manifest ({'this looks like ' + what if looks_like_values else what}): "
         f"no document has both apiVersion and kind, so none of the audit rules apply. {how}"
     )
+
+
+_KINDS_BY_FOLDED = {k.lower(): k for k in KIND_API_VERSIONS}
+
+
+def _not_an_object(data: object) -> str | None:
+    """Why no rule can read this document as a Kubernetes object, or None when one can (G276). A kind kube-noob does
+    not know (a CRD's) is an object: no rule is written for it, and that is not news. A kind that is a known one
+    spelt in another case or with spaces is not: the API server would refuse it, and every rule passed it by."""
+    if not isinstance(data, dict):
+        return "not a mapping"
+    kind = data.get("kind")
+    if kind is None or kind == "":
+        return "no kind"
+    if not isinstance(kind, str):
+        return f"kind is {type(kind).__name__}, not a string"
+    if kind not in KIND_API_VERSIONS and kind.strip().lower() in _KINDS_BY_FOLDED:
+        return f"kind {kind!r} is not {_KINDS_BY_FOLDED[kind.strip().lower()]!r}: kinds are exact"
+    return None

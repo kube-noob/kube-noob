@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from kube_noob import sanitize
+from kube_noob import sanitize, shape
 from kube_noob.attack_paths import Inventory, Reach, ambiguous_notes, workload_reach
 from kube_noob.sanitize import visible
 from kube_noob.vuln import attack
@@ -267,28 +267,40 @@ def _app_of(obj: dict[str, Any]) -> str:
 
 
 def _pod_spec(obj: dict[str, Any]) -> dict[str, Any]:
+    """The pod spec, ``{}`` when there is none. ``shape.WrongShape`` when a field on the way is not a mapping."""
     kind = obj.get("kind")
-    spec: Any = obj.get("spec") or {}
+    ref = str(kind)
+    spec = shape.mapping(obj.get("spec"), f"{ref} spec")
     if kind == "CronJob":
-        spec = (((spec.get("jobTemplate") or {}).get("spec") or {}).get("template") or {}).get("spec")
-    elif kind != "Pod":
-        spec = (spec.get("template") or {}).get("spec")
-    return spec if isinstance(spec, dict) else {}
+        job = shape.mapping(
+            shape.mapping(spec.get("jobTemplate"), f"{ref} spec.jobTemplate").get("spec"),
+            f"{ref} spec.jobTemplate.spec",
+        )
+        return shape.mapping(shape.mapping(job.get("template"), f"{ref} job template").get("spec"), f"{ref} pod spec")
+    if kind != "Pod":
+        return shape.mapping(shape.mapping(spec.get("template"), f"{ref} spec.template").get("spec"), f"{ref} pod spec")
+    return spec
 
 
 def _is_store(obj: dict[str, Any]) -> bool:
-    if obj.get("kind") == "StatefulSet" or (obj.get("spec") or {}).get("volumeClaimTemplates"):
+    """Whether the workload keeps data. ``shape.WrongShape`` when a field it reads has a type it cannot use: the caller
+    reports the workload as not read rather than as stateless (G276)."""
+    ref = str(obj.get("kind"))
+    if obj.get("kind") == "StatefulSet" or shape.mapping(obj.get("spec"), f"{ref} spec").get("volumeClaimTemplates"):
         return True
     spec = _pod_spec(obj)
-    if any(isinstance(v, dict) and v.get("persistentVolumeClaim") for v in spec.get("volumes") or []):
+    volumes = shape.sequence(spec.get("volumes"), f"{ref} pod spec volumes")
+    if any(isinstance(v, dict) and v.get("persistentVolumeClaim") for v in volumes):
         return True
-    for c in [*(spec.get("containers") or []), *(spec.get("initContainers") or [])]:
+    containers = shape.sequence(spec.get("containers"), f"{ref} containers")
+    init = shape.sequence(spec.get("initContainers"), f"{ref} initContainers")
+    for c in [*containers, *init]:
         if not isinstance(c, dict):
             continue
         if isinstance(c.get("image"), str) and _DATA_IMAGES.search(c["image"]):
             return True
         for p in c.get("ports") or []:
-            if isinstance(p, dict) and p.get("containerPort") in _DATA_PORTS:
+            if isinstance(p, dict) and shape.scalar(p.get("containerPort"), f"{ref} containerPort") in _DATA_PORTS:
                 return True
     return False
 
@@ -423,6 +435,7 @@ def model(
         if obj is not None:
             apps.setdefault(_app_of(obj), []).append(ref)
     out_apps: list[dict[str, Any]] = []
+    not_read: list[str] = []
     total = 0
     for app, refs in sorted(apps.items()):
         threats: list[Threat] = []
@@ -444,7 +457,13 @@ def model(
             if entry_kind == "Service":
                 ev = _evidence(audit, [entry_ref], TEMPLATES["TM-S03"].rules)
                 threats.append(Threat(TEMPLATES["TM-S03"], Element("entry point", entry_ref), _status(ev), ev))
-        stores = [ref for ref in refs if _is_store(objects[reach[ref].object])]
+        stores: list[str] = []
+        for ref in refs:
+            try:
+                if _is_store(objects[reach[ref].object]):
+                    stores.append(ref)
+            except shape.WrongShape as exc:
+                not_read.append(f"{ref}: {exc}; whether it keeps data was not decided")
         for ref in refs:
             threats.extend(
                 _workload_threats(
@@ -486,6 +505,8 @@ def model(
         "attackVersion": attack.VERSION,
         "attribution": attack.ATTRIBUTION,
         "secretsIgnored": inv.dropped_unread,
+        # Only when something could not be read, so a model with nothing to say keeps its shape (G276).
+        **({"notRead": sorted(set(not_read + inv.not_read))} if not_read or inv.not_read else {}),
         # A name carried by different objects: which one runs is not known, so every one is modelled (G273).
         "ambiguous": ambiguous_notes(reach)
         + [
