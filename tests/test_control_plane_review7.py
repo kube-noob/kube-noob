@@ -135,7 +135,9 @@ def test_the_mcp_tools_carry_the_undetermined_state() -> None:
     assert out["notAudited"] == [
         {"object": "<kind not a string>/q", "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}
     ]
-    assert out["summary"]["scoreWithheld"].startswith("2 rules not evaluated in full and 1 pod spec not audited")
+    # Six rules, not two: the four kubelet rules decline on a pod spec no reader looks at for the same reason
+    # KN-S038 and KN-S039 do -- it may run the kubelet -- so they joined this record with G308.
+    assert out["summary"]["scoreWithheld"].startswith("6 rules not evaluated in full and 1 pod spec not audited")
     fixed = kit.fix(FixIn(manifests=text))
     assert fixed["after"]["score"] is None and fixed["after"]["scoreWithheld"]
 

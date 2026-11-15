@@ -109,7 +109,15 @@ def test_a_list_with_a_non_mapping_item_is_still_opened_and_every_rule_answers(l
             continue
         if status == reference[rid]:
             continue
-        assert (reference[rid], status) == ("clean", "declined"), (label, rid, status, reference[rid])
+        # "quiet" -> "declined" is the same strengthening as "clean" -> "declined", one step further along: the
+        # rule had no subject at all in the clean bundle (so it declined with nothing to name) and the stray item
+        # is now a subject it could not read, which it names. Strictly more information, never less (G308).
+        assert (reference[rid], status) in {("clean", "declined"), ("quiet", "declined")}, (
+            label,
+            rid,
+            status,
+            reference[rid],
+        )
         assert rid in report.not_evaluated, (label, rid, "declined without a not-evaluated record")
 
 
