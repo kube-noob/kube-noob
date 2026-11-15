@@ -13,12 +13,23 @@ kube-noob bundles derived data and links to public sources. Licenses were verifi
 | EgressFirewall schema | openshift/cluster-network-operator @a1b26444 | Apache-2.0 | `schemas/data/crds/` |
 | Central, SecuredCluster schemas | stackrox/stackrox @3373dee4 | Apache-2.0 | `schemas/data/crds/` |
 | RHACS default policy names (references only) | stackrox/stackrox `pkg/defaults/policies/files` | Apache-2.0 | `audit/rules.py` |
-| OpenShift 4.20, 4.21 and 4.22 release notes: known and fixed issues (text, issue ids, versions) | openshift/openshift-docs, branches enterprise-4.20 to enterprise-4.22 (commits in each file) | Apache-2.0 | `src/kube_noob/data/known_issues/*.json` |
+| OpenShift 4.14 through 4.22 release notes: known and fixed issues (text, issue ids, versions) | openshift/openshift-docs, branches enterprise-4.14 to enterprise-4.22 (the commit and the retrieval date of each branch are in the `minors` block of every file) | Apache-2.0 (one declared alteration, below) | `src/kube_noob/data/known_issues/*.json` |
 | OpenShift update risks (conditional updates) for targets 4.18 and later: `to`, `from`, `url`, `name`, `message`, `fixedIn`, `matchingRules` of 356 `blocked-edges/*.yaml` files, with each file's path | openshift/cincinnati-graph-data @7572174a551561c30e07e9b5ca6f156ef5cd513c (2026-10-29), "OpenShift update graph data (c) Red Hat, Inc. and contributors" | Apache-2.0 | `src/kube_noob/data/upgrade_risks/*.json` |
 | Ceph health check catalogue: health code names, the summary wording `ceph status` prints, and the Rook and ODF alert names, rule lines and runbook links (meanings, causes, fixes and steps are kube-noob's own words) | ceph/ceph @eb3b634b (`doc/rados/operations/health-checks.rst`, `doc/cephfs/health-messages.rst` and the source files cited per entry); rook/rook @61a8fea1 `deploy/charts/rook-ceph-cluster/prometheus/localrules.yaml`; red-hat-storage/ocs-operator @731e93be `internal/controller/storagecluster/prometheus/localcephrules.yaml` | Ceph docs CC BY-SA 3.0 (cited by section and line, not copied); Ceph code LGPL-2.1 or LGPL-3 (names and message wording cited, no code copied); Rook and ocs-operator Apache-2.0 | `src/kube_noob/data/ceph_health.yaml` |
 
 | FedRAMP 20x Key Security Indicators: the 46 indicator ids, their names, their families and the NIST control ids each one cites (no indicator statement text is shipped) | FedRAMP/rules `fedramp-consolidated-rules.json`, version 2026.11.02.01 (`last_updated` 2026-11-02), sha256 `782faecae3eee4aa2aa9d32cdb0de4c929524f2e41dc1f3d143a94a9ca64c4e3`, retrieved 2026-11-05 | A work of the US Government (FedRAMP, GSA), not subject to US copyright (17 U.S.C. 105). Verified 2026-11-05: the repository has no `LICENSE` or `LICENSE.md` (both 404 on `main`) and its README states no licence, so this is the basis recorded rather than one quoted | `src/kube_noob/audit/fedramp.py` (generated); the vendored extract, which includes the statements and is not packaged, is `vendor/fedramp/fedramp-ksi.json` |
 | MITRE ATT&CK for Containers technique ids, names and tactics (18 techniques) | mitre-attack/attack-stix-data `enterprise-attack/enterprise-attack.json` @c2494b29dd268c46a5d0ea0990553e4327cd2253 (Enterprise ATT&CK 20.0) | ATT&CK Terms of Use (below) | `src/kube_noob/vuln/attack.py` |
+
+**One declared alteration to the OpenShift release-note text.** Two records (an Assisted Installer issue in the 4.14 and 4.15 notes) quote a shell example containing `-H "Authorization: Bearer $API_TOKEN"`. The
+generator replaces a credential-shaped environment-variable name -- `*_TOKEN`, `*_API_KEY`,
+`*_SECRET_ACCESS_KEY`, `*_ACCESS_KEY_ID` -- with `CREDENTIAL_VARIABLE`, so that example is shipped and
+printed as `$CREDENTIAL_VARIABLE`. The Claude plugin bundles this index as data, and a reviewer scanning the
+bundle cannot tell a vendor's placeholder from a variable kube-noob itself reads
+(`tests/test_plugin.py::test_bundle_names_no_credential_variables`). Nothing else is changed: the issue, its
+id, its remaining text and its cited source file and commit are the vendor's. **So for those two records the
+text kube-noob prints differs from the vendor's page, by that substitution and only that one** -- compare
+against the cited source, which every record carries (G317,
+`tests/test_known_issue_backfill.py::test_a_credential_shaped_variable_name_in_a_quoted_command_is_replaced_not_dropped`).
 
 Exact source URLs and upstream SHA-256 digests: `src/kube_noob/schemas/data/PROVENANCE.json`.
 

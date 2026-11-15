@@ -3,6 +3,9 @@
 
 Usage: python scripts/vendor_known_issues.py [--minors 4.20,4.21,4.22] [--workdir DIR]
        python scripts/vendor_known_issues.py --check     exit 1 if a part is over the size limit or unreadable,
+                                                         an indexed release has no known or no fixed issues (a
+                                                         section of its notes was not read -- the defect the
+                                                         4.14-4.19 back-fill was built out of),
                                                          a record has a field the loader does not know (a component
                                                          or operator version would change what operators issues can
                                                          join on), a record the loader would reject, or an operator
@@ -81,6 +84,35 @@ def write_parts(records: list[dict], meta: dict) -> list[Path]:
 RECORD_FIELDS = frozenset({"id", "ids", "kind", "minor", "version", "text", "source", "issued", "fixedIn"})
 
 
+def _every_minor_has_both_kinds(issues: list) -> list[str]:  # type: ignore[type-arg]
+    """Refuse an index in which a release has fixed issues and no known ones, or the reverse.
+
+    This is the defect the 4.14 back-fill was built out of. 4.19 and earlier keep their known issues in a book
+    file, not in the ``modules/rn-ocp-release-notes-known-issues.adoc`` extract that 4.20 and later use, so a
+    generator reading only the modules produced an index that answered "nothing is reported open" for six
+    releases from a section it never opened -- no error, no empty file, just a release whose own notes report
+    plenty and whose record set says otherwise. A test in CI catches the regression; this catches it at the
+    moment the maintainer regenerates, which is where they can do something about it.
+
+    Every release of the notes has both kinds -- a release with no open issue at all has not happened and would
+    be remarkable -- so this asks for both and names the release and what it is missing rather than a count.
+    """
+    kinds: dict[str, set[str]] = {}
+    for issue in issues:
+        kinds.setdefault(issue.minor, set()).add(issue.kind)
+    out = []
+    for minor, have in sorted(kinds.items(), key=lambda kv: [int(n) for n in kv[0].split(".")]):
+        missing = sorted({"known", "fixed"} - have)
+        if missing:
+            out.append(
+                f"OpenShift {minor} has no {' and no '.join(missing)} issue: the notes of a release have both, so "
+                f"a section was not read. 4.19 and earlier keep theirs in release_notes/ocp-<x>-<y>-release-notes."
+                f"adoc, 4.20 and later in modules/rn-ocp-release-notes-{{known,fixed}}-issues.adoc; check that the "
+                f"file this release uses still has that name and that sparse-checkout fetched it."
+            )
+    return out
+
+
 def check() -> int:
     bad = []
     for f in sorted(OUT.glob("*.json")):
@@ -100,6 +132,7 @@ def check() -> int:
                 bad.append(f"{f.name} record {n}: fields the loader does not know: {', '.join(extra)}")
     issues, meta = known_issues._read_parts(sorted(OUT.glob("*.json")))
     bad += [f"rejected by the loader: {r}" for r in meta.get("_rejected", [])]
+    bad += _every_minor_has_both_kinds(issues)
     bad += [f"operator alias: {p}" for p in operator_issues.alias_problems(issues)]
     for line in operator_issues.alias_report(issues):
         print(line)

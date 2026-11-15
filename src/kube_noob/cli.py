@@ -544,7 +544,7 @@ def _print_known_issues(out: dict[str, Any]) -> None:
     k = out["knowledge"]
     print(f"index: release-note issues as of {k['knownIssuesAsOf']} for OpenShift {', '.join(k['openshiftReleases'])}")
     # Per release, not only the list: nine releases were read on their own days and to their own newest update,
-    # and one "as of" over all of them would claim a freshness the older ones may not have (G303).
+    # and one "as of" over all of them would claim a freshness the older ones may not have (G317).
     for row in k.get("openshiftReleaseDetail") or []:
         print(f"index: OpenShift {row['minor']} read to {row['indexedThrough']} as of {row['asOf']}")
     if k.get("recordsRejected"):

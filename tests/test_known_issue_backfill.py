@@ -1,4 +1,4 @@
-"""G303: the bundled reported-issue index reaches down to OpenShift 4.14, and says per release what it reaches.
+"""G317: the bundled reported-issue index reaches down to OpenShift 4.14, and says per release what it reaches.
 
 The index held 4.20-4.22, so `known-issues`, `operators issues` and the gate answered "not determined" for every
 cluster on a release people actually run. That answer was correct -- the index could not say -- and useless.
@@ -13,9 +13,12 @@ say what it did not match (docs/review-classes.md class 15).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -263,3 +266,52 @@ def test_the_known_issues_command_prints_the_per_release_reach() -> None:
     out = buf.getvalue()
     for row in ki.get_index().release_detail():
         assert f"OpenShift {row['minor']} read to {row['indexedThrough']} as of {row['asOf']}" in out
+
+
+def _vendor_script() -> Any:
+    spec = importlib.util.spec_from_file_location("kn_vendor_backfill", ROOT / "scripts/vendor_known_issues.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["kn_vendor_backfill"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_generator_refuses_an_index_whose_release_has_no_known_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The defect this back-fill was built out of, caught where the maintainer is standing.
+
+    A generator reading only the `modules/rn-ocp-*` extracts produced an index that answered "nothing is reported
+    open" for six releases from a section it never opened: no error, no empty file, just a release whose notes
+    report plenty and whose records say otherwise. A CI test catches the regression after the fact; `--check`
+    refuses it at the moment of regeneration.
+    """
+    mod = _vendor_script()
+    for f in DATA.glob("*.json"):
+        (tmp_path / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(mod, "OUT", tmp_path)
+    assert mod.check() == 0
+    capsys.readouterr()
+    for f in sorted(tmp_path.glob("openshift-4.16-known-*.json")):
+        f.unlink()
+    assert mod.check() == 1
+    out = capsys.readouterr().out
+    assert "OpenShift 4.16 has no known issue" in out
+    assert "a section was not read" in out
+    assert "ocp-<x>-<y>-release-notes.adoc" in out
+    assert "an indexed release has no known or no fixed issues" in (mod.__doc__ or "")
+
+
+def test_the_generator_refuses_a_release_with_no_fixed_issues_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The neighbouring input, not only the reported one (class 21): the other extract can go missing too."""
+    mod = _vendor_script()
+    for f in DATA.glob("*.json"):
+        (tmp_path / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(mod, "OUT", tmp_path)
+    for f in sorted(tmp_path.glob("openshift-4.21-fixed-*.json")):
+        f.unlink()
+    assert mod.check() == 1
+    assert "OpenShift 4.21 has no fixed issue" in capsys.readouterr().out

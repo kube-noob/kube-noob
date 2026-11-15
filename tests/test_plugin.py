@@ -65,7 +65,7 @@ def test_mcp_config_runs_the_bundled_source_from_the_lock() -> None:
     # admit KUBE_NOOB_SERVER_HOST=0.0.0.0, a redirect in KUBE_NOOB_LLM_BASE_URL, or KUBE_NOOB_ANYTHING=${GITHUB_TOKEN},
     # which would forward a secret off the user's machine.
     assert set(env) == {
-        "KUBE_NOOB_MCP_TOOLS",  # "all": its seven skills name tools from three profiles (G302)
+        "KUBE_NOOB_MCP_TOOLS",  # "all": its seven skills name tools from three profiles (G316)
         "KUBE_NOOB_WEB_ENABLED",
         "KUBE_NOOB_CLUSTER_ENABLED",
         "KUBE_NOOB_LLM_PROVIDER",
