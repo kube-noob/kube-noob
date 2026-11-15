@@ -4,23 +4,7 @@ verdict: not-evaluated
 summary: '`--authorization-mode=$(MODE)` on a hardened API server pod: KN-S038 declines (named in `declined` and
   `assumptions`), and the headline still says `score: 100.0` -- a perfect score beside a rule that reached no verdict;
   the score must say what the counts beside it say.'
-provenance: G282 review (Q5) on rules/control-plane at 67c3917; the control-plane builder owns the fix
-expected_on: rules/control-plane
-probe:
-  json:
-    argv:
-    - audit
-    - -f
-    - '{probes}/kas-var.yaml'
-    - --platform
-    - kubernetes
-    - --version
-    - '1.35'
-    - --format
-    - json
-    path: declined
-    value:
-      exists: true
+provenance: G282 review (Q5) on rules/control-plane at 67c3917; the control-plane builder owns the fix (landed on main as 4d2485d, so this case enforces)
 inputs: cp-var
 cli:
   argv:

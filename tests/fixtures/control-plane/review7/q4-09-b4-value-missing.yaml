@@ -1,0 +1,7 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+apiServer:
+  extraArgs:
+  - name: authorization-mode
+    value: AlwaysAllow
+  - name: anonymous-auth

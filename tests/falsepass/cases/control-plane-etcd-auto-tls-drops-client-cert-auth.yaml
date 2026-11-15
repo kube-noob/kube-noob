@@ -4,16 +4,7 @@ verdict: finding
 summary: 'etcd with `--auto-tls` and `--client-cert-auth=true` and no certificate files: etcd replaces its TLS settings
   with a generated certificate''s and drops client-certificate checking with them (embed ClientSelfCert), so the
   first version''s clean reading of `--client-cert-auth=true` was a false pass.'
-provenance: rules/control-plane reviews one to four (G272), second review
-expected_on: rules/control-plane
-probe:
-  json:
-    argv:
-    - rules
-    - --format
-    - json
-    path: rules[*].ruleId
-    value: KN-S038
+provenance: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
 inputs: cp-etcd-auto-tls
 cli:
   argv:

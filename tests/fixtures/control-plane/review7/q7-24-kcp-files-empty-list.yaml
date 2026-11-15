@@ -1,0 +1,11 @@
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: KubeadmControlPlane
+metadata: {name: cp, namespace: default}
+spec:
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+          authorization-mode: Node,RBAC
+    files: []
+    preKubeadmCommands: []

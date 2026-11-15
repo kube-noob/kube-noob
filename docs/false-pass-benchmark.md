@@ -45,23 +45,23 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 4 | an unknown or unrecognised value reads as the benign default | 20 | 19 | 1 |
 | 5 | duplicates and ordering | 4 | 4 | 0 |
 | 6 | the caveat exists only in JSON | 6 | 6 | 0 |
-| 7 | input-derived strings forge output | 4 | 3 | 1 |
+| 7 | input-derived strings forge output | 4 | 4 | 0 |
 | 8 | docs claim what the code does not do | 0 | 0 | 0 |
 | 9 | a second source of truth | 1 | 1 | 0 |
 | 10 | tests that fail only in CI | 0 | 0 | 0 |
 | 11 | the object asked about is not the object answered | 3 | 3 | 0 |
 | 12 | quadratic loops inside caps | 0 | 0 | 0 |
-| 13 | the verdict word contradicts the counts | 5 | 2 | 3 |
-| 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 |
+| 13 | the verdict word contradicts the counts | 5 | 3 | 2 |
+| 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 4 | 0 |
 | 15 | a match tier hides what it did not match | 2 | 2 | 0 |
 | 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 8 | 0 |
 | 17 | untrusted text in fields that read as the tool's own words | 2 | 2 | 0 |
 | 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 |
 | 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 |
 | 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 |
-| 21 | fixing the reported shape, not its neighbours | 5 | 2 | 3 |
-| 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 |
-| | **total** | **91** | **67** | **24** |
+| 21 | fixing the reported shape, not its neighbours | 5 | 5 | 0 |
+| 22 | parsing argv or flags without the real parser's rules | 12 | 3 | 9 |
+| | **total** | **91** | **77** | **14** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -76,8 +76,7 @@ Classes with no case, and where the shape is held instead:
 
 | Source | Cases | Classes |
 |---|---|---|
-| `main` | 69 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
-| `rules/control-plane` | 10 | 7, 13, 14, 21, 22 |
+| `main` | 79 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21, 22 |
 | `verify/pre-action` | 12 | 1, 4, 22 |
 
 ## The cases
@@ -127,11 +126,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob --config {inputs}/kube-noob.yaml alerts report -f {inputs}/payload.json --format json`
   - forbidden: the critical alert missing from the rows, or kept with its detail cut while info rows keep theirs, with notIncluded empty
   - found: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
-- **`operators-list-past-the-item-cap-is-partial`** (not-determined)
+- **`operators-list-past-the-item-cap-is-partial`** (error-exit-4)
   - A ClusterServiceVersionList of 50,050 items (2.85 MB, under the 5 MB file cap) beside an empty SubscriptionList: the slice to the 50,000-item cap happened before the dropped count was taken, so the answer was `listed`, complete, 50,000 operators, no caveat; the 50 past the cap are a gap in the answer.
   - `kube-noob operators inventory -f {inputs}/csvs.json -f {inputs}/subs.json --require-complete --format json`
   - forbidden: listed, complete: true, 50,000 operators and no word about the 50 dropped
-  - found: operators/inventory review before #55 (G270), defect 7; the G282 review measured the shape reachable
+  - found: operators/inventory review before #55 (G270), defect 7; the G282 review measured the shape reachable. Recorded as a partial answer with exit 5. G272 (main at 4d2485d) made the 1,000-document cap apply to what comes out of a list for every command alike, so this input is now REFUSED -- exit 4, nothing answered, "More than 1000 YAML documents" on stderr -- which forbids the false pass more completely than a partial answer did. The case expects the refusal; what it forbids is unchanged, and it is what matters: never `listed`, complete, exit 0.
 - **`reach-truncation-keeps-cluster-admin-and-privileged`** (finding)
   - A privileged Deployment whose ServiceAccount is bound to cluster-admin, under 130 RoleBindings to a Role not in the input: nodes were kept by type then by id, so the cap cut every capability node, the summary (computed after the cut) said 'reaches no capability', the SA node itself was gone and every notDetermined.from was empty.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/bundle.yaml --whole-bundle --format json`
@@ -298,7 +297,7 @@ Classes with no case, and where the shape is held instead:
   - `audit --format sarif` on part of a namespace: SARIF is a list of results, so a partial audit and a clean one differed only in length; the assumptions the JSON report carried (rules not evaluated because the bundle is partial) were dropped by the format that replaces it.
   - `kube-noob audit -f {inputs}/kas.yaml --platform kubernetes --version 1.35 --format sarif`
   - forbidden: a SARIF document with results only and no notification about the rules that did not run
-  - found: audit --format sarif (G269), on main
+  - found: audit --format sarif (G269), on main. The expected exit was 0 when this was recorded; G272 (main at 4d2485d) made an undetermined audit exit 1 whatever --fail-on says, and this input IS undetermined -- a rule declined on the API server it could not read. The stricter code is the shipped one, so the case expects it; the forbidden outcomes are unchanged.
 - **`diagnose-carries-the-known-issue-coverage-statement`** (not-determined)
   - `diagnose` on a CrashLoopBackOff description with `--version 4.16.20`: `knownIssues: []` with no coverage statement, so the sibling command that embeds the lookup read 'no known issue' where `known-issues` itself would have said the release is not indexed (G221 parity).
   - `kube-noob diagnose -f {inputs}/events.txt --platform openshift --version 4.16.20 --format json`
@@ -327,11 +326,11 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 7: input-derived strings forge output
 
-- **`injection-control-plane-argv-cannot-forge-a-text-line`** (finding -- waits for `rules/control-plane`)
+- **`injection-control-plane-argv-cannot-forge-a-text-line`** (finding)
   - A container name and a flag value carrying a newline, a fake `[CRITICAL] KN-X999` line, terminal escapes, a bidi override and a zero-width space: the audit's text view printed them raw, so the input forged a finding line and erased part of the screen.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35`
   - forbidden: a forged [CRITICAL] KN-X999 line at column 0, a raw ESC and a bidi override in stdout
-  - found: rules/control-plane reviews one to four (G272), second review
+  - found: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
 - **`injection-invisible-characters-do-not-reach-the-inventory`** (finding)
   - A CSV whose display name and status message carry U+061C, a soft hyphen, a tag character, a bidi override and a zero-width space: the hand-kept list of invisible code points missed them and they reached the text, JSON and tool output, where a terminal or a model reads them as something else.
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`; tool `operator_inventory`
@@ -376,11 +375,11 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 13: the verdict word contradicts the counts
 
-- **`control-plane-score-is-not-100-beside-a-declined-rule`** (not-evaluated -- waits for `rules/control-plane`)
+- **`control-plane-score-is-not-100-beside-a-declined-rule`** (not-evaluated)
   - `--authorization-mode=$(MODE)` on a hardened API server pod: KN-S038 declines (named in `declined` and `assumptions`), and the headline still says `score: 100.0` -- a perfect score beside a rule that reached no verdict; the score must say what the counts beside it say.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: summary.score 100.0 while declined is non-empty
-  - found: G282 review (Q5) on rules/control-plane at 67c3917; the control-plane builder owns the fix
+  - found: G282 review (Q5) on rules/control-plane at 67c3917; the control-plane builder owns the fix (landed on main as 4d2485d, so this case enforces)
 - **`issues-no-installed-operator-is-not-all-matched`** (not-determined)
   - Empty ClusterServiceVersion and Subscription lists: `allMatched` was true because zero not-matched is vacuously all, so a gate on `.allMatched == true` passed a cluster whose operators were never read.
   - `kube-noob operators issues -f {inputs}/ops.yaml --openshift-version 4.21.0 --format json`
@@ -404,16 +403,16 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 14: a rule about a kind that is absent counts as evaluated and clean
 
-- **`control-plane-always-allow-is-a-critical-finding`** (finding -- waits for `rules/control-plane`)
+- **`control-plane-always-allow-is-a-critical-finding`** (finding)
   - A kube-apiserver static Pod started with `--authorization-mode=AlwaysAllow`: no rule in the catalogue read the control plane's own flags, so the bundle audited clean on this point (score 100, exit 0 at --fail-on critical).
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json --fail-on critical`; tool `audit_manifests`
   - forbidden: no finding, critical 0, exit 0: the API server's authorizer was never read
-  - found: rules/control-plane reviews one to four (G272)
-- **`control-plane-etcd-plaintext-client-url-is-a-finding`** (finding -- waits for `rules/control-plane`)
+  - found: rules/control-plane reviews one to four (G272) (landed on main as 4d2485d, so this case enforces)
+- **`control-plane-etcd-plaintext-client-url-is-a-finding`** (finding)
   - etcd listening for clients on `http://0.0.0.0:2379`: every Secret of the cluster readable in plaintext from the network, and no rule read etcd's flags, so the bundle audited clean.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json --fail-on critical`; tool `audit_manifests`
   - forbidden: critical 0, exit 0
-  - found: rules/control-plane reviews one to four (G272)
+  - found: rules/control-plane reviews one to four (G272) (landed on main as 4d2485d, so this case enforces)
 - **`gate-with-no-manifests-says-the-audit-did-not-run`** (not-evaluated)
   - A gate given a scanner report and no manifests (a renamed deploy/ directory, a glob that stopped matching): it passed, exited 0 and rendered an empty 'Not run' section, which positively asserts that nothing was left out; the manifest audit must be named as not run.
   - `kube-noob gate --scanner-report {inputs}/trivy.json --summary /dev/stdout --quiet`
@@ -496,21 +495,21 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 21: fixing the reported shape, not its neighbours
 
-- **`control-plane-a-script-on-the-api-server-image-is-not-no-server`** (not-evaluated -- waits for `rules/control-plane`)
+- **`control-plane-a-script-on-the-api-server-image-is-not-no-server`** (not-evaluated)
   - The kube-apiserver image started through `/scripts/start.sh`: a command kube-noob does not recognise was silently 'not an API server', so beside one clean API server the bundle read clean; the image says what it is, and the rule must decline with the reason.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: no assumption, no decline: the script was not a server and the rule read clean
-  - found: rules/control-plane reviews one to four (G272), second review
-- **`control-plane-a-wrapper-before-the-binary-is-still-the-binary`** (not-evaluated -- waits for `rules/control-plane`)
+  - found: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
+- **`control-plane-a-wrapper-before-the-binary-is-still-the-binary`** (not-evaluated)
   - `tini -- kube-apiserver --authorization-mode=AlwaysAllow`: the binary sits after a wrapper, so the first version's 'argv[0] is the server' recognition saw tini and read nothing, leaving AlwaysAllow clean; the server must be found through the wrapper, or the rule must decline with the reason.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: no finding and no decline: the server read clean
-  - found: rules/control-plane reviews one to four (G272), reviews two and three
-- **`control-plane-etcd-auto-tls-drops-client-cert-auth`** (finding -- waits for `rules/control-plane`)
+  - found: rules/control-plane reviews one to four (G272), reviews two and three (landed on main as 4d2485d, so this case enforces)
+- **`control-plane-etcd-auto-tls-drops-client-cert-auth`** (finding)
   - etcd with `--auto-tls` and `--client-cert-auth=true` and no certificate files: etcd replaces its TLS settings with a generated certificate's and drops client-certificate checking with them (embed ClientSelfCert), so the first version's clean reading of `--client-cert-auth=true` was a false pass.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json --fail-on high`
   - forbidden: clean: client-cert-auth=true read as client certificates on, exit 0
-  - found: rules/control-plane reviews one to four (G272), second review
+  - found: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
 - **`reach-ingress-rules-as-a-mapping-are-not-no-exposure`** (not-determined)
   - An Ingress whose `spec.rules` is a mapping rather than a list, pointing at the workload's Service: after the reviewed shapes were fixed, this neighbour still read as an Ingress with no rules, so the exposure leg said the workload is not reached from outside.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/i.yaml --whole-bundle --require-complete --format json`
@@ -524,21 +523,21 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 22: parsing argv or flags without the real parser's rules
 
-- **`control-plane-a-variable-in-argv-declines-the-rule`** (not-evaluated -- waits for `rules/control-plane`)
+- **`control-plane-a-variable-in-argv-declines-the-rule`** (not-evaluated)
   - `--authorization-mode=$(MODE)`: the value comes from an environment variable the manifest does not resolve, so the authorizer is not readable; reading the literal text as 'not AlwaysAllow' counted the rule clean.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`; tool `audit_manifests`
   - forbidden: no assumption, no decline: the rule counted clean on a value it could not read
-  - found: rules/control-plane reviews one to four (G272)
-- **`control-plane-flags-in-args-with-an-empty-command-are-read`** (not-evaluated -- waits for `rules/control-plane`)
+  - found: rules/control-plane reviews one to four (G272) (landed on main as 4d2485d, so this case enforces)
+- **`control-plane-flags-in-args-with-an-empty-command-are-read`** (not-evaluated)
   - `command: []` (the image's entrypoint) with `--authorization-mode=AlwaysAllow` in `args` on a kube-apiserver image: the first version read only `command`, so the same AlwaysAllow was clean when the flag sat in `args`; the image names the server, so the rule finds it or declines, never reads clean.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: no finding and no decline: the server read clean
-  - found: rules/control-plane reviews one to four (G272)
-- **`control-plane-underscore-flag-is-the-same-flag`** (finding -- waits for `rules/control-plane`)
+  - found: rules/control-plane reviews one to four (G272) (landed on main as 4d2485d, so this case enforces)
+- **`control-plane-underscore-flag-is-the-same-flag`** (finding)
   - `--authorization_mode=AlwaysAllow` beside `--authorization-mode=Node,RBAC`: kube-apiserver normalises `_` to `-` in flag names, so the second one wins and the server allows everything, while the rule read only the dashed spelling and reported Node,RBAC clean.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json --fail-on critical`
   - forbidden: clean: Node,RBAC read, the underscore spelling ignored, exit 0
-  - found: rules/control-plane reviews one to four (G272)
+  - found: rules/control-plane reviews one to four (G272) (landed on main as 4d2485d, so this case enforces)
 - **`verify-a-cluster-admin-binding-by-flags-is-denied`** (deny -- waits for `verify/pre-action`)
   - `kubectl create clusterrolebinding x --clusterrole=cluster-admin --serviceaccount=default:default`: no file at all, the grant is in the flags; a check that reads only `-f` files would allow it.
   - `kube-noob verify --command kubectl create clusterrolebinding x --clusterrole=cluster-admin --serviceaccount=default:default --format json`

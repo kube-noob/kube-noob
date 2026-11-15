@@ -72,6 +72,7 @@ schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |
 | **R5** | Operator and add-on vulnerability surface | Shipped as a lookup (G278): `operators issues` lists the release-note issues that name or mention each operator for the cluster's release, for Red Hat's builds, and never decides whether the installed version has the fix. It is not a gate. Open: the join through the local Jira copy (components, fix and affects versions per ticket, `tickets.py`; projects in `jira_catalog.DEFAULT_PROJECTS`), which is the step that would answer for operator versions |
 | **R6** | Admission sees pod specs inside operator CRDs -- policies half | The webhook runs the audit and finds them; the generated policies do not. Needs a kind job |
+| **R8** | A permissive SCC whose own `users`/`groups` name everyone | `KN-S019` reports the SCC, `KN-S028` RBAC bindings to everyone, attack paths one ServiceAccount at a time; no single audit finding for the SCC's own subject list |
 | **P10** | Host-networked pods selected by policies the spec says cannot select them | Found red-teaming P4. Changes shared v1alpha1 primitives, so deliberately not folded in |
 | **M6** | `net verify`: policy says allowed, packets say dropped | The roadmap calls this "the insurance on the policy wedge". Needs an OVN cluster to validate |
 

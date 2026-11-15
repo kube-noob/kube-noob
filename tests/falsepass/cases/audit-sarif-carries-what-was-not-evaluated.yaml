@@ -4,7 +4,10 @@ verdict: not-evaluated
 summary: '`audit --format sarif` on part of a namespace: SARIF is a list of results, so a partial audit and a clean
   one differed only in length; the assumptions the JSON report carried (rules not evaluated because the bundle is
   partial) were dropped by the format that replaces it.'
-provenance: audit --format sarif (G269), on main
+provenance: 'audit --format sarif (G269), on main. The expected exit was 0 when this was recorded; G272 (main at
+  4d2485d) made an undetermined audit exit 1 whatever --fail-on says, and this input IS undetermined -- a rule
+  declined on the API server it could not read. The stricter code is the shipped one, so the case expects it; the
+  forbidden outcomes are unchanged.'
 inputs: audit-partial-namespace
 cli:
   argv:
@@ -19,7 +22,7 @@ cli:
   - sarif
 expect:
   exit:
-  - 0
+  - 1
   json_any:
     runs[0].invocations[0].toolExecutionNotifications[*].message.text:
       contains: were not evaluated

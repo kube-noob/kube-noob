@@ -4,16 +4,7 @@ verdict: finding
 summary: 'A container name and a flag value carrying a newline, a fake `[CRITICAL] KN-X999` line, terminal escapes,
   a bidi override and a zero-width space: the audit''s text view printed them raw, so the input forged a finding
   line and erased part of the screen.'
-provenance: rules/control-plane reviews one to four (G272), second review
-expected_on: rules/control-plane
-probe:
-  json:
-    argv:
-    - rules
-    - --format
-    - json
-    path: rules[*].ruleId
-    value: KN-S038
+provenance: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
 inputs: cp-forged-line
 cli:
   argv:

@@ -121,7 +121,9 @@ def policy_rows() -> list[Row]:
     for label, platform, version in PLATFORMS:
         g = policies.generate(platform=platform, platform_version=version, engines=policies.ENGINES, mode="audit")
         generated = {str(r["ruleId"]) for r in g.generated}
-        skipped = {str(r["ruleId"]) for r in g.skipped}
+        # A rule generated for one engine and skipped for another (KN-S037: no Kyverno policy, G272) is a
+        # generated rule; counting it in both columns made the two sum to more rules than exist.
+        skipped = {str(r["ruleId"]) for r in g.skipped} - generated
         rows.append(Row(label, platform, version, len(generated), len(skipped)))
     return rows
 

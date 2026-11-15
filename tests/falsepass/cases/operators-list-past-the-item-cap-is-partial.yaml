@@ -1,10 +1,14 @@
 id: operators-list-past-the-item-cap-is-partial
 class: 2
-verdict: not-determined
+verdict: error-exit-4
 summary: 'A ClusterServiceVersionList of 50,050 items (2.85 MB, under the 5 MB file cap) beside an empty SubscriptionList:
   the slice to the 50,000-item cap happened before the dropped count was taken, so the answer was `listed`, complete,
   50,000 operators, no caveat; the 50 past the cap are a gap in the answer.'
-provenance: 'operators/inventory review before #55 (G270), defect 7; the G282 review measured the shape reachable'
+provenance: 'operators/inventory review before #55 (G270), defect 7; the G282 review measured the shape reachable.
+  Recorded as a partial answer with exit 5. G272 (main at 4d2485d) made the 1,000-document cap apply to what comes
+  out of a list for every command alike, so this input is now REFUSED -- exit 4, nothing answered, "More than 1000
+  YAML documents" on stderr -- which forbids the false pass more completely than a partial answer did. The case
+  expects the refusal; what it forbids is unchanged, and it is what matters: never `listed`, complete, exit 0.'
 generate: csv-list-over-cap
 cli:
   argv:
@@ -19,13 +23,9 @@ cli:
   - json
 expect:
   exit:
-  - 5
-  json:
-    verdict: partial
-    complete: false
-  json_any:
-    caveats[*]:
-      contains: past the first 50000
+  - 4
+  stderr:
+  - More than 1000 YAML documents
 forbid:
   what: 'listed, complete: true, 50,000 operators and no word about the 50 dropped'
   exit:

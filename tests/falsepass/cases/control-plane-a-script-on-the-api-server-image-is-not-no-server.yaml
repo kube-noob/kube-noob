@@ -4,16 +4,7 @@ verdict: not-evaluated
 summary: 'The kube-apiserver image started through `/scripts/start.sh`: a command kube-noob does not recognise was
   silently ''not an API server'', so beside one clean API server the bundle read clean; the image says what it is,
   and the rule must decline with the reason.'
-provenance: rules/control-plane reviews one to four (G272), second review
-expected_on: rules/control-plane
-probe:
-  json:
-    argv:
-    - rules
-    - --format
-    - json
-    path: rules[*].ruleId
-    value: KN-S038
+provenance: rules/control-plane reviews one to four (G272), second review (landed on main as 4d2485d, so this case enforces)
 inputs: cp-script
 cli:
   argv:
