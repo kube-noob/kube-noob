@@ -7,7 +7,7 @@ summary: 'The bundle of its parent -- a Deployment and two PodDisruptionBudgets,
   whose containers it says, in the assumption line directly beside it, were NOT audited and whose structural
   checks it skipped. Exit 0 either way. Nothing was read, and the word for that is not `mitigated`.'
 provenance: 'neighbour variants of shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated:
-  nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G302). Found by the law over the enforced
+  nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G311). Found by the law over the enforced
   cases after main (a090ac9) merged, which is what put the parent in scope. The parent is itself open on main; this
   is a further false pass on the same surface and stands on its own. Open on main and no branch owns the fix, so
   it waits. The probe holds when a scenario over a bundle nothing could read is no longer `mitigated`.'

@@ -9,7 +9,7 @@ summary: 'The same Alertmanager payload as its parent with a UTF-8 byte order ma
   one that does not falls back to the prose.'
 provenance: 'neighbour variants of injection-diagnose-reads-names-from-labels-not-prose: utf8-bom, list-wrap,
   nested-list-wrap, list-items-mapping, list-items-null, list-items-scalar, list-items-empty,
-  list-item-not-an-object, hidden-characters-in-the-wrapper-kind, bidi-in-the-api-version on payload.json (G302).
+  list-item-not-an-object, hidden-characters-in-the-wrapper-kind, bidi-in-the-api-version on payload.json (G311).
   Ten of the eleven neighbours of that case show it; only CRLF does not. Open on main and no branch owns the fix,
   so it waits. The probe holds when `context.ns` comes from the alert''s own labels again.'
 expected_on: main

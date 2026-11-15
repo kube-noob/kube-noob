@@ -8,7 +8,7 @@ summary: 'The PodList of its parent -- first item the number 7, second an Always
   beside an assumption line that says structural checks were skipped. The caveat survived the extra wrapper and the
   finding and the number did not.'
 provenance: 'neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines:
-  nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G302). Open on main and
+  nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G311). Open on main and
   no branch owns the fix, so it waits. The probe holds when the structural check reaches an item inside a wrapper
   kube-noob has no schema for.'
 expected_on: main

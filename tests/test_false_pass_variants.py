@@ -1,4 +1,4 @@
-"""Neighbour variants for the false-pass benchmark (G302): every enforced case's input is also run as its
+"""Neighbour variants for the false-pass benchmark (G311): every enforced case's input is also run as its
 mechanical neighbours, and a neighbour that answers more kindly than its parent fails the suite.
 
 ``docs/review-classes.md`` class 21 -- "fixing the reported shape, not its neighbours" -- is the class that file
