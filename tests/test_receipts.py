@@ -617,6 +617,29 @@ def test_the_receipt_is_written_through_the_one_output_boundary(tmp_path: Path) 
     assert json.loads(text)["payload"]["note"] == "##[set-output name=x]"
 
 
+def test_a_hostile_input_path_in_a_receipt_reaches_the_reader_through_the_boundary(tmp_path: Path) -> None:
+    """A receipt's input paths come from whoever ran the audit, and `receipt verify` echoes one when it cannot get
+    the file. A path carrying a bidi override, a tag character or a terminal escape must arrive marked, never
+    spliced into a plain name and never as a sequence the terminal runs (class 7, G279)."""
+    from kube_noob import sanitize
+
+    chars = ("\u061c", "\u00ad", "\U000e0041", "\u202e", "\u2066", "\u200b", "\x1b")
+    name = "m" + "m".join(chars) + "m.yaml"
+    src = tmp_path / name
+    src.write_text(_DEPLOY, encoding="utf-8")
+    out = tmp_path / "r.json"
+    assert _run(["audit", "-f", str(src), "--receipt", str(out)])[0] == 1
+    src.unlink()
+    rc, text, err = _run(["receipt", "verify", str(out)])
+    assert rc == 5
+    shown = text + err
+    assert shown.strip()
+    assert not any(ch in shown for ch in chars), ascii(shown)[:400]
+    assert "\x07" not in shown
+    assert sanitize.visible_lines(shown) == shown
+    assert "mmmmmmm.yaml" not in shown, "the hostile name was spliced into a plain one"
+
+
 def test_a_receipt_file_is_written_readable_only_by_its_owner(bundle: Path, tmp_path: Path) -> None:
     import stat
 

@@ -332,7 +332,7 @@ Where it is applied (found in the code):
 - `kube_noob/mustgather/report.py` `case_draft` calls `sanitize.visible_lines`
 - `kube_noob/mustgather/report.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/operators.py` `_package_property` calls `sanitize.loads_bounded`
-- `kube_noob/receipt.py` `load` calls `sanitize.json_nesting_ok`
+- `kube_noob/receipt.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/report_html.py` `_esc` calls `sanitize.visible_lines`
 - `kube_noob/rhacs.py` `load` calls `sanitize.loads_bounded`
 - `kube_noob/server/mcp_app.py` `CallFailed.__init__` calls `sanitize.clean`
@@ -349,7 +349,7 @@ Where it is applied (found in the code):
 - `kube_noob/tickets.py` `_clip` calls `sanitize.visible`
 - `kube_noob/tickets.py` `_ticket_shards` calls `sanitize.loads_bounded`
 - `kube_noob/tool_runner.py` `call` calls `sanitize.result`
-- `kube_noob/toolkit.py` `Toolkit.verify_receipt` calls `sanitize.json_nesting_ok`
+- `kube_noob/toolkit.py` `Toolkit.verify_receipt` calls `sanitize.loads_bounded`
 - `kube_noob/upgrade_risks.py` `bundled` calls `sanitize.loads_bounded`
 - `kube_noob/versions.py` `shown_version` calls `sanitize.one_line`
 - `kube_noob/vuln/kev.py` `parse` calls `sanitize.loads_bounded`

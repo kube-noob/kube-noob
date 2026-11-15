@@ -1345,15 +1345,15 @@ class Toolkit:
         never a pass. A receipt is integrity, not authenticity: it proves the same inputs give the same verdict and
         nothing about who produced it.
         """
-        import json
-
         from kube_noob import receipt as rc
         from kube_noob import sanitize
 
-        if not sanitize.json_nesting_ok(p.receipt, sanitize.MAX_JSON_DEPTH):
-            raise rc.ReceiptError("the receipt nests deeper than a receipt ever does")
+        # loads_bounded, not json.loads: every reader here refuses a nesting bomb at the same depth rather than
+        # at whatever the interpreter's recursion limit is on the machine that happens to be serving.
         try:
-            doc = json.loads(p.receipt)
+            doc = sanitize.loads_bounded(p.receipt)
+        except sanitize.JsonTooDeep as exc:
+            raise rc.ReceiptError(str(exc)) from exc
         except ValueError as exc:
             raise rc.ReceiptError(f"the receipt is not JSON ({exc})") from exc
         if not isinstance(doc, dict) or doc.get("schema") != rc.SCHEMA:

@@ -363,9 +363,11 @@ def write(path: Path, doc: dict[str, Any]) -> None:
 
 
 def load(path: Path) -> dict[str, Any]:
-    """Read a receipt, bounded, and refuse anything that is not one."""
-    import json
+    """Read a receipt, bounded, and refuse anything that is not one.
 
+    Through ``sanitize.loads_bounded``, not ``json.loads``: the depth at which a nesting bomb is refused must be
+    the same on every machine rather than whatever the interpreter's recursion limit happens to be here.
+    """
     from kube_noob import sanitize
 
     try:
@@ -374,10 +376,10 @@ def load(path: Path) -> dict[str, Any]:
         # Exit 2, not 4: "a file that is not there" is the published meaning of 2, and a receipt somebody has not
         # been given yet is that, not a refused document.
         raise ConfigError(f"{path}: {exc.strerror or exc}") from exc
-    if not sanitize.json_nesting_ok(raw, sanitize.MAX_JSON_DEPTH_FILE):
-        raise ReceiptError(f"{path}: JSON nests deeper than a receipt ever does")
     try:
-        doc = json.loads(raw)
+        doc = sanitize.loads_bounded(raw, sanitize.MAX_JSON_DEPTH_FILE)
+    except sanitize.JsonTooDeep as exc:
+        raise ReceiptError(f"{path}: {exc}") from exc
     except ValueError as exc:
         raise ReceiptError(f"{path}: not JSON ({exc})") from exc
     if not isinstance(doc, dict):

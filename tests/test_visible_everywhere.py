@@ -687,6 +687,10 @@ NOT_DRIVEN: dict[str, str] = {
         ],
         "prints kube-noob's own bundled text, not text from the input",
     ),
+    "receipt verify": "takes a receipt document this table has no hostile fixture for, and the answer it must be "
+    "driven for is exit 5 (cannot be checked), which the 0/1/3 rule above does not fit: its text view is driven "
+    "with a hostile input path in "
+    "tests/test_receipts.py::test_a_hostile_input_path_in_a_receipt_reaches_the_reader_through_the_boundary",
     "examples copy": "takes a directory, not a file: driven with a hostile directory name in "
     "test_a_hostile_directory_name_is_refused_and_not_echoed (G277 refuses it with exit 2, so the table's 0/1/3 rule "
     "does not fit)",
