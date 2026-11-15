@@ -334,6 +334,10 @@ def _undecided(refs: list[str], why: str) -> dict[str, Any]:
     }
 
 
+def _how_many(found: Sequence[Document]) -> str:
+    return "several cluster-scoped APIServer objects" if len(found) > 1 else "one cluster-scoped APIServer object"
+
+
 def coverage(
     docs: Sequence[Document], version: str | None = None, platform: str = "openshift"
 ) -> dict[str, Any] | None:
@@ -350,12 +354,22 @@ def coverage(
     if not found:
         return None
     refs = [d.ref() for d in found]
-    named = [d for d in found if _name_of(d) == "cluster"] if len(found) > 1 else found
-    if len(named) != 1:
+    # Only the object named `cluster` is the platform's configuration. A lone object of another name used to be
+    # read as if it were, so a coverage statement could be drawn from settings the cluster ignores; two named
+    # `cluster` are a bundle that disagrees with itself (G272, the shape KN-S035 and KN-S040 decline).
+    named = [d for d in found if _name_of(d) == "cluster"]
+    if not named:
         return _undecided(
             refs,
-            "this bundle carries several cluster-scoped APIServer objects and none of them is the singleton "
-            "named 'cluster', so which configuration the cluster has cannot be read from it",
+            f"this bundle carries {_how_many(found)} "
+            "and none of them is the singleton named 'cluster', the only one the platform reads, so which "
+            "configuration the cluster has cannot be read from it",
+        )
+    if len(named) > 1:
+        return _undecided(
+            refs,
+            f"this bundle carries {len(named)} APIServer objects named 'cluster', which the API server cannot hold "
+            "at once, so which configuration the cluster has cannot be read from it",
         )
     doc = named[0]
     spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
@@ -421,14 +435,38 @@ def coverage(
     return out
 
 
+#: The longest line `render_text` prints, as the audit's own text view caps its lines.
+MAX_TEXT_LINE = 2000
+
+
+def _clean_line(line: str) -> str:
+    """One printed line: its indent kept, the rest `sanitize.visible` and collapsed. A customRules group is the
+    input's text, and a newline or an escape sequence in it forged report lines (G272)."""
+    from kube_noob.sanitize import visible
+
+    body = line.lstrip(" ")
+    text = " ".join(visible(body).split())
+    if len(text) > MAX_TEXT_LINE:
+        text = f"{text[:MAX_TEXT_LINE]}... ({len(text) - MAX_TEXT_LINE} more)"
+    return " " * (len(line) - len(body)) + text
+
+
 def render_text(cov: dict[str, Any]) -> str:
-    """The block `kube-noob audit --format text` prints. Short on purpose: the detail is in the JSON."""
+    """The block `kube-noob audit --format text` prints. Short on purpose: the detail is in the JSON.
+
+    Every line is cleaned on the way out, so no value in it -- a group name, an object name -- can start a line
+    of its own or reach the terminal as an escape sequence.
+    """
+    return "\n".join(_clean_line(ln) for ln in _render_lines(cov)) + "\n"
+
+
+def _render_lines(cov: dict[str, Any]) -> list[str]:
     where = cov["from"] if isinstance(cov["from"], str) else ", ".join(cov["from"])
     if "undecided" in cov:
         lines = [f"Detection coverage (from {where}): not decided", "", f"  {cov['undecided']}", ""]
         lines.append("  This says nothing about:")
         lines.extend(f"    - {w}" for w in cov["cannotSay"])
-        return "\n".join(lines) + "\n"
+        return lines
     version = f", version {cov['platformVersion']}" if cov.get("platformVersion") else ""
     lines = [f"Detection coverage (from {where}, spec.audit.profile: {cov['profile']}{version})", ""]
     lines.append(f"  {cov['statement']}")
@@ -444,4 +482,4 @@ def render_text(cov: dict[str, Any]) -> str:
     lines.append(f"  Read against {cov['source']}.")
     lines.append("  This says nothing about:")
     lines.extend(f"    - {w}" for w in cov["cannotSay"])
-    return "\n".join(lines) + "\n"
+    return lines

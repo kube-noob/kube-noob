@@ -1,0 +1,22 @@
+rule: KN-S037
+good: |
+  apiVersion: apiregistration.k8s.io/v1
+  kind: APIService
+  metadata: {name: v1beta1.metrics.k8s.io}
+  spec:
+    group: metrics.k8s.io
+    version: v1beta1
+    groupPriorityMinimum: 100
+    versionPriority: 100
+    service: {name: metrics-server, namespace: kube-system}
+bad: |
+  apiVersion: apiregistration.k8s.io/v1
+  kind: APIService
+  metadata: {name: v1beta1.metrics.k8s.io}
+  spec:
+    group: metrics.k8s.io
+    version: v1beta1
+    groupPriorityMinimum: 100
+    versionPriority: 100
+    insecureSkipTLSVerify: true
+    service: {name: metrics-server, namespace: kube-system}

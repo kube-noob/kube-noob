@@ -1,0 +1,30 @@
+rule: KN-S038
+# A kubeadm static pod. The rule recognises the API server by the binary it runs, never by a name or label.
+good: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: kube-apiserver, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: kube-apiserver
+      image: registry.k8s.io/kube-apiserver:v1.35.0
+      command:
+      - kube-apiserver
+      - --advertise-address=10.0.0.10
+      - --anonymous-auth=false
+      - --authorization-mode=Node,RBAC
+bad: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: kube-apiserver, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: kube-apiserver
+      image: registry.k8s.io/kube-apiserver:v1.35.0
+      command:
+      - kube-apiserver
+      - --advertise-address=10.0.0.10
+      - --anonymous-auth=false
+      - --authorization-mode=AlwaysAllow
