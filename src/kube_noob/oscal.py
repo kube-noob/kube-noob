@@ -260,6 +260,11 @@ def _findings(
                 f"{int(c.get('clean') or 0)} rule(s) giving evidence about {cid} {title} ran over this input "
                 "and produced no finding."
             )
+        if coverage and int(c.get("partlyEvaluated") or 0):
+            description += (
+                f" {int(c['partlyEvaluated'])} rule(s) for this control found something and declined on other "
+                "objects, which are not covered by this record (G272)."
+            )
         if coverage and int(c.get("notEvaluated") or 0):
             description += (
                 f" {int(c['notEvaluated'])} further rule(s) for this control were not evaluated, so this "

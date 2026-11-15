@@ -117,6 +117,7 @@ TARGETS: dict[str, Target] = {
         Target("PodDisruptionBudget", "policy", "v1", "poddisruptionbudgets"),
         Target("MachineConfig", "machineconfiguration.openshift.io", "v1", "machineconfigs", namespaced=False),
         Target("MachineConfigPool", "machineconfiguration.openshift.io", "v1", "machineconfigpools", namespaced=False),
+        Target("APIService", "apiregistration.k8s.io", "v1", "apiservices", namespaced=False),
     )
 }
 OPENSHIFT_GROUPS = frozenset(
@@ -355,6 +356,10 @@ class Check:
     skip_owned: bool = False
     rbac_names: bool = False
     variables: tuple[tuple[str, str], ...] = field(default=())
+    # The engines a policy for this rule would actually run on. A rule whose kind an engine's default
+    # configuration never sends to its policies is generated for the others only, with the reason in
+    # ENGINE_SKIPS, rather than as a policy that looks installed and checks nothing (G272).
+    engines: tuple[Engine, ...] = ("vap", "kyverno")
 
     @property
     def rule(self) -> Rule:
@@ -363,6 +368,13 @@ class Check:
 
 _OPENSHIFT_ONLY = "OpenShift API: generated with --platform openshift, rosa-classic or rosa-hcp"
 _ROSA_ONLY = "a ROSA rule: generated with --platform rosa-classic or rosa-hcp"
+
+# Rules generated for some engines and not others, with the reason for each engine left out.
+ENGINE_SKIPS: dict[tuple[str, Engine], str] = {
+    ("KN-S037", "kyverno"): "Kyverno's default configuration never sends APIService objects to its policies "
+    "(resourceFilters `[APIService,*,*]` in the v1.19.1 install.yaml), so a Kyverno policy for this rule would be "
+    "installed and check nothing; the ValidatingAdmissionPolicy is generated",
+}
 
 # Rules not turned into admission policies, with the reason. Every rule is in exactly one of NOT_GENERATED and the
 # checks (tests/test_policy_generate.py keeps it so).
@@ -395,6 +407,19 @@ NOT_GENERATED: dict[str, str] = {
     "KN-S035": "admission cannot help: the finding is the state of one cluster-scoped singleton that "
     "already exists, not an object anybody is about to create, and a policy that blocked edits to it "
     "would stop an administrator turning auditing back ON as readily as off",
+    "KN-S038": "the kubelet runs a static Pod from a file on the node and the API server holds only its mirror, "
+    "which cannot stop it (deleting the mirror leaves the static Pod running), so refusing the mirror at admission "
+    "would not stop the container; `kube-noob audit` reads the manifest",
+    "KN-S039": "the kubelet runs a static Pod from a file on the node and the API server holds only its mirror, "
+    "which cannot stop it, so refusing the mirror at admission would not stop etcd; `kube-noob audit` reads the "
+    "manifest",
+    "KN-S040": "the finding is the state of the APIServer singleton every OpenShift cluster already has, unset by "
+    "default, so a policy would see only later edits and would refuse every one of them -- an audit-profile change "
+    "included -- until encryption is turned on; `kube-noob audit` checks it",
+    "KN-S041": "the finding is the state of the OAuth singleton every OpenShift cluster already has, so a policy "
+    "would see only later edits, and where an insecure provider is already configured it would refuse every edit "
+    "of the object -- adding a provider or changing a CA reference included -- until that one is fixed; "
+    "`kube-noob audit` checks it",
     "KN-S034": "the webhook and the generated policies exempt openshift-* namespaces, where operator "
     "Subscriptions normally live, so a policy would not see the objects this rule is about",
     "KN-C015": "needs the namespace's ResourceClaims and templates (other objects); `kube-noob audit` checks "
@@ -766,6 +791,15 @@ def _checks(
         ),
         Check("KN-N005", ("Service",), ("!(has(object.spec.type) && object.spec.type == 'NodePort')",)),
         Check("KN-N008", ("Service",), ("!has(object.spec.externalIPs) || object.spec.externalIPs.size() == 0",)),
+        Check(
+            "KN-S037",
+            ("APIService",),
+            (
+                "!(has(object.spec.service) && has(object.spec.insecureSkipTLSVerify) && "
+                "object.spec.insecureSkipTLSVerify == true)",
+            ),
+            engines=("vap",),
+        ),
         Check("KN-N009", ("Ingress",), (f"!has(object.metadata.annotations) || !({_NGINX_RISKY})",)),
         Check("KN-N010", ("ConfigMap",), (f"!has(object.data) || !({_NGINX_CONFIGMAP})",)),
         Check(
@@ -1002,6 +1036,7 @@ def _with_kinds(c: Check, kinds: tuple[str, ...]) -> Check:
         skip_owned=c.skip_owned,
         rbac_names=c.rbac_names,
         variables=c.variables,
+        engines=c.engines,
     )
 
 
@@ -1295,6 +1330,9 @@ def generate(
             skipped.append({"ruleId": rid, "reason": reason})
             continue
         for engine in engines:
+            if engine not in c.engines:
+                skipped.append({"ruleId": rid, "reason": f"{engine}: {ENGINE_SKIPS[(rid, engine)]}"})
+                continue
             docs.extend(documents(c, engine, mode, platform, exclude, exceptions))
             row = {"ruleId": rid, "engine": engine, "name": name_of(rid), "coverage": c.coverage}
             if c.limitation:

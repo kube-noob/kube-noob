@@ -322,12 +322,18 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
                 f"{'it' if not_run == 1 else 'them'}: that is not a pass, and section 1 says what "
                 f"{'it' if not_run == 1 else 'they'} would have covered."
             )
-        from kube_noob.gate import headline
+        from kube_noob.gate import verdict_word
 
-        word = headline(report)
-        heads = {"passed": "The gate passed.", "failed": "The gate failed.", "incomplete": "The gate is incomplete."}
+        word = verdict_word(report)
+        heads = {"passed": "The gate passed.", "failed": "The gate failed.", "incomplete": "Gate incomplete."}
         if word == "incomplete":
-            lede += " A rule the pipeline requires could not decide: section 1 names it and why."
+            # Both reasons a gate is incomplete, and they are not alternatives: the audit under it reached no
+            # verdict (G272, which names what it could not read), and a rule the pipeline requires could not
+            # decide (G290, named per rule in section 1). Saying only one of them left the other unexplained.
+            if report.get("undetermined"):
+                lede += f" The audit under it reached no verdict: {_esc(report.get('undetermined'))}."
+            if any(not r["evaluated"] for r in report.get("requiredEvaluated") or []):
+                lede += " A rule the pipeline requires could not decide: section 1 names it and why."
         return Masthead(tiles, heads[word], lede)
     rows = report.get("indicators")
     if isinstance(rows, list) and rows:
@@ -456,8 +462,24 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
                 "Audit something and run again; a zero here would read as a pass.",
             )
         )
+    # "Assumed" is an ALLOWLIST -- the assumed-version lines -- as in the gate's Markdown: everything else in
+    # `assumptions` is something the audit did not read, and labelling a declined rule "Assumed" said it had been
+    # (G272, seventh review).
+    from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
+    from kube_noob.cli import caveat_lines
+
     for note in report.get("assumptions") or []:
-        items.append(("Assumed", str(note), "Give kube-noob what it assumed, and the assumption becomes a result."))
+        if str(note).startswith(ASSUMED_VERSION_PREFIXES):
+            items.append(("Assumed", str(note), "Give kube-noob what it assumed, and the assumption becomes a result."))
+        else:
+            items.append(
+                ("Not evaluated in full", str(note), "The JSON report's `declined` and `notAudited` name every object.")
+            )
+
+    # The same two lines the gate's Markdown carries (G272): which rules reached no verdict, and which found
+    # something and declined elsewhere. Without them the page counted declined objects nowhere.
+    for line in caveat_lines(report.get("controlSummary") or {}):
+        items.append(("Not evaluated in full", line, "The JSON report's `declined` map names every object."))
     limit = report.get("notCheckedBeyond")
     if isinstance(limit, dict) and limit.get("why"):
         items.append(("Not checked that far", str(limit["why"]), "Nothing beyond that point is covered either way."))
@@ -658,8 +680,15 @@ def _caveats(report: dict[str, Any]) -> list[str]:
             '<div class="caveat"><b>Nothing was audited.</b>This is the crosswalk itself, not a result: no '
             "manifests were read, so no row below carries a finding count. A zero would read as a pass.</div>"
         )
+    from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
+    from kube_noob.cli import caveat_lines
+
     for note in report.get("assumptions") or []:
-        out.append(f'<div class="caveat"><b>Assumed</b>{_rich(note)}</div>')
+        label = "Assumed" if str(note).startswith(ASSUMED_VERSION_PREFIXES) else "Not evaluated in full"
+        out.append(f'<div class="caveat"><b>{label}</b>{_rich(note)}</div>')
+
+    for line in caveat_lines(report.get("controlSummary") or {}):
+        out.append(f'<div class="caveat"><b>Not evaluated in full</b>{_rich(line)}</div>')
     limit = report.get("notCheckedBeyond")
     if limit:
         out.append(f'<div class="caveat"><b>Not checked that far</b>{_rich(limit.get("why"))}</div>')
@@ -687,7 +716,7 @@ def _caveats(report: dict[str, Any]) -> list[str]:
 def _gate_sections(report: dict[str, Any], sec: Sections) -> list[str]:
     out: list[str] = []
     if report.get("failures"):
-        out.append(sec.head("Why the gate failed", "why"))
+        out.append(sec.head("Why the gate is incomplete" if report.get("incomplete") else "Why the gate failed", "why"))
         out.append("<ul>" + "".join(f"<li>{_esc(f)}</li>" for f in report["failures"]) + "</ul>")
     findings = report.get("findings")
     if isinstance(findings, list):
@@ -933,6 +962,12 @@ def _ksi_sections(report: dict[str, Any], sec: Sections) -> list[str]:
                 out.append(
                     f'<p class="note">Declined to decide: <span class="mono">'
                     f"{_esc(', '.join(r['notEvaluatedRules']))}</span>{_esc(more)}.</p>"
+                )
+            if r.get("partlyEvaluatedRules"):
+                more = f" and {r['morePartlyEvaluated']} more" if r.get("morePartlyEvaluated") else ""
+                out.append(
+                    f'<p class="note">Partly evaluated (found something and declined on other objects): '
+                    f'<span class="mono">{_esc(", ".join(r["partlyEvaluatedRules"]))}</span>{_esc(more)}.</p>'
                 )
     return out
 

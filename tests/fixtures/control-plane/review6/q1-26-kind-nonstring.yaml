@@ -1,0 +1,15 @@
+apiVersion: v1
+items:
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: priv
+    namespace: shop
+  spec:
+    containers:
+    - image: nginx:1.27
+      name: c
+      securityContext:
+        privileged: true
+kind:
+- List
