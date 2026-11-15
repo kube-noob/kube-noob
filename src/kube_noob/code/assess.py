@@ -19,9 +19,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kube_noob.attack_paths import Reach, Step
+from kube_noob.attack_paths import Reach, Step, ambiguous_notes
 from kube_noob.code import deps, ship
 from kube_noob.code.sarif import SEVERITY_RANK, CodeFinding, SarifReport
+from kube_noob.sanitize import visible
 from kube_noob.vuln import reports as vr
 from kube_noob.vuln.rank import parse_ref
 
@@ -260,6 +261,8 @@ def assess(
         },
         "ranking": {
             "formula": FORMULA,
+            # A name two different objects carry: each copy is placed with its own images and rights (G273).
+            "ambiguous": ambiguous_notes(reach or {}),
             "ranked": shipped_rows[:top],
             "total": len(shipped_rows),
             "bySeverity": {
@@ -324,6 +327,7 @@ def render_text(out: dict[str, Any], top: int = 20) -> str:
     for img in out["images"]:
         where = ", ".join(img["workloads"]) or "no workload in the input"
         lines.append(f"  {img['image']} ({img['containerfile']}, context {img['context']}): runs in {where}")
+    lines.extend(f"note: {visible(n)}" for n in out["ranking"].get("ambiguous") or [])
     ranked = out["ranking"]["ranked"][:top]
     if ranked:
         lines.append(f"top {len(ranked)} by reachability ({out['ranking']['formula']}):")

@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'A bound Role whose `rules:` is a mapping instead of a list: `_list` turned it into nothing, so the rbac
   leg said `none` and even claimed ''no binding in the input names ServiceAccount/shop/web'' while RoleBinding/shop/odd
   names it.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 10
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 10 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-malformed-rbac
 cli:
   argv:

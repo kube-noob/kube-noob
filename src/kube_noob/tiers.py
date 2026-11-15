@@ -90,7 +90,7 @@ TIERS: tuple[Tier, ...] = (
         "none in the cluster; the external system's token",
         writes=True,
         external=True,
-        sources=("https://github.com/aashishmahajan/kube-noob/blob/main/PRIVACY.md",),  # every destination listed there
+        sources=("https://github.com/kube-noob/kube-noob/blob/main/PRIVACY.md",),  # every destination listed there
     ),
     Tier(
         "G",

@@ -39,29 +39,29 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 
 | Class | Shape | Cases | On main | Waiting for a merge |
 |---|---|---|---|---|
-| 1 | a skipped input reads as complete | 7 | 2 | 5 |
-| 2 | truncation hides the worst item | 3 | 1 | 2 |
-| 3 | substring matching on errors or kinds | 5 | 4 | 1 |
-| 4 | an unknown or unrecognised value reads as the benign default | 20 | 7 | 13 |
-| 5 | duplicates and ordering | 4 | 2 | 2 |
-| 6 | the caveat exists only in JSON | 6 | 2 | 4 |
-| 7 | input-derived strings forge output | 4 | 1 | 3 |
+| 1 | a skipped input reads as complete | 7 | 5 | 2 |
+| 2 | truncation hides the worst item | 3 | 3 | 0 |
+| 3 | substring matching on errors or kinds | 5 | 5 | 0 |
+| 4 | an unknown or unrecognised value reads as the benign default | 20 | 18 | 2 |
+| 5 | duplicates and ordering | 4 | 4 | 0 |
+| 6 | the caveat exists only in JSON | 6 | 6 | 0 |
+| 7 | input-derived strings forge output | 4 | 3 | 1 |
 | 8 | docs claim what the code does not do | 0 | 0 | 0 |
-| 9 | a second source of truth | 1 | 0 | 1 |
+| 9 | a second source of truth | 1 | 1 | 0 |
 | 10 | tests that fail only in CI | 0 | 0 | 0 |
-| 11 | the object asked about is not the object answered | 3 | 0 | 3 |
+| 11 | the object asked about is not the object answered | 3 | 3 | 0 |
 | 12 | quadratic loops inside caps | 0 | 0 | 0 |
-| 13 | the verdict word contradicts the counts | 5 | 1 | 4 |
+| 13 | the verdict word contradicts the counts | 5 | 2 | 3 |
 | 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 |
-| 15 | a match tier hides what it did not match | 2 | 0 | 2 |
-| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 3 | 5 |
-| 17 | untrusted text in fields that read as the tool's own words | 2 | 0 | 2 |
+| 15 | a match tier hides what it did not match | 2 | 2 | 0 |
+| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 |
+| 17 | untrusted text in fields that read as the tool's own words | 2 | 2 | 0 |
 | 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 |
 | 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 |
 | 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 |
-| 21 | fixing the reported shape, not its neighbours | 5 | 0 | 5 |
+| 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 |
 | 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 |
-| | **total** | **91** | **25** | **66** |
+| | **total** | **91** | **63** | **28** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -76,14 +76,9 @@ Classes with no case, and where the shape is held instead:
 
 | Source | Cases | Classes |
 |---|---|---|
-| `main` | 26 | 1, 2, 3, 4, 5, 6, 7, 13, 14, 16 |
-| `alerts/evidence-report` | 5 | 2, 4, 11, 17 |
-| `fix/absent-vs-unread` | 9 | 1, 3, 4, 7, 11, 16 |
-| `operators/known-issues` | 6 | 4, 6, 13, 15 |
+| `main` | 64 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
 | `plugin/directory-engine` | 5 | 4, 13, 16, 21 |
-| `posture/blast-radius` | 13 | 1, 2, 4, 5, 6, 9, 11, 21 |
 | `rules/control-plane` | 10 | 7, 13, 14, 21, 22 |
-| `ux/first-run` | 5 | 4, 6 |
 | `verify/pre-action` | 12 | 1, 4, 22 |
 
 ## The cases
@@ -100,21 +95,21 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory --must-gather {inputs}/ --require-complete --format json`
   - forbidden: verdict listed, complete: true, exit 0
   - found: operators/inventory review before #55 (G270), defect 4
-- **`policy-reach-live-unread-namespace-labels-are-not-a-verdict`** (undetermined -- waits for `fix/absent-vs-unread`)
+- **`policy-reach-live-unread-namespace-labels-are-not-a-verdict`** (undetermined)
   - The NetworkPolicy in shop admits ingress from namespaces labelled tier=platform and the labels of namespace monitoring could not be read (403): the selector then matched nothing and the answer was `denied` -- a verdict on labels nobody read; the reverse selector gives `allowed` the same way.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: denied (or allowed), decided by labels that were never read
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`reach-files-without-whole-bundle-are-never-complete`** (not-determined -- waits for `posture/blast-radius`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`reach-files-without-whole-bundle-are-never-complete`** (not-determined)
   - The same files without `--whole-bundle`: a set of files cannot show the bindings, Services and Routes it leaves out, so `--require-complete` must refuse (exit 5) and `complete` must be false, rather than reading the absence of a binding as the absence of a right.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/base.yaml --require-complete --format json`; tool `posture_reach`
   - forbidden: complete: true, every leg none, exit 0
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 7
-- **`reach-live-refused-exposure-read-is-not-unreached`** (not-determined -- waits for `posture/blast-radius`)
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 7 (landed on main as 266f4f2, so this case enforces)
+- **`reach-live-refused-exposure-read-is-not-unreached`** (not-determined)
   - Live, with the Service, Route and Ingress lists refused (403): the summary said 'not reached by any exposure in the input', `complete: true`, `notDetermined: []`, and only a trailing 'not read:' line hinted that nothing about exposure had been read.
   - `kube-noob posture reach deployment/web -n shop --live --require-complete --format json`
   - forbidden: not reached by any exposure, complete: true, notDetermined [], exit 0
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 9
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 9 (landed on main as 266f4f2, so this case enforces)
 - **`verify-a-pipe-from-curl-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - `-f -` fed by curl: the manifests arrive from the network when the line runs; nothing on this machine shows them.
   - `kube-noob verify --command curl -sL https://example.com/install.yaml \| kubectl apply -f - --format json`; tool `verify_change`
@@ -128,21 +123,21 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 2: truncation hides the worst item
 
-- **`alerts-the-cap-drops-info-detail-before-the-critical-alert`** (finding -- waits for `alerts/evidence-report`)
+- **`alerts-the-cap-drops-info-detail-before-the-critical-alert`** (finding)
   - 299 info alerts with long labels and one critical etcdMembersDown last, under the smallest report cap: rows were cut in arrival order, so the critical alert vanished (heading included) while the header still said 300 alerts and `diagnosed: 300`.
   - `kube-noob --config {inputs}/kube-noob.yaml alerts report -f {inputs}/payload.json --format json`
   - forbidden: the critical alert missing from the rows, or kept with its detail cut while info rows keep theirs, with notIncluded empty
-  - found: alerts/evidence-report reviews one to three (I1, G274)
+  - found: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
 - **`operators-list-past-the-item-cap-is-partial`** (not-determined)
   - A ClusterServiceVersionList of 50,050 items (2.85 MB, under the 5 MB file cap) beside an empty SubscriptionList: the slice to the 50,000-item cap happened before the dropped count was taken, so the answer was `listed`, complete, 50,000 operators, no caveat; the 50 past the cap are a gap in the answer.
   - `kube-noob operators inventory -f {inputs}/csvs.json -f {inputs}/subs.json --require-complete --format json`
   - forbidden: listed, complete: true, 50,000 operators and no word about the 50 dropped
   - found: operators/inventory review before #55 (G270), defect 7; the G282 review measured the shape reachable
-- **`reach-truncation-keeps-cluster-admin-and-privileged`** (finding -- waits for `posture/blast-radius`)
+- **`reach-truncation-keeps-cluster-admin-and-privileged`** (finding)
   - A privileged Deployment whose ServiceAccount is bound to cluster-admin, under 130 RoleBindings to a Role not in the input: nodes were kept by type then by id, so the cap cut every capability node, the summary (computed after the cut) said 'reaches no capability', the SA node itself was gone and every notDetermined.from was empty.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/bundle.yaml --whole-bundle --format json`
   - forbidden: 'reaches no capability', 0 capability nodes kept, the cluster-admin binding and the privileged container cut by the cap
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 1
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 1 (landed on main as 266f4f2, so this case enforces)
 
 ### Class 3: substring matching on errors or kinds
 
@@ -166,49 +161,49 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory --live --require-complete --format json`
   - forbidden: no-olm, not an OLM cluster, complete, exit 0
   - found: operators/inventory review before #55 (G270), defect 2
-- **`policy-reach-live-auth-plugin-not-found-is-not-tier-absent`** (undetermined -- waits for `fix/absent-vs-unread`)
+- **`policy-reach-live-auth-plugin-not-found-is-not-tier-absent`** (undetermined)
   - kubectl cannot read ClusterNetworkPolicy because `gke-gcloud-auth-plugin` is not on PATH (the error says 'not found'): the substring was read as 'the API is not served', the tier Calico 3.32 enforces was dropped and the traffic was `allowed`, exit 0.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: allowed, exit 0: a failed read of an enforced tier read as the tier being absent
-  - found: fix/absent-vs-unread reviews one and two (G279)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
 
 ### Class 4: an unknown or unrecognised value reads as the benign default
 
-- **`alerts-a-release-outside-the-index-is-not-evaluated-not-none`** (not-evaluated -- waits for `alerts/evidence-report`)
+- **`alerts-a-release-outside-the-index-is-not-evaluated-not-none`** (not-evaluated)
   - An alert labelled openshift_version 4.99.999, outside the releases the local issues cover: the known-issue section said `status: none`, 'No reported issue matched', for a release in which nothing was looked for.
   - `kube-noob alerts report -f {inputs}/payload.json --format json`; tool `alert_report`
   - forbidden: knownIssues status none for a release the index does not hold
-  - found: alerts/evidence-report reviews one to three (I1, G274)
+  - found: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
 - **`control-plane-a-list-with-an-item-that-is-not-an-object-declines`** (not-evaluated)
   - A PodList whose first item is the number 7 and whose second is an AlwaysAllow API server: a list with an item that is not a mapping is left whole and must be named as not read, not unwrapped around the bad item into a clean bundle.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: assumptions []: the list read as nothing and the bundle as clean
   - found: rules/control-plane reviews one to four (G272), fourth review; main already answers it
-- **`issues-a-release-outside-the-index-is-not-determined`** (not-determined -- waits for `operators/known-issues`)
+- **`issues-a-release-outside-the-index-is-not-determined`** (not-determined)
   - A cluster on 4.16 with the index holding 4.20-4.22: an empty result read as 'no reported issue' for a release the notes do not cover; it is not determined and `--require-complete` exits 5.
   - `kube-noob operators issues -f {inputs}/ops.yaml --openshift-version 4.16.0 --require-complete --format json`
   - forbidden: complete, exit 0, no issue listed for a release that was never searched
-  - found: operators/known-issues reviews one and two (R5, G278)
-- **`issues-an-okd-must-gather-is-not-openshift`** (not-determined -- waits for `operators/known-issues`)
+  - found: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
+- **`issues-an-okd-must-gather-is-not-openshift`** (not-determined)
   - A must-gather whose ClusterVersion is `4.20.0-okd-scos.6`: OKD was read as OpenShift 4.20 and answered from OpenShift Container Platform's release notes, complete; OKD's notes are not indexed, so the lookup is not determined.
   - `kube-noob operators issues --must-gather {inputs} --require-complete --format json`
   - forbidden: complete, exit 0, OpenShift 4.20 issues listed for an OKD cluster
-  - found: operators/known-issues reviews one and two (R5, G278), second review
-- **`known-issues-a-release-outside-the-index-is-not-no-known-issue`** (not-determined -- waits for `ux/first-run`)
+  - found: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
+- **`known-issues-a-release-outside-the-index-is-not-no-known-issue`** (not-determined)
   - `known-issues 'etcd leader changed' --version 4.16.20` when the index holds 4.20-4.22: exit 0, `matches: []` and a note naming the indexed releases, so a program read 'no reported issue' for a release the index has never seen.
   - `kube-noob known-issues etcd leader changed --version 4.16.20 --format json`; tool `known_issues`
   - forbidden: matches [] with a note naming the indexed releases, nothing a program reads saying the version is not one of them
-  - found: ux/first-run reviews (G277)
-- **`known-issues-a-z-stream-past-the-index-is-not-determined`** (not-determined -- waits for `ux/first-run`)
+  - found: ux/first-run reviews (G277) (landed on main as 4120a05, so this case enforces)
+- **`known-issues-a-z-stream-past-the-index-is-not-determined`** (not-determined)
   - A z-stream newer than the newest the notes reach (4.22.999 against an index through 4.22.x): the minor is indexed, so the first version called the empty list an answer for a release whose notes it does not hold.
   - `kube-noob known-issues etcd leader changed --version 4.22.999 --format json`
   - forbidden: matches [] read as no known issue for a z-stream the index does not reach
-  - found: ux/first-run reviews (G277), second review
-- **`known-issues-an-okd-build-is-never-answered-from-ocp-notes`** (not-determined -- waits for `ux/first-run`)
+  - found: ux/first-run reviews (G277), second review (landed on main as 4120a05, so this case enforces)
+- **`known-issues-an-okd-build-is-never-answered-from-ocp-notes`** (not-determined)
   - An OKD build string (`4.16.0-0.okd-2024-08-01`): the version was refused as too long or 'not narrowed' and the lookup printed its old 'no known issue' note; OKD is never answered from OpenShift Container Platform release notes, so the statement is not-determined with the reason.
   - `kube-noob known-issues etcd leader changed --version 4.16.0-0.okd-2024-08-01 --format json`
   - forbidden: exit 2 on the version string, or matches [] read as no known issue
-  - found: ux/first-run reviews (G277), second review
+  - found: ux/first-run reviews (G277), second review (landed on main as 4120a05, so this case enforces)
 - **`operators-condition-status-as-a-bool-is-not-no-problem`** (not-determined)
   - A Subscription whose `ResolutionFailed` condition has `status: true` (a YAML bool where the API writes the string "True"): the value was compared as a string, matched nothing and the operator reported `problems: []`.
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`
@@ -239,31 +234,31 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`
   - forbidden: two operators: foo.v1.0.0 'no-subscription' and subscription foo 'not-installed'
   - found: operators/inventory review before #55 (G270), defect 10
-- **`policy-reach-live-unidentified-cni-does-not-apply-the-admin-tier`** (undetermined -- waits for `fix/absent-vs-unread`)
+- **`policy-reach-live-unidentified-cni-does-not-apply-the-admin-tier`** (undetermined)
   - An AdminNetworkPolicy that denies the traffic, on a cluster whose CNI could not be identified (no Calico ClusterInformation, no Cilium, no OVN-Kubernetes): 'no Calico' was read as 'so OVN-Kubernetes', the tier was applied and the answer was `denied` on a CNI that may ignore it.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: denied: an AdminNetworkPolicy decided for a CNI nobody identified
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`reach-a-right-the-model-does-not-rank-is-not-none`** (finding -- waits for `posture/blast-radius`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`reach-a-right-the-model-does-not-rank-is-not-none`** (finding)
   - A bound Role granting `create` on `serviceaccounts/token` (mint a token for any account in the namespace): the right matched no ranked capability, so the rbac leg said `none \| bound by RoleBinding/shop/mint, to nothing kube-noob ranks`, secrets `none`, complete.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/r.yaml --whole-bundle --require-complete --format json`; tool `posture_reach`
   - forbidden: rbac none, to nothing kube-noob ranks; secrets none; complete; exit 0
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 6
-- **`reach-aggregate-to-view-source-reaches-secrets`** (finding -- waits for `posture/blast-radius`)
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 6 (landed on main as 266f4f2, so this case enforces)
+- **`reach-aggregate-to-view-source-reaches-secrets`** (finding)
   - A ClusterRole labelled aggregate-to-view that grants secrets get/list/watch, and a RoleBinding to `view` (itself not in the input): the built-in stand-in for `view` ignored the aggregation source the bundle carried, so rbac and secrets were `none`, complete.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/agg.yaml --whole-bundle --require-complete --format json`
   - forbidden: rbac none, secrets none, complete, exit 0
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 8
-- **`reach-projected-token-with-automount-off-is-a-token`** (finding -- waits for `posture/blast-radius`)
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 8 (landed on main as 266f4f2, so this case enforces)
+- **`reach-projected-token-with-automount-off-is-a-token`** (finding)
   - automountServiceAccountToken: false beside a projected serviceAccountToken volume that is mounted, the account bound to cluster-admin: the token leg read the flag alone and said `none`, so rbac and secrets were `none` too and the answer was complete -- for a pod that holds a cluster-admin token.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/p.yaml --whole-bundle --require-complete --format json`; tool `posture_reach`
   - forbidden: token none (automountServiceAccountToken=false), rbac none, secrets none, complete, exit 0
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 3
-- **`reach-rules-that-are-not-a-list-are-not-none`** (not-determined -- waits for `posture/blast-radius`)
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 3 (landed on main as 266f4f2, so this case enforces)
+- **`reach-rules-that-are-not-a-list-are-not-none`** (not-determined)
   - A bound Role whose `rules:` is a mapping instead of a list: `_list` turned it into nothing, so the rbac leg said `none` and even claimed 'no binding in the input names ServiceAccount/shop/web' while RoleBinding/shop/odd names it.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/m.yaml --whole-bundle --require-complete --format json`; tool `posture_reach`
   - forbidden: rbac none, 'no binding in the input names' the account, complete
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 10
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 10 (landed on main as 266f4f2, so this case enforces)
 - **`shape-a-document-whose-kind-is-a-list-is-named-not-audited`** (not-evaluated -- waits for `plugin/directory-engine`)
   - A privileged, hostNetwork pod whose `kind` is `[Pod]`: no rule could read it, and the audit passed it clean beside the pod it could read, saying nothing about a document it had not audited; `fix` on the same file crashed with an unhashable list.
   - `kube-noob audit -f {inputs}/k.yaml --platform kubernetes --version 1.35 --format json`
@@ -287,16 +282,16 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`
   - forbidden: listed, complete, one operator 1.0.0 Succeeded with no note, the Failed document gone
   - found: operators/inventory review before #55 (G270), defect 16
-- **`reach-two-serviceaccounts-that-disagree-are-not-no-token`** (not-determined -- waits for `posture/blast-radius`)
+- **`reach-two-serviceaccounts-that-disagree-are-not-no-token`** (not-determined)
   - Two ServiceAccount/shop/web documents, one with automountServiceAccountToken: false: whichever sorted first answered, so the token leg could say `none` for an account whose other document mounts the token, and the answer stayed complete.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/s.yaml --whole-bundle --require-complete --format json`
   - forbidden: token none or reached, complete, exit 0, one document silently chosen
-  - found: posture/blast-radius fourth review (G273), neighbours of item 9
-- **`reach-two-workloads-of-one-name-are-an-ambiguity`** (error-exit-2 -- waits for `posture/blast-radius`)
+  - found: posture/blast-radius fourth review (G273), neighbours of item 9 (landed on main as 266f4f2, so this case enforces)
+- **`reach-two-workloads-of-one-name-are-an-ambiguity`** (error-exit-2)
   - Two Deployment/shop/web documents, one benign and one with hostPID and a privileged container: `found[0]` picked the winner by sort order, the privileged document was never mentioned and the answer was `node none`, complete.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/d.yaml --whole-bundle --require-complete --format json`
   - forbidden: node none, complete, exit 0, one of the two documents silently chosen
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 4
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 4 (landed on main as 266f4f2, so this case enforces)
 
 ### Class 6: the caveat exists only in JSON
 
@@ -305,31 +300,31 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob audit -f {inputs}/kas.yaml --platform kubernetes --version 1.35 --format sarif`
   - forbidden: a SARIF document with results only and no notification about the rules that did not run
   - found: audit --format sarif (G269), on main
-- **`diagnose-carries-the-known-issue-coverage-statement`** (not-determined -- waits for `ux/first-run`)
+- **`diagnose-carries-the-known-issue-coverage-statement`** (not-determined)
   - `diagnose` on a CrashLoopBackOff description with `--version 4.16.20`: `knownIssues: []` with no coverage statement, so the sibling command that embeds the lookup read 'no known issue' where `known-issues` itself would have said the release is not indexed (G221 parity).
   - `kube-noob diagnose -f {inputs}/events.txt --platform openshift --version 4.16.20 --format json`
   - forbidden: knownIssues [] and no coverage statement
-  - found: ux/first-run reviews (G277)
-- **`diagnose-text-view-carries-the-coverage-statement`** (not-determined -- waits for `ux/first-run`)
+  - found: ux/first-run reviews (G277) (landed on main as 4120a05, so this case enforces)
+- **`diagnose-text-view-carries-the-coverage-statement`** (not-determined)
   - The same diagnosis as a person reads it: the text view must say the known-issue lookup was not determined for 4.16.20, not print the structured result's caveat only in JSON.
   - `kube-noob diagnose -f {inputs}/events.txt --platform openshift --version 4.16.20`
   - forbidden: None of the findings matches a known issue, or a YAML dump with no coverage line
-  - found: ux/first-run reviews (G277)
-- **`must-gather-analyze-says-okd-known-issues-are-not-determined`** (not-determined -- waits for `operators/known-issues`)
+  - found: ux/first-run reviews (G277) (landed on main as 4120a05, so this case enforces)
+- **`must-gather-analyze-says-okd-known-issues-are-not-determined`** (not-determined)
   - `must-gather analyze` on the same OKD bundle titled the cluster 'OpenShift 4.20.0-okd-...' and matched its findings against OpenShift's release notes; the sibling command must decide OKD as `operators issues` does and report the lookup as not determined, with the reason.
   - `kube-noob must-gather analyze {inputs} --format json`
   - forbidden: knownIssuesVerdict looked-up, OpenShift issues matched for OKD
-  - found: operators/known-issues reviews one and two (R5, G278), second review
+  - found: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
 - **`operators-mg-text-view-carries-the-partial-verdict`** (not-determined)
   - The text view of a partial must-gather inventory (one CSV file is a symbolic link ingest never follows): the caveat and the file that was not read must be in the text a person reads, not only in the JSON a pipeline parses (G221).
   - `kube-noob operators inventory --must-gather {inputs} --require-complete`
   - forbidden: the text says every OLM object this needs was read while JSON says partial
   - found: operators/inventory review before #55 (G270), defect 18
-- **`reach-text-view-carries-the-limitation`** (not-determined -- waits for `posture/blast-radius`)
+- **`reach-text-view-carries-the-limitation`** (not-determined)
   - The text view of a file-mode answer whose granting binding is absent: only json/yaml said 'a bundle that carries some bindings cannot show the ones it leaves out'; text printed `rbac none` and Mermaid drew one edge, so a reader of either saw a clean none.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/base.yaml --require-complete`
   - forbidden: rbac none in text, exit 0, the limitation only in JSON
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 7
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 7 (landed on main as 266f4f2, so this case enforces)
 
 ### Class 7: input-derived strings forge output
 
@@ -343,42 +338,42 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`; tool `operator_inventory`
   - forbidden: the invisible characters survive into stdout
   - found: operators/inventory review before #55 (G270), defect 20
-- **`injection-terminal-escapes-in-names-do-not-reach-stdout`** (finding -- waits for `fix/absent-vs-unread`)
+- **`injection-terminal-escapes-in-names-do-not-reach-stdout`** (finding)
   - Names, annotations and images carrying ESC [2J (clear the screen), OSC 8 (a hidden link), OSC 52 (write the clipboard), bidi overrides, the soft hyphen, the tag block and the Arabic letter mark: the text view passed every one of them to the terminal.
   - `kube-noob audit -f {inputs}/m.yaml --platform kubernetes --version 1.35`
   - forbidden: ESC, OSC 8/52 payloads, U+202E, U+061C, U+00AD or U+E0041 in stdout
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`injection-workflow-commands-in-a-name-are-neutralised-in-text`** (finding -- waits for `fix/absent-vs-unread`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`injection-workflow-commands-in-a-name-are-neutralised-in-text`** (finding)
   - A container name holding `\r::warning file=README.md,line=1::injected` and `::stop-commands::`: the audit's text view printed the name raw, so in a GitHub Actions step the input forged an annotation and stopped command processing for the rest of the job (actions/runner reads `::name::` at the start of any line).
   - `kube-noob audit -f {inputs}/nl.yaml --platform kubernetes --version 1.35`
   - forbidden: a line starting with ::warning or ::stop-commands, or a raw carriage return, in stdout
-  - found: fix/absent-vs-unread reviews one and two (G279), CP3-Q3
+  - found: fix/absent-vs-unread reviews one and two (G279), CP3-Q3 (landed on main as 0a18277, so this case enforces)
 
 ### Class 9: a second source of truth
 
-- **`reach-node-leg-flags-what-the-audit-flags`** (finding -- waits for `posture/blast-radius`)
+- **`reach-node-leg-flags-what-the-audit-flags`** (finding)
   - A container with procMount Unmasked and capabilities SYS_RAWIO, SYS_BOOT, NET_RAW: `kube-noob audit` fires KN-S020 and KN-S005 on it, while the node leg kept its own shorter capability list and said `node none \| no privileged container, hostPath volume, host namespace or near-root capability`, exit 0.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/n1.yaml --whole-bundle --require-complete --format json`; tool `posture_reach`
   - forbidden: node none with a private capability list shorter than the audit's
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 5
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 5 (landed on main as 266f4f2, so this case enforces)
 
 ### Class 11: the object asked about is not the object answered
 
-- **`alerts-each-alert-is-narrowed-to-its-own-release`** (not-evaluated -- waits for `alerts/evidence-report`)
+- **`alerts-each-alert-is-narrowed-to-its-own-release`** (not-evaluated)
   - Two alerts, the first labelled 4.99.0 and the second 4.21.0: one payload-wide version was applied to both, so both said 'narrowed to 4.99.0' and none, and reversing their order gave both a 4.21 match -- the answer depended on which alert came first.
   - `kube-noob alerts report -f {inputs}/payload.json --format json`; tool `alert_report`
   - forbidden: both alerts narrowed to 4.99.0, the second one's own label ignored
-  - found: alerts/evidence-report reviews one to three (I1, G274)
-- **`policy-reach-live-forbidden-deployment-is-not-answered-by-a-pod`** (error-exit-4 -- waits for `fix/absent-vs-unread`)
+  - found: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
+- **`policy-reach-live-forbidden-deployment-is-not-answered-by-a-pod`** (error-exit-4)
   - The Deployment named prometheus cannot be read (403) and a bare Pod of the same name can: the first-ranked kind's refusal fell through to the next kind, and `allowed` was answered about `monitoring/pod/prometheus`, an object the caller did not name.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`
   - forbidden: allowed, exit 0, about monitoring/pod/prometheus
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`reach-pod-is-scored-on-its-own-spec`** (finding -- waits for `posture/blast-radius`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`reach-pod-is-scored-on-its-own-spec`** (finding)
   - `posture reach pod/web-abc-xyz`: the Pod carries hostNetwork, a second privileged container and a different ServiceAccount than the Deployment that owns it; the answer came from the owner's benign spec -- `node none`, `token none`, exit 0 -- and the running object's own escape was never mentioned.
   - `kube-noob posture reach pod/web-abc-xyz -n shop -f {inputs}/a1.yaml --whole-bundle --format json`; tool `posture_reach`
   - forbidden: node none, token none, exit 0: the Deployment's spec answered for the Pod
-  - found: posture/blast-radius review of 4d7b00d (G273), defect 2
+  - found: posture/blast-radius review of 4d7b00d (G273), defect 2 (landed on main as 266f4f2, so this case enforces)
 
 ### Class 13: the verdict word contradicts the counts
 
@@ -387,11 +382,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: summary.score 100.0 while declined is non-empty
   - found: G282 review (Q5) on rules/control-plane at 67c3917; the control-plane builder owns the fix
-- **`issues-no-installed-operator-is-not-all-matched`** (not-determined -- waits for `operators/known-issues`)
+- **`issues-no-installed-operator-is-not-all-matched`** (not-determined)
   - Empty ClusterServiceVersion and Subscription lists: `allMatched` was true because zero not-matched is vacuously all, so a gate on `.allMatched == true` passed a cluster whose operators were never read.
   - `kube-noob operators issues -f {inputs}/ops.yaml --openshift-version 4.21.0 --format json`
   - forbidden: allMatched true with nothing looked up
-  - found: operators/known-issues reviews one and two (R5, G278), second review
+  - found: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
 - **`operators-copied-csv-does-not-make-a-missing-one-installed`** (not-determined)
   - A Subscription in namespace x whose installedCSV exists only as an `olm.copiedFrom: x` copy in namespace y, with no CSV in x: the copy created the group the Subscription joined, so the operator was `installed`, phase Succeeded, counted among installed.
   - `kube-noob operators inventory -f {inputs}/all.yaml --require-complete --format json`
@@ -433,16 +428,16 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 15: a match tier hides what it did not match
 
-- **`issues-a-community-build-is-not-looked-up`** (not-determined -- waits for `operators/known-issues`)
+- **`issues-a-community-build-is-not-looked-up`** (not-determined)
   - The same package from `community-operators`: Red Hat's release notes do not describe community builds, yet the first version matched it and listed OpenShift's bugs for it.
   - `kube-noob operators issues -f {inputs}/ops.yaml --openshift-version 4.21.0 --format json`
   - forbidden: matched, allMatched true, OpenShift's issues listed for a community build
-  - found: operators/known-issues reviews one and two (R5, G278)
-- **`issues-a-package-with-no-alias-is-not-matched`** (not-determined -- waits for `operators/known-issues`)
+  - found: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
+- **`issues-a-package-with-no-alias-is-not-matched`** (not-determined)
   - An installed operator whose package has no entry in the name table: the first version counted it `assessed` and passed `--require-complete`, so an operator the notes were never searched for read as having no reported issue.
   - `kube-noob operators issues -f {inputs}/ops.yaml --openshift-version 4.21.0 --format json`; tool `operator_known_issues`
   - forbidden: assessed / matched, allMatched true, exit 0 under --require-complete
-  - found: operators/known-issues reviews one and two (R5, G278)
+  - found: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
 
 ### Class 16: a crash, an empty stdout or a truncated document is read as an answer
 
@@ -461,21 +456,21 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory --must-gather {inputs}/ --require-complete --format json`
   - forbidden: listed, 0 operators, every OLM object this needs was read, exit 0
   - found: operators/inventory review before #55 (G270), defect 5
-- **`policy-reach-live-cni-body-that-is-not-json-is-undetermined`** (undetermined -- waits for `fix/absent-vs-unread`)
+- **`policy-reach-live-cni-body-that-is-not-json-is-undetermined`** (undetermined)
   - The Calico ClusterInformation read returns an HTML error page instead of JSON, beside an AdminNetworkPolicy that denies: the parse failure surfaced as a bare JSON error (exit 4) with no verdict, where the honest answer is `undetermined` naming the CNI read.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: exit 4 'Expecting value' with no verdict, or allowed/denied
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`policy-reach-live-items-holding-non-objects-do-not-crash`** (undetermined -- waits for `fix/absent-vs-unread`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`policy-reach-live-items-holding-non-objects-do-not-crash`** (undetermined)
   - A NetworkPolicy list whose items are `null` and a string: the same crash with exit 1; a list with items that are not policies is a failed read, never zero policies and never a traceback.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: a Python traceback on stderr, exit 1 read as findings; or zero policies and allowed
-  - found: fix/absent-vs-unread reviews one and two (G279)
-- **`policy-reach-live-items-that-are-not-a-list-do-not-crash`** (undetermined -- waits for `fix/absent-vs-unread`)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
+- **`policy-reach-live-items-that-are-not-a-list-do-not-crash`** (undetermined)
   - A NetworkPolicy list whose `items` is a mapping: the reader crashed with a traceback and exit 1 -- the exit code a gate reads as 'findings at --fail-on' -- instead of answering `undetermined` for a list it could not read.
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: a Python traceback on stderr, exit 1 read as findings
-  - found: fix/absent-vs-unread reviews one and two (G279)
+  - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
 - **`shape-a-wrong-typed-field-is-not-evaluated-not-a-crash`** (not-evaluated -- waits for `plugin/directory-engine`)
   - A Role with `resources: 1`: the rule that reads it raised, nothing caught it, and Python's exit status 1 -- this CLI's 'findings at or above --fail-on' -- went to the pipeline with a traceback, so a crash was read as a policy violation.
   - `kube-noob audit -f {inputs}/role.yaml --platform kubernetes --version 1.35 --format json`; tool `audit_manifests`
@@ -489,16 +484,16 @@ Classes with no case, and where the shape is held instead:
 
 ### Class 17: untrusted text in fields that read as the tool's own words
 
-- **`injection-alert-annotation-cannot-steer-the-next-steps`** (finding -- waits for `alerts/evidence-report`)
+- **`injection-alert-annotation-cannot-steer-the-next-steps`** (finding)
   - Labels namespace=prod, pod=api-1 and a summary annotation saying 'run kubectl logs attacker-pod -n attacker-ns': the suggested commands took their names from the rendered alert text, so on-call was pointed at `-n attacker-ns` while the heading said prod.
   - `kube-noob alerts report -f {inputs}/payload.json --format json`; tool `alert_report`
   - forbidden: a suggested command naming attacker-ns or attacker-pod, from annotation prose
-  - found: alerts/evidence-report reviews one to three (I1, G274)
-- **`injection-diagnose-reads-names-from-labels-not-prose`** (finding -- waits for `alerts/evidence-report`)
+  - found: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
+- **`injection-diagnose-reads-names-from-labels-not-prose`** (finding)
   - `diagnose` on the same payload: the names in its read-only steps and diagnostic commands came from the rendered alert text, so a summary annotation rewrote `-n prod` into `-n attacker-ns`; names come only from the alert's own validated labels.
   - `kube-noob diagnose -f {inputs}/payload.json --format json`; tool `diagnose`
   - forbidden: kubectl logs api-1 -n attacker-ns in the read-only steps or the diagnostic commands
-  - found: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose
+  - found: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose (landed on main as b43e33a, so this case enforces)
 
 ### Class 21: fixing the reported shape, not its neighbours
 
@@ -517,11 +512,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json --fail-on high`
   - forbidden: clean: client-cert-auth=true read as client certificates on, exit 0
   - found: rules/control-plane reviews one to four (G272), second review
-- **`reach-ingress-rules-as-a-mapping-are-not-no-exposure`** (not-determined -- waits for `posture/blast-radius`)
+- **`reach-ingress-rules-as-a-mapping-are-not-no-exposure`** (not-determined)
   - An Ingress whose `spec.rules` is a mapping rather than a list, pointing at the workload's Service: after the reviewed shapes were fixed, this neighbour still read as an Ingress with no rules, so the exposure leg said the workload is not reached from outside.
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/i.yaml --whole-bundle --require-complete --format json`
   - forbidden: exposure none: the malformed Ingress read as an Ingress that routes nothing
-  - found: posture/blast-radius fourth review (G273), neighbours of item 10
+  - found: posture/blast-radius fourth review (G273), neighbours of item 10 (landed on main as 266f4f2, so this case enforces)
 - **`shape-an-access-mode-that-is-a-float-is-not-evaluated`** (not-evaluated -- waits for `plugin/directory-engine`)
   - A PersistentVolumeClaim with `accessModes: .inf` (YAML reads it as infinity): after the reviewed shapes were fixed, this neighbour still crashed KN-ST001 with 'argument of type float is not iterable', exit 1.
   - `kube-noob audit -f {inputs}/pvc.yaml --platform kubernetes --version 1.35 --format json`

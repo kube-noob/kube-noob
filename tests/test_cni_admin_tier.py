@@ -284,7 +284,11 @@ def test_a_failed_read_of_a_tier_the_cni_ignores_does_not_withhold_the_verdict()
                 # The error type a real backend raises. The first version of this fake raised RuntimeError and
                 # passed only because the tier was being skipped instead of read.
                 raise ClusterAccessError("forbidden: User cannot list adminnetworkpolicies at the cluster scope")
-            return {"items": []}
+            if name is not None:  # a named read answers with the object or NotFound, never a list (G279)
+                from kube_noob.debug.cluster import ALLOWED_RESOURCES
+
+                raise ClusterAccessError(f"Not found: GET {ALLOWED_RESOURCES[plural].path(namespace, name)}")
+            return {"kind": "List", "items": []}
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders", "calico:3.32")
     assert "adminnetworkpolicies" in reads, "the tier is read, so an inert policy can be reported as inert"

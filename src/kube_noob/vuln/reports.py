@@ -181,15 +181,12 @@ def severity(value: Any) -> str:
     return _SEVERITY_WORDS.get(word, "unknown")
 
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
-
-
 def _s(value: Any, limit: int = 300) -> str:
     """A bounded one-line string from a report: control characters and line breaks become a space, so a package or
     image name cannot start a new line in a log, SARIF message or job summary."""
     if not isinstance(value, (str, int, float)) or isinstance(value, bool):
         return ""
-    return _CONTROL.sub(" ", str(value)[:limit])
+    return sanitize.visible_squeezed(str(value)[:limit])
 
 
 def _list(value: Any) -> list[Any]:

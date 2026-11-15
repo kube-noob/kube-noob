@@ -37,7 +37,7 @@ uv tool install kube-noob
 kube-noob demo --list
 
 Website: https://kube-noob.com
-GitHub: https://github.com/aashishmahajan/kube-noob
+GitHub: https://github.com/kube-noob/kube-noob
 PyPI: https://pypi.org/project/kube-noob/
 
 Chapters

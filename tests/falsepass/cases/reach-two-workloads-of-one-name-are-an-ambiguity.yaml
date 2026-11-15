@@ -3,12 +3,7 @@ class: 5
 verdict: error-exit-2
 summary: 'Two Deployment/shop/web documents, one benign and one with hostPID and a privileged container: `found[0]`
   picked the winner by sort order, the privileged document was never mentioned and the answer was `node none`, complete.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 4
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 4 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-dup-anchor
 cli:
   argv:

@@ -120,7 +120,7 @@
     },
     "mcp": {
       "title": "kube-noob as tools for Claude",
-      "cta": "/plugin marketplace add aashishmahajan/kube-noob",
+      "cta": "/plugin marketplace add kube-noob/kube-noob",
       "scenes": [
         {
           "kind": "desk",
@@ -184,7 +184,7 @@
           "captionPos": "lower",
           "vo": "Add it to Claude Code with two commands. Get it at kube-noob dot com.",
           "term": [
-            "/plugin marketplace add aashishmahajan/kube-noob",
+            "/plugin marketplace add kube-noob/kube-noob",
             "/plugin install kube-noob@kube-noob"
           ]
         },

@@ -31,7 +31,7 @@ from kube_noob import __version__
 from kube_noob.config import Settings, is_local_url
 from kube_noob.errors import ConfigError, DomainNotAllowedError, WebDisabledError
 
-USER_AGENT = f"kube-noob/{__version__} (+https://github.com/aashishmahajan/kube-noob)"
+USER_AGENT = f"kube-noob/{__version__} (+https://github.com/kube-noob/kube-noob)"
 
 
 class Purpose(enum.Enum):

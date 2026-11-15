@@ -44,7 +44,7 @@ MCP_META = {
     "titleSub": "In Claude, end to end: Claude does the thinking, kube-noob supplies the rules",
     "brand": "real Claude Code session",
     "endTitle": "Add it to Claude",
-    "endCodes": ["/plugin marketplace add aashishmahajan/kube-noob", "/plugin install kube-noob@kube-noob"],
+    "endCodes": ["/plugin marketplace add kube-noob/kube-noob", "/plugin install kube-noob@kube-noob"],
 }
 SIDECAR_META = {
     "titleSub": "As a sidecar on Kubernetes and OpenShift: your app calls it on 127.0.0.1, nothing else can",

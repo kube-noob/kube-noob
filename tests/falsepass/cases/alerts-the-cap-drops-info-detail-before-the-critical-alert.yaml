@@ -4,12 +4,7 @@ verdict: finding
 summary: '299 info alerts with long labels and one critical etcdMembersDown last, under the smallest report cap:
   rows were cut in arrival order, so the critical alert vanished (heading included) while the header still said
   300 alerts and `diagnosed: 300`.'
-provenance: alerts/evidence-report reviews one to three (I1, G274)
-expected_on: alerts/evidence-report
-probe:
-  command:
-  - alerts
-  - report
+provenance: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
 generate: alerts-info-flood-then-critical
 cli:
   argv:

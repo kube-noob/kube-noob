@@ -1234,8 +1234,19 @@ class Generated:
     pod_rules: tuple[str, ...] = ()
 
     def yaml(self, header: Sequence[str] = ()) -> str:
-        lines = [f"# {h}" for h in header]
-        body = yaml.safe_dump_all(self.documents, sort_keys=False, width=100_000, default_flow_style=False)
+        from kube_noob import sanitize
+        from kube_noob.yamlio import TerminalSafeDumper
+
+        # The header is kube-noob's own text, and it echoes values from the exceptions file (an id, a namespace, a
+        # reason): each line is cleaned and has its CI service messages broken, so `mon##[endgroup]` is not a
+        # workflow command in a log that prints the file. Comments are not data, so changing them loses nothing.
+        # The documents go through the dumper the other writers use (G279, third review).
+        lines = [sanitize.defuse_workflow_commands(f"# {sanitize.visible(h, mark=True)}") for h in header]
+        body = str(
+            yaml.dump_all(
+                self.documents, Dumper=TerminalSafeDumper, sort_keys=False, width=100_000, default_flow_style=False
+            )
+        )
         return ("\n".join(lines) + "\n" if lines else "") + ("---\n" + body if self.documents else "")
 
     def summary(self) -> dict[str, Any]:

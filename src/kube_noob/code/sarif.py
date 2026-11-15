@@ -54,7 +54,6 @@ SECURITY_RULE_PREFIXES = ("security/", "security-node/", "no-unsanitized/", "@mi
 _CWE = re.compile(r"(?i)(?<![a-z0-9])cwe[-/_ ]?0*(\d{1,5})(?!\d)")
 _LINK_REF = re.compile(r"\[([^\]\n]{0,300})\]\(\d{1,4}\)")
 _ARG = re.compile(r"\{(\d{1,2})\}")
-_CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]+")
 
 
 class SarifError(ValueError):
@@ -67,7 +66,7 @@ def _s(v: Any, n: int = 300) -> str:
     if not isinstance(v, (str, int, float)) or isinstance(v, bool):
         return ""
     text = str(v)[:n].encode("utf-8", "replace").decode("utf-8")
-    return _CONTROL.sub(" ", text).strip()
+    return sanitize.visible_squeezed(text).strip()
 
 
 def _raw(v: Any, n: int) -> str:
@@ -294,8 +293,8 @@ def _location(
         path, absolute = _resolve(uri, base_id, bases)
         path = path.encode("utf-8", "replace").decode("utf-8")
         rel, ok = _relative(path, absolute, roots)
-        if _CONTROL.search(rel):  # %0A, %00, %1B decoded: never a repository file; never printed as is
-            rel, ok = _CONTROL.sub("?", rel), False
+        if sanitize.has_invisible(rel):  # %0A, %00, %1B, U+202E decoded: never a repository file or printed as is
+            rel, ok = sanitize.visible(rel, replacement="?"), False
         region = _dict(phys.get("region"))
         return Location(
             rel, _int(region.get("startLine")), _int(region.get("startColumn")), _int(region.get("endLine")), ok

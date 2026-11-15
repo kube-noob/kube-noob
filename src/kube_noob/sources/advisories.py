@@ -165,16 +165,27 @@ def from_archive(path: Path) -> Iterator[Any]:
                 yield json.loads(f.read_bytes())
         return
     if path.name.endswith(".zst"):
-        proc = subprocess.Popen(["zstd", "-dc", "--", str(path)], stdout=subprocess.PIPE)  # noqa: S607
-        if proc.stdout is None:  # pragma: no cover
-            raise AdvisoryError("zstd produced no output")
-        try:
-            with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
-                yield from _members(tf)
-        finally:
-            proc.stdout.close()
-            if proc.wait() != 0:
-                raise AdvisoryError(f"zstd could not read {path.name}")
+        import tempfile
+
+        # The child's stderr is captured, not inherited: what it says reaches the terminal through kube-noob's own
+        # error message and its output boundary, never straight from the child (G279). A file, not a pipe, so a
+        # chatty child cannot fill a pipe nobody reads and stall.
+        with tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(["zstd", "-dc", "--", str(path)], stdout=subprocess.PIPE, stderr=err)  # noqa: S607
+            if proc.stdout is None:  # pragma: no cover
+                raise AdvisoryError("zstd produced no output")
+            try:
+                with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+                    yield from _members(tf)
+            except tarfile.TarError:
+                pass  # the exit status and stderr below say why
+            finally:
+                proc.stdout.close()
+                status = proc.wait()
+            if status != 0:
+                err.seek(0)
+                said = err.read(2000).decode("utf-8", "replace").strip()
+                raise AdvisoryError(f"zstd could not read {path.name}" + (f": {said}" if said else ""))
         return
     with tarfile.open(path, "r:*") as tf:
         yield from _members(tf)

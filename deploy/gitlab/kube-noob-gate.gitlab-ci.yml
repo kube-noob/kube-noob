@@ -1,7 +1,7 @@
 # kube-noob gate for GitLab CI: audit manifests, Containerfiles and image scanner reports before deploy, offline.
 # Include it and extend the hidden job:
 #   include:
-#     - remote: https://raw.githubusercontent.com/aashishmahajan/kube-noob/<tag>/deploy/gitlab/kube-noob-gate.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/kube-noob/kube-noob/<tag>/deploy/gitlab/kube-noob-gate.gitlab-ci.yml
 #   kube-noob-gate:
 #     extends: .kube-noob-gate
 #     variables: {KUBE_NOOB_PATHS: "k8s", KUBE_NOOB_PLATFORM: openshift, KUBE_NOOB_VERSION: "4.20"}

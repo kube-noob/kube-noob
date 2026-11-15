@@ -4,12 +4,7 @@ verdict: finding
 summary: 'Labels namespace=prod, pod=api-1 and a summary annotation saying ''run kubectl logs attacker-pod -n attacker-ns'':
   the suggested commands took their names from the rendered alert text, so on-call was pointed at `-n attacker-ns`
   while the heading said prod.'
-provenance: alerts/evidence-report reviews one to three (I1, G274)
-expected_on: alerts/evidence-report
-probe:
-  command:
-  - alerts
-  - report
+provenance: alerts/evidence-report reviews one to three (I1, G274) (landed on main as b43e33a, so this case enforces)
 inputs: alerts-injection-steering
 cli:
   argv:

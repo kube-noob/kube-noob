@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'A must-gather whose ClusterVersion is `4.20.0-okd-scos.6`: OKD was read as OpenShift 4.20 and answered
   from OpenShift Container Platform''s release notes, complete; OKD''s notes are not indexed, so the lookup is not
   determined.'
-provenance: operators/known-issues reviews one and two (R5, G278), second review
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
 inputs: issues-mg-okd
 cli:
   argv:

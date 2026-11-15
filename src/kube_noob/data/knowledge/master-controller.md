@@ -7,7 +7,7 @@ platforms: [kubernetes, openshift, rosa-classic, rosa-hcp]
 updated: 2026-10-27
 license: Apache-2.0
 sources:
-  - {title: "kube-noob protocol (original)", url: "https://github.com/aashishmahajan/kube-noob", license: Apache-2.0}
+  - {title: "kube-noob protocol (original)", url: "https://github.com/kube-noob/kube-noob", license: Apache-2.0}
 ---
 # Master Controller - the 7-step engineering protocol
 

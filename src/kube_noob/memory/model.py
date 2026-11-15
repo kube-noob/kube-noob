@@ -24,6 +24,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from kube_noob import sanitize
 from kube_noob.catalog import PLATFORMS, Platform
 
 MAX_SYMPTOM = 500
@@ -58,7 +59,6 @@ _URL = re.compile(r"^https://[A-Za-z0-9.-]{1,253}(:\d{1,5})?(/[^\s<>\"'`]{0,800}
 _OPAQUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,99}\Z")
 _CLUSTER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}\Z")
 _OWNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@/+-]{0,99}\Z")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _PRINTS_SECRET = re.compile(
     r"\b(get|describe|edit)\s+(secrets?|secret/\S+)\b.*(-o|--output)[ =]?(yaml|json|jsonpath|go-template|template)"
     r"|\bextract\s+(secrets?/|secret\s)"
@@ -74,8 +74,15 @@ def _whole(pattern: re.Pattern[str]) -> str:
 
 
 def vkey(version: str) -> tuple[int, ...]:
-    """Numeric parts of a version, ignoring a build suffix ("4.16.0-202410011135" -> (4, 16, 0))."""
-    return tuple(int(p) for p in re.findall(r"\d+", version.split("-", 1)[0].lstrip("v"))[:3])
+    """Numeric parts of a version, ignoring a build suffix ("4.16.0-202410011135" -> (4, 16, 0)): read as the
+    known-issue index reads it (kube_noob.versions), so "4.21.3-x86_64" is 4.21.3 here too. Text the grammar does
+    not accept (an entry's free-form field) keeps the numbers before its first hyphen."""
+    from kube_noob.versions import read_version
+
+    cv = read_version(version)
+    if cv is not None:
+        return tuple(int(p) for p in cv.numeric.split("."))
+    return tuple(int(p[:9]) for p in re.findall(r"\d+", version[:200].split("-", 1)[0].lstrip("v"))[:3])
 
 
 def _prose(field: str, value: str, limit: int) -> str:
@@ -165,7 +172,7 @@ class Command(_Model):
             raise ValueError("command is empty")
         if "\n" in v.strip() or "\r" in v:
             raise ValueError("a command is one line; list each command separately")
-        if _CONTROL.search(v):
+        if sanitize.has_invisible(v, keep="\t\n"):  # bidi overrides and tag characters too (G279)
             raise ValueError("command contains control characters")
         return v
 

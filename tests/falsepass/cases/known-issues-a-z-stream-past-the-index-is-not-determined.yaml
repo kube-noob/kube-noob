@@ -3,20 +3,7 @@ class: 4
 verdict: not-determined
 summary: 'A z-stream newer than the newest the notes reach (4.22.999 against an index through 4.22.x): the minor
   is indexed, so the first version called the empty list an answer for a release whose notes it does not hold.'
-provenance: ux/first-run reviews (G277), second review
-expected_on: ux/first-run
-probe:
-  json:
-    argv:
-    - known-issues
-    - etcd
-    - --version
-    - 4.21.0
-    - --format
-    - json
-    path: versionCoverage.status
-    value:
-      exists: true
+provenance: ux/first-run reviews (G277), second review (landed on main as 4120a05, so this case enforces)
 cli:
   argv:
   - known-issues

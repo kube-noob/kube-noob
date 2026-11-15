@@ -15,6 +15,16 @@ import pytest
 
 from kube_noob.debug.netpol import Inventory, check_reachability
 
+
+def _not_found(plural: str, namespace: str | None = None, name: str | None = None) -> str:
+    """What the in-cluster backend writes for a 404 on this resource's own path (debug/backends.py). A bare "the
+    server could not find the requested resource" or "not there" is a read that failed, not an absent API or
+    object (G279), so a stub that means "absent" says it in a backend's own words."""
+    from kube_noob.debug.cluster import ALLOWED_RESOURCES
+
+    return f"Not found: GET {ALLOWED_RESOURCES[plural].path(namespace, name)}"
+
+
 WORKLOADS = """
 apiVersion: v1
 kind: Namespace
@@ -396,20 +406,20 @@ def test_the_live_check_reads_the_admin_tiers_too() -> None:
             if plural == "adminnetworkpolicies":
                 import yaml
 
-                return {"items": [yaml.safe_load(_anp(10, "Deny"))]}
+                return {"kind": "List", "items": [yaml.safe_load(_anp(10, "Deny"))]}
             if plural == "baselineadminnetworkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"tier": "app"}}}
             if plural == "networkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if plural in (
                 "clusternetworkpolicies",
                 "ciliumclusterwidenetworkpolicies",
                 "globalnetworkpolicies",
             ):
                 raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(
-                    "the server could not find the requested resource"
+                    _not_found(plural, namespace, name)
                 )
             if name == "orders":
                 import yaml
@@ -417,7 +427,7 @@ def test_the_live_check_reads_the_admin_tiers_too() -> None:
                 for doc in yaml.safe_load_all(WORKLOADS):
                     if doc and doc.get("metadata", {}).get("name") == "orders":
                         return dict(doc)
-            raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError("not there")
+            raise __import__("kube_noob.errors", fromlist=["x"]).ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders")
     assert [p for p, _ in reads].count("adminnetworkpolicies") == 1, "read once, not per namespace"
@@ -441,12 +451,12 @@ def test_a_cluster_that_has_no_admin_tier_api_is_not_an_error() -> None:
                 "ciliumclusterwidenetworkpolicies",
                 "globalnetworkpolicies",
             ):
-                raise ClusterAccessError("the server could not find the requested resource")
+                raise ClusterAccessError(_not_found(plural, namespace, name))
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {}}}
             if plural == "networkpolicies":
-                return {"items": []}
-            raise ClusterAccessError("not there")
+                return {"kind": "List", "items": []}
+            raise ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders")
     assert inv.admin == [] and inv.baseline == []
@@ -691,11 +701,11 @@ def test_a_forbidden_read_of_the_admin_tier_is_not_a_networkpolicy_answer() -> N
                 "ciliumclusterwidenetworkpolicies",
                 "globalnetworkpolicies",
             ):
-                raise ClusterAccessError("the server could not find the requested resource")
+                raise ClusterAccessError(_not_found(plural, namespace, name))
             if plural == "namespaces":
                 return {"kind": "Namespace", "metadata": {"name": name, "labels": {"tier": "app"}}}
             if plural == "networkpolicies":
-                return {"items": []}
+                return {"kind": "List", "items": []}
             if name == "orders":
                 import yaml
 
@@ -708,7 +718,7 @@ def test_a_forbidden_read_of_the_admin_tier_is_not_a_networkpolicy_answer() -> N
                 for doc in yaml.safe_load_all(WORKLOADS):
                     if doc and doc.get("metadata", {}).get("name") == "prometheus":
                         return dict(doc)
-            raise ClusterAccessError("the server could not find the requested resource")
+            raise ClusterAccessError(_not_found(plural, namespace, name))
 
     inv = inventory_from_cluster(Backend(), "monitoring/prometheus", "shop/orders")
     out = check_reachability(inv, "monitoring/prometheus", "shop/orders", 8080)
@@ -988,7 +998,6 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
     from kube_noob.errors import ClusterAccessError
 
     docs = [d for d in yaml.safe_load_all(WORKLOADS + "\n---\n" + policies) if isinstance(d, dict)]
-    absent = "the server could not find the requested resource"
 
     class Backend:
         name = "fake"
@@ -1001,10 +1010,10 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
             if plural in extra:
                 spec = extra[plural]
                 if spec == "absent":
-                    raise ClusterAccessError(absent)
+                    raise ClusterAccessError(_not_found(plural, namespace, name))
                 if spec == "forbidden":
                     raise ClusterAccessError("Forbidden (403)")
-                return {"items": spec}
+                return {"kind": "List", "items": spec}
             if plural in {
                 "adminnetworkpolicies",
                 "baselineadminnetworkpolicies",
@@ -1012,18 +1021,19 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
                 "ciliumclusterwidenetworkpolicies",
                 "globalnetworkpolicies",
             }:
-                raise ClusterAccessError(absent)
+                raise ClusterAccessError(_not_found(plural, namespace, name))
             if plural == "namespaces" and name:
                 for doc in docs:
                     if doc.get("kind") == "Namespace" and doc["metadata"]["name"] == name:
                         return doc
             if plural == "networkpolicies":
                 return {
+                    "kind": "NetworkPolicyList",
                     "items": [
                         doc
                         for doc in docs
                         if doc.get("kind") == "NetworkPolicy" and doc["metadata"].get("namespace") == namespace
-                    ]
+                    ],
                 }
             if name:
                 wanted = {
@@ -1036,7 +1046,7 @@ def _live(extra: dict[str, Any], policies: str = ALLOW_ALL_NP) -> Any:
                     meta = doc.get("metadata") or {}
                     if doc.get("kind") == wanted and meta.get("name") == name and meta.get("namespace") == namespace:
                         return doc
-            raise ClusterAccessError("not there")
+            raise ClusterAccessError(_not_found(plural, namespace, name))
 
     backend = Backend()
     inv = inventory_from_cluster(backend, "monitoring/prometheus", "shop/orders")

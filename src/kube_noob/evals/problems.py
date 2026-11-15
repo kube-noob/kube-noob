@@ -28,13 +28,14 @@ import csv
 import io
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, field_validator
 
 from kube_noob import sanitize
 from kube_noob.config import Settings
+from kube_noob.versions import MAX_SHOWN, VERSION_FIELD_PATTERN, strict_field
 
 MAX_CASES = 2_000
 MAX_INPUT = 2_000_000
@@ -93,7 +94,9 @@ class Case(BaseModel):
     input: str = Field(..., min_length=3, max_length=MAX_INPUT)
     kind: Literal["auto", "diagnose", "search", "audit", "known-issues"] = "auto"
     platform: PlatformT | None = None
-    version: str | None = Field(None, max_length=20, pattern=r"^\d+\.\d+(\.\d+)?$")
+    version: Annotated[str | None, BeforeValidator(strict_field("version"))] = Field(
+        None, max_length=MAX_SHOWN, pattern=VERSION_FIELD_PATTERN
+    )
     source: str = Field("", max_length=300)
     expect: Expect = Field(default_factory=Expect)
 
@@ -199,6 +202,8 @@ def answer(kit: Any, case: Case) -> dict[str, Any]:
             for x in d["diagnoses"][:5]
         ]
         out["context"] = d.get("context", {})
+        if d.get("knownIssuesCoverage"):
+            out["knownIssuesCoverage"] = d["knownIssuesCoverage"]
     if "search" in kinds:
         hits = kit.search(tk.SearchIn(query=case.input[:500], limit=8))["results"]
         docs: list[dict[str, Any]] = []
@@ -212,6 +217,8 @@ def answer(kit: Any, case: Case) -> dict[str, Any]:
             tk.KnownIssuesIn(text=case.input[:100_000], platform=case.platform, version=case.version, limit=5)
         )
         out["issues"] = [{"id": m.get("id"), "title": m.get("title")} for m in k.get("matches", [])]
+        if k.get("versionCoverage"):
+            out["knownIssuesCoverage"] = k["versionCoverage"]
     if "audit" in kinds:
         where = {k: v for k, v in (("platform", case.platform), ("version", case.version)) if v}
         rep = kit.audit(tk.AuditIn(manifests=case.input, **where))
@@ -246,6 +253,17 @@ def judge(case: Case, said: dict[str, Any]) -> list[str]:
     return misses
 
 
+def undetermined(case: Case, said: dict[str, Any]) -> str | None:
+    """Why a case that passed cannot be scored: its expectation can be met by reported issues being ABSENT
+    (``issues``, ``mention``, ``notMention``) while the index could not answer for the case's version, so the
+    absence is not evidence (G277). ``None`` when the score stands."""
+    e = case.expect
+    cov = said.get("knownIssuesCoverage") or {}
+    if cov.get("status") != "not-determined" or not (e.issues or e.mention or e.not_mention):
+        return None
+    return f"not determined: {cov.get('why', 'known issues were not determined for this version')}"
+
+
 def run_cases(settings: Settings, cases: list[Case], gate: float | None = None) -> dict[str, Any]:
     """Run every case offline (web and cluster off) and score the labelled ones."""
     from kube_noob import toolkit as tk
@@ -260,6 +278,8 @@ def run_cases(settings: Settings, cases: list[Case], gate: float | None = None) 
             said = answer(kit, case)
             misses = judge(case, said) if case.expect.labelled() else []
             status = ("pass" if not misses else "fail") if case.expect.labelled() else "unlabelled"
+            if status == "pass" and (why := undetermined(case, said)):
+                status, misses = "not-determined", [why]
         except (ValueError, ValidationError) as exc:
             said, misses, status = {}, [f"could not run: {str(exc)[:300]}"], "error"
         rows.append(
@@ -273,13 +293,15 @@ def run_cases(settings: Settings, cases: list[Case], gate: float | None = None) 
                 "misses": misses,
             }
         )
-    labelled = [r for r in rows if r["status"] in {"pass", "fail", "error"}]
+    labelled = [r for r in rows if r["status"] in {"pass", "fail", "error", "not-determined"}]
     passed = sum(r["status"] == "pass" for r in labelled)
     rate = round(passed / len(labelled), 3) if labelled else None
     return {
         "cases": len(rows),
         "labelled": len(labelled),
         "passed": passed,
+        # Counted in `labelled` and not in `passed`: a case that cannot be scored lowers the rate, never raises it.
+        "notDetermined": sum(r["status"] == "not-determined" for r in labelled),
         "passRate": rate,
         "unlabelled": len(rows) - len(labelled),
         "gate": None if gate is None else {"threshold": gate, "passed": rate is not None and rate >= gate},
@@ -298,12 +320,18 @@ def markdown(rep: dict[str, Any]) -> str:
         f"| Cases | {rep['cases']} |",
         f"| Labelled | {rep['labelled']} |",
         f"| Passed | {rep['passed']} of {rep['labelled']} ({rate}) |",
+        f"| Not determined (counted, not passed) | {rep.get('notDetermined', 0)} |",
         f"| Unlabelled (answered, not scored) | {rep['unlabelled']} |",
     ]
     if rep["gate"]:
         verdict = "PASSED" if rep["gate"]["passed"] else "FAILED"
         lines.append(f"| Gate (pass rate >= {rep['gate']['threshold']:.0%}) | **{verdict}** |")
-    for status, title in (("fail", "Failed"), ("error", "Could not run"), ("unlabelled", "Unlabelled: add `expect`")):
+    for status, title in (
+        ("fail", "Failed"),
+        ("not-determined", "Not determined: the answer cannot be scored for this version"),
+        ("error", "Could not run"),
+        ("unlabelled", "Unlabelled: add `expect`"),
+    ):
         group = [r for r in rep["results"] if r["status"] == status]
         if not group:
             continue

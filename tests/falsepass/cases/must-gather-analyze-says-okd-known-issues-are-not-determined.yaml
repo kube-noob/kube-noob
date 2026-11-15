@@ -4,12 +4,7 @@ verdict: not-determined
 summary: '`must-gather analyze` on the same OKD bundle titled the cluster ''OpenShift 4.20.0-okd-...'' and matched
   its findings against OpenShift''s release notes; the sibling command must decide OKD as `operators issues` does
   and report the lookup as not determined, with the reason.'
-provenance: operators/known-issues reviews one and two (R5, G278), second review
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
 inputs: issues-mg-okd
 cli:
   argv:

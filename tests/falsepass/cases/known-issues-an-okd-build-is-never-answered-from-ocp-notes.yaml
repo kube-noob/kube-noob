@@ -4,20 +4,7 @@ verdict: not-determined
 summary: 'An OKD build string (`4.16.0-0.okd-2024-08-01`): the version was refused as too long or ''not narrowed''
   and the lookup printed its old ''no known issue'' note; OKD is never answered from OpenShift Container Platform
   release notes, so the statement is not-determined with the reason.'
-provenance: ux/first-run reviews (G277), second review
-expected_on: ux/first-run
-probe:
-  json:
-    argv:
-    - known-issues
-    - etcd
-    - --version
-    - 4.21.0
-    - --format
-    - json
-    path: versionCoverage.status
-    value:
-      exists: true
+provenance: ux/first-run reviews (G277), second review (landed on main as 4120a05, so this case enforces)
 cli:
   argv:
   - known-issues

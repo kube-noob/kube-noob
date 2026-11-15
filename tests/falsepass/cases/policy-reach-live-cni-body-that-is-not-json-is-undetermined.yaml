@@ -4,12 +4,7 @@ verdict: undetermined
 summary: 'The Calico ClusterInformation read returns an HTML error page instead of JSON, beside an AdminNetworkPolicy
   that denies: the parse failure surfaced as a bare JSON error (exit 4) with no verdict, where the honest answer
   is `undetermined` naming the CNI read.'
-provenance: fix/absent-vs-unread reviews one and two (G279)
-expected_on: fix/absent-vs-unread
-probe:
-  grep:
-    file: src/kube_noob/debug/cluster.py
-    text: def classify_read_failure
+provenance: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
 inputs: policy-reach-live
 cli:
   argv:

@@ -89,7 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
-          brew tap kube-noob/kube-noob https://github.com/aashishmahajan/kube-noob
+          brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob
           brew trust --formula kube-noob/kube-noob/kube-noob
           brew install kube-noob
           formula="$(brew --repository kube-noob/kube-noob)/Formula/kube-noob.rb"

@@ -103,7 +103,10 @@ def test_the_planted_path_ranks_first_and_decoys_rank_lower_or_not_at_all() -> N
     assert "Deployment/shop/api" not in summaries, "automountServiceAccountToken: false breaks the token step"
     assert "batch" not in summaries, "an unexposed cluster-admin is not an attack path from an exposure"
     assert "Deployment/shop/docs" not in summaries, "view grants nothing an attacker can use"
-    assert out["total"] == 5 and out["entries"] == 5
+    # Six since G273: the built-in `edit` lets admin-sa create Secrets, which mints a long-lived token for any
+    # ServiceAccount of the namespace (the documented TokenRequest-free path), scored 1 x 5.
+    assert out["total"] == 6 and out["entries"] == 5
+    assert any(p["blastRadius"]["capability"].startswith("mint long-lived") for p in out["paths"])
     assert out["secretsIgnored"] == 1
     assert "hunter2" not in json.dumps(out)
 
@@ -297,7 +300,7 @@ def test_entries_ingress_loadbalancer_nodeport_and_owned_objects() -> None:
 
 def test_ties_rank_fewer_steps_first_and_bounds() -> None:
     out = ap.scan_manifests(SEEDED.read_text(encoding="utf-8"), top=1)
-    assert len(out["paths"]) == 1 and out["total"] == 5
+    assert len(out["paths"]) == 1 and out["total"] == 6
     with pytest.raises(ap.ScanError):
         ap.scan(ap.Inventory(), top=0)
     inv = ap.Inventory()
@@ -335,7 +338,7 @@ class FakeBackend:
             for i in self.by_plural.get(resource, [])
             if namespace is None or (i.get("metadata") or {}).get("namespace") == namespace
         ]
-        return {"items": items}
+        return {"kind": "List", "items": items}
 
 
 def test_live_scan_reads_the_allowlist_only_and_reports_what_it_could_not_read() -> None:
@@ -371,7 +374,7 @@ def test_the_allowlist_reads_rbac_and_still_refuses_secrets() -> None:
 def test_cli_text_json_and_the_ci_gate(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["posture", "scan", "-f", str(SEEDED), "--top", "2"]) == 0
     text = capsys.readouterr().out
-    assert text.startswith("5 attack paths from 5 exposures") and "#1  score 18" in text and "#3" not in text
+    assert text.startswith("6 attack paths from 5 exposures") and "#1  score 18" in text and "#3" not in text
     assert "hunter2" not in text and "1 Secret object(s) in the input were ignored, unread." in text
     assert main(["--format", "json", "posture", "scan", "-f", str(SEEDED)]) == 0
     assert json.loads(capsys.readouterr().out)["paths"][0]["summary"] == PLANTED
@@ -382,7 +385,8 @@ def test_cli_text_json_and_the_ci_gate(capsys: pytest.CaptureFixture[str]) -> No
     for argv in (
         ["posture", "scan"],
         ["posture", "scan", "--live"],
-        ["posture", "scan", "-f", str(SEEDED), "-n", "x"],
+        # D1 (fourth review): one -n with -f places objects without a namespace there; two are refused.
+        ["posture", "scan", "-f", str(SEEDED), "-n", "x", "-n", "y"],
         ["posture", "scan", "-f", str(SEEDED), "--top", "0"],
     ):
         assert main(argv) != 0

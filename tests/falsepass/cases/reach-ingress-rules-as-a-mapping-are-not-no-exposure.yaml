@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'An Ingress whose `spec.rules` is a mapping rather than a list, pointing at the workload''s Service: after
   the reviewed shapes were fixed, this neighbour still read as an Ingress with no rules, so the exposure leg said
   the workload is not reached from outside.'
-provenance: posture/blast-radius fourth review (G273), neighbours of item 10
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius fourth review (G273), neighbours of item 10 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-ingress-dict
 cli:
   argv:

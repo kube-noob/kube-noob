@@ -9,8 +9,8 @@ license: Apache-2.0
 requires:
   - [kube-noob, kubenoob]
 sources:
-  - {title: "kube-noob use cases", url: "https://github.com/aashishmahajan/kube-noob/blob/main/docs/use-cases.md", license: Apache-2.0}
-  - {title: "kube-noob operations", url: "https://github.com/aashishmahajan/kube-noob/blob/main/docs/operations.md", license: Apache-2.0}
+  - {title: "kube-noob use cases", url: "https://github.com/kube-noob/kube-noob/blob/main/docs/use-cases.md", license: Apache-2.0}
+  - {title: "kube-noob operations", url: "https://github.com/kube-noob/kube-noob/blob/main/docs/operations.md", license: Apache-2.0}
 ---
 
 ## Use `gate` in CI, not `audit`

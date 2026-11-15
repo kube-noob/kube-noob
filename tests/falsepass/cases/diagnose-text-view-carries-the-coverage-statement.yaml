@@ -3,20 +3,7 @@ class: 6
 verdict: not-determined
 summary: 'The same diagnosis as a person reads it: the text view must say the known-issue lookup was not determined
   for 4.16.20, not print the structured result''s caveat only in JSON.'
-provenance: ux/first-run reviews (G277)
-expected_on: ux/first-run
-probe:
-  json:
-    argv:
-    - known-issues
-    - etcd
-    - --version
-    - 4.21.0
-    - --format
-    - json
-    path: versionCoverage.status
-    value:
-      exists: true
+provenance: ux/first-run reviews (G277) (landed on main as 4120a05, so this case enforces)
 inputs: diagnose-crashloop
 cli:
   argv:

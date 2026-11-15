@@ -5,12 +5,12 @@ type: application
 version: 0.9.2
 appVersion: "0.9.2"
 kubeVersion: ">=1.25.0-0"
-home: https://github.com/aashishmahajan/kube-noob
+home: https://github.com/kube-noob/kube-noob
 sources:
-  - https://github.com/aashishmahajan/kube-noob
+  - https://github.com/kube-noob/kube-noob
 keywords: [kubernetes, openshift, rosa, mcp, security, learning]
 annotations:
   artifacthub.io/license: Apache-2.0
   charts.openshift.io/name: kube-noob
   charts.openshift.io/provider: kube-noob
-  charts.openshift.io/supportURL: https://github.com/aashishmahajan/kube-noob/issues
+  charts.openshift.io/supportURL: https://github.com/kube-noob/kube-noob/issues

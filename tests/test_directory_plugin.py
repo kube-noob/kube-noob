@@ -188,8 +188,9 @@ def test_nothing_the_directory_shows_names_the_account_the_project_moved_out_of(
     """The listing renders plugin.json's fields and the plugin folder's README, and both named the old account for
     three releases after the move, because the test that should have caught it pinned the old owner as a literal.
 
-    The generated server copy under plugin/kube-noob/server is excluded: those URLs come from src/ and redirect, and
-    G266 left redirecting forms alone on purpose. The directory does not render them.
+    The generated server copy under plugin/kube-noob/server is not rendered by the directory, so it is not listed
+    here; it is held, with every other tracked file, by
+    test_distribution.py::test_no_tracked_file_names_the_owner_the_project_moved_out_of (G275).
     """
     shown: list[Path] = []
     for plugin in (FULL, LITE):

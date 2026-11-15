@@ -8,7 +8,7 @@ reports a deny that is not happening -- the defect P7 exists to prevent, survivi
 operator cannot read the policies for themselves.
 
 What this must NOT do is make an answer worse. An absent CRD means Calico is not installed and the behaviour is
-what it was; a forbidden read says so and changes nothing.
+what it was; a forbidden read says so, and withholds only an answer the admin tier decides (G279).
 """
 
 from __future__ import annotations
@@ -92,6 +92,8 @@ class Cluster:
         if resource in self.forbidden:
             raise ClusterAccessError(f"{resource} is forbidden: User cannot list {resource} at the cluster scope")
         kind = _KINDS.get(resource)
+        if resource == "clusterinformations" and not any(o["kind"] == "ClusterInformation" for o in self.objects):
+            kind = None  # no Calico: the API does not serve the CRD (served but empty is Calico, version unknown)
         if kind is None:
             raise ClusterAccessError(f'the server doesn\'t have a resource type "{resource}"')
         hits = [
@@ -109,7 +111,7 @@ class Cluster:
             if not hits:
                 raise ClusterAccessError(f"{resource} {name} not found")
             return hits[0]
-        return {"items": hits}
+        return {"kind": "List", "items": hits}
 
 
 def _info(version: str | None, variant: str | None = "Calico") -> dict[str, Any]:
@@ -146,16 +148,29 @@ def test_a_version_that_still_enforces_leaves_the_tier_deciding() -> None:
 
 
 def test_a_cluster_without_calico_behaves_exactly_as_before() -> None:
-    """An absent CRD is a 404 and means Calico is not installed. It must not add a note or change a verdict."""
-    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    """An absent CRD is a 404 and means Calico is not installed. With the CNI named it must not add a note about
+    Calico or change a verdict. With nothing named and nothing identified, "no Calico" is no longer taken for
+    "OVN-Kubernetes" (review D3): the admin tier decides this answer, so it is undetermined and says why."""
+    out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]), "ovn-kubernetes")
     assert out["verdict"] == "denied" and "inertPolicies" not in out
     assert not any("calico" in n.lower() for n in out.get("notes", []))
 
+    # This double serves CiliumClusterwideNetworkPolicy, so the CNI is read as Cilium, which documents no support
+    # for AdminNetworkPolicy: the tier that decides this answer may not be enforced.
+    unknown = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP]))
+    assert unknown["verdict"] == "undetermined" and "inertPolicies" not in unknown
+    assert any("CNI read from the cluster: Cilium" in n for n in unknown["notes"]), unknown["notes"]
 
-def test_a_forbidden_read_says_so_and_changes_nothing() -> None:
+
+def test_a_forbidden_read_says_so_and_withholds_an_answer_the_admin_tier_decides() -> None:
+    """A forbidden read of the CNI is not "no Calico" (G279). This used to keep the OVN-Kubernetes assumption and
+    answer `denied` from an AdminNetworkPolicy that a Calico 3.32 cluster ignores; the two readings disagree here,
+    so the answer is undetermined and says why. Where they agree, the forbidden read changes nothing:
+    tests/test_absent_vs_unread.py::test_a_cni_that_could_not_be_read_changes_nothing_where_both_readings_agree."""
     cluster = Cluster([*WORKLOADS, ALLOW_ALL, ANP], forbidden=("clusterinformations",))
     out = _reach(cluster)
-    assert out["verdict"] == "denied"
+    assert out["verdict"] == "undetermined"
+    assert out["undeterminedBy"] == ["AdminNetworkPolicy/guardrail"]
     assert any("could not be read" in n and "CNI" in n for n in out["notes"]), out["notes"]
 
 
@@ -180,8 +195,10 @@ def test_another_variant_is_not_read_as_open_source_calico() -> None:
 
 
 def test_an_information_object_without_a_version_is_not_a_version() -> None:
+    """Calico is installed (the CRD is served) and its version is not known: G209's `unknown`, so an answer the
+    AdminNetworkPolicy decides is withheld rather than evaluated as enforced (G279)."""
     out = _reach(Cluster([*WORKLOADS, ALLOW_ALL, ANP, _info(None)]))
-    assert out["verdict"] == "denied" and "inertPolicies" not in out
+    assert out["verdict"] == "undetermined" and "inertPolicies" not in out
 
 
 @pytest.mark.parametrize("version", ["3", "not-a-version", ""])

@@ -705,7 +705,7 @@ def insights_markdown(ins: dict[str, Any], retrieved_at: str, min_version: str) 
     def table(rows: list[tuple[str, int]]) -> str:
         return "\n".join(f"- {k}: {v}" for k, v in rows) or "- (none)"
 
-    return (
+    return sanitize.visible_lines(  # nothing that does not print reaches the file (G279)
         f"# {ins['project']} issue insights ({min_version}+)\n\n"
         f"Aggregated from {ins['issues']} public issues retrieved {retrieved_at}. Counts only; see individual issues "
         "for details.\n\n"

@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'Live, with the Service, Route and Ingress lists refused (403): the summary said ''not reached by any exposure
   in the input'', `complete: true`, `notDetermined: []`, and only a trailing ''not read:'' line hinted that nothing
   about exposure had been read.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 9
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 9 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-live
 cli:
   argv:

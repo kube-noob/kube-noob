@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'The text view of a file-mode answer whose granting binding is absent: only json/yaml said ''a bundle that
   carries some bindings cannot show the ones it leaves out''; text printed `rbac none` and Mermaid drew one edge,
   so a reader of either saw a clean none.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 7
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 7 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-base
 cli:
   argv:

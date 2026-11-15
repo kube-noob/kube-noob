@@ -77,6 +77,8 @@ BODIES: dict[str, dict[str, Any]] = {
     "/v1/policy/reach": {"manifests": DEPLOY, "source": "shop/web", "destination": "shop/db", "port": 5432},
     "/v1/memory/match": {"text": "web crash-loops when the database is down"},
     "/v1/reports": {},
+    # Alertmanager's own payload, posted whole (the route passes the body as one argument).
+    "/v1/alert-reports": json.loads((ROOT / "examples" / "alertmanager-etcd.json").read_text(encoding="utf-8")),
 }
 
 

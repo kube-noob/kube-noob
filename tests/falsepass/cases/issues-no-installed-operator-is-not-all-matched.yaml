@@ -3,12 +3,7 @@ class: 13
 verdict: not-determined
 summary: 'Empty ClusterServiceVersion and Subscription lists: `allMatched` was true because zero not-matched is
   vacuously all, so a gate on `.allMatched == true` passed a cluster whose operators were never read.'
-provenance: operators/known-issues reviews one and two (R5, G278), second review
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278), second review (landed on main as 5b5956a, so this case enforces)
 inputs: issues-no-operators
 cli:
   argv:

@@ -3,12 +3,7 @@ class: 15
 verdict: not-determined
 summary: 'An installed operator whose package has no entry in the name table: the first version counted it `assessed`
   and passed `--require-complete`, so an operator the notes were never searched for read as having no reported issue.'
-provenance: operators/known-issues reviews one and two (R5, G278)
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
 inputs: issues-unlisted
 cli:
   argv:

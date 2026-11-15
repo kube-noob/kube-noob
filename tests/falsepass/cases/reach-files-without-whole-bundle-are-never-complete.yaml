@@ -4,12 +4,7 @@ verdict: not-determined
 summary: 'The same files without `--whole-bundle`: a set of files cannot show the bindings, Services and Routes
   it leaves out, so `--require-complete` must refuse (exit 5) and `complete` must be false, rather than reading
   the absence of a binding as the absence of a right.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 7
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 7 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-base
 cli:
   argv:

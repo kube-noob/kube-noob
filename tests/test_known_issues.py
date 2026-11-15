@@ -274,7 +274,8 @@ class FakeBackend:
 
         assert resource == "clusterversions" and name == "version"
         if self.cv is None:
-            raise ClusterAccessError("the server doesn't have a resource type clusterversions")
+            # kubectl's own words (cli-runtime builder.go quotes the resource); unquoted is not recognised (G279)
+            raise ClusterAccessError('error: the server doesn\'t have a resource type "clusterversions"')
         return self.cv
 
     def logs(self, *_: Any) -> str:

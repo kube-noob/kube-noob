@@ -248,3 +248,25 @@ def test_no_module_gains_an_empty_collection_verdict() -> None:
     assert not shrank, "sites were removed, which is the point -- lower the baseline to lock the gain in: " + ", ".join(
         f"{f} {was} -> {is_}" for f, (was, is_) in sorted(shrank.items())
     )
+
+
+def test_all_matched_is_false_when_no_operator_was_looked_up() -> None:
+    """The same shape in `operator_issues` (G278): `allMatched` was `complete and not_matched == 0`, and with nothing
+    looked up `not_matched` is 0, so a cluster with no installed operator -- or no OLM at all -- read "every operator
+    matched". It is true only for the `matched` verdict, which needs at least one operator looked up."""
+    from kube_noob import operator_issues, operators
+
+    empty_list = {"apiVersion": "operators.coreos.com/v1alpha1", "kind": "ClusterServiceVersionList", "items": []}
+    subscribed = {
+        "apiVersion": "operators.coreos.com/v1alpha1",
+        "kind": "Subscription",
+        "metadata": {"name": "ptp", "namespace": "p"},
+        "spec": {"name": "ptp-operator", "source": "redhat-operators", "sourceNamespace": "openshift-marketplace"},
+        "status": {"state": "UpgradePending"},
+    }
+    nothing = operator_issues.assess(
+        operators.from_manifests(yaml.safe_dump_all([empty_list, subscribed])),
+        release=operator_issues.Release(given="4.21.9"),
+    )
+    assert nothing["verdict"] == "nothing-to-match" and nothing["counts"]["assessable"] == 0
+    assert nothing["allMatched"] is False

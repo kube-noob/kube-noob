@@ -168,12 +168,14 @@ def _fake_cluster(tmp_path: Path) -> Path:
     }
     deploy = {"metadata": {"name": "web"}, "spec": {"selector": {"matchLabels": {"app": "web"}}}, "status": {}}
     events = {
+        "kind": "List",
         "items": [
             {
                 "type": "Warning",
                 "reason": "FailedToRetrieveImagePullSecret",
                 "message": "Unable to retrieve some image pull secrets (regcred); attempting to pull the image may "
                 "not succeed.",
+                "metadata": {"name": "ev-1", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "web-7d9c6b9f5-x2k8p"},
                 "lastTimestamp": "2026-10-28T10:00:00Z",
             },
@@ -181,10 +183,11 @@ def _fake_cluster(tmp_path: Path) -> Path:
                 "type": "Warning",
                 "reason": "Failed",
                 "message": "Error: ImagePullBackOff",
+                "metadata": {"name": "ev-2", "namespace": "shop"},
                 "involvedObject": {"kind": "Pod", "name": "web-7d9c6b9f5-x2k8p"},
                 "lastTimestamp": "2026-10-28T10:00:01Z",
             },
-        ]
+        ],
     }
     sa = {"metadata": {"name": "web"}, "imagePullSecrets": [{"name": "regcred"}]}
     script.write_text(f"""#!/usr/bin/env python3
@@ -204,7 +207,7 @@ elif args[1] == "serviceaccounts":
 elif args[1] == "secrets":
     raise SystemExit("secrets must never be read")
 else:
-    print({json.dumps({"items": [pod]})!r})
+    print({json.dumps({"kind": "List", "items": [pod]})!r})
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return log

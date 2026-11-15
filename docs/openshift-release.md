@@ -73,7 +73,7 @@ establishes your vendor label, so that is the one most likely to attract human a
 ### 2. GHCR/Quay — the zero-gatekeeper path, already live
 
 `.github/workflows/release.yml` already does all of this at tag time: it builds and signs the image with cosign, packages
-the chart, pushes it to `oci://ghcr.io/aashishmahajan/charts`, signs the chart manifest, and attaches
+the chart, pushes it to `oci://ghcr.io/kube-noob/charts`, signs the chart manifest, and attaches
 `kube-noob-<version>.tgz` to the GitHub release. `kube-noob-0.7.0.tgz` is on release `v0.7.0` today.
 
 One documentation caveat worth fixing in the README if it is phrased otherwise: **`helm repo add` does not work against
@@ -106,7 +106,7 @@ certified container. Two hard prerequisites stand in the way:
   Partner Connect project. Without enrollment there is nothing to submit to.
 
 There is also a dependency loop. The `images-are-certified` check is **Mandatory** for the `partner` and `redhat`
-profiles. kube-noob's chart defaults to `ghcr.io/aashishmahajan/kube-noob`, which is not a Red Hat certified image. So a
+profiles. kube-noob's chart defaults to `ghcr.io/kube-noob/kube-noob`, which is not a Red Hat certified image. So a
 certified chart requires a certified image first, which requires the partner account. Under the `community` profile that
 check is optional, which is exactly why the community tier is the viable one.
 
@@ -170,7 +170,7 @@ Install Helm and lint the chart from a fresh shallow clone:
 ```zsh
 mkdir -p ~/kube-noob-src && cd ~/kube-noob-src
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-gh repo clone aashishmahajan/kube-noob . -- --depth 1
+gh repo clone kube-noob/kube-noob . -- --depth 1
 helm lint --strict deploy/helm/kube-noob
 helm template deploy/helm/kube-noob >/dev/null && echo "template ok"
 ```
@@ -179,7 +179,7 @@ Run chart-verifier 1.16.1 with the community profile against the released tarbal
 
 ```zsh
 mkdir -p ~/kube-noob-verify && cd ~/kube-noob-verify
-gh release download v0.7.0 --repo aashishmahajan/kube-noob --pattern "kube-noob-0.7.0.tgz" --clobber
+gh release download v0.7.0 --repo kube-noob/kube-noob --pattern "kube-noob-0.7.0.tgz" --clobber
 podman run --rm -v "$PWD":/charts:z quay.io/redhat-certification/chart-verifier:1.16.1 verify --set profile.vendorType=community /charts/kube-noob-0.7.0.tgz
 ```
 
@@ -195,7 +195,7 @@ To see what else that release ships, and to confirm which chart-verifier assets 
 than the image:
 
 ```zsh
-gh release view v0.7.0 --repo aashishmahajan/kube-noob
+gh release view v0.7.0 --repo kube-noob/kube-noob
 gh release view 1.16.1 --repo redhat-certification/chart-verifier
 ```
 
@@ -218,7 +218,7 @@ Checked by reading `deploy/helm/kube-noob/` directly. Each row names the chart-v
 | `signature-is-valid` | `deploy/openshift-catalog/OWNERS` has `publicPgpKey: null`, so no `.prov` is submitted and nothing is checked | Not applicable |
 | `helm-lint` | Not run here. `release.yml`'s `chart` job runs `helm lint --strict deploy/helm/kube-noob` *before* `helm package`, and `kube-noob-0.7.0.tgz` is attached to release `v0.7.0` — so lint passed for 0.7.0 in CI | Pass, by CI evidence |
 | `chart-testing` | Needs a live OpenShift cluster; neither runnable here nor mandatory under the community profile | Not run |
-| `images-are-certified` | `values.yaml` defaults to `ghcr.io/aashishmahajan/kube-noob`, which is not a Red Hat certified image. Optional under the community profile; **mandatory** under partner/redhat | Expected fail, acceptable |
+| `images-are-certified` | `values.yaml` defaults to `ghcr.io/kube-noob/kube-noob`, which is not a Red Hat certified image. Optional under the community profile; **mandatory** under partner/redhat | Expected fail, acceptable |
 
 I also validated `values.yaml` against `values.schema.json` with a draft-07 validator: **zero errors**. That is the
 condition `helm lint --strict` would otherwise trip on, so the lint result above is consistent.
@@ -244,12 +244,12 @@ gh repo fork openshift-helm-charts/charts --clone
 cd charts
 git switch -c kube-noob-owners
 mkdir -p charts/community/kube-noob/kube-noob
-gh api repos/aashishmahajan/kube-noob/contents/deploy/openshift-catalog/OWNERS --jq .content | base64 -d > charts/community/kube-noob/kube-noob/OWNERS
+gh api repos/kube-noob/kube-noob/contents/deploy/openshift-catalog/OWNERS --jq .content | base64 -d > charts/community/kube-noob/kube-noob/OWNERS
 cat charts/community/kube-noob/kube-noob/OWNERS
 git add charts/community/kube-noob/kube-noob/OWNERS
 git commit -s -m "Add OWNERS for the kube-noob community chart"
 git push -u origin kube-noob-owners
-gh pr create --repo openshift-helm-charts/charts --title "Add OWNERS for the kube-noob community chart" --body "Adds the OWNERS file for the kube-noob community chart. kube-noob is an Apache-2.0 deterministic Kubernetes, OpenShift and ROSA audit, debugging and learning tool exposed as an MCP server, with no LLM inside: https://github.com/aashishmahajan/kube-noob. The chart follows in a separate pull request, per the community submission flow."
+gh pr create --repo openshift-helm-charts/charts --title "Add OWNERS for the kube-noob community chart" --body "Adds the OWNERS file for the kube-noob community chart. kube-noob is an Apache-2.0 deterministic Kubernetes, OpenShift and ROSA audit, debugging and learning tool exposed as an MCP server, with no LLM inside: https://github.com/kube-noob/kube-noob. The chart follows in a separate pull request, per the community submission flow."
 ```
 
 Watch it to completion:
@@ -268,7 +268,7 @@ git switch main
 git pull --ff-only https://github.com/openshift-helm-charts/charts main
 git switch -c kube-noob-0.7.0
 mkdir -p charts/community/kube-noob/kube-noob/0.7.0
-gh release download v0.7.0 --repo aashishmahajan/kube-noob --pattern "kube-noob-0.7.0.tgz" --dir charts/community/kube-noob/kube-noob/0.7.0 --clobber
+gh release download v0.7.0 --repo kube-noob/kube-noob --pattern "kube-noob-0.7.0.tgz" --dir charts/community/kube-noob/kube-noob/0.7.0 --clobber
 git add charts/community/kube-noob/kube-noob/0.7.0
 git commit -s -m "Add kube-noob 0.7.0 community chart"
 git push -u origin kube-noob-0.7.0
@@ -297,9 +297,13 @@ helm install kube-noob openshift-helm-charts/kube-noob --namespace kube-noob --c
 The GHCR path, which works today and does not use `helm repo add`:
 
 ```zsh
-helm show chart oci://ghcr.io/aashishmahajan/charts/kube-noob --version 0.7.0
-helm install kube-noob oci://ghcr.io/aashishmahajan/charts/kube-noob --version 0.7.0 --namespace kube-noob --create-namespace
+helm show chart oci://ghcr.io/kube-noob/charts/kube-noob
+helm install kube-noob oci://ghcr.io/kube-noob/charts/kube-noob --namespace kube-noob --create-namespace
 ```
+
+Charts 0.7.1 and earlier, the 0.7.0 this document submits among them, were pushed before the project moved into the
+`kube-noob` organisation and stay at `oci://ghcr.io/aashishmahajan/charts/kube-noob`; 0.9.0 and later are only at the
+address above.
 
 ## Honest blockers
 

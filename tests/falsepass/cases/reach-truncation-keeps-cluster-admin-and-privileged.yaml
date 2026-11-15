@@ -4,12 +4,7 @@ verdict: finding
 summary: 'A privileged Deployment whose ServiceAccount is bound to cluster-admin, under 130 RoleBindings to a Role
   not in the input: nodes were kept by type then by id, so the cap cut every capability node, the summary (computed
   after the cut) said ''reaches no capability'', the SA node itself was gone and every notDetermined.from was empty.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 1
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 1 (landed on main as 266f4f2, so this case enforces)
 generate: many-bindings-then-cluster-admin
 cli:
   argv:

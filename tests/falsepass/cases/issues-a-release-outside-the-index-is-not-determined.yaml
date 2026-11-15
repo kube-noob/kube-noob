@@ -3,12 +3,7 @@ class: 4
 verdict: not-determined
 summary: 'A cluster on 4.16 with the index holding 4.20-4.22: an empty result read as ''no reported issue'' for
   a release the notes do not cover; it is not determined and `--require-complete` exits 5.'
-provenance: operators/known-issues reviews one and two (R5, G278)
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
 inputs: issues-ptp
 cli:
   argv:

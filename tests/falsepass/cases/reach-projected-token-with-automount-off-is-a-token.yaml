@@ -4,12 +4,7 @@ verdict: finding
 summary: 'automountServiceAccountToken: false beside a projected serviceAccountToken volume that is mounted, the
   account bound to cluster-admin: the token leg read the flag alone and said `none`, so rbac and secrets were `none`
   too and the answer was complete -- for a pod that holds a cluster-admin token.'
-provenance: posture/blast-radius review of 4d7b00d (G273), defect 3
-expected_on: posture/blast-radius
-probe:
-  command:
-  - posture
-  - reach
+provenance: posture/blast-radius review of 4d7b00d (G273), defect 3 (landed on main as 266f4f2, so this case enforces)
 inputs: reach-projected-token
 cli:
   argv:

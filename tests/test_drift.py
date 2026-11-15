@@ -312,7 +312,7 @@ class FakeBackend:
             for d in self.docs
             if d.get("kind") == kind and (namespace is None or d["metadata"].get("namespace") == namespace)
         ]
-        return {"items": items}
+        return {"kind": "List", "items": items}
 
 
 def test_live_snapshots_read_the_allowlist_only(tmp_path: Path) -> None:

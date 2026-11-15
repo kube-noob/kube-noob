@@ -3,12 +3,7 @@ class: 15
 verdict: not-determined
 summary: 'The same package from `community-operators`: Red Hat''s release notes do not describe community builds,
   yet the first version matched it and listed OpenShift''s bugs for it.'
-provenance: operators/known-issues reviews one and two (R5, G278)
-expected_on: operators/known-issues
-probe:
-  command:
-  - operators
-  - issues
+provenance: operators/known-issues reviews one and two (R5, G278) (landed on main as 5b5956a, so this case enforces)
 inputs: issues-community
 cli:
   argv:

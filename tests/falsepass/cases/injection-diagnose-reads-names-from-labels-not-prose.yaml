@@ -4,12 +4,7 @@ verdict: finding
 summary: '`diagnose` on the same payload: the names in its read-only steps and diagnostic commands came from the
   rendered alert text, so a summary annotation rewrote `-n prod` into `-n attacker-ns`; names come only from the
   alert''s own validated labels.'
-provenance: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose
-expected_on: alerts/evidence-report
-probe:
-  command:
-  - alerts
-  - report
+provenance: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose (landed on main as b43e33a, so this case enforces)
 inputs: alerts-injection-steering
 cli:
   argv:
