@@ -901,6 +901,75 @@ kube-noob posture report --live --html posture.html
 kube-noob ksi -f deploy/ --html ksi.html
 ```
 
+### Can somebody who does not trust me check this verdict?
+
+`--receipt PATH` on `audit` and `gate` writes a reproducible verdict receipt: one self-describing JSON document a
+third party can check offline. It binds, in one place, the schema it is written to, the kube-noob that wrote it,
+every input by SHA-256 -- file by file, with the path as given and the path it resolved to -- the identity and the
+**meaning** of every rule in the rule set, the settings and flags that changed the verdict (platform, version, CNI,
+the exception list by hash, `--fail-on`, `--min-severity`, whether the bundle was partial, the configured registry
+allowlist), the scope actually read and what was not read, and the verdict itself: the counts, the score or the
+reason the score is withheld, the exit code, and every finding by its line-independent fingerprint.
+
+The score and the reason it is withheld are the ones the command gave, decided by the one predicate
+(`Report.undetermined()`): a receipt records the verdict it was given and never re-judges it. So the exit code it
+records follows the published rule -- an **undetermined** report is exit **1** whatever `--fail-on` says, because
+1 means a verdict was reached and it is not a pass, while 5 means no verdict was reached at all. A receipt that
+recorded 0 for an undetermined run would disagree with the exit code the command returned, and a receipt that
+disagrees with a published contract is worse than no receipt. The three records that make a report undetermined
+travel in the receipt's scope as `declinedRules`, `notEvaluatedRules` and `notAudited`, and a gate receipt also
+carries the gate's own headline word, which is `incomplete` and never `passed` there.
+
+`kube-noob receipt verify PATH` re-runs those inputs and answers one of three things, and the third one is the
+point:
+
+| Answer | Exit | What it means |
+|---|---|---|
+| identical | 0 | the same inputs give the same verdict |
+| differs | 1 | they do not, and the answer names every field that moved |
+| **cannot be checked** | **5** | an input is missing, an input's digest differs, the receipt was written by another kube-noob, a rule no longer means what it meant, or the run is not replayable from the files the receipt binds |
+
+Exit 5 is **not a pass**, and it names what could not be got. A changed input digest is never reported as a changed
+verdict: a different input is a different question, and calling it "differs" would invite a reader to treat a fresh
+audit as a reproduction. A receipt from a newer or older kube-noob is "cannot be checked" with both versions named,
+never a silent pass -- and so is a receipt whose rule set has moved, which is why the receipt records a **meaning
+version per rule** derived from the rule's own declaration (its title, subject, default severity, remediation,
+description, citations and controls) rather than a hand-maintained number. A rule id is stable on purpose, so
+"KN-S001 clean" says nothing without saying which KN-S001.
+
+The verdict payload is byte-identical for identical inputs; that is the product, not a side effect. Everything that
+cannot be deterministic -- the clock, how long the run took -- is in a separate `envelope` outside the hashed
+payload, so two honest runs minutes apart still match. The envelope records **no hostname and no runner identity**:
+an unsigned document cannot attest to who produced it, so a self-asserted host in it would be a claim the document
+itself says it cannot support, and a receipt is written to be forwarded. The fields are present and null with that
+reason in their place.
+
+**Integrity, not authenticity.** SHA-256 and nothing else: no signature, no key, no key management, and
+`cryptography` is not a dependency. The document states in its own text that it proves the same inputs give the same
+verdict and proves **nothing about who produced it** -- anyone who can run kube-noob can write a receipt for any
+input they hold. Check the inputs yourself with `sha256sum`; check the verdict with `receipt verify`. A signer would
+be an adapter: it would wrap this document and add its own block beside `payload` and `integrity`, and the payload
+digest is the seam it would sign. That is left clean and not built.
+
+What a receipt does not do: it does not replay a gate that also read a Containerfile, a vulnerability scanner
+report, a SARIF report, a VEX document, a KEV catalogue or a rendered Helm chart. Those verdicts rest on a build
+context, on `helm`, or on the local advisory data in kube-noob's data directory -- none of which is a file the
+receipt binds -- so the receipt says `replay.supported: false` with the reason, and `receipt verify` answers "cannot
+be checked" and names the input class. Standard input is bound by hash and is also "cannot be checked": its bytes
+are not a file to read again. And a file ADDED to a directory since the receipt was written is caught too -- the
+receipt carries one digest over the whole input set, so a run that would now read a different set of files is not
+reported as the same question answered differently.
+
+The MCP server has `verify_receipt`, which takes the receipt and the manifests as text, because the server reads no
+path on the caller's machine. That bounds what it can check and the answer says so.
+
+```bash
+kube-noob audit -f k8s/ --platform openshift --version 4.20 --receipt audit.receipt.json
+kube-noob gate -f deploy/ --fail-on high --receipt gate.receipt.json
+kube-noob receipt verify audit.receipt.json
+sha256sum k8s/*.yaml
+```
+
 ### Which FedRAMP 20x indicators does a finding speak to?
 
 `ksi` joins kube-noob's findings to the FedRAMP 20x Key Security Indicators through the NIST SP 800-53 controls both

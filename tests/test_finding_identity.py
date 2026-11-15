@@ -154,3 +154,40 @@ def test_duplicate_container_names_also_fall_back_to_the_index() -> None:
 
     data = {"spec": {"containers": [{"name": "api"}, {"name": "api"}]}}
     assert locator(data, ("spec", "containers", 0, "securityContext")) == "spec.containers[0].securityContext"
+
+
+def test_the_one_definition_of_the_identity_is_the_shared_function() -> None:
+    """``Finding.fingerprint`` and ``fingerprint_for`` are one key, not two that agree today.
+
+    The receipt fingerprints the gate's finding dicts -- which carry CVE and SAST results beside audit rules and
+    are no longer ``Finding`` objects -- so the key had to be reachable as a function. A second implementation of
+    it would be the defect class where a private copy of a shared list turns out to be a subset of it, so there is
+    one definition and the method calls it. This test fails if the method ever stops doing that.
+    """
+    from kube_noob.audit.model import Finding, Severity, Stage, fingerprint_for
+
+    f = Finding(
+        rule_id="KN-S001",
+        title="t",
+        severity=Severity.HIGH,
+        stage=Stage.AUDIT,
+        category="security",
+        resource="Deployment/prod/app",
+        message="m",
+        remediation="r",
+        path="spec.template",
+        locator="spec.template.spec.containers[name=api]",
+    )
+    assert f.fingerprint() == fingerprint_for(f.rule_id, f.resource, f.locator)
+    bare = Finding(
+        rule_id="KN-S001",
+        title="t",
+        severity=Severity.HIGH,
+        stage=Stage.AUDIT,
+        category="security",
+        resource="Deployment/prod/app",
+        message="m",
+        remediation="r",
+        path="spec.template",
+    )
+    assert bare.fingerprint() == fingerprint_for("KN-S001", "Deployment/prod/app", "spec.template")
