@@ -158,6 +158,11 @@ RULE_CONTROLS: dict[str, tuple[str, ...]] = {
     "KN-S039": ("SC-8", "SC-8(1)", "AC-3"),  # the store of every Secret, reachable in plaintext or by anyone
     "KN-S040": ("SC-28", "SC-28(1)"),  # Secrets written to etcd as they are
     "KN-S041": ("SC-8", "SC-8(1)", "IA-5"),  # passwords sent to the directory in plaintext
+    # The kubelet, the component a cluster has most copies of (G302)
+    "KN-S042": ("AC-14", "IA-5", "AC-3"),  # the node's own API served to a request with no identity
+    "KN-S043": ("AC-3", "AC-6", "CM-6"),  # every request the kubelet authenticated is allowed
+    "KN-S044": ("CM-6", "CM-7", "SC-5"),  # node protections the kubelet does by default, turned off
+    "KN-S045": ("SC-8", "SC-8(1)", "IA-5"),  # the kubelet's serving TLS and its certificate's lifetime
 }
 
 

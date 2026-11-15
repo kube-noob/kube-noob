@@ -61,7 +61,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
 
-## The 98 audit rules and their controls
+## The 102 audit rules and their controls
 
 | Rule | What it checks | NIST SP 800-53 Rev. 5 controls |
 |---|---|---|
@@ -136,6 +136,10 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 | KN-S039 | etcd serves clients or peers in plaintext, or without client certificates | SC-8, SC-8(1), AC-3 |
 | KN-S040 | OpenShift API server does not encrypt resources at rest | SC-28, SC-28(1) |
 | KN-S041 | OpenShift LDAP identity provider connects without TLS | SC-8, SC-8(1), IA-5 |
+| KN-S042 | kubelet accepts requests it does not authenticate | AC-14, IA-5, AC-3 |
+| KN-S043 | kubelet authorizes every request it authenticates | AC-3, AC-6, CM-6 |
+| KN-S044 | kubelet node protections are turned off | CM-6, CM-7, SC-5 |
+| KN-S045 | kubelet serving TLS is weak or its certificate is never rotated | SC-8, SC-8(1), IA-5 |
 | KN-ST001 | ReadWriteMany requested from a ReadWriteOnce-only StorageClass | CM-6 |
 | KN-ST002 | ReadWriteOnce volume shared by a rolling Deployment | CM-6, CP-10 |
 | KN-ST003 | Zonal storage with Immediate volume binding | SC-36, CM-6 |

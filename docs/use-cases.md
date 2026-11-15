@@ -83,8 +83,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 392 to
-74 979 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 146 460 to
+75 047 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1128,7 +1128,7 @@ object and the path, and `posture scan` records the same in `notRead`. You get a
 clean report you cannot trust, and a kind worth reading properly can be added with its published schema.
 
 ```bash
-kube-noob audit -f serving/            # the same 98 rules, now reaching the components
+kube-noob audit -f serving/            # the same 102 rules, now reaching the components
 kube-noob posture scan -f serving/     # per-component attack paths
 kube-noob --cluster-enabled posture scan --live -n model-serving
 ```

@@ -25,7 +25,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** whether a workload could be redeployed to a known state at all -- a mutable image reference (KN-S012), a pull secret that exists only in another namespace (KN-C013), a replica count fighting an HPA (KN-C014), a resource claim no object in the bundle defines (KN-C015), a request above its limit (KN-C006).
 - **Does not show:** how changes reach the cluster, which is what the indicator is about. This is the widest row in the table because it cites `cm-6` (Configuration Settings) and a third of kube-noob's rules are evidence about `cm-6`, so the count here is a weak signal and the named findings are the useful part.
 - kube-noob controls: CM-2, CM-6, CM-7
-- Rules that are evidence (51), of which the sentences above name 5: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-N005`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-S001`, `KN-S002`, `KN-S003`, `KN-S004` and 39 more
+- Rules that are evidence (53), of which the sentences above name 5: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-N005`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-S001`, `KN-S002`, `KN-S003`, `KN-S004` and 41 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -40,7 +40,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** the traffic surface the bundle declares and the paths it passes through: a namespace with workloads and no NetworkPolicy (KN-N001), a policy allowing all ingress (KN-N007), a policy selecting no pod (KN-N012), an admin policy the CNI does not enforce (KN-N014), a Service with externalIPs (KN-N008), a shadowed EgressFirewall rule (KN-N006), and shell or traversal characters in a subPath or PersistentVolume path (KN-S025, KN-ST006).
 - **Does not show:** the host-level surface, which is the first thing most readers mean by attack surface: privileged containers, host namespaces, hostPath and added capabilities are evidence about `ac-6`, `cm-7` and `sc-39`, and this indicator cites none of those -- they reach KSI-IAM-ELP and KSI-IAM-JIT instead. Nor anything about lateral movement at runtime, or a cloud security group kube-noob cannot see.
 - kube-noob controls: SC-7(5), SC-8, SI-10
-- Rules that are evidence (15), of which the sentences above name 8: `KN-N001`, `KN-N002`, `KN-N003`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N011`, `KN-N012`, `KN-N014`, `KN-S025`, `KN-S037`, `KN-S039` and 3 more
+- Rules that are evidence (16), of which the sentences above name 8: `KN-N001`, `KN-N002`, `KN-N003`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N011`, `KN-N012`, `KN-N014`, `KN-S025`, `KN-S037`, `KN-S039` and 4 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -73,7 +73,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** the three settings that decide whether one workload can exhaust a node: a container with no memory limit (KN-C005), a namespace with workloads and no ResourceQuota or LimitRange (KN-C016), and an aggressive liveness probe that restarts a pod under load (KN-C003).
 - **Does not show:** CPU. No rule reports a missing CPU limit; KN-C004 is about missing requests and is evidence about `sc-6`, which no indicator in the dataset cites. Nor any protection in front of the cluster, nor the review the indicator asks for -- whether a denial-of-service defence works is measured, not read.
 - kube-noob controls: SC-5
-- Rules that are evidence (3), of which the sentences above name 3: `KN-C003`, `KN-C005`, `KN-C016`
+- Rules that are evidence (4), of which the sentences above name 3: `KN-C003`, `KN-C005`, `KN-C016`, `KN-S044`
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -86,7 +86,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** where a workload reaches around the cluster's own networking: a NodePort Service (KN-N005), a LoadBalancer open to the internet (KN-N004), externalIPs (KN-N008), a hostPort (KN-S011), a probe or lifecycle handler pointed at a host (KN-S029), egress denied without allowing cluster DNS (KN-N013), an EgressFirewall under the wrong name and so not applied (KN-V015), and risky ingress-nginx annotations (KN-N009).
 - **Does not show:** the host network itself -- sharing the node's namespaces (KN-S009) is evidence about `ac-6` and `sc-39`, which this indicator does not cite -- and nothing about the network underneath: which CNI is installed, which mode it runs in, or what the provider's subnets permit.
 - kube-noob controls: SC-4, SC-7, SC-8
-- Rules that are evidence (20), of which the sentences above name 8: `KN-N001`, `KN-N002`, `KN-N003`, `KN-N004`, `KN-N005`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N009`, `KN-N012`, `KN-N013`, `KN-N014` and 8 more
+- Rules that are evidence (21), of which the sentences above name 8: `KN-N001`, `KN-N002`, `KN-N003`, `KN-N004`, `KN-N005`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N009`, `KN-N012`, `KN-N013`, `KN-N014` and 9 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -104,7 +104,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** the privileges a workload asks the cluster for and the ones RBAC hands out: privileged containers (KN-S001), escalation left on (KN-S002), running as root (KN-S003), capabilities added or not dropped (KN-S005, KN-S006), host namespaces and hostPath (KN-S009, KN-S010), a service-account token mounted where nothing uses it (KN-S014), wildcard grants (KN-S015), bindings to cluster-admin (KN-S016), escalation paths through RBAC (KN-S017), a role granted to everyone (KN-S028), and a namespace enforcing no pod security level (KN-S032).
 - **Does not show:** anything about people. No identity provider, no MFA, no joiner-mover-leaver process, and no evidence that the privileges that are declared were ever reviewed by anyone.
 - kube-noob controls: AC-14, AC-3, AC-4, AC-6, SC-39, SC-4
-- Rules that are evidence (33), of which the sentences above name 13: `KN-N001`, `KN-N004`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N012`, `KN-N014`, `KN-S001`, `KN-S002`, `KN-S003`, `KN-S004`, `KN-S005` and 21 more
+- Rules that are evidence (35), of which the sentences above name 13: `KN-N001`, `KN-N004`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N012`, `KN-N014`, `KN-S001`, `KN-S002`, `KN-S003`, `KN-S004`, `KN-S005` and 23 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -127,7 +127,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** standing authorisation written into manifests: wildcard verbs and resources (KN-S015), a binding to cluster-admin (KN-S016), roles permitting escalate, bind or impersonate (KN-S017), a role granted to every authenticated user (KN-S028), and a permissive SecurityContextConstraints (KN-S019).
 - **Does not show:** whether access is time-bound, which is the whole substance of just-in-time. A manifest records a grant, not when it was requested, who approved it, or when it expires.
 - kube-noob controls: AC-3, AC-4, AC-5, AC-6, AC-6(10), AC-6(5), CM-7, SC-39
-- Rules that are evidence (41), of which the sentences above name 5: `KN-N001`, `KN-N004`, `KN-N005`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-N012`, `KN-N014`, `KN-S001` and 29 more
+- Rules that are evidence (44), of which the sentences above name 5: `KN-N001`, `KN-N004`, `KN-N005`, `KN-N006`, `KN-N007`, `KN-N008`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-N012`, `KN-N014`, `KN-S001` and 32 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -233,7 +233,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** the settings most often changed by hand, through `cm-2` and `cm-6`: a mutable image tag (KN-S012), a replica count fighting an HPA (KN-C014), a request above its limit (KN-C006), a container that may run as root (KN-S003), no seccomp profile (KN-S008), and ReadWriteMany asked of a StorageClass that only offers ReadWriteOnce (KN-ST001).
 - **Does not show:** drift, and whether automation made the change. kube-noob does measure drift -- `posture diff` names every object whose configuration changed between two snapshots and reports standing per control -- but that output does not feed this view, so nothing in this row is evidence of drift over time. It is one audit of one bundle, like every other row.
 - kube-noob controls: CM-2, CM-6
-- Rules that are evidence (35), of which the sentences above name 6: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-N010`, `KN-S003`, `KN-S004`, `KN-S008`, `KN-S012`, `KN-S032`, `KN-S036`, `KN-S037` and 23 more
+- Rules that are evidence (37), of which the sentences above name 6: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-N010`, `KN-S003`, `KN-S004`, `KN-S008`, `KN-S012`, `KN-S032`, `KN-S036`, `KN-S037` and 25 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -249,7 +249,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** where the bundle leaves information in the clear: a Route or Ingress with no TLS (KN-N002, KN-N003), a Route whose TLS configuration is invalid and so does not do what it says (KN-V016), a secret value hard-coded in an environment variable (KN-S013), secret material committed in a manifest (KN-S018), and a credential stored in a ConfigMap (KN-S026).
 - **Does not show:** data at rest, despite the indicator citing `sc-28`. No rule in the catalogue checks a volume, a claim or a StorageClass for encryption, so nothing here is evidence about it. Nor cipher suites, key custody, KMS configuration or the provider's own at-rest encryption.
 - kube-noob controls: SC-28, SC-28(1), SC-4, SC-8, SC-8(1)
-- Rules that are evidence (12), of which the sentences above name 6: `KN-N002`, `KN-N003`, `KN-N008`, `KN-S013`, `KN-S018`, `KN-S026`, `KN-S031`, `KN-S037`, `KN-S039`, `KN-S040`, `KN-S041`, `KN-V016`
+- Rules that are evidence (13), of which the sentences above name 6: `KN-N002`, `KN-N003`, `KN-N008`, `KN-S013`, `KN-S018`, `KN-S026`, `KN-S031`, `KN-S037`, `KN-S039`, `KN-S040`, `KN-S041`, `KN-S045` and 1 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|

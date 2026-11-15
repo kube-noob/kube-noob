@@ -86,6 +86,29 @@ SOURCES: dict[str, Citation] = {
         "kube-aggregator/pkg/apis/apiregistration/v1/types.go",
         "Apache-2.0",
     ),
+    "k8s-kubelet-authn-authz": Citation(
+        "k8s-kubelet-authn-authz",
+        "kubelet command-line defaults (applyLegacyDefaults: --anonymous-auth=true, "
+        "--authorization-mode=AlwaysAllow, --read-only-port=10255)",
+        "https://github.com/kubernetes/kubernetes/blob/fba15ecefa95cd275b3e6d8dd68b983e976e40dd/cmd/kubelet/app/"
+        "options/options.go",
+        "Apache-2.0",
+    ),
+    "k8s-kubelet-config": Citation(
+        "k8s-kubelet-config",
+        "KubeletConfiguration v1beta1 defaults (SetDefaults_KubeletConfiguration: anonymous false, "
+        "authorization mode Webhook, makeIPTablesUtilChains true, eventRecordQPS 50)",
+        "https://github.com/kubernetes/kubernetes/blob/fba15ecefa95cd275b3e6d8dd68b983e976e40dd/pkg/kubelet/apis/"
+        "config/v1beta1/defaults.go",
+        "Apache-2.0",
+    ),
+    "go-cipher-suites": Citation(
+        "go-cipher-suites",
+        "crypto/tls InsecureCipherSuites and CipherSuites at go1.27.4, the Go release "
+        "kubernetes/kubernetes names in .go-version",
+        "https://github.com/golang/go/blob/go1.27.4/src/crypto/tls/cipher_suites.go",
+        "BSD-3-Clause",
+    ),
     "k8s-apiserver-authn-options": Citation(
         "k8s-apiserver-authn-options",
         "kube-apiserver authentication options (--anonymous-auth default, --authentication-config)",

@@ -378,6 +378,16 @@ ENGINE_SKIPS: dict[tuple[str, Engine], str] = {
 
 # Rules not turned into admission policies, with the reason. Every rule is in exactly one of NOT_GENERATED and the
 # checks (tests/test_policy_generate.py keeps it so).
+#: Four of the five shapes a kubelet is configured in never reach admission at all -- a static pod is written on
+#: the node's disk by kubeadm, a KubeletConfiguration file is not a Kubernetes object, and a kubelet's command
+#: line is a systemd unit -- so a policy that matched only the two OpenShift CRs would pass a cluster configured
+#: in any of the other three (G302).
+_KUBELET_NOT_ADMITTED = (
+    "four of the five shapes a kubelet is configured in never reach the API server (a static pod on the node's "
+    "disk, a KubeletConfiguration file, a systemd command line), so a policy over the two that do would pass a "
+    "cluster configured in any of the others; `kube-noob audit` reads all five"
+)
+
 NOT_GENERATED: dict[str, str] = {
     "KN-V001": "the API server refuses objects without apiVersion, kind or metadata.name before admission",
     "KN-V002": "the API server refuses kinds it does not serve; there is nothing for a policy to admit",
@@ -450,6 +460,10 @@ NOT_GENERATED: dict[str, str] = {
     "checks the bundle",
     "KN-C014": "needs the HorizontalPodAutoscaler that scales the workload (another object); `kube-noob audit` checks "
     "the bundle",
+    "KN-S042": _KUBELET_NOT_ADMITTED,
+    "KN-S043": _KUBELET_NOT_ADMITTED,
+    "KN-S044": _KUBELET_NOT_ADMITTED,
+    "KN-S045": _KUBELET_NOT_ADMITTED,
 }
 
 

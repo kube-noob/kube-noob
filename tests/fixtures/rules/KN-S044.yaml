@@ -1,0 +1,45 @@
+rule: KN-S044
+good: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: kubelet, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: kubelet
+      image: registry.k8s.io/kubelet:v1.35.0
+      command:
+      - kubelet
+      - --anonymous-auth=false
+      - --client-ca-file=/etc/kubernetes/ca.crt
+      - --read-only-port=0
+      - --authorization-mode=Webhook
+      - --protect-kernel-defaults=true
+      - --make-iptables-util-chains=true
+      - --streaming-connection-idle-timeout=4h
+      - --event-qps=50
+      - --rotate-certificates=true
+      - --rotate-server-certificates=true
+      - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+bad: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: kubelet, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: kubelet
+      image: registry.k8s.io/kubelet:v1.35.0
+      command:
+      - kubelet
+      - --anonymous-auth=false
+      - --client-ca-file=/etc/kubernetes/ca.crt
+      - --read-only-port=0
+      - --authorization-mode=Webhook
+      - --protect-kernel-defaults=false
+      - --make-iptables-util-chains=true
+      - --streaming-connection-idle-timeout=4h
+      - --event-qps=50
+      - --rotate-certificates=true
+      - --rotate-server-certificates=true
+      - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
