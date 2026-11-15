@@ -1,2 +1,9 @@
 plugin/kube-noob/server/kube_noob/** linguist-generated=true
 plugin/kube-noob/uv.lock linguist-generated=true
+
+# Append-only by construction: every change prepends a bullet under `## Unreleased` and appends a `G<n>` row, so
+# two branches cut from one `main` always collide on these two lines and nowhere else. Union keeps both sides.
+# Nothing whose lines are rewritten belongs here -- union would keep both versions of the rewritten line.
+# Held by tests/test_merge_attributes.py.
+CHANGELOG.md merge=union
+docs/guidance.md merge=union
