@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from tests.falsepass import harness as fp  # noqa: E402
+from tests.falsepass import variants as fpv  # noqa: E402
 
 from kube_noob import sanitize  # noqa: E402
 
@@ -75,8 +76,8 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 
 CLASS_TABLE = """## Cases by defect class
 
-| Class | Shape | Cases | On main | Waiting for a merge |
-|---|---|---|---|---|
+| Class | Shape | Cases | On main | Waiting for a merge | Neighbour variants |
+|---|---|---|---|---|---|
 """
 
 #: Why a defect class has no case here: it is not a shape a command's output shows, and other tests hold it.
@@ -98,6 +99,36 @@ BRANCH_TABLE = """## Cases by source
 |---|---|---|
 """
 
+NEIGHBOURS_HEADER = """## The neighbour variants
+
+Every case here is a shape that once read as a pass, so every case's *neighbours* -- the other wrapper, the other
+type, the other order, the other spelling -- are the shapes most likely to still read as one.
+`docs/review-classes.md` calls that class 21 and says it is the class that closes most review rounds.
+`tests/falsepass/variants.py` derives those neighbours from one table and holds the tool to one law:
+
+**A variant may be as conservative as its parent, or more -- never less.** Where the parent case's shape is
+reported honestly today, no neighbour of it may show the shape the parent forbids, exit 0 where the parent did
+not, or carry a score above the parent's. Nobody has to decide what the honest answer for a generated input *is*,
+only that it cannot be kinder than one already known to be honest -- which is what makes the neighbours cheap.
+Every transformation keeps every document the parent had, held by a test, because the law is only sound while the
+evidence still is: a transformation that deleted the privileged container -- or quietly dropped the list item that
+is not an object, which is what three of these were caught doing -- would make a kinder answer *correct*. That is
+why the odd-container shapes sit on a wrapper beside the real documents rather than in place of them, and why the
+ones that rewrite a document keep the original documents after their own.
+
+Keeping the evidence while mangling a kind, a name or a parent means putting the mangled form **beside** the
+original, so those variants hold one object more than their parent and every count, per-object assertion and score
+moves for an honest reason. The table below says which transformations do that; for them the law keeps only the
+exit leg, because adding a sibling to a bundle that already had a finding cannot make the run a success. A
+neighbour that breaks the law prints the case, the transformation, the parent's verdict and its own, and nothing
+else.
+
+"""
+
+TRANSFORM_TABLE = """| # | Transformation | Adds a sibling | Why the reviews say to try it |
+|---|---|---|---|
+"""
+
 
 def _cell(text: str) -> str:
     """One Markdown cell from case text: made printable by Unicode category (the summaries describe hostile input
@@ -106,16 +137,19 @@ def _cell(text: str) -> str:
 
 
 def tables(cases: list[fp.Case]) -> str:
+    derived = {c.id: fpv.derive(c) for c in cases}
     out = [CLASS_TABLE]
     for n, shape in fp.DEFECT_CLASSES.items():
         group = [c for c in cases if c.defect_class == n]
         if not group:
-            out.append(f"| {n} | {shape} | 0 | 0 | 0 |\n")
+            out.append(f"| {n} | {shape} | 0 | 0 | 0 | 0 |\n")
             continue
         waiting = sum(1 for c in group if c.expected_on)
-        out.append(f"| {n} | {shape} | {len(group)} | {len(group) - waiting} | {waiting} |\n")
+        variants = sum(len(derived[c.id].variants) for c in group)
+        out.append(f"| {n} | {shape} | {len(group)} | {len(group) - waiting} | {waiting} | {variants} |\n")
     out.append(f"| | **total** | **{len(cases)}** | **{sum(1 for c in cases if not c.expected_on)}** | ")
-    out.append(f"**{sum(1 for c in cases if c.expected_on)}** |\n\n")
+    out.append(f"**{sum(1 for c in cases if c.expected_on)}** | ")
+    out.append(f"**{sum(len(d.variants) for d in derived.values())}** |\n\n")
     empty = [n for n in fp.DEFECT_CLASSES if not any(c.defect_class == n for c in cases)]
     if empty:
         out.append("Classes with no case, and where the shape is held instead:\n\n")
@@ -154,8 +188,47 @@ def listing(cases: list[fp.Case]) -> str:
     return "".join(out)
 
 
+def neighbours(cases: list[fp.Case]) -> str:
+    """The neighbour-variant table: the law, the bound and every transformation, from ``tests/falsepass/variants.py``.
+
+    Nothing here is run: the derivation reads the case files and their inputs, so this section changes only when
+    the corpus, the inputs or the table does.
+    """
+    derived = [fpv.derive(c) for c in cases]
+    out = [NEIGHBOURS_HEADER, fpv.CAP_REASON, "\n\n", TRANSFORM_TABLE]
+    for i, transform in enumerate(fpv.TRANSFORMS, start=1):
+        adds = "yes" if transform.adds_objects else "no"
+        out.append(f"| {i} | `{transform.name}` | {adds} | {_cell(transform.why)} |\n")
+    total = sum(len(d.variants) for d in derived)
+    out.append(
+        f"\nThe corpus derives **{total}** neighbours over {sum(1 for d in derived if d.variants)} of its "
+        f"{len(cases)} cases, at most {fpv.MAX_VARIANTS_PER_CASE} per case; the law runs the ones whose case "
+        "enforces today. A case whose input no transformation can read is listed here rather than skipped, "
+        "because a skipped input reading as covered is class 1 pointed at this generator:\n\n"
+    )
+    for d in sorted((d for d in derived if not d.variants), key=lambda d: d.case.id):
+        out.append(f"- `{d.case.id}`: {_cell(d.not_derived)}\n")
+    ledger = fpv.filed(cases)
+    if ledger:
+        owners: dict[str, list[str]] = {}
+        for (parent, transform), owner in sorted(ledger.items()):
+            owners.setdefault(f"{owner.id}|{parent}", []).append(transform)
+        out.append(
+            "\nA neighbour the corpus already holds its own case for is not judged twice: the case is the record, "
+            "the benchmark runs it, and the law would otherwise fail the suite for a defect that is filed and "
+            "owned. Each one is named here and by the case that owns it, and the day that case's probe holds it "
+            "stops waiting and the law judges the neighbour again:\n\n"
+            "| Filed case | Neighbour of | Transformations it owns |\n|---|---|---|\n"
+        )
+        for key, transforms in sorted(owners.items()):
+            owner_id, parent = key.split("|")
+            names = ", ".join(f"`{n}`" for n in sorted(transforms))
+            out.append(f"| `{owner_id}` | `{parent}` | {names} |\n")
+    return "".join(out)
+
+
 def render(cases: list[fp.Case]) -> str:
-    return HEADER + tables(cases) + listing(cases)
+    return HEADER + tables(cases) + neighbours(cases) + listing(cases)
 
 
 def main(argv: list[str] | None = None) -> int:

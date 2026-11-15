@@ -1,0 +1,46 @@
+id: variants-a-clusterversion-that-could-not-be-read-is-not-not-okd
+class: 4
+verdict: not-determined
+summary: 'The OKD must-gather of its parent, with the ClusterVersion document wrapped in a `List`: every field
+  that carries the version goes honestly null -- `openshiftVersion`, `versionFrom`, `indexed` -- and the two
+  booleans beside them do not. `cluster.okd: false` and `cluster.notOpenShift: false` assert that this cluster is
+  not OKD and is OpenShift, from a document nothing could read, and `releasesSearched` lists three releases the
+  lookup searched for a version it never had. A boolean has no third value, so the absence reads as the negative.'
+provenance: 'neighbour variants of issues-an-okd-must-gather-is-not-openshift: nested-list-wrap,
+  list-items-mapping, hidden-characters-in-the-wrapper-kind on
+  cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml (G302). The exit code is honest (5,
+  `complete: false`); the booleans are not. Open on main and no branch owns the fix, so it waits. The probe holds
+  when `cluster.okd` is null for a version that could not be read.'
+expected_on: main
+probe:
+  json:
+    argv:
+    - operators
+    - issues
+    - --must-gather
+    - '{probes}/mg-okd-wrapped-clusterversion'
+    - --format
+    - json
+    path: cluster.okd
+    value: null
+inputs: variants-mg-okd-wrapped-clusterversion
+cli:
+  argv:
+  - operators
+  - issues
+  - --must-gather
+  - '{inputs}'
+  - --require-complete
+  - --format
+  - json
+expect:
+  exit:
+  - 5
+  json:
+    complete: false
+    cluster.okd: null
+forbid:
+  what: 'cluster.okd false and cluster.notOpenShift false for a ClusterVersion nothing could read'
+  json:
+    cluster.okd: false
+    cluster.notOpenShift: false

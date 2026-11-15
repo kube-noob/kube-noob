@@ -1,0 +1,40 @@
+apiVersion: v1
+items:
+- apiVersion: v1
+  items:
+  - apiVersion: v1
+    items:
+    - 7
+    - apiVersion: v1
+      kind: Pod
+      metadata:
+        name: kas
+        namespace: kube-system
+      spec:
+        automountServiceAccountToken: false
+        containers:
+        - command:
+          - kube-apiserver
+          - --authorization-mode=AlwaysAllow
+          - --anonymous-auth=false
+          image: registry.k8s.io/kube-apiserver:v1.34.0
+          name: c
+          resources:
+            limits:
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+        securityContext:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+    kind: PodList
+  kind: List
+kind: List

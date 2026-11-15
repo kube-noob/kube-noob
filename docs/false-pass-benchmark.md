@@ -37,31 +37,31 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 
 ## Cases by defect class
 
-| Class | Shape | Cases | On main | Waiting for a merge |
-|---|---|---|---|---|
-| 1 | a skipped input reads as complete | 7 | 5 | 2 |
-| 2 | truncation hides the worst item | 3 | 3 | 0 |
-| 3 | substring matching on errors or kinds | 5 | 5 | 0 |
-| 4 | an unknown or unrecognised value reads as the benign default | 20 | 18 | 2 |
-| 5 | duplicates and ordering | 4 | 4 | 0 |
-| 6 | the caveat exists only in JSON | 6 | 6 | 0 |
-| 7 | input-derived strings forge output | 4 | 3 | 1 |
-| 8 | docs claim what the code does not do | 0 | 0 | 0 |
-| 9 | a second source of truth | 1 | 1 | 0 |
-| 10 | tests that fail only in CI | 0 | 0 | 0 |
-| 11 | the object asked about is not the object answered | 3 | 3 | 0 |
-| 12 | quadratic loops inside caps | 0 | 0 | 0 |
-| 13 | the verdict word contradicts the counts | 5 | 2 | 3 |
-| 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 |
-| 15 | a match tier hides what it did not match | 2 | 2 | 0 |
-| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 |
-| 17 | untrusted text in fields that read as the tool's own words | 2 | 2 | 0 |
-| 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 |
-| 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 |
-| 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 |
-| 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 |
-| 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 |
-| | **total** | **91** | **63** | **28** |
+| Class | Shape | Cases | On main | Waiting for a merge | Neighbour variants |
+|---|---|---|---|---|---|
+| 1 | a skipped input reads as complete | 8 | 5 | 3 | 32 |
+| 2 | truncation hides the worst item | 3 | 3 | 0 | 0 |
+| 3 | substring matching on errors or kinds | 5 | 5 | 0 | 20 |
+| 4 | an unknown or unrecognised value reads as the benign default | 21 | 18 | 3 | 72 |
+| 5 | duplicates and ordering | 4 | 4 | 0 | 16 |
+| 6 | the caveat exists only in JSON | 6 | 6 | 0 | 16 |
+| 7 | input-derived strings forge output | 4 | 3 | 1 | 16 |
+| 8 | docs claim what the code does not do | 0 | 0 | 0 | 0 |
+| 9 | a second source of truth | 1 | 1 | 0 | 4 |
+| 10 | tests that fail only in CI | 0 | 0 | 0 | 0 |
+| 11 | the object asked about is not the object answered | 3 | 3 | 0 | 12 |
+| 12 | quadratic loops inside caps | 0 | 0 | 0 | 0 |
+| 13 | the verdict word contradicts the counts | 5 | 2 | 3 | 20 |
+| 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 | 16 |
+| 15 | a match tier hides what it did not match | 2 | 2 | 0 | 8 |
+| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 | 28 |
+| 17 | untrusted text in fields that read as the tool's own words | 3 | 2 | 1 | 12 |
+| 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 | 0 |
+| 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 | 0 |
+| 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 | 0 |
+| 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 | 20 |
+| 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 | 36 |
+| | **total** | **94** | **63** | **31** | **328** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -76,10 +76,87 @@ Classes with no case, and where the shape is held instead:
 
 | Source | Cases | Classes |
 |---|---|---|
-| `main` | 64 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
+| `main` | 67 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
 | `plugin/directory-engine` | 5 | 4, 13, 16, 21 |
 | `rules/control-plane` | 10 | 7, 13, 14, 21, 22 |
 | `verify/pre-action` | 12 | 1, 4, 22 |
+## The neighbour variants
+
+Every case here is a shape that once read as a pass, so every case's *neighbours* -- the other wrapper, the other
+type, the other order, the other spelling -- are the shapes most likely to still read as one.
+`docs/review-classes.md` calls that class 21 and says it is the class that closes most review rounds.
+`tests/falsepass/variants.py` derives those neighbours from one table and holds the tool to one law:
+
+**A variant may be as conservative as its parent, or more -- never less.** Where the parent case's shape is
+reported honestly today, no neighbour of it may show the shape the parent forbids, exit 0 where the parent did
+not, or carry a score above the parent's. Nobody has to decide what the honest answer for a generated input *is*,
+only that it cannot be kinder than one already known to be honest -- which is what makes the neighbours cheap.
+Every transformation keeps every document the parent had, held by a test, because the law is only sound while the
+evidence still is: a transformation that deleted the privileged container -- or quietly dropped the list item that
+is not an object, which is what three of these were caught doing -- would make a kinder answer *correct*. That is
+why the odd-container shapes sit on a wrapper beside the real documents rather than in place of them, and why the
+ones that rewrite a document keep the original documents after their own.
+
+Keeping the evidence while mangling a kind, a name or a parent means putting the mangled form **beside** the
+original, so those variants hold one object more than their parent and every count, per-object assertion and score
+moves for an honest reason. The table below says which transformations do that; for them the law keeps only the
+exit leg, because adding a sibling to a bundle that already had a finding cannot make the run a success. A
+neighbour that breaks the law prints the case, the transformation, the parent's verdict and its own, and nothing
+else.
+
+The cap is not a taste: it is the SMALLEST number of neighbours per case at which every transformation in the table is still tried somewhere in the corpus, which is the coverage property that matters, and it was measured rather than guessed. Each case starts the table at its own offset, so at 1 neighbour per case four transformations are never tried at all, at 2 and at 3 one still is not (typed-list-wrap, which applies only where every document is a mapping of one kind), and at 4 all 26 are (test_the_cap_spreads_the_table_so_no_transformation_is_never_tried holds this, and fails if a later case or a new transformation breaks it -- then the cap is measured again, which is the point). Anything above 4 buys repetition of transformations already exercised, and it is not free: one variant is one CLI run of the parent's own command, so the suite's cost is its variant count. Measured on this branch by running the whole matrix serially, one run each -- 1,069 neighbours over the 63 enforced cases: 629 seconds in all, 0.45 seconds at the median, 0.59 at the mean, 0.97 at the ninetieth percentile, 10.1 for the slowest single run (the tail is the must-gather trees and the stub-cluster reads). With the 54 parent runs the law compares against, 4 costs 187 seconds of command time, 5 costs 222 and 6 costs 256. The cap is per case rather than overall, so one case with a large input cannot spend another's budget.
+
+| # | Transformation | Adds a sibling | Why the reviews say to try it |
+|---|---|---|---|
+| 1 | `list-wrap` | no | The objects arrive as the items of one `v1` `kind: List`, which is what `kubectl get -o yaml` writes and what a reader that only walks documents never descends into. |
+| 2 | `typed-list-wrap` | no | The same objects inside a typed `<Kind>List` rather than a plain `List`, which is the wrapper a single `kubectl get <kind>` actually returns and a separate branch in every loader that special-cases `List`. |
+| 3 | `nested-list-wrap` | no | A `List` whose single item is another `List` holding the objects: a loader that unwraps one level and then audits what it finds sees a wrapper where a workload should be. |
+| 4 | `list-items-mapping` | no | A wrapper whose `items` is a mapping keyed by index rather than a sequence, beside the real objects: a mapping where a sequence was is the shape class 4 names, and the container's own defect is class 23. |
+| 5 | `list-items-null` | no | A wrapper whose `items` is null, beside the real objects: null is the value a missing key and an explicit `items:` with nothing after it both produce, and it used to read as an empty cluster. |
+| 6 | `list-items-scalar` | no | A wrapper whose `items` is a non-string scalar, beside the real objects: an integer where a sequence was is the shape that crashed a reader which checked for a list by truthiness. |
+| 7 | `list-items-empty` | no | A wrapper whose `items` is an empty sequence, beside the real objects: an empty collection is the one shape a reader is most likely to answer with a count of zero rather than with what it could not read. |
+| 8 | `list-item-not-an-object` | no | A wrapper whose `items` holds a scalar before the real objects: an item that is not a mapping among items that are, which is the shape that made a reader stop at the first element and report what it had. |
+| 9 | `duplicate-key-on-the-wrapper` | no | A `List` wrapper whose own `kind` is written twice: the items are checked for duplicate keys and the container that holds them is not, which is class 23 exactly. |
+| 10 | `duplicate-key-on-the-object` | no | Each object's own top-level `kind` written twice: YAML takes the last and says nothing, so a reader that does not look for the repeat answers about a kind the author did not write. |
+| 11 | `duplicate-key-in-metadata` | no | A duplicate `name` inside `metadata`: the same defect one level down, where the duplicate decides which object the answer is about rather than which kind. |
+| 12 | `kind-case-swapped` | yes | Every `kind` with its letter case swapped. Kubernetes kinds are case-sensitive, so this is a kind nothing serves -- which must be not-evaluated and never a clean read of the kind it resembles (class 3). |
+| 13 | `kind-with-spaces` | yes | Every `kind` wrapped in spaces. A matcher that strips before comparing and a matcher that does not disagree about this input, and the honest answer is the same either way: say which it read. |
+| 14 | `api-version-case-swapped` | yes | Every `apiVersion` with its letter case swapped: the group is a DNS name and the version is not, so a comparison that folds case reads a group this cluster does not serve as one it does. |
+| 15 | `api-version-group-moved` | yes | Every `apiVersion` moved into another group, keeping the version: a foreign kind of the same name is a different kind, and matching `kind` without its group is class 3. |
+| 16 | `documents-reversed` | no | The documents in reverse order. Order must not change the answer at all: a verdict that depends on which document came first is class 5, and the duplicate-and-ordering defects were found this way. |
+| 17 | `documents-rotated` | no | The first document moved to the end: the deciding object is now in another document, which is the shape that a reader walking only the first document, or caching by document index, answers wrongly. |
+| 18 | `empty-document-between` | no | An empty document before and after every document, which is what a trailing `---` and a template that rendered to nothing both produce; an empty document is not an object and not an absence of objects. |
+| 19 | `documents-joined` | yes | The first two documents merged into one mapping, and then the originals: two objects joined into one is what a careless `yq` or a Helm template without its separator writes. |
+| 20 | `documents-split` | yes | Every object split into two documents that share its `apiVersion`, `kind` and `metadata`, and then the originals: the same object collected twice, in halves, which is the conflict a reader must report. |
+| 21 | `body-one-level-deeper` | yes | A copy of every object whose body sits one level deeper, under a parent nothing reads, and then the originals: the deciding field under a different parent is how a rule came to answer about nothing. |
+| 22 | `hidden-characters-in-the-wrapper-kind` | no | A `List` wrapper whose `kind` carries a zero-width space and a soft hyphen: it reads as `List` to a human and is not `List` to a matcher, so it must be not-evaluated and must never reach output unmarked. |
+| 23 | `hidden-characters-in-every-name` | yes | A copy of every object with a zero-width space inside its name, and then the originals: two objects whose names differ only by a character that does not print is both a duplicate (class 5) and output the boundary must mark (class 7). |
+| 24 | `bidi-in-the-api-version` | no | A `List` wrapper whose `apiVersion` carries a right-to-left override and an Arabic letter mark: a bidirectional control in a version string reorders what a reader sees without changing what it matches. |
+| 25 | `crlf` | no | The same bytes with CRLF line endings, which is what a checkout on Windows and a pasted manifest both produce: a block scalar's content now ends in a carriage return the parser keeps. |
+| 26 | `utf8-bom` | no | A UTF-8 byte order mark before the first document: a file a Windows editor saved, where the first key's name begins with a character no comparison expects. |
+
+The corpus derives **328** neighbours over 82 of its 94 cases, at most 4 per case; the law runs the ones whose case enforces today. A case whose input no transformation can read is listed here rather than skipped, because a skipped input reading as covered is class 1 pointed at this generator:
+
+- `alerts-the-cap-drops-info-detail-before-the-critical-alert`: the input is generated in code, not a file in the corpus
+- `diagnose-carries-the-known-issue-coverage-statement`: the inputs hold no YAML or JSON file a transformation can read
+- `diagnose-text-view-carries-the-coverage-statement`: the inputs hold no YAML or JSON file a transformation can read
+- `known-issues-a-release-outside-the-index-is-not-no-known-issue`: the case has no input files
+- `known-issues-a-z-stream-past-the-index-is-not-determined`: the case has no input files
+- `known-issues-an-okd-build-is-never-answered-from-ocp-notes`: the case has no input files
+- `operators-list-past-the-item-cap-is-partial`: the input is generated in code, not a file in the corpus
+- `operators-mg-zero-byte-files-are-not-read`: the inputs hold no YAML or JSON file a transformation can read
+- `reach-truncation-keeps-cluster-admin-and-privileged`: the input is generated in code, not a file in the corpus
+- `verify-a-cluster-admin-binding-by-flags-is-denied`: the case has no input files
+- `verify-a-heredoc-cluster-admin-grant-is-denied`: the case has no input files
+- `verify-a-heredoc-privileged-pod-is-denied`: the case has no input files
+
+A neighbour the corpus already holds its own case for is not judged twice: the case is the record, the benchmark runs it, and the law would otherwise fail the suite for a defect that is filed and owned. Each one is named here and by the case that owns it, and the day that case's probe holds it stops waiting and the law judges the neighbour again:
+
+| Filed case | Neighbour of | Transformations it owns |
+|---|---|---|
+| `variants-a-byte-order-mark-moves-the-namespace-to-the-prose` | `injection-diagnose-reads-names-from-labels-not-prose` | `bidi-in-the-api-version`, `hidden-characters-in-the-wrapper-kind`, `list-item-not-an-object`, `list-items-empty`, `list-items-mapping`, `list-items-null`, `list-items-scalar`, `list-wrap`, `nested-list-wrap`, `utf8-bom` |
+| `variants-a-clusterversion-that-could-not-be-read-is-not-not-okd` | `issues-an-okd-must-gather-is-not-openshift` | `hidden-characters-in-the-wrapper-kind`, `list-items-mapping`, `nested-list-wrap` |
+| `variants-a-wrapper-with-no-schema-drops-the-structural-check` | `control-plane-a-list-with-an-item-that-is-not-an-object-declines` | `hidden-characters-in-the-wrapper-kind`, `nested-list-wrap`, `typed-list-wrap` |
 
 ## The cases
 
@@ -110,6 +187,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob posture reach deployment/web -n shop --live --require-complete --format json`
   - forbidden: not reached by any exposure, complete: true, notDetermined [], exit 0
   - found: posture/blast-radius review of 4d7b00d (G273), defect 9 (landed on main as 266f4f2, so this case enforces)
+- **`variants-a-wrapper-with-no-schema-drops-the-structural-check`** (finding -- known failing on main)
+  - The PodList of its parent -- first item the number 7, second an AlwaysAllow API server -- wrapped in one more `List`. On the parent, the bundled Kubernetes schema for `PodList` reports the non-object item as KN-V007 (`7 is not of type object`) and the bundle scores 80. Nested one level deeper there is no bundled schema for the wrapper, so the structural check is skipped for everything inside it: KN-V007 is gone, and the score RISES to 90 beside an assumption line that says structural checks were skipped. The caveat survived the extra wrapper and the finding and the number did not.
+  - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
+  - forbidden: KN-V007 gone and the score up from 80 to 90, beside "structural checks skipped"
+  - found: neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines: nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G302). Open on main and no branch owns the fix, so it waits. The probe holds when the structural check reaches an item inside a wrapper kube-noob has no schema for.
 - **`verify-a-pipe-from-curl-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - `-f -` fed by curl: the manifests arrive from the network when the line runs; nothing on this machine shows them.
   - `kube-noob verify --command curl -sL https://example.com/install.yaml \| kubectl apply -f - --format json`; tool `verify_change`
@@ -264,6 +346,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob audit -f {inputs}/k.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: the document with the unreadable kind absent from assumptions, the bundle clean
   - found: plugin/directory-engine reviews one and two (G276)
+- **`variants-a-clusterversion-that-could-not-be-read-is-not-not-okd`** (not-determined -- known failing on main)
+  - The OKD must-gather of its parent, with the ClusterVersion document wrapped in a `List`: every field that carries the version goes honestly null -- `openshiftVersion`, `versionFrom`, `indexed` -- and the two booleans beside them do not. `cluster.okd: false` and `cluster.notOpenShift: false` assert that this cluster is not OKD and is OpenShift, from a document nothing could read, and `releasesSearched` lists three releases the lookup searched for a version it never had. A boolean has no third value, so the absence reads as the negative.
+  - `kube-noob operators issues --must-gather {inputs} --require-complete --format json`
+  - forbidden: cluster.okd false and cluster.notOpenShift false for a ClusterVersion nothing could read
+  - found: neighbour variants of issues-an-okd-must-gather-is-not-openshift: nested-list-wrap, list-items-mapping, hidden-characters-in-the-wrapper-kind on cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml (G302). The exit code is honest (5, `complete: false`); the booleans are not. Open on main and no branch owns the fix, so it waits. The probe holds when `cluster.okd` is null for a version that could not be read.
 - **`verify-a-strategic-merge-patch-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - A strategic merge patch that turns hostNetwork on, against an object verify does not have: strategic merge joins lists by keys only the API server knows, so the result cannot be computed and must not be allowed.
   - `kube-noob verify --command kubectl patch deployment web -p '{"spec":{"template":{"spec":{"hostNetwork":true}}}}' --format json`; tool `verify_change`
@@ -494,6 +581,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob diagnose -f {inputs}/payload.json --format json`; tool `diagnose`
   - forbidden: kubectl logs api-1 -n attacker-ns in the read-only steps or the diagnostic commands
   - found: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose (landed on main as b43e33a, so this case enforces)
+- **`variants-a-byte-order-mark-moves-the-namespace-to-the-prose`** (finding -- known failing on main)
+  - The same Alertmanager payload as its parent with a UTF-8 byte order mark in front of it -- three bytes, nothing else changed. `signals` still reads the alert out of the labels (`alertname`, `CrashLoopBackOff`), so the payload was recognised; but `context` falls from `{ns: prod, pod: api-1, name: api-1}` to `{ns: attacker-ns}`, and every read-only step the answer suggests is now `-n attacker-ns` -- the namespace out of the summary annotation an attacker writes. One reader of the payload descends to the labels and the other does not, and the one that does not falls back to the prose.
+  - `kube-noob diagnose -f {inputs}/payload.json --format json`; tool `diagnose`
+  - forbidden: context.ns attacker-ns, and kubectl logs <pod> -n attacker-ns in every read-only step
+  - found: neighbour variants of injection-diagnose-reads-names-from-labels-not-prose: utf8-bom, list-wrap, nested-list-wrap, list-items-mapping, list-items-null, list-items-scalar, list-items-empty, list-item-not-an-object, hidden-characters-in-the-wrapper-kind, bidi-in-the-api-version on payload.json (G302). Ten of the eleven neighbours of that case show it; only CRLF does not. Open on main and no branch owns the fix, so it waits. The probe holds when `context.ns` comes from the alert's own labels again.
 
 ### Class 21: fixing the reported shape, not its neighbours
 
