@@ -56,6 +56,13 @@ KUBELET_DEFAULTS_CHECKED = "kubernetes/kubernetes fba15ecefa95 and every release
 MACHINE_CONFIG_GROUP = "machineconfiguration.openshift.io"
 #: The group a `KubeletConfiguration` is served in.
 KUBELET_CONFIG_GROUP = "kubelet.config.k8s.io"
+#: The label a MachineConfig carries to say which pool it belongs to, and the prefix a KubeletConfig's pool
+#: selector uses. Both are the Machine Config Operator's own spellings.
+MACHINE_CONFIG_ROLE_LABEL = "machineconfiguration.openshift.io/role"
+POOL_SELECTOR_PREFIX = "pools.operator.machineconfiguration.openshift.io/"
+#: The two roles whose ownership differs; any other pool name leaves the role unstated.
+NODE_ROLES = ("master", "worker")
+
 #: The file in a MachineConfig's ignition that holds the node's KubeletConfiguration, as the Machine Config
 #: Operator writes it. Matched on the whole path, never a substring (class 3).
 KUBELET_CONF_PATHS = frozenset({"/etc/kubernetes/kubelet.conf", "/etc/kubernetes/kubelet.conf.d/kubelet.conf"})
@@ -229,6 +236,10 @@ class KubeletSettings:
     unread: list[str] = field(default_factory=list)
     #: Non-empty when the whole object could not be read, with the reason.
     declined: str = ""
+    #: The node role this object configures, when it says: "worker", "master", or "" when nothing states it.
+    #: On a managed platform an unstated role is treated as the control plane's, because assuming the worker
+    #: role there would read Red Hat's own configuration as the customer's (`audit.ownership`).
+    role: str = ""
     #: The document the paths in ``values`` are relative to.
     doc: Document | None = None
 
@@ -368,25 +379,54 @@ def _file_sources(ctx: AuditContext) -> Iterator[KubeletSettings]:
                 out.declined = "is a KubeletConfig with no spec.kubeletConfig mapping, so what it sets was not read"
                 yield out
                 continue
+            out.role = _pool_role(spec)
             _read_fields(spec.get("kubeletConfig"), ("spec", "kubeletConfig"), out)
             yield out
         elif d.kind == "MachineConfig" and group == MACHINE_CONFIG_GROUP:
             yield from _machine_config(d, ref)
 
 
-def _file_record(ref: str, d: Document) -> KubeletSettings:
+def _file_record(ref: str, d: Document, role: str = "") -> KubeletSettings:
     """A configuration object's record: it decides what it STATES and declines what it does not."""
     return KubeletSettings(
-        where=ref, ref=ref, spelling="file", defaults="", no_defaults=FILE_HAS_NO_COMMAND_LINE, doc=d
+        where=ref, ref=ref, spelling="file", defaults="", no_defaults=FILE_HAS_NO_COMMAND_LINE, doc=d, role=role
     )
+
+
+def _pool_role(data: Any) -> str:
+    """The node role a KubeletConfig's `spec.machineConfigPoolSelector` names, or "" when it names neither.
+
+    Only the operator's own `pools.operator.machineconfiguration.openshift.io/<role>` label decides. A selector
+    written any other way (a custom pool label, `matchExpressions`, or one naming both pools) leaves the role
+    unstated rather than being guessed, because a wrong guess reads one owner's configuration as another's.
+    """
+    selector = data.get("machineConfigPoolSelector") if isinstance(data, dict) else None
+    labels = selector.get("matchLabels") if isinstance(selector, dict) else None
+    if not isinstance(labels, dict):
+        return ""
+    named = [
+        key[len(POOL_SELECTOR_PREFIX) :]
+        for key in labels
+        if isinstance(key, str) and key.startswith(POOL_SELECTOR_PREFIX)
+    ]
+    roles = {r for r in named if r in NODE_ROLES}
+    return roles.pop() if len(roles) == 1 and not (set(named) - set(NODE_ROLES)) else ""
+
+
+def _machine_config_role(d: Document) -> str:
+    """The node role a MachineConfig's own role label names, or "" when it carries none kube-noob knows."""
+    labels = (d.data.get("metadata") or {}).get("labels") if isinstance(d.data, dict) else None
+    role = labels.get(MACHINE_CONFIG_ROLE_LABEL) if isinstance(labels, dict) else None
+    return role if role in NODE_ROLES else ""
 
 
 def _machine_config(d: Document, ref: str) -> Iterator[KubeletSettings]:
     config = d.data.get("spec", {}).get("config") if isinstance(d.data.get("spec"), dict) else None
+    role = _machine_config_role(d)
     for entry, path in _ignition_files(config, ("spec", "config")):
         if entry.get("path") not in KUBELET_CONF_PATHS:
             continue
-        out = _file_record(ref, d)
+        out = _file_record(ref, d, role)
         text, why = _decode_ignition(entry)
         if text is None:
             out.declined = f"carries {why}"
@@ -399,7 +439,7 @@ def _machine_config(d: Document, ref: str) -> Iterator[KubeletSettings]:
             continue
         # The decoded file's own paths are not paths in the MachineConfig, so every value points at the
         # ignition entry that carried it rather than at a path the reader would not find (class 7).
-        inner = _file_record(ref, d)
+        inner = _file_record(ref, d, role)
         _read_fields(data, (), inner)
         out.values = {name: (value, (*path, "contents", "source")) for name, (value, _) in inner.values.items()}
         out.unread = inner.unread

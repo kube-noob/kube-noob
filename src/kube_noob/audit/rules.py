@@ -46,6 +46,7 @@ from kube_noob.audit.cpflags import (
     _unread_lists,
 )
 from kube_noob.audit.model import Finding, Severity, Stage
+from kube_noob.audit.ownership import owner as component_owner
 from kube_noob.audit.podspec import (
     LONG_RUNNING_EMBEDDED_KINDS,
     LONG_RUNNING_KINDS,
@@ -4497,14 +4498,9 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         where, ref = _where(d, c)
         ctx.looked_at(r.rule_id, ref)
         runs = "may run" if launch.maybe else "runs"
-        if ctx.is_openshift:
-            ctx.cannot_decide(
-                r.rule_id,
-                f"{where} {runs} kube-apiserver on {ctx.platform}, where the control plane is operator-managed and "
-                "is configured through the platform's own configuration rather than by these arguments (on ROSA "
-                "with HCP it runs outside the cluster altogether)",
-                ref,
-            )
+        own = component_owner(ctx.platform, "kube-apiserver")
+        if not own.theirs:
+            ctx.cannot_decide(r.rule_id, f"{where} {runs} kube-apiserver, and {own.why}", ref)
             continue
         if launch.declined:
             starts = "may start" if launch.maybe else "starts"
@@ -4811,6 +4807,11 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         recognised = True
         where, ref = _where(d, c)
         ctx.looked_at(r.rule_id, ref)
+        own = component_owner(ctx.platform, "etcd")
+        if not own.theirs:
+            runs = "may run" if launch.maybe else "runs"
+            ctx.cannot_decide(r.rule_id, f"{where} {runs} etcd, and {own.why}", ref)
+            continue
         if launch.declined:
             starts = "may start" if launch.maybe else "starts"
             ctx.cannot_decide(r.rule_id, f"{where} {starts} etcd {launch.declined}", ref)

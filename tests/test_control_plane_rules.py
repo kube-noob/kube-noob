@@ -228,12 +228,21 @@ def test_recognition_is_by_the_binary_not_by_a_name_or_label() -> None:
     assert not _hits(_report(_pod("x", ["kube-apiserver-proxy", "--authorization-mode=AlwaysAllow"])), "KN-S038")
 
 
-@pytest.mark.parametrize("platform", ["openshift", "rosa-classic", "rosa-hcp"])
-def test_an_apiserver_on_openshift_declines_with_the_reason(platform: str) -> None:
+@pytest.mark.parametrize(
+    ("platform", "says"),
+    [
+        ("openshift", "operator-managed"),
+        ("rosa-classic", "ROSA Classic"),
+        ("rosa-hcp", "hosted control planes"),
+    ],
+)
+def test_an_apiserver_on_a_managed_platform_declines_with_that_platforms_reason(platform: str, says: str) -> None:
+    """The three used to share one sentence, which said "operator-managed" of a control plane that is not even in
+    the cluster. The reasons come from `audit.ownership` now, one row per platform (G304)."""
     report = _report(_apiserver("--authorization-mode=AlwaysAllow"), platform, "4.20")
     assert not _hits(report, "KN-S038")
     assert _declined(report, "KN-S038")
-    assert any("operator-managed" in a for a in report.assumptions)
+    assert any(says in a for a in report.assumptions), report.assumptions
 
 
 # =====================================================================================================

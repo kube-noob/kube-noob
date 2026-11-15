@@ -34,6 +34,7 @@ from kube_noob.audit.kubelet import read_int as kubelet_int
 from kube_noob.audit.kubelet import read_strings as kubelet_strings
 from kube_noob.audit.kubelet import resolve as kubelet_resolve
 from kube_noob.audit.model import Finding, Severity, Stage
+from kube_noob.audit.ownership import owner as component_owner
 from kube_noob.audit.rules import AuditContext, Rule, rule
 from kube_noob.audit.webhookca import read_bundle as read_ca_bundle
 from kube_noob.yamlio import Document, PathT
@@ -61,6 +62,15 @@ def _kubelet_sources(ctx: AuditContext, r: Rule) -> list[KubeletSettings]:
     out: list[KubeletSettings] = []
     for s in sources:
         ctx.looked_at(r.rule_id, s.ref)
+        # Whose kubelet this is. A worker kubelet is the customer's on every platform kube-noob knows -- on ROSA
+        # through `rosa create kubeletconfig` and a machine pool -- and a control-plane one is not, on any managed
+        # platform. A role the object does not state is read as the control plane's there, because assuming the
+        # worker role would read Red Hat's own configuration as the customer's (G304).
+        own = component_owner(ctx.platform, "kubelet-worker" if s.role == "worker" else "kubelet")
+        if not own.theirs:
+            stated = "" if s.role else ", and this object does not say which node role it configures"
+            ctx.cannot_decide(r.rule_id, f"{s.where} configures a kubelet, and {own.why}{stated}", s.ref)
+            continue
         if s.declined:
             ctx.cannot_decide(r.rule_id, f"{s.where} {s.declined}", s.ref)
             continue
