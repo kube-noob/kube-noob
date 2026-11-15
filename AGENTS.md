@@ -145,6 +145,14 @@ every format, and the exit code is the verdict's, not 5
 from that: the refusal is checked before the verdict, so an unreadable file in a directory that would also have
 been undetermined is 5, and the same directory with `--skip-unreadable` is 1.
 
+That is the general shape and not an exception: **a waiver the person asked for does not change the exit code, and
+the evidence it waived is still named in the output.** `--skip-unreadable` and an accepted `notAudited` row are
+the same move -- the person has taken responsibility for what was not read, so a verdict WAS reached on the
+evidence that remained and the code is that verdict's. What the waiver must never do is make the gap disappear:
+the skipped file stays in `unreadable` and the accepted record stays in `notAudited`, in the text view and in
+JSON and YAML and in the MCP result alike. A waiver is an answer about less evidence, never a cleaner answer about
+the same evidence.
+
 A command whose own answer is a decision rather than a score reads the same rule the other way round: when it
 cannot decide whether to allow something, no verdict was reached, so that is a 5 and not a 1. That is the same
 sentence, not an exception to it.
