@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kube_noob.config import Settings
-from kube_noob.debug.cluster import list_items
+from kube_noob.debug.cluster import classify_read_failure, list_items
 from kube_noob.errors import ClusterAccessError, ConfigError
 from kube_noob.incidents import IncidentLedger, Observation, observe, what_changed
 
@@ -57,6 +57,7 @@ class Watcher:
         self.platform = platform
         self.version: str | None = None
         self._info_read = False
+        self.cluster_not_read: str | None = None  # named in every poll's errors (G293, review)
 
     def _cluster_info(self) -> None:
         if self._info_read:
@@ -66,9 +67,14 @@ class Watcher:
 
         try:
             info = cluster_info(self.backend)
-        except Exception:  # noqa: BLE001 - the version only sharpens known-issue matches
+        except Exception as exc:  # noqa: BLE001 - the version only sharpens known-issue matches, but say so
+            self.cluster_not_read = f"clusterversions: not read ({str(exc)[:300]}); no platform for known-issue matches"
             return
         self.version = info.get("openshift")
+        if info.get("platformNotRead"):
+            # A ServiceAccount that may not read ClusterVersion is the usual shape on OpenShift: the diagnosis still
+            # runs, without a platform, and the poll says so instead of a silent None (G293, review).
+            self.cluster_not_read = f"clusterversions: not read ({info['platformNotRead']})"
         if self.platform is None:
             self.platform = info.get("platform")  # None when ClusterVersion could not be read (G279)
 
@@ -90,12 +96,21 @@ class Watcher:
         from kube_noob.known_issues import match as known_issue_match
 
         logs = ""
+        not_read: list[str] = []
         for pod, container in obs.crashed[:1]:
-            with contextlib.suppress(ClusterAccessError):
+            try:
                 logs = self.backend.logs(obs.namespace, pod, container, 50, True)
+            except ClusterAccessError as exc:
+                # A pod that is gone by now (NotFound, in the backend's own words) is an answer, not a failed
+                # read: there is no log to have read. Anything else -- forbidden, a timeout, a 500 -- is named,
+                # because the diagnosis then ran on the events alone (G293).
+                if classify_read_failure("pods", exc, name=pod) != "not-found":
+                    not_read.append(f"{obs.namespace}/pods/log {pod}/{container}: not read ({str(exc)[:300]})")
         text = "\n".join(obs.evidence) + "\n" + logs + f"\nNamespace: {obs.namespace}\n"
         dx = diagnose(text, platform=self.platform, limit=1).as_dict()
         out: dict[str, Any] = {"analyzedAt": now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")}
+        if not_read:
+            out["notRead"] = not_read
         if dx["diagnoses"]:
             top = dx["diagnoses"][0]
             out["diagnosis"] = {
@@ -133,7 +148,7 @@ class Watcher:
         observations: list[Observation] = []
         analyses: dict[str, dict[str, Any]] = {}
         polled: list[str] = []
-        errors: list[str] = []
+        errors: list[str] = [self.cluster_not_read] if self.cluster_not_read else []
         for ns in self.namespaces:
             snap, errs = self.snapshot(ns)
             errors += errs
@@ -144,6 +159,7 @@ class Watcher:
                 observations.append(obs)
                 if self.ledger.needs_analysis(obs):
                     analyses[obs.fingerprint] = self.analyse(obs, snap, now)
+                    errors += analyses[obs.fingerprint].get("notRead", [])
         changes = self.ledger.record(observations, analyses, polled, now)
         if self.settings.learning_enabled and (changes["opened"] or changes["reopened"]):
             from kube_noob.learn.memory import LearningStore

@@ -836,6 +836,18 @@ the source workspace and `params: [{name: paths, value: k8s}]`. GitLab: include
 `deploy/gitlab/kube-noob-gate.gitlab-ci.yml` and extend `.kube-noob-gate` with `KUBE_NOOB_PATHS`; findings show in
 the merge request through the code quality report.
 
+All three wrappers run the same shell (`scripts/ci/gate.sh`) and report the same four things, for every exit code
+the gate has, never leaving one unset: `result` is the exit code by name (`passed`, `failed`, `config-error`,
+`clarification`, `internal-error`, `evidence-incomplete`; any other code is `internal-error`), `exit-code` is the
+number, `evidence` is `complete`, `incomplete` or `not-run` as read from the gate's report (a check that did not run,
+an unreadable file; `not-run` when the gate wrote no report), and `because` says why. On GitHub they are the action's
+outputs; in GitLab a later job reads `KUBE_NOOB_RESULT`, `KUBE_NOOB_EXIT`, `KUBE_NOOB_EVIDENCE` and
+`KUBE_NOOB_BECAUSE` from the dotenv report; in Tekton they are the Task's results. Merge status is not evidence
+status: a gate at `fail-on: never`, or a step under `continue-on-error`, exits 0 with `evidence: incomplete` when
+no scanner report or SARIF was given, and its summary reads "merge allowed · evidence: incomplete (…)" rather than
+"passed". A workflow that must not merge on a gate that could not read its inputs gates on `result == 'passed'`
+(never on `!= 'failed'`), and one that rolls the gate out non-blocking watches `evidence`.
+
 ### Which tests are flaky, and which steps got slower?
 
 `build analytics` reads a CI history on disk: one folder per run with `run.json` (the run, its jobs and steps, as the
@@ -1031,6 +1043,13 @@ kube-noob posture scan -f k8s/ --fail-above 17
 kube-noob posture scan -f k8s/ --fail-above 17 --require-complete
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
 ```
+
+What `--live` reads, per command and MCP tool -- API group, resource and verb, recorded from the code rather than
+written down -- and that the chart's read-only Role and ClusterRole grant exactly that set and no Secret, is
+[docs/permissions.md](permissions.md). An operator who grants less than the chart (one capability's row) gets every
+read that was refused named, in the text view and in the result (`notRead`, `errors` or an evidence line), and the
+attack-path scan's headline reads `not determined: N resource list(s) not read (...)` before its counts; nothing
+refused reads as clean.
 
 ### What can this pod reach if it is compromised? Blast radius
 
