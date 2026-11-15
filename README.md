@@ -35,7 +35,7 @@ cluster order, naming the tier, policy and rule that decided. A checker reading 
 **Which system denied this pod?** One pass across Pod Security, SCC, Kyverno, Gatekeeper, VAP and RHACS, with the
 smallest fix. `reach` exits 1 when denied; both say what they could not determine.
 
-Also: 93 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
+Also: 98 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
 must-gathers triaged into a case draft that says what could not be read; OpenShift bugs with fix versions; hardened
 manifests and admission policies; 5 tracks, 16 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
 exception list, and a design request runs the 7-step protocol. All of it: [use-cases.md](docs/use-cases.md).
@@ -71,7 +71,7 @@ Claude plugin, in Claude Code (needs [uv](https://docs.astral.sh/uv/)):
 /plugin install kube-noob@kube-noob
 ```
 
-Desktop app, claude.ai chat and the Agent Skill: [install.md](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md). Any MCP client:
+Desktop, claude.ai, the plugin directory, Agent Skill: [install.md](https://github.com/kube-noob/kube-noob/blob/main/docs/install.md). Any MCP client:
 
 ```json
 {"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.9.2", "kube-noob", "mcp"]}}}

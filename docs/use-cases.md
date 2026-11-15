@@ -27,9 +27,12 @@ every time, and they run where you put them.
    ([openshift.md](openshift.md)). That client's model does the talking.
 3. **With no AI at all**: the CLI below. Audits, diagnoses, cited search, lessons and evidence bundles need no model
    and no network, which suits CI gates and air-gapped clusters.
-4. **With Claude, knowledge only** (the `kube-noob-skills` plugin): the same seven skills with no MCP server and no
-   code at all, for somewhere a plugin may not run anything. Claude gets the platform facts and the review protocol;
-   it gets no audit, no validator and no diagnosis, and each skill says so rather than implying otherwise.
+4. **With Claude, from the plugin directory** (the `kube-noob-skills` plugin): the same seven skills with no MCP
+   server and no code in the plugin. Each skill checks for the kube-noob CLI you installed, runs it through Claude's
+   Bash tool on your pasted text in a private folder, and reads the verdict and what was not evaluated from the JSON.
+   Ask "is this production ready for OpenShift 4.20?" with a manifest pasted, and Claude runs `kube-noob protocol` on
+   it. With no CLI, the skill says nothing was audited and gives the install command, rather than answering from
+   memory as if it had checked.
 
 `kube-noob ask` is the one optional command that uses a model: one you configure, and only a local one under the
 offline lock.
@@ -83,8 +86,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 145 957 to
-74 544 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 149 491 to
+78 078 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -1008,7 +1011,10 @@ rights the Kubernetes RBAC good-practices page names). Each path scores exposure
 restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide above one namespace), lists every step
 with the field that proves it, and ends with a fix. A pod with no token, automounted or projected, has no token
 step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret objects in a bundle are dropped
-unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate. NetworkPolicies
+unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate: exit 1 when a path
+scores above it, exit 5 when an object or a read was refused (an object of the wrong shape, a read the cluster forbade
+or did not answer; listed under `refused`), else 0. A CRD the cluster does not serve or a role the bundle does not
+carry is listed under `notRead` and fails the gate only with `--require-complete`. NetworkPolicies
 on the entry edge are not applied: check a path with `policy reach`. RBAC resources match as the API server
 matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what the scan could not account for:
 a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway
@@ -1018,7 +1024,10 @@ followed and the path says which; two Roles of one name: neither is read), and a
 the shape the API requires (a VirtualService `gateways` string, an HTTPRoute `backendRefs` map, a Service
 `selector` string). Read live, any list the cluster did not answer is in `notRead` -- a 404 included, because
 an Istio older than 1.22 or a Gateway API older than v1.0 answers 404 for the version kube-noob reads, and
-kube-noob does not read API discovery to tell them from a cluster without them. OpenShift's legacy
+kube-noob does not read API discovery to tell them from a cluster without them. `refused` is the part of
+`notRead` the gate fails on: every field of the wrong shape above, a legacy binding the server would refuse, two
+Roles under one bound name, and a live list that was forbidden, timed out, or answered with something that is
+not a list of what was asked; a list the backend's own words say the cluster does not serve is not refused. OpenShift's legacy
 `authorization.openshift.io` Roles and bindings are read as the RBAC objects they proxy. A VirtualService
 delegate takes its parent's gateways, and a mirror counts as a route.
 
@@ -1031,6 +1040,7 @@ that input, which is not the same as it being unexposed.
 ```bash
 kube-noob posture scan -f k8s/
 kube-noob posture scan -f k8s/ --fail-above 17
+kube-noob posture scan -f k8s/ --fail-above 17 --require-complete
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
 ```
 
@@ -1091,10 +1101,11 @@ bindings every cluster carries (`--whole-bundle`): 8 of 10 legs are determined, 
 list; the two still open are the operator's writes to its own custom resource, which kube-noob cannot rank. A set of files cannot show the bindings, Services, Routes or
 Ingresses it leaves out, so for files `none` is only said of what the pod spec decides and the answer is never
 complete unless `--whole-bundle` asserts the files are everything that applies to the workload; `--require-complete`
-exits 5 until then, and a name that matches nothing exits 2. `--format json` prints the graph (schema
-`kube-noob/blast-radius` v1: nodes, edges with their evidence, the not-determined legs, and what was withheld when it
-hit its node, edge or byte cap -- every list is bounded, the open legs first, and a document never exceeds its
-byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
+exits 5 until then, and on anything at all under `notRead`, refused or absent, and a name that matches nothing
+exits 2. `--format json` prints the graph (schema `kube-noob/blast-radius` v1: nodes, edges with their evidence, the
+not-determined legs, `notRead` and the `refused` part of it the posture gate fails on, each with the count it
+withholds, and what was withheld when it hit its node, edge or byte cap -- every list is bounded, the open legs
+first, and a document never exceeds its byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
 request or a wiki page, with the undetermined legs dashed and the limitations as notes.
 
 ```bash
@@ -1147,7 +1158,7 @@ object and the path, and `posture scan` records the same in `notRead`. You get a
 clean report you cannot trust, and a kind worth reading properly can be added with its published schema.
 
 ```bash
-kube-noob audit -f serving/            # the same 93 rules, now reaching the components
+kube-noob audit -f serving/            # the same 98 rules, now reaching the components
 kube-noob posture scan -f serving/     # per-component attack paths
 kube-noob --cluster-enabled posture scan --live -n model-serving
 ```
@@ -1338,6 +1349,77 @@ than a family of checks about a SIEM kube-noob has no credentials for.
 oc get apiserver cluster -o yaml > apiserver.yaml
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20 --format json | jq .detectionCoverage
+```
+
+### Does the control plane check who it talks to?
+
+Five rules read the settings that decide whether the cluster's own components verify, authenticate and encrypt.
+`KN-S037` reports an APIService that sends its API group to an extension API server with `insecureSkipTLSVerify`
+(an absent `caBundle` is not a finding: the API server then uses its system trust roots, and OpenShift's service CA
+fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the AlwaysAllow authorizer and anonymous
+authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
+certificates switched off (a trusted CA file switches them on too, as etcd reads it; `--auto-tls` with no
+`--cert-file` or `--key-file` switches them off again, because etcd then replaces its TLS settings with a generated
+certificate's). Both recognise the component by what the container runs, never by its name or a label, and
+recognition is fail-safe: a container is passed over only when nothing points at the binary -- no image whose name
+has it as a dash-separated component (`etcd-amd64`, `kube-apiserver-amd64`, `hyperkube`; not `etcd-operator`),
+none of its flags, no `ETCD_*` variable, no mention of it (or of k3s, rke2 or k0s) as a command word in argv, args,
+env values or a script -- or when it is positively something else: `etcdctl`, `k3s agent`, or a script on the
+etcd image made only of etcdctl and coreutils. A path is the program only in a `bin` or `sbin` directory, `.` or
+`/`, so `tar czf b /var/lib/etcd` is not etcd. Every list kind in the input (`List`, `PodList`, a list inside a list) is opened into
+its items, an item that is not an object is reported by `KN-V001` and declined here, and a list past the 1,000-document
+cap is refused by every command alike. the insecure port on a network address is a CRITICAL finding on a
+stated release up to 1.19;
+kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
+absent flag is the upstream default, named in the finding with the releases it was checked at:
+anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
+`--authorization-mode` nor `--authorization-config` authorizes everything. On OpenShift, `KN-S040` reports
+encryption at rest switched off on the same `APIServer` object `KN-S035` reads, and `KN-S041` an LDAP identity
+provider with `insecure: true` and an `ldap://` URL.
+
+Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
+`--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
+`envFrom` can set any `ETCD_*` variable (an empty `--config-file=` falls through to `ETCD_CONFIG_FILE`, as etcd
+reads it); a shell script (directly, as `busybox sh` or after `env`), a wrapper such as `tini` or `go-runner`, an
+image entrypoint (no `command`, or `command: []`), or any other entrypoint -- a script file, `s6-svscan`, `/pause`,
+`python3 -c` -- that something points at is not executed; k3s, rke2 and k0s set the API server's other flags from
+their own defaults (an AlwaysAllow passed through `--kube-apiserver-arg` is still read as a finding); ABAC and
+Webhook authorize from a file not in the input; a non-zero insecure port on 1.20-1.23, and any insecure-port flag on 1.24 or later or an assumed version, is a
+setting the server refuses; an object that writes the flags -- a kubeadm `ClusterConfiguration`, Cluster API's
+`KubeadmControlPlane`, the `kubeadm-config` ConfigMap, a kind cluster, a k0s `ClusterConfig`, a Rancher `Cluster` --
+is read for AlwaysAllow, an explicit `anonymous-auth: true` and a plaintext etcd URL, and named as not read for the rest; `--enable-v2` is refused by etcd 3.6 unless the image says 3.5; a kubeadm
+`ClusterConfiguration` or an OpenShift `KubeAPIServer` writes the flags and is named as seen and not read; a `$(VAR)` anywhere in argv is not expanded; a flag
+kube-noob does not know, given without `=` before another flag, may swallow it (so `--version` or `-h` there is
+not read as one); an authorization-mode combination the API server refuses to start with, and a `KMS` encryption
+type with no `kms` block, are not read as a setting; an encryption type or identity provider type openshift/api
+does not define is not guessed at. On ROSA with HCP the API server, etcd
+and the OAuth server are configured from the `HostedCluster` on the management cluster, on the rest of the
+OpenShift family the API server is operator-managed, and off OpenShift the OpenShift objects are not read (the
+reason names `--platform openshift`). In each case the rule is left out of the evaluated list and the report states why -- naming every declined
+object, up to a cap -- in the text view, the JSON (`declined`), the SARIF notifications, the MCP result and the
+gate's JSON, SARIF, Markdown and HTML. When the rule found nothing anywhere, its controls count it as not
+evaluated and `controlSummary.notEvaluatedRules` names it. When it found something on one object and declined on
+another, the finding is reported and counted under its controls as a finding, the decline is still stated in
+`assumptions` and `declined`, and `controlSummary.partlyEvaluatedRules` names it (as do the KSI rows, the OSCAL
+control remarks, the text view, the SARIF and the gate); it is not in `notEvaluatedRules`, which lists rules that
+reached no verdict at all, so every rule not evaluated in full is in exactly one of the two. `declined[rule].decided`
+says how many objects the rule read in full beside the ones it declined. An
+input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
+"not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
+`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While anything was
+not audited -- a rule declined on an object, a pod spec in a kind kube-noob has no reader for, a container whose
+image an operator supplies, an object in a group the reader refuses -- the headline score is withheld:
+`summary.score` is `null`, `summary.scoreWithheld` names the rules and the objects, and the text view prints
+`score=not determined (N rules not evaluated in full and M pod specs not audited)` -- a number above "was not
+evaluated in full" or "were NOT audited" would be a verdict on what was not read. Undetermined is exit 1 whatever
+`--fail-on` says, and the gate is `incomplete` rather than passed; `notAudited` and `notEvaluated` in the JSON name
+the objects and the rules. Every output reads the same predicate (`fix`'s `after`, the gate, the MCP tools and
+every finding-derived check of the eval grader included). The per-control counts stay as they are.
+
+```bash
+kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33
+oc get apiserver cluster -o yaml > cp.yaml; echo --- >> cp.yaml; oc get oauth cluster -o yaml >> cp.yaml
+kube-noob audit -f cp.yaml --platform openshift --version 4.20
 ```
 
 ### Enforce the audit rules at admission

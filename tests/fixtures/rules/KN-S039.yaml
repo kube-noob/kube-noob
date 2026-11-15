@@ -1,0 +1,32 @@
+rule: KN-S039
+good: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: etcd, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: etcd
+      image: registry.k8s.io/etcd:3.6.4-0
+      command:
+      - etcd
+      - --advertise-client-urls=https://10.0.0.10:2379
+      - --client-cert-auth=true
+      - --listen-client-urls=https://127.0.0.1:2379,https://10.0.0.10:2379
+      - --listen-peer-urls=https://10.0.0.10:2380
+      - --peer-client-cert-auth=true
+bad: |
+  apiVersion: v1
+  kind: Pod
+  metadata: {name: etcd, namespace: kube-system}
+  spec:
+    hostNetwork: true
+    containers:
+    - name: etcd
+      image: registry.k8s.io/etcd:3.6.4-0
+      command:
+      - etcd
+      - --advertise-client-urls=http://10.0.0.10:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=https://10.0.0.10:2380
+      - --peer-client-cert-auth=true

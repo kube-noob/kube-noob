@@ -182,8 +182,13 @@ def test_a_forbidden_list_is_reported_as_not_read_naming_the_resource_never_as_n
     monkeypatch.setenv("KUBE_NOOB_DATA_DIR", str(tmp_path))
     assert main(["posture", "scan", "--live", "--cluster-enabled", "-n", "shop"]) == 0
     text = capsys.readouterr().out
-    line = next((x for x in text.splitlines() if x.startswith("not read: ")), "")
+    # The merge of G276 into G293 renamed this line: it was "not read: ", it is now "N object(s) not read: " with
+    # a second line counting how many of them were REFUSED. The claim is unchanged -- the text view names the list
+    # and the reason, not only the JSON (review class 6) -- so it is asserted against the line that carries it now.
+    line = next((x for x in text.splitlines() if "object(s) not read: " in x), "")
     assert f"{forbidden} in shop: " in line and "orbidden" in line, text
+    refused_line = next((x for x in text.splitlines() if "refused (a gate fails on these): " in x), "")
+    assert f"{forbidden} in shop: " in refused_line, text
     assert text.startswith("not determined: 1 resource list(s) not read ("), text.splitlines()[0]
     assert main(["--format", "json", "posture", "scan", "--live", "--cluster-enabled", "-n", "shop"]) == 0
     out = json.loads(capsys.readouterr().out)
@@ -192,6 +197,51 @@ def test_a_forbidden_list_is_reported_as_not_read_naming_the_resource_never_as_n
         out["summary"].startswith("not determined: 1 resource list(s) not read (") and "attack paths" in out["summary"]
     )
     assert out["notRead"], "a refused list is never an empty list"
+
+
+class _NotServedBackend(pd.RecordingBackend):
+    """The recording backend on a cluster that serves no such resource type: the backend's own words, which
+    `says_not_served` reads as an absence rather than a refusal."""
+
+    def __init__(self, absent: str) -> None:
+        super().__init__()
+        self.absent = absent
+
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
+        from kube_noob.debug.cluster import resolve_resource
+        from kube_noob.errors import ClusterAccessError
+
+        plural, _ = resolve_resource(resource)
+        if plural == self.absent:
+            raise ClusterAccessError(
+                f"kubectl get {plural} --all-namespaces failed: "
+                f'error: the server doesn\'t have a resource type "{plural}"'
+            )
+        return super().get(resource, name=name, namespace=namespace, **kw)
+
+
+def test_a_type_the_cluster_does_not_serve_is_named_but_does_not_withhold_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The headline reads `refused`, not `not_read`, so the two causes do not collapse into one.
+
+    A list the cluster REFUSED (a 403, a timeout, an answer that is not a list) makes the counts a lower bound, so
+    the headline says not determined before them (G293). A type the cluster does not SERVE -- no KServe on plain
+    Kubernetes -- is an absence: it is still named under `not read`, because what depended on it is still not
+    determined (G279), but it must not withhold the headline, or a gate would report not determined on every
+    cluster that simply lacks a CRD (G276). Merging G293 into G276 is where these two could have become one list.
+    """
+    from kube_noob.cli import main
+    from kube_noob.debug import cluster
+
+    monkeypatch.setattr(cluster, "get_backend", lambda _s: _NotServedBackend("inferenceservices"))
+    monkeypatch.setenv("KUBE_NOOB_DATA_DIR", str(tmp_path))
+    assert main(["--format", "json", "posture", "scan", "--live", "--cluster-enabled", "-n", "shop"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert not out["summary"].startswith("not determined:"), out["summary"]
+    assert "attack paths" in out["summary"], out["summary"]
+    assert any("inferenceservices" in n for n in out["notRead"]), out["notRead"]
+    assert not any("inferenceservices" in r for r in out.get("refused", [])), out.get("refused")
 
 
 def test_the_watch_and_the_debugger_name_their_bonus_reads_when_forbidden(
