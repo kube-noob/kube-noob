@@ -39,7 +39,13 @@ TARGETS: dict[str, tuple[str, ...]] = {
         r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",
     ),
     "deploy/gitlab/kube-noob-gate.gitlab-ci.yml": (r"ghcr\.io/kube-noob/kube-noob:(?P<v>\d+\.\d+\.\d+)",),
-    "docs/install.md": (r"ghcr\.io/kube-noob/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",),
+    "docs/install.md": (
+        r"ghcr\.io/kube-noob/kube-noob:(?P<m>\d+\.\d+)(?![.\d])",
+        # the directory plugin's install line and the Claude Desktop config, and the no-krew kubectl path (G276)
+        r"kube-noob==(?P<v>\d+\.\d+\.\d+)",
+        r"/v(?P<v>\d+\.\d+\.\d+)/",
+        r"kubectl-noob-v(?P<v>\d+\.\d+\.\d+)\.tar\.gz",
+    ),
     # the owner's commands for the OpenShift Helm catalog pull request: every version in it is the release's
     "docs/openshift-catalog.md": (r"(?<![\d.])(?P<v>\d+\.\d+\.\d+)(?!\.?\d)",),
 }

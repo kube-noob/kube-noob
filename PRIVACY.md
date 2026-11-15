@@ -118,11 +118,38 @@ plugin ships only the modules of the stdio server: no CLI, model agent, HTTP ser
 so it reads no credentials and makes no network calls of its own. Personal data is never requested. If text you paste contains some, it is processed in memory
 and not stored, except words you choose to put in a confirmed note or a learner id.
 
-## The knowledge-only plugin
+## The directory plugin (`kube-noob-skills`)
 
-`kube-noob-skills` contains Markdown and one image. There is no server in it, no Python and nothing to run, so it
-starts no process, installs no dependency, reads no file of yours and makes no network connection. What you type
-goes to Claude as it always does; this plugin adds nothing to that and receives nothing from it.
+`kube-noob-skills` contains Markdown and one image. There is no server in it, no Python and nothing of its own to run,
+and it downloads nothing. Its skills ask Claude to run the kube-noob CLI you installed, through Claude Code's Bash tool,
+under your own permission settings: you are asked before each command unless you have allowed such commands without
+asking. What happens is what the CLI does, held to this:
+
+- **Engine.** Only `kube-noob` already on your `PATH`. Not `kubectl noob`, which downloads kube-noob through `uvx`
+  when kube-noob is missing, and no package launcher. If kube-noob is not installed the skill says so and gives the
+  install command; installing is yours to do.
+- **What is read.** A private folder Claude makes for the session (`umask 077 && mktemp -d`), holding what you pasted,
+  written with Claude's file-writing tool. Files you point Claude at: a chart folder (`helm-audit`, which runs your
+  installed `helm template` with an empty Helm home), a rendered chart (`helm template` run by Claude with your
+  approval), a Containerfile and its build context, a must-gather folder, SARIF files and a repository. kube-noob's
+  own local stores, when a skill reads them: incidents (`incidents list`), the learning profile (`learning show`) and
+  its configuration (`config`).
+- **What is not reached.** No command passes `--cluster-enabled`, `--web-enabled`, `--live` or `--online`, so kube-noob
+  reads no cluster and makes no network connection.
+- **What is written, and kept.** Every command runs with `KUBE_NOOB_LEARNING_ENABLED=false`, so ordinary checks write
+  nothing to kube-noob's data folder (without it, `audit`, `diagnose`, `insight` and `policy explain` add rule and
+  playbook ids to `learning.json` there). The private folder is removed with `rm -rf` when the work is done. What stays
+  is what you asked for: files written with `-o` (inside that folder unless you ask Claude to copy them out), learning
+  progress when you read a lesson, submit an exercise or answer a quiz (exercise ids, scores and credits, in
+  `progress/` under the data folder), and a profile or an incident fix only when you ask to save one.
+- **What Claude reads back.** kube-noob's JSON for those files, with `KUBE_NOOB_FOR_MODEL=1`: text from your input that
+  is shaped like instructions is neutralised before Claude reads it.
+
+What you type goes to Claude as it always does. In chat on claude.ai the skills run nothing: they give you the command,
+and you choose what output to paste.
+
+A remote MCP server pointing at your own `kube-noob serve` was considered for this plugin and is not shipped; see
+[SECURITY.md](SECURITY.md#the-directory-plugin-and-a-remote-server).
 
 ## The Agent Skill
 
