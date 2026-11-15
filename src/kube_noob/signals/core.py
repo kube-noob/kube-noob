@@ -111,7 +111,7 @@ def normalise_error(line: str) -> tuple[str, str]:
     for rx, repl in _NORMALISE:
         text = rx.sub(repl, text)
     text = re.sub(r"\s+", " ", text).strip(" .;,")
-    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return text, hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
 
 
 class _Collector:

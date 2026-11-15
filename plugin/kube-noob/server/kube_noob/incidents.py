@@ -509,6 +509,9 @@ def _headline(inc: dict[str, Any]) -> str:
         fixed = f", fixed in {k['fixedIn']}" if k.get("fixedIn") and verdict == "fixed" else ""
         parts.append(f"reported as {k['id']} ({verdict}{fixed})")
         break
+    coverage = analysis.get("knownIssuesCoverage") or {}
+    if coverage.get("status") == "not-determined":  # no "reported as" here is not "not a known bug" (G277)
+        parts.append(f"known issues not determined for OpenShift {coverage.get('version')} (outside the index)")
     changed = analysis.get("whatChanged") or {}
     if changed.get("note"):
         parts.append(changed["note"])

@@ -700,10 +700,18 @@ def match(
         return {"available": False, "matches": [], "note": f"the local Jira copy is unavailable: {exc}"}
 
 
+def _running(version: str | None) -> str | None:
+    """The version compared against fix versions, read as every other surface reads it (kube_noob.versions)."""
+    from kube_noob.versions import read_version
+
+    cv = read_version(version)
+    return cv.numeric if cv else None
+
+
 def _match(con: sqlite3.Connection, text: str, platform: str | None, version: str | None, limit: int) -> dict[str, Any]:
     info = _info(con)
     out: dict[str, Any] = {"available": True, "knowledge": info, "matches": []}
-    running = version if version and re.fullmatch(r"\d+\.\d+(\.\d+)?", version) else None
+    running = _running(version)
     skip_openshift = bool(platform) and platform not in OPENSHIFT_FAMILY
     words = {w for w in _words(text[:200_000]) if _useful(w)}
     n = max(info["tickets"], 1)
@@ -789,7 +797,7 @@ def ticket(key: str, data_dir: Path | None, version: str | None = None) -> dict[
                     "url": f"{DEFAULT_BASE_URL}/browse/{key}",
                     "note": f"{key} is not in the local copy ({info['tickets']} tickets, retrieved {info['asOf']}).",
                 }
-            running = version if version and re.fullmatch(r"\d+\.\d+(\.\d+)?", version) else None
+            running = _running(version)
             item, applies = _present(con, _ticket(row), running, _info(con)["asOf"])
             desc, comments = split_body(row["body"] or "")
             item.update(
