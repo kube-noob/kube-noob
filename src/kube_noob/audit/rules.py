@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from kube_noob import shape
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
 from kube_noob.audit.podspec import (
@@ -220,7 +221,9 @@ def refused_summary(docs: list[Document]) -> str:
     """ "1 Deployment not audited (apiVersion is not well-formed ...)", one clause per kind and reason, sorted."""
     counts: dict[tuple[str, str], int] = {}
     for d in docs:
-        why = refusal(d)
+        # `refusal` first (the apiVersion or the kind), then G276's `object_unreadable` (the identity or the spec):
+        # both return fixed phrases, so neither puts the input's own text in the reason (class 7).
+        why = refusal(d) or object_unreadable(d.data)
         # A kind with no reader, or no kind name at all, is not one the rules know, so its name is the input's
         # own text and stays out of the reason (class 7): "1 object not audited (<fixed phrase>)".
         key = (d.kind, why) if why is not None else ("object", kind_refusal(d) or UNREAD_POD_SPECS)
@@ -263,6 +266,13 @@ class AuditContext:
     absent_subjects: dict[str, list[str]] = field(default_factory=dict)
     #: Rules that declined on part of the input and reported a finding on the rest: evaluated, with the note.
     partly_declined: dict[str, str] = field(default_factory=dict)
+    # Rules that met a field of a type they cannot read (`resources: 1` where a list belongs) and stopped. They are
+    # undecided too, and named with the exception type, because "this rule could not read your input" is part of
+    # the answer and a crash was not (G276).
+    unreadable_shapes: dict[str, str] = field(default_factory=dict)
+    # Rules whose verdict on one object rests on another they could not read (an HPA with `metadata: 7`, a PDB whose
+    # selector is a number): rule id -> the objects. Undecided too, never "no HPA" or "no PDB" (G276).
+    unreadable_partners: dict[str, set[str]] = field(default_factory=dict)
     _has_workloads: bool | None = field(default=None, repr=False)
 
     def cannot_decide(self, rule_id: str, why: str = "", resource: str | None = None) -> None:
@@ -294,6 +304,10 @@ class AuditContext:
                 return True
         plain = [k for k in subject if k not in (ANY_OBJECT, WORKLOAD_SUBJECT)]
         return any(kind_in_group(d, k) for k in plain for d in self.docs)
+
+    def partner_unreadable(self, rule_id: str, ref: str) -> None:
+        self.cannot_decide(rule_id)
+        self.unreadable_partners.setdefault(rule_id, set()).add(ref)
 
     @property
     def is_openshift(self) -> bool:
@@ -353,6 +367,29 @@ class AuditContext:
             ):
                 out.append(d)
         return out
+
+    def unreadable_of(self, subject: tuple[str, ...]) -> list[Document]:
+        """Documents that ARE one of this subject's kinds but whose content the rules cannot read.
+
+        G276's `object_unreadable` (its identity or its spec has the wrong type) and G281's `refusal` (its
+        apiVersion or its kind) are two reasons for the same thing: the object was in the input and was not read.
+        `refused_of` knew only the second, so a Deployment whose `spec` is `.nan` was neither a readable subject
+        nor a refused one, and the subject gate reported "no pod spec in the input (no Pod, Deployment, ...)" --
+        a stated absence for an object the user had passed, which is the refusal-read-as-an-absence this release
+        exists to refuse (class 24). Only documents whose `kind` is a readable string of the subject's kinds:
+        anything less is already `refusal`'s.
+        """
+        kinds = {k for k in subject if k not in (ANY_OBJECT, WORKLOAD_SUBJECT)}
+        if WORKLOAD_SUBJECT in subject:
+            kinds |= set(WORKLOAD_KINDS)
+        return [
+            d
+            for d in self.docs
+            if isinstance(d.data, dict)
+            and isinstance(d.data.get("kind"), str)
+            and d.kind in kinds
+            and object_unreadable(d.data) is not None
+        ]
 
     def unread_pod_spec_docs(self) -> list[Document]:
         """Documents of a kind with no pod-spec reader that carry a pod-spec-shaped mapping (`unread_pod_specs`):
@@ -743,6 +780,8 @@ def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         meta = d.data.get("metadata")
         if not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
+        elif not isinstance(meta.get("name") or meta.get("generateName"), str):
+            missing.append("metadata.name as a string")
         if missing:
             yield r.finding(d, (), f"Missing required field(s): {', '.join(missing)}.", resource=f"doc[{d.index}]")
 
@@ -4379,12 +4418,51 @@ def _has_hpa(ctx: AuditContext, d: Document) -> bool:
     return False
 
 
-def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str]) -> list[Document]:
-    return [
-        p
-        for p in ctx.by_kind("PodDisruptionBudget")
-        if ctx.ns(p) == ctx.ns(d) and selector_matches(get_path(p.data, ("spec", "selector")), labels)
-    ]
+_BUDGET = re.compile(r"^\d+%?\Z")
+
+
+def _pdb_spec(p: Document) -> dict[str, Any]:
+    """A PodDisruptionBudget's spec as the disruption controller reads it, or ``shape.WrongShape``: a selector, label
+    or budget of a type the API server would refuse. Before G276 such a PDB matched nothing or budgeted nothing, and
+    the upgrade scenario called a cluster with an unreadable PDB `mitigated`."""
+    ref = p.ref()
+    spec = shape.mapping(p.data.get("spec") if isinstance(p.data, dict) else None, f"{ref} spec")
+    unknown = set(spec) - {"minAvailable", "maxUnavailable", "selector", "unhealthyPodEvictionPolicy"}
+    if unknown:
+        raise shape.WrongShape(f"{ref} spec.{sorted(map(str, unknown))[0]}", "a PodDisruptionBudget field", spec)
+    sel = spec.get("selector")
+    if sel is not None:
+        sel = shape.mapping(sel, f"{ref} spec.selector")
+        if set(sel) - {"matchLabels", "matchExpressions"}:
+            raise shape.WrongShape(f"{ref} spec.selector", "matchLabels or matchExpressions", sel)
+        for k, v in shape.mapping(sel.get("matchLabels"), f"{ref} spec.selector.matchLabels").items():
+            if not isinstance(v, str):
+                raise shape.WrongShape(f"{ref} spec.selector.matchLabels.{k}", "a string", v)
+        for e in shape.sequence(sel.get("matchExpressions"), f"{ref} spec.selector.matchExpressions"):
+            shape.mapping(e, f"{ref} spec.selector.matchExpressions[]")
+    for key in ("minAvailable", "maxUnavailable"):
+        v = spec.get(key)
+        ok = v is None or (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, str) and _BUDGET.match(v))
+        if not ok:
+            raise shape.WrongShape(f"{ref} spec.{key}", "an integer or a percentage", v)
+    return spec
+
+
+def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str], rule_id: str) -> tuple[list[Document], bool]:
+    """The PDBs that select ``d``, and whether a PDB in its namespace could not be read (so "none" is not known)."""
+    out, unread = [], False
+    for p in ctx.by_kind("PodDisruptionBudget"):
+        if ctx.ns(p) != ctx.ns(d):
+            continue
+        try:
+            spec = _pdb_spec(p)
+        except shape.WrongShape:
+            ctx.partner_unreadable(rule_id, p.ref())
+            unread = True
+            continue
+        if selector_matches(spec.get("selector"), labels):
+            out.append(p)
+    return out, unread
 
 
 @rule(
@@ -4407,7 +4485,10 @@ def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         )
         return
     for d, pt in ctx.workloads():
-        if d.kind in REPLICATED_KINDS and (replicas(d) or 1) >= 2 and not _pdbs_for(ctx, d, pt.labels()):
+        if d.kind not in REPLICATED_KINDS or (replicas(d) or 1) < 2:
+            continue
+        pdbs, unread = _pdbs_for(ctx, d, pt.labels(), r.rule_id)
+        if not pdbs and not unread:
             yield r.finding(d, ("spec",), "No PodDisruptionBudget selects this workload.")
 
 
@@ -4428,8 +4509,8 @@ def _c009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if d.kind not in REPLICATED_KINDS:
             continue
         reps = replicas(d) or 1
-        for p in _pdbs_for(ctx, d, pt.labels()):
-            spec = p.data.get("spec") or {}
+        for p in _pdbs_for(ctx, d, pt.labels(), r.rule_id)[0]:
+            spec = _pdb_spec(p)
             if pdb_allows_no_disruption(spec, reps):
                 yield r.finding(p, ("spec",), f"{p.ref()} allows no disruptions for {d.ref()} ({reps} replicas).")
 
@@ -4675,6 +4756,129 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             )
 
 
+# What a rule raises when an object has a field of a type it cannot use. ArithmeticError: `.nan` and `.inf` reach
+# Decimal and float arithmetic (decimal.InvalidOperation, OverflowError and ZeroDivisionError are all one).
+_SHAPE_ERRORS = (TypeError, AttributeError, KeyError, IndexError, ValueError, ArithmeticError)
+
+
+def _without_unreadable(ctx: AuditContext, r: Rule) -> tuple[list[Finding], list[str]] | None:
+    """Run ``r`` without the documents it fails on by themselves: (its findings, the documents left out), or None when
+    no single document explains the failure or the rule still fails without them."""
+    from dataclasses import replace
+
+    def fresh(docs: list[Document]) -> AuditContext:
+        return replace(ctx, docs=docs, undecided=set(), unreadable_shapes={})
+
+    bad: list[Document] = []
+    for d in ctx.docs:
+        try:
+            list(r.check(fresh([d]), r))  # type: ignore[misc]
+        except _SHAPE_ERRORS:
+            bad.append(d)
+    if not bad or len(bad) == len(ctx.docs):
+        return None
+    left_out = {id(d) for d in bad}
+    rest = fresh([d for d in ctx.docs if id(d) not in left_out])
+    try:
+        found = list(r.check(rest, r))  # type: ignore[misc]
+    except _SHAPE_ERRORS:
+        return None
+    return found, [d.ref() for d in bad]
+
+
+_WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
+# Rules whose verdict on one object rests on other objects -- the PDB that selects a workload, the HPA that scales
+# it, the Service in front of it -- and the kinds they read. When one of those objects cannot be read at all, the
+# rule cannot tell "there is none" from "there is one I could not read", so it is undecided and names the object
+# (G276). A field of the wrong type deeper inside a readable object is the rule's own business (KN-C009 reads a PDB's
+# selector and budget through `_pdb_spec`).
+_PARTNER_KINDS: dict[str, frozenset[str]] = {
+    "KN-C008": frozenset({"PodDisruptionBudget"}) | _WORKLOAD_KINDS,
+    "KN-C009": frozenset({"PodDisruptionBudget"}) | _WORKLOAD_KINDS,
+    "KN-C012": frozenset({"HorizontalPodAutoscaler"}) | _WORKLOAD_KINDS,
+    "KN-C014": frozenset({"HorizontalPodAutoscaler"}) | _WORKLOAD_KINDS,
+    "KN-C013": frozenset({"Secret", "ServiceAccount"}) | _WORKLOAD_KINDS,
+    "KN-V011": frozenset({"Service"}) | _WORKLOAD_KINDS,
+    "KN-V012": frozenset({"Service"}) | _WORKLOAD_KINDS,
+    "KN-V023": frozenset({"Service"}) | _WORKLOAD_KINDS,
+    "KN-N012": frozenset({"NetworkPolicy"}) | _WORKLOAD_KINDS,
+    "KN-ST002": frozenset({"PersistentVolumeClaim"}) | _WORKLOAD_KINDS,
+}
+
+
+def object_unreadable(data: object) -> str | None:
+    """Why this document cannot be read as an object at all -- its identity or its spec -- or None."""
+    if not isinstance(data, dict):
+        return "the document is not a mapping"
+    if not isinstance(data.get("kind"), str):
+        return "its kind is not a string"
+    meta = data.get("metadata")
+    if meta is not None and not isinstance(meta, dict):
+        return "its metadata is not a mapping"
+    for key in ("name", "namespace"):
+        v = (meta or {}).get(key)
+        if v is not None and not isinstance(v, str):
+            return f"its metadata.{key} is not a string"
+    if not isinstance((meta or {}).get("labels") or {}, dict):
+        return "its metadata.labels is not a mapping"
+    if data.get("spec") is not None and not isinstance(data.get("spec"), dict):
+        return "its spec is not a mapping"
+    kind = data["kind"]
+    if kind in POD_SPEC_PATHS:
+        # The pod template is what a Service, PDB or NetworkPolicy selects and what an HPA's target is judged by.
+        path = POD_SPEC_PATHS[kind]
+        node: Any = data
+        for i, step in enumerate(path):
+            node = node.get(step) if isinstance(node, dict) else None
+            if node is not None and not isinstance(node, dict):
+                return f"its {'.'.join(map(str, path[: i + 1]))} is not a mapping"
+        holder: Any = data if kind == "Pod" else _get_mapping(data, path[:-1])
+        tmeta = holder.get("metadata") if isinstance(holder, dict) else None
+        if tmeta is not None and not isinstance(tmeta, dict):
+            return "its pod template's metadata is not a mapping"
+        labels = (tmeta or {}).get("labels")
+        if labels is not None and (
+            not isinstance(labels, dict) or not all(isinstance(v, str) for v in labels.values())
+        ):
+            return "its pod template's labels are not a mapping of strings"
+        pod = node if isinstance(node, dict) else {}
+        for key in ("containers", "initContainers"):
+            v = pod.get(key)
+            if v is not None and (not isinstance(v, list) or not all(isinstance(c, dict) for c in v)):
+                return f"its pod spec's {key} is not a list of mappings"
+    if kind == "HorizontalPodAutoscaler":
+        ref = (data.get("spec") or {}).get("scaleTargetRef")
+        if ref is not None and (
+            not isinstance(ref, dict) or not all(isinstance(ref.get(k), str | None) for k in ("kind", "name"))
+        ):
+            return "its spec.scaleTargetRef is not a kind and a name"
+    return None
+
+
+def _get_mapping(data: dict[str, Any], path: tuple[Any, ...]) -> dict[str, Any] | None:
+    node: Any = data
+    for key in path:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else None
+
+
+def _check_partners(ctx: AuditContext, rule_id: str) -> None:
+    kinds = _PARTNER_KINDS.get(rule_id)
+    if kinds is not None:
+        for d in ctx.docs:
+            known = isinstance(d.data, dict) and isinstance(d.data.get("kind"), str)
+            if (not known or d.kind in kinds) and object_unreadable(d.data):
+                meta_ok = isinstance(d.data, dict) and object_unreadable({**d.data, "spec": None}) is None
+                ctx.partner_unreadable(rule_id, d.ref() if meta_ok else f"document {d.index + 1}")
+    refs = ctx.unreadable_partners.get(rule_id)
+    if refs:
+        names = sorted(refs)
+        more = f" and {len(names) - 10} more" if len(names) > 10 else ""
+        note = f"an object it depends on could not be read: {', '.join(names[:10])}{more}"
+        prior = ctx.unreadable_shapes.get(rule_id)
+        ctx.unreadable_shapes[rule_id] = f"{prior}; {note}" if prior else note
+
+
 def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: list[str] | None = None) -> list[Finding]:
     """Every rule in ``stages``, appending the ids that actually ran to ``evaluated`` when given.
 
@@ -4693,30 +4897,65 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
         if r.check is None:
             continue
         # The declared subject first: a rule whose subject is not in the input has nothing to evaluate and does
-        # not run, whatever else it could have read (G281). The check runs only over a subject that is there.
+        # not run, whatever else it could have read (G281). The check runs only over a subject that is there, so
+        # this gate is before G276's run-and-retry below and not inside it: a rule that never ran cannot have met
+        # a shape it could not read.
         absent: list[str] = []
         refused: list[str] = []
         for sub in r.subjects:
             if ctx.has_subject(sub):
                 continue
-            # The subject was in the input and refused: say that, never "no Deployment in the input" (R1).
-            refused_docs = ctx.refused_of(sub)
-            (refused if refused_docs else absent).append(
-                refused_summary(refused_docs) if refused_docs else subject_label(sub)
-            )
+            # The subject was in the input and not read: say that, never "no Deployment in the input" (R1).
+            # Both reasons count -- refused by its apiVersion or kind (G281), or unreadable in its identity or
+            # spec (G276) -- and a document that is both is named once.
+            present = {d.index: d for d in ctx.refused_of(sub)}
+            present.update({d.index: d for d in ctx.unreadable_of(sub)})
+            not_read = [present[i] for i in sorted(present)]
+            (refused if not_read else absent).append(refused_summary(not_read) if not_read else subject_label(sub))
         if absent or refused:
             ctx.no_subject[r.rule_id] = subject_reason(absent, refused)
             continue
-        before = len(findings)
-        findings.extend(r.check(ctx, r))
+        # Findings the rule produced before it met a shape it could not read are real, so they are kept; the
+        # rule itself is recorded as not evaluated, never as evaluated-and-clean (G276).
+        produced: list[Finding] = []
+        try:
+            for f in r.check(ctx, r):
+                produced.append(f)
+        # ArithmeticError: `.nan` and `.inf` reach Decimal and float arithmetic (decimal.InvalidOperation,
+        # OverflowError, ZeroDivisionError are all ArithmeticError).
+        except _SHAPE_ERRORS as exc:
+            # One object the rule cannot read must not blind it for every other object (G276): find the
+            # objects it fails on alone and run it again without them. Their findings are kept, the rule stays
+            # undecided (it did not read everything) and the objects are named.
+            ctx.cannot_decide(r.rule_id)
+            retried = _without_unreadable(ctx, r)
+            if retried is None:
+                ctx.unreadable_shapes[r.rule_id] = type(exc).__name__
+            else:
+                produced, skipped = retried
+                # Bounded and sorted: on a thousand broken objects the list ran to 154 KB, and its order
+                # followed the input's, so the same bundle shuffled gave a different report (G276).
+                names = sorted(set(skipped))
+                more = f" and {len(names) - 10} more" if len(names) > 10 else ""
+                ctx.unreadable_shapes[r.rule_id] = (
+                    f"{type(exc).__name__}; evaluated without {', '.join(names[:10])}{more}"
+                )
+        _check_partners(ctx, r.rule_id)
+        findings.extend(produced)
         missing = [subject_label((k,)) for k in r.context if not ctx.has_subject((k,))]
         if missing:
             ctx.absent_subjects[r.rule_id] = missing
-        if len(findings) > before and r.rule_id in ctx.undecided:
+        if produced and r.rule_id in ctx.undecided:
             # It declined on one object and reported on another: it RAN. A rule in both `firedRules` and
             # `notEvaluated` was two records of one run (D4). The decline is kept as a note, not as a verdict.
+            # `produced`, not a length comparison on `findings`: G276's retry can replace what the rule produced
+            # rather than append to it, so counting the list afterwards would miss a rule that found something.
+            # G276's own decline carries no `why` (`cannot_decide(rule_id)` alone), so the note falls back to the
+            # unreadable-shape reason rather than popping a key that is not there.
             ctx.undecided.discard(r.rule_id)
-            ctx.partly_declined[r.rule_id] = ctx.declined.pop(r.rule_id)
+            ctx.partly_declined[r.rule_id] = ctx.declined.pop(r.rule_id, "") or ctx.unreadable_shapes.get(
+                r.rule_id, "a field in this input has a type it cannot read"
+            )
         if evaluated is not None and r.rule_id not in ctx.undecided:
             evaluated.append(r.rule_id)
     return findings

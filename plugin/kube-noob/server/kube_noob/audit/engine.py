@@ -10,7 +10,14 @@ from kube_noob.audit.model import Report, Severity, Stage
 from kube_noob.audit.podspec import operator_supplied_images, unread_pod_specs
 from kube_noob.audit.redteam import red_team
 from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refusal, run_rules
-from kube_noob.catalog import LEGACY_OPENSHIFT_V1, OPENSHIFT_FAMILY, PLATFORMS, api_group, k8s_version_for
+from kube_noob.catalog import (
+    KIND_API_VERSIONS,
+    LEGACY_OPENSHIFT_V1,
+    OPENSHIFT_FAMILY,
+    PLATFORMS,
+    api_group,
+    k8s_version_for,
+)
 from kube_noob.errors import ConfigError
 from kube_noob.schemas.validate import validate_documents
 from kube_noob.yamlio import Document, load_documents
@@ -150,6 +157,36 @@ def analyze(
         report.assumptions.append(
             f"{report.not_audited[-1]['object']} {detail}; it was not audited, so this verdict is undetermined."
         )
+    # G276's two summary lines, kept beside the per-object rows above. The rows say which object and make the
+    # verdict undetermined; these say how many and in what way, which is what a reader of the summary alone had.
+    # Both are the same fact, so neither may contradict the other: they are built from `docs`, not from a second
+    # idea of what "not an object" means.
+    # `shape_why`, not `why`: the loop above binds `why` as a `str`, and a walrus in a comprehension binds in
+    # the enclosing scope, so reusing the name made it `str | None` there. mypy caught it on the merge.
+    unaudited = [
+        f"document {d.index + 1} ({shape_why})" for d in docs if (shape_why := _not_an_object(d.data)) is not None
+    ]
+    if unaudited:
+        # `kind: [Pod]`, `kind: pod`, a document with no kind or one that is a bare number all used to count as an
+        # audited resource with nothing found: no rule recognised the kind, so none fired (G276).
+        report.assumptions.append(
+            f"{len(unaudited)} document(s) are not Kubernetes objects any rule can read, so they are NOT audited: "
+            f"{', '.join(unaudited[:10])}{f' and {len(unaudited) - 10} more' if len(unaudited) > 10 else ''}."
+        )
+    odd_api = [
+        f"document {d.index + 1}"
+        for d in docs
+        if isinstance(d.data, dict)
+        and isinstance(d.data.get("kind"), str)
+        and _not_an_object(d.data) is None
+        and not isinstance(d.data.get("apiVersion"), str | None)
+    ]
+    if odd_api:
+        # G281 names these per object above and withholds the verdict; this line keeps G276's count beside it.
+        report.assumptions.append(
+            f"{len(odd_api)} document(s) have an apiVersion that is not a string: {', '.join(odd_api[:10])}. They "
+            "were read by their kind, and kubectl and oc would refuse to apply them."
+        )
     if not docs:
         report.assumptions.append("Input contained no YAML documents.")
         return report
@@ -157,11 +194,26 @@ def analyze(
     evaluated: list[str] = []
     findings = run_rules(ctx, rule_stages, evaluated) if rule_stages else []
     report.evaluated_rules = evaluated
+    if ctx.unreadable_shapes:
+        # A field of the wrong type (`resources: 1`) used to crash the whole audit, exit 1 (G276). Now each rule that
+        # cannot read it is named here and left out of the evaluated list; the schema check reports the field.
+        # `shapes_named`, not `named`: `named` means something else a few lines up, and one name for two things is
+        # how a merge turns two correct blocks into one wrong one.
+        shapes_named = ", ".join(f"{rid} ({kind})" for rid, kind in sorted(ctx.unreadable_shapes.items()))
+        report.assumptions.append(
+            f"{len(ctx.unreadable_shapes)} rule(s) were not evaluated because a field in the input has the wrong type "
+            f"for what the rule reads: {shapes_named}. Fix the field (the schema findings name it) and audit again."
+        )
     # Every rule that is not in `evaluated` is here with its reason, so the record never has a rule that is
-    # neither checked nor accounted for: the stage the caller left out, the guard that declined, or the kind
-    # that was not in the input (G281). Sorted by id: the same input gives the same bytes.
+    # neither checked nor accounted for: the stage the caller left out, the guard that declined, the kind
+    # that was not in the input (G281), or a field whose type the rule cannot read (G276). The G276 rules were
+    # named in the assumption line above and NOWHERE in this record, so `controlSummary`, the KSI page, the OSCAL
+    # document and the gate each had a rule they did not account for -- the gap this record exists to close. The
+    # reasons that name an object come last, so a rule with one of those keeps it. Sorted by id: same input, same
+    # bytes.
     not_evaluated = {
         **{r.rule_id: f"stage {r.stage.value} was not requested" for r in RULES.values() if r.stage not in rule_stages},
+        **{rid: f"could not read the input: {why}" for rid, why in ctx.unreadable_shapes.items()},
         **ctx.declined,
         **ctx.no_subject,
     }
@@ -270,3 +322,22 @@ def refuse_if_not_manifests(manifests: str | list[Document]) -> None:
         f"nothing here is a Kubernetes manifest ({'this looks like ' + what if looks_like_values else what}): "
         f"no document has both apiVersion and kind, so none of the audit rules apply. {how}"
     )
+
+
+_KINDS_BY_FOLDED = {k.lower(): k for k in KIND_API_VERSIONS}
+
+
+def _not_an_object(data: object) -> str | None:
+    """Why no rule can read this document as a Kubernetes object, or None when one can (G276). A kind kube-noob does
+    not know (a CRD's) is an object: no rule is written for it, and that is not news. A kind that is a known one
+    spelt in another case or with spaces is not: the API server would refuse it, and every rule passed it by."""
+    if not isinstance(data, dict):
+        return "not a mapping"
+    kind = data.get("kind")
+    if kind is None or kind == "":
+        return "no kind"
+    if not isinstance(kind, str):
+        return f"kind is {type(kind).__name__}, not a string"
+    if kind not in KIND_API_VERSIONS and kind.strip().lower() in _KINDS_BY_FOLDED:
+        return f"kind {kind!r} is not {_KINDS_BY_FOLDED[kind.strip().lower()]!r}: kinds are exact"
+    return None

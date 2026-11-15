@@ -26,7 +26,7 @@
     {
       "name": "kube-noob-skills",
       "source": "./plugin/kube-noob-skills",
-      "description": "The same Kubernetes, OpenShift, ROSA, Helm and RHACS knowledge as skills alone. No MCP server and no code: install kube-noob@kube-noob instead if you want the tools.",
+      "description": "The same seven skills, driving the kube-noob CLI you install yourself through Claude's Bash tool instead of an MCP server (kube-noob 0.9.3 or later). Markdown, a manifest and an icon: no server and no code in the plugin. Install kube-noob@kube-noob instead if you want the engine as MCP tools.",
       "version": "0.9.2",
       "license": "Apache-2.0",
       "keywords": [
