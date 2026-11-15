@@ -4,23 +4,28 @@ verdict: not-evaluated
 summary: 'A PodDisruptionBudget with `selector: 7` beside a Deployment: the first version crashed `redteam`; the
   fix made KN-C009 decline, and RT-UPGRADE-BLOCK, which reads only KN-C009, then called the upgrade path `mitigated`
   on a rule that had not run.'
-provenance: plugin/directory-engine reviews one and two (G276)
-expected_on: plugin/directory-engine
+provenance: 'plugin/directory-engine reviews one and two (G276). G276 landed on main as a090ac9 and this did
+  NOT come with it: `redteam` on the input still answers `exposed` for every scenario while the assumptions say
+  KN-C008 and KN-C009 could not read the PodDisruptionBudget. Checked against rules/control-plane,
+  verify/pre-action, fix/coverage-absent-kinds and fix/live-false-passes as well, and none of them fixes it, so
+  it is open on main with no owner. Its old probe -- "does `redteam` print an assumptions key" -- held the day
+  G276 landed without the behaviour landing, which is a probe that cannot tell the fix from its neighbour; the
+  one below is the fix itself.'
+expected_on: main
 probe:
   json:
     argv:
     - redteam
     - -f
-    - '{probes}/pod.yaml'
+    - '{probes}/pdb-selector-int.yaml'
     - --platform
     - kubernetes
     - --version
     - '1.35'
     - --format
     - json
-    path: assumptions
-    value:
-      exists: true
+    path: scenarios[*].verdict
+    value: undecided
 inputs: shape-pdb-selector-int
 cli:
   argv:

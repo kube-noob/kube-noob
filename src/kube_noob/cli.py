@@ -181,6 +181,89 @@ def _read_text_or_file(value: str, command: str = "diagnose") -> str:
     return value
 
 
+# `KUBE_NOOB_FOR_MODEL=1`: the CLI's JSON and YAML are being read by a model (the directory plugin's skills run the
+# CLI through Claude's Bash tool), so they get what the MCP server gives a model and the terminal does not need
+# (G276): every string passes through `kube_noob.sanitize` (text from the input shaped like instructions is
+# neutralised, the result flagged `untrusted`), `knowledgeAsOf` is stamped as `tool_runner` stamps it, and the keys
+# that say what was NOT read or decided come first, because a reader that sees only the start of a long result (a
+# tool output cap) must still see them. An environment variable rather than a flag so that a command line written
+# for this mode still runs on a release that does not have it; such a release prints no `forModel` key, and the
+# skills say so. Unset, output is byte-for-byte what it was.
+FOR_MODEL_ENV = "KUBE_NOOB_FOR_MODEL"
+FIRST_KEYS = (
+    "verdict",
+    "status",
+    "undetermined",
+    "undeterminedBy",
+    "untrusted",
+    "injectionSignals",
+    "injectionSignalsTruncated",
+    "knowledgeAsOf",
+    "assumptions",
+    "unreadable",
+    "notEvaluated",
+    "notRead",
+    "notChecked",
+    "unparsed",
+    "coverage",
+    "skipped",
+    "limitations",
+    "withheld",
+    "excluded",
+    "notShipped",
+    "secretsIgnored",
+    "openQuestions",
+    "note",
+    "notes",
+    "causeNote",
+    "summary",
+    "redTeam",
+)
+# Set once per run in `main`, from the settings, when the mode is on.
+_MODEL_KNOWLEDGE: dict[str, str] = {}
+
+
+def _for_model() -> bool:
+    return os.environ.get(FOR_MODEL_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def for_model(obj: Any) -> Any:
+    """The document a model reads: sanitised, flagged, stamped, the not-evaluated keys first. Non-dicts are only
+    sanitised."""
+    from kube_noob import sanitize
+
+    cleaned = sanitize.result(obj)
+    if not isinstance(cleaned, dict):
+        return cleaned
+    if "line" in _MODEL_KNOWLEDGE:
+        cleaned.setdefault("knowledgeAsOf", _MODEL_KNOWLEDGE["line"])
+    out: dict[str, Any] = {"forModel": True}
+    out.update({k: cleaned[k] for k in FIRST_KEYS if k in cleaned})
+    out.update({k: v for k, v in cleaned.items() if k not in out})
+    return out
+
+
+def _debug() -> bool:
+    return os.environ.get("KUBE_NOOB_DEBUG", "").lower() in ("1", "true", "yes")
+
+
+def _is_validation_error(exc: BaseException) -> bool:
+    from pydantic import ValidationError
+
+    return isinstance(exc, ValidationError)
+
+
+def _error_line(line: str) -> str:
+    """An error message, cleaned like a result in the model mode: an error can quote the input (a file name, a field
+    value), and the skills read it when the exit is not 0 or 1 (G276)."""
+    if not _for_model():
+        return line
+    from kube_noob import sanitize
+
+    cleaned, found = sanitize.clean(line, "error")
+    return cleaned + (" [untrusted: text shaped like instructions was removed]" if found else "")
+
+
 def _raw_stdout() -> Any:
     """The stream under the text boundary: a document goes here, byte for byte, so `cmd > f` equals `cmd -o f`."""
     return getattr(sys.stdout, "_inner", sys.stdout)
@@ -213,6 +296,8 @@ def _emit(obj: Any, fmt: str) -> None:
     are terminal-safe and load back to exactly the data (G279)."""
     from kube_noob.yamlio import dump_yaml
 
+    if _for_model():
+        obj = for_model(obj)
     if fmt == "json":
         _write_document(json_document(obj, indent=2, default=str) + "\n")
     else:
@@ -546,8 +631,10 @@ def _print_report(rep: dict[str, Any]) -> None:
         print()
         print(render_text(cov), end="")
     for sc in rep.get("redTeam", []):
-        if sc["verdict"] == "exposed":
-            print(f"[RED-TEAM {sc['severity'].upper()}] {sc['scenarioId']}: {sc['question']}")
+        if sc["verdict"] in ("exposed", "undecided"):
+            # An undecided scenario could not read its input; printed so a terminal reader does not take it as clean.
+            label = sc["severity"].upper() if sc["verdict"] == "exposed" else "UNDECIDED"
+            print(f"[RED-TEAM {label}] {sc['scenarioId']}: {sc['question']}")
             for e in sc["evidence"][:4]:
                 print(f"           - {e}")
 
@@ -1930,7 +2017,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     posub = pos.add_subparsers(dest="posture_cmd", required=True)
     _patch(posub, common)
-    psc = posub.add_parser("scan", help="Rank the attack paths in manifests (-f) or the live cluster (--live)")
+    psc = posub.add_parser(
+        "scan",
+        help="Rank the attack paths in manifests (-f) or the live cluster (--live)",
+        description="Rank the attack paths in manifests (-f) or the live cluster (--live). With --fail-above: exit 1 "
+        "when a path scores above it; exit 5 when an object or a read was refused (an object of the wrong shape, "
+        "a read the cluster forbade or did not answer), listed under `refused`, because the gate did not see "
+        "everything; otherwise 0. What was absent rather than refused (a CRD the cluster does not serve, a role "
+        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete.",
+    )
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
     psc.add_argument(
@@ -1944,7 +2039,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     psc.add_argument("--top", type=int, default=20, help="paths to show (1-200, default 20)")
     psc.add_argument(
-        "--fail-above", type=int, default=None, help="exit 1 when a path scores above this (CI gate; max score 30)"
+        "--fail-above",
+        type=int,
+        default=None,
+        help="exit 1 when a path scores above this (CI gate; max score 30); exit 5 when something was refused",
+    )
+    psc.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="with --fail-above: exit 5 when anything at all is under notRead, absent as well as refused",
     )
 
     prc = posub.add_parser(
@@ -1981,8 +2084,9 @@ def build_parser() -> argparse.ArgumentParser:
     prc.add_argument(
         "--require-complete",
         action="store_true",
-        help="exit 5 unless the answer is complete: every leg determined, nothing truncated, and -- for files -- "
-        "--whole-bundle given, since a set of files cannot show the bindings and Services it leaves out",
+        help="exit 5 unless the answer is complete: every leg determined, nothing truncated, nothing under notRead "
+        "(refused or absent), and -- for files -- --whole-bundle given, since a set of files cannot show the "
+        "bindings and Services it leaves out",
     )
     prc.add_argument(
         "--whole-bundle",
@@ -2528,7 +2632,10 @@ def _unexpected(exc: BaseException) -> int:
         print("".join(traceback.format_exception(exc)), end="", file=sys.stderr)
     msg = sanitize.one_line(str(exc))[:500]
     print(
-        f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)",
+        _error_line(
+            f"error: unexpected {type(exc).__name__}: {msg} (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the "
+            "traceback)"
+        ),
         file=sys.stderr,
     )
     return 4
@@ -2592,16 +2699,26 @@ def _main(a: argparse.Namespace) -> int:
         return 2
     try:
         s = _settings(a)
+        if _for_model():
+            from kube_noob.knowledge_status import line as knowledge_line
+
+            _MODEL_KNOWLEDGE["line"] = knowledge_line(s.data_dir)
         return _dispatch(a, s)
     except ClarificationNeeded as exc:
         _emit({"status": "needs-clarification", "questions": exc.questions}, "yaml" if a.format == "text" else a.format)
         return 3
     except (ConfigError, FileNotFoundError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(_error_line(f"error: {exc}"), file=sys.stderr)
         return 2
     except (KubeNoobError, KeyError, ValueError) as exc:
+        # All three are exit 4. A KubeNoobError, and pydantic's ValidationError for an argument a model refused, is a
+        # deliberate refusal. A bare KeyError or ValueError can be either a refusal or a bug, and the CLI cannot tell
+        # which; under KUBE_NOOB_DEBUG they are left to `_unexpected`, which prints the traceback through the output
+        # boundary, so a test or a fuzz can tell the two apart by it (G276, G279).
+        if not isinstance(exc, KubeNoobError) and not _is_validation_error(exc) and _debug():
+            raise
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
-        print(f"error: {msg}", file=sys.stderr)
+        print(_error_line(f"error: {msg}"), file=sys.stderr)
         return 4
     except KeyboardInterrupt:
         # Ctrl-C: whatever was half-written has been rolled back by the code that wrote it (examples copy); one line
@@ -2724,17 +2841,17 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 f"{' and more' if len(sources) > 3 else ''}). Run `fix` per file to keep them.",
                 file=sys.stderr,
             )
+        log = {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]}
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
+            if a.format == "json":
+                # The YAML went to the file, so stdout is free for the document `--format json` asked for: the change
+                # log as JSON, where it used to go to stderr as YAML and leave stdout empty (G276).
+                _emit({"output": a.output, **log}, "json")
+                return 0
         else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
             _write_document(res["manifests"])
-        print(
-            yaml.safe_dump(
-                {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]},
-                sort_keys=False,
-            ),
-            file=sys.stderr,
-        )
+        print(yaml.safe_dump(log, sort_keys=False), file=sys.stderr)
         return 0
 
     if a.cmd == "protocol":
@@ -2772,14 +2889,16 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             if out["status"] != "ok":
                 _emit(out, fmt)
                 return 3
+            report = {k: out[k] for k in ("assumptions", "prerequisites", "audit")}
             if a.output:
                 Path(a.output).write_text(out["manifests"], encoding="utf-8")
+                if a.format == "json":
+                    # As for `fix -o`: the manifests are in the file, the report is the JSON document (G276).
+                    _emit({"output": a.output, **report}, "json")
+                    return 0
             else:
                 _write_document(out["manifests"])
-            print(
-                yaml.safe_dump({k: out[k] for k in ("assumptions", "prerequisites", "audit")}, sort_keys=False),
-                file=sys.stderr,
-            )
+            print(yaml.safe_dump(report, sort_keys=False), file=sys.stderr)
             return 0
         from kube_noob.generate.helm import generate_chart
 
@@ -2793,9 +2912,14 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         chart_report, lint = audit_chart(a.chart, a.platform, a.pversion, a.values, a.namespace)
         d = chart_report.as_dict()
         d["chartLint"] = lint
-        _print_report(d) if a.format == "text" else _emit(d, fmt)
-        for issue in lint:
-            print(f"[CHART] {issue}")
+        if a.format == "text":
+            _print_report(d)
+            for issue in lint:
+                print(f"[CHART] {issue}")
+        else:
+            # The lint issues are already in the document as `chartLint`. Printing them after it as well made the
+            # JSON output two things, and no JSON parser reads that (G276).
+            _emit(d, fmt)
         top = chart_report.max_severity()
         return 1 if top is not None and top >= 3 else 0
 
@@ -3818,7 +3942,18 @@ def _posture_reach(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         print(br.to_mermaid(out))
     else:
         _emit(out, fmt)
-    return 5 if a.require_complete and not out["complete"] else 0
+    if not a.require_complete:
+        return 0
+    # Incomplete is a leg not determined, a truncated graph, file input not asserted whole -- and anything at all
+    # under notRead, refused or absent: a front to a Service the files do not carry in another namespace is not in
+    # this workload's graph, and the answer still did not read everything it was given (G276).
+    if not out["complete"] or out["notRead"]:
+        total = len(out["notRead"]) + int(out.get("notReadWithheld", 0))
+        if total:
+            refused = len(out["refused"]) + int(out.get("refusedWithheld", 0))
+            print(f"incomplete: {total} object(s) not read, {refused} of them refused; see notRead", file=sys.stderr)
+        return 5
+    return 0
 
 
 def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
@@ -3870,7 +4005,16 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 _tprint(f"        {flat(st['evidence'])}")
             _tprint("    fix: " + "; or ".join(flat(f) for f in path["fix"]))
         if out["notRead"]:
-            _tprint("\nnot read: " + "; ".join(flat(n) for n in out["notRead"][:10]))
+            # The JSON caps the list at 50 and counts the rest; the text said neither (G276).
+            total = len(out["notRead"]) + int(out.get("notReadWithheld", 0))
+            more = f"; and {total - 10} more" if total > 10 else ""
+            _tprint(f"\n{total} object(s) not read: " + "; ".join(flat(n) for n in out["notRead"][:10]) + more)
+        if out.get("refused"):
+            # The part a gate fails on, in the text view as well as the JSON (G221's rule, G276).
+            total = len(out["refused"]) + int(out.get("refusedWithheld", 0))
+            more = f"; and {total - 10} more" if total > 10 else ""
+            listed = "; ".join(flat(n) for n in out["refused"][:10])
+            _tprint(f"{total} of them refused (a gate fails on these): {listed}{more}")
         for note in (out.get("assumptions") or [])[:10]:
             _tprint(f"assumed: {flat(note)}")
         if out["secretsIgnored"]:
@@ -3883,7 +4027,22 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
-    return 1 if a.fail_above is not None and top_score > a.fail_above else 0
+    if a.fail_above is None:
+        return 0
+    if top_score > a.fail_above:
+        return 1
+    # A gate that was refused part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
+    # privileged Deployment used to leave total 0 and exit 0. Only a refusal counts by default: a CRD the cluster
+    # does not serve or a built-in role the bundle does not carry is normal, and gating on it meant no live scan
+    # without KServe and Ray could ever pass. --require-complete gates on those too.
+    key = "notRead" if a.require_complete else "refused"
+    if out[key]:
+        withheld = int(out.get(f"{key}Withheld", 0))
+        what = "not read" if a.require_complete else "refused"
+        unlisted = f", {withheld} not listed" if withheld else ""
+        print(f"incomplete: {len(out[key]) + withheld} object(s) {what}{unlisted}; see {key}", file=sys.stderr)
+        return 5
+    return 0
 
 
 _OPERATOR_SUFFIXES = (".yaml", ".yml", ".json")

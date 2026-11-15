@@ -42,7 +42,7 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 1 | a skipped input reads as complete | 7 | 5 | 2 |
 | 2 | truncation hides the worst item | 3 | 3 | 0 |
 | 3 | substring matching on errors or kinds | 5 | 5 | 0 |
-| 4 | an unknown or unrecognised value reads as the benign default | 20 | 18 | 2 |
+| 4 | an unknown or unrecognised value reads as the benign default | 20 | 19 | 1 |
 | 5 | duplicates and ordering | 4 | 4 | 0 |
 | 6 | the caveat exists only in JSON | 6 | 6 | 0 |
 | 7 | input-derived strings forge output | 4 | 3 | 1 |
@@ -54,14 +54,14 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 13 | the verdict word contradicts the counts | 5 | 2 | 3 |
 | 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 |
 | 15 | a match tier hides what it did not match | 2 | 2 | 0 |
-| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 |
+| 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 8 | 0 |
 | 17 | untrusted text in fields that read as the tool's own words | 2 | 2 | 0 |
 | 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 |
 | 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 |
 | 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 |
-| 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 |
+| 21 | fixing the reported shape, not its neighbours | 5 | 2 | 3 |
 | 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 |
-| | **total** | **91** | **63** | **28** |
+| | **total** | **91** | **67** | **24** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -76,8 +76,7 @@ Classes with no case, and where the shape is held instead:
 
 | Source | Cases | Classes |
 |---|---|---|
-| `main` | 64 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
-| `plugin/directory-engine` | 5 | 4, 13, 16, 21 |
+| `main` | 69 | 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 14, 15, 16, 17, 21 |
 | `rules/control-plane` | 10 | 7, 13, 14, 21, 22 |
 | `verify/pre-action` | 12 | 1, 4, 22 |
 
@@ -259,11 +258,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/m.yaml --whole-bundle --require-complete --format json`; tool `posture_reach`
   - forbidden: rbac none, 'no binding in the input names' the account, complete
   - found: posture/blast-radius review of 4d7b00d (G273), defect 10 (landed on main as 266f4f2, so this case enforces)
-- **`shape-a-document-whose-kind-is-a-list-is-named-not-audited`** (not-evaluated -- waits for `plugin/directory-engine`)
+- **`shape-a-document-whose-kind-is-a-list-is-named-not-audited`** (not-evaluated)
   - A privileged, hostNetwork pod whose `kind` is `[Pod]`: no rule could read it, and the audit passed it clean beside the pod it could read, saying nothing about a document it had not audited; `fix` on the same file crashed with an unhashable list.
   - `kube-noob audit -f {inputs}/k.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: the document with the unreadable kind absent from assumptions, the bundle clean
-  - found: plugin/directory-engine reviews one and two (G276)
+  - found: plugin/directory-engine reviews one and two (G276); landed on main as a090ac9, so this case enforces. The expectation below was recorded as "kind or apiVersion that is not a string", a sentence the fix did not use; it now quotes the one that shipped. The forbidden outcomes are unchanged.
 - **`verify-a-strategic-merge-patch-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - A strategic merge patch that turns hostNetwork on, against an object verify does not have: strategic merge joins lists by keys only the API server knows, so the result cannot be computed and must not be allowed.
   - `kube-noob verify --command kubectl patch deployment web -p '{"spec":{"template":{"spec":{"hostNetwork":true}}}}' --format json`; tool `verify_change`
@@ -397,11 +396,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob operators inventory -f {inputs}/ops.yaml --format json`; tool `operator_inventory`
   - forbidden: counts.installed 2 beside two operators whose state is subscription-not-read
   - found: G282 review (Q5) on main at 68fdc3a; open on main, so it waits for the fix
-- **`shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated`** (not-evaluated -- waits for `plugin/directory-engine`)
+- **`shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated`** (not-evaluated -- known failing on main)
   - A PodDisruptionBudget with `selector: 7` beside a Deployment: the first version crashed `redteam`; the fix made KN-C009 decline, and RT-UPGRADE-BLOCK, which reads only KN-C009, then called the upgrade path `mitigated` on a rule that had not run.
   - `kube-noob redteam -f {inputs}/pdb.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: a traceback with exit 1, or RT-UPGRADE-BLOCK mitigated
-  - found: plugin/directory-engine reviews one and two (G276)
+  - found: plugin/directory-engine reviews one and two (G276). G276 landed on main as a090ac9 and this did NOT come with it: `redteam` on the input still answers `exposed` for every scenario while the assumptions say KN-C008 and KN-C009 could not read the PodDisruptionBudget. Checked against rules/control-plane, verify/pre-action, fix/coverage-absent-kinds and fix/live-false-passes as well, and none of them fixes it, so it is open on main with no owner. Its old probe -- "does `redteam` print an assumptions key" -- held the day G276 landed without the behaviour landing, which is a probe that cannot tell the fix from its neighbour; the one below is the fix itself.
 
 ### Class 14: a rule about a kind that is absent counts as evaluated and clean
 
@@ -471,16 +470,16 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob policy reach --from monitoring/prometheus --to shop/orders --port 8080 --live --format json`; tool `cluster_check_traffic`
   - forbidden: a Python traceback on stderr, exit 1 read as findings
   - found: fix/absent-vs-unread reviews one and two (G279) (landed on main as 0a18277, so this case enforces)
-- **`shape-a-wrong-typed-field-is-not-evaluated-not-a-crash`** (not-evaluated -- waits for `plugin/directory-engine`)
+- **`shape-a-wrong-typed-field-is-not-evaluated-not-a-crash`** (not-evaluated)
   - A Role with `resources: 1`: the rule that reads it raised, nothing caught it, and Python's exit status 1 -- this CLI's 'findings at or above --fail-on' -- went to the pipeline with a traceback, so a crash was read as a policy violation.
   - `kube-noob audit -f {inputs}/role.yaml --platform kubernetes --version 1.35 --format json`; tool `audit_manifests`
   - forbidden: a Python traceback and exit 1
-  - found: plugin/directory-engine reviews one and two (G276)
-- **`shape-fix-leaves-a-document-it-cannot-read-and-says-so`** (not-evaluated -- waits for `plugin/directory-engine`)
+  - found: plugin/directory-engine reviews one and two (G276) (landed on main as a090ac9, so this case enforces)
+- **`shape-fix-leaves-a-document-it-cannot-read-and-says-so`** (not-evaluated)
   - `fix` on the same file: `kind in {...}` on a list raised TypeError and the command died with a traceback (exit 1); a document the fixer cannot read must be left exactly as it was and listed under manualFollowUps.
   - `kube-noob fix -f {inputs}/k.yaml --platform kubernetes --version 1.35`
   - forbidden: a traceback, exit 1
-  - found: plugin/directory-engine reviews one and two (G276)
+  - found: plugin/directory-engine reviews one and two (G276) (landed on main as a090ac9, so this case enforces)
 
 ### Class 17: untrusted text in fields that read as the tool's own words
 
@@ -517,11 +516,11 @@ Classes with no case, and where the shape is held instead:
   - `kube-noob posture reach deployment/web -n shop -f {inputs}/i.yaml --whole-bundle --require-complete --format json`
   - forbidden: exposure none: the malformed Ingress read as an Ingress that routes nothing
   - found: posture/blast-radius fourth review (G273), neighbours of item 10 (landed on main as 266f4f2, so this case enforces)
-- **`shape-an-access-mode-that-is-a-float-is-not-evaluated`** (not-evaluated -- waits for `plugin/directory-engine`)
+- **`shape-an-access-mode-that-is-a-float-is-not-evaluated`** (not-evaluated)
   - A PersistentVolumeClaim with `accessModes: .inf` (YAML reads it as infinity): after the reviewed shapes were fixed, this neighbour still crashed KN-ST001 with 'argument of type float is not iterable', exit 1.
   - `kube-noob audit -f {inputs}/pvc.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: a traceback, exit 1
-  - found: plugin/directory-engine reviews one and two (G276), fuzz rerun
+  - found: plugin/directory-engine reviews one and two (G276), fuzz rerun (landed on main as a090ac9, so this case enforces)
 
 ### Class 22: parsing argv or flags without the real parser's rules
 

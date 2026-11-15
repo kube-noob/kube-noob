@@ -3,23 +3,7 @@ class: 16
 verdict: not-evaluated
 summary: '`fix` on the same file: `kind in {...}` on a list raised TypeError and the command died with a traceback
   (exit 1); a document the fixer cannot read must be left exactly as it was and listed under manualFollowUps.'
-provenance: plugin/directory-engine reviews one and two (G276)
-expected_on: plugin/directory-engine
-probe:
-  json:
-    argv:
-    - redteam
-    - -f
-    - '{probes}/pod.yaml'
-    - --platform
-    - kubernetes
-    - --version
-    - '1.35'
-    - --format
-    - json
-    path: assumptions
-    value:
-      exists: true
+provenance: plugin/directory-engine reviews one and two (G276) (landed on main as a090ac9, so this case enforces)
 inputs: shape-kind-list
 cli:
   argv:

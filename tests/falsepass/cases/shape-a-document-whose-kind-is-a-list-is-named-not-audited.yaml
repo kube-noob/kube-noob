@@ -4,23 +4,9 @@ verdict: not-evaluated
 summary: 'A privileged, hostNetwork pod whose `kind` is `[Pod]`: no rule could read it, and the audit passed it
   clean beside the pod it could read, saying nothing about a document it had not audited; `fix` on the same file
   crashed with an unhashable list.'
-provenance: plugin/directory-engine reviews one and two (G276)
-expected_on: plugin/directory-engine
-probe:
-  json:
-    argv:
-    - redteam
-    - -f
-    - '{probes}/pod.yaml'
-    - --platform
-    - kubernetes
-    - --version
-    - '1.35'
-    - --format
-    - json
-    path: assumptions
-    value:
-      exists: true
+provenance: 'plugin/directory-engine reviews one and two (G276); landed on main as a090ac9, so this case enforces.
+  The expectation below was recorded as "kind or apiVersion that is not a string", a sentence the fix did not use;
+  it now quotes the one that shipped. The forbidden outcomes are unchanged.'
 inputs: shape-kind-list
 cli:
   argv:
@@ -36,7 +22,7 @@ cli:
 expect:
   json_any:
     assumptions[*]:
-      contains: kind or apiVersion that is not a string
+      contains: are not Kubernetes objects any rule can read
 forbid:
   what: the document with the unreadable kind absent from assumptions, the bundle clean
   stderr:

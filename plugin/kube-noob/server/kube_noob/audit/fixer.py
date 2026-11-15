@@ -11,6 +11,7 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from kube_noob import shape
 from kube_noob.audit.podspec import (
     PodTemplate,
     containers,
@@ -157,7 +158,7 @@ class _Fixer:
             port_obj = {"number": port} if isinstance(port, int) else {"name": str(port)}
             return {"service": {"name": backend["serviceName"], "port": port_obj}}
 
-        spec = obj.get("spec") or {}
+        spec = shape.mapping(obj.get("spec"), f"{doc.ref()} spec")
         if isinstance(spec.get("backend"), dict):
             spec["defaultBackend"] = conv(spec.pop("backend"))
         for rule_ in spec.get("rules") or []:
@@ -177,7 +178,7 @@ class _Fixer:
 
     def _migrate_hpa_v2beta1(self, doc: Document, obj: dict[str, Any]) -> None:
         obj["apiVersion"] = "autoscaling/v2"
-        for m in (obj.get("spec") or {}).get("metrics") or []:
+        for m in shape.sequence(shape.mapping(obj.get("spec"), f"{doc.ref()} spec").get("metrics"), "spec.metrics"):
             res = m.get("resource") if isinstance(m, dict) else None
             if isinstance(res, dict) and "targetAverageUtilization" in res:
                 res["target"] = {"type": "Utilization", "averageUtilization": res.pop("targetAverageUtilization")}
@@ -287,7 +288,8 @@ class _Fixer:
                     "with a non-root USER and remove runAsUser: 0."
                 )
             caps = _ensure_dict(sc, "capabilities")
-            added = {str(x).upper().removeprefix("CAP_") for x in (caps.get("add") or []) if isinstance(x, str)}
+            adds = shape.sequence(caps.get("add"), f"{doc.ref()} container '{c.name}' capabilities.add")
+            added = {str(x).upper().removeprefix("CAP_") for x in adds if isinstance(x, str)}
             # The API server rejects allowPrivilegeEscalation: false together with privileged: true or an added
             # CAP_SYS_ADMIN, and a privileged container ignores capability drops: leave those to a manual fix.
             privileged = sc.get("privileged") is True or "SYS_ADMIN" in added
@@ -351,7 +353,7 @@ class _Fixer:
 
     # -- network / storage / availability ---------------------------------------------------------------
     def fix_route(self, doc: Document, obj: dict[str, Any]) -> None:
-        spec = obj.setdefault("spec", {})
+        spec = shape.mapping(obj.setdefault("spec", {}), f"{doc.ref()} spec")
         tls = spec.get("tls")
         if not isinstance(tls, dict):
             spec["tls"] = {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}
@@ -375,8 +377,10 @@ class _Fixer:
             )
 
     def fix_pdb(self, doc: Document, obj: dict[str, Any], all_objs: list[dict[str, Any]]) -> None:
-        spec = obj.get("spec") or {}
+        spec = shape.mapping(obj.get("spec"), f"{doc.ref()} spec")
         sel = spec.get("selector")
+        if sel is not None:  # None selects nothing; a selector that is not a mapping cannot be read
+            shape.mapping(sel, f"{doc.ref()} spec.selector")
         for w in all_objs:
             wdoc = Document(index=0, data=w)
             pt = pod_template(wdoc)
@@ -423,13 +427,17 @@ class _Fixer:
             meta["name"] = "default"
         if meta.get("name") == "default":
             taken.add(ns)
-        egress = (obj.get("spec") or {}).get("egress")
+        egress = shape.mapping(obj.get("spec"), f"{doc.ref()} spec").get("egress")
         if isinstance(egress, list):
             catch = [
                 e
                 for e in egress
                 if isinstance(e, dict)
-                and (e.get("to") or {}).get("cidrSelector") in {"0.0.0.0/0", "::/0"}
+                and shape.scalar(
+                    shape.mapping(e.get("to"), f"{doc.ref()} egress rule to").get("cidrSelector"),
+                    f"{doc.ref()} egress rule cidrSelector",
+                )
+                in {"0.0.0.0/0", "::/0"}
                 and not e.get("ports")
             ]
             rest = [e for e in egress if e not in catch]
@@ -469,10 +477,10 @@ class _Fixer:
                     specs.append((("spec", "volumeClaimTemplates", i, "spec"), v["spec"]))
         target = DEFAULT_STORAGE_CLASS.get(self.platform, {}).get("ReadWriteMany")
         for path, spec in specs:
-            if "ReadWriteMany" not in (spec.get("accessModes") or []):
+            if "ReadWriteMany" not in shape.sequence(spec.get("accessModes"), "spec.accessModes"):
                 continue
-            sc = spec.get("storageClassName")
-            prov = classes.get(sc) if sc else None
+            sc = shape.scalar(spec.get("storageClassName"), "spec.storageClassName")
+            prov = classes.get(str(sc)) if sc else None
             p = PROVISIONERS.get(prov) if prov else None
             bad = p is not None and not p.rwx_filesystem and not (spec.get("volumeMode") == "Block" and p.rwx_block)
             bad = bad or (sc is None and self.platform in {"rosa-classic", "rosa-hcp"})
@@ -495,11 +503,15 @@ class _Fixer:
 
 
 def _ensure_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
-    """``parent[key]`` as a dict; ``null`` or a missing key becomes ``{}`` (YAML ``securityContext:`` with no value)."""
+    """``parent[key]`` as a dict; ``null`` or a missing key becomes ``{}`` (YAML ``securityContext:`` with no value).
+    Any other value is refused with ``shape.WrongShape``: `securityContext: 7` used to be overwritten and recorded
+    as a change from nothing, so the fix discarded what the user wrote and said it had been empty (G276)."""
     value = parent.get(key)
-    if not isinstance(value, dict):
+    if value is None:
         value = {}
         parent[key] = value
+    elif not isinstance(value, dict):
+        raise shape.WrongShape(key, "a mapping", value)
     return value
 
 
@@ -513,38 +525,100 @@ def fix_manifests(
     docs = load_documents(text)
     fx = _Fixer(platform, k8s_version, harden, openshift_ids)
     objs = [copy.deepcopy(d.data) for d in docs]
+    # A document whose metadata or spec is not a mapping takes no part in any fix, its own or another's (a PDB
+    # looks at every workload, the storage fix at every class): it is left as it is and named (G276).
+    unreadable = {
+        i
+        for i, o in enumerate(objs)
+        if isinstance(o, dict)
+        and (
+            not isinstance(o.get("kind"), str | None)
+            or not isinstance(o.get("apiVersion"), str | None)
+            or not isinstance(o.get("metadata") or {}, dict)
+            # A spec only matters for a kind the fixer reads; a custom resource's CRD may allow any spec.
+            or (o.get("kind") in _SPEC_READ_KINDS and not isinstance(o.get("spec") or {}, dict))
+        )
+    }
+    readable = [o for i, o in enumerate(objs) if i not in unreadable]
     classes = dict(KNOWN_STORAGE_CLASSES)
-    for o in objs:
+    for o in readable:
         if isinstance(o, dict) and o.get("kind") == "StorageClass" and o.get("provisioner"):
             classes[str((o.get("metadata") or {}).get("name"))] = str(o["provisioner"])
     firewall_namespaces = {
         str((o.get("metadata") or {}).get("namespace") or "")
-        for o in objs
+        for o in readable
         if isinstance(o, dict)
         and o.get("kind") == "EgressFirewall"
         and isinstance(o.get("metadata"), dict)
         and o["metadata"].get("name") == "default"
     }
-    for d, o in zip(docs, objs, strict=True):
+    for i, (d, o) in enumerate(zip(docs, objs, strict=True)):
         if not isinstance(o, dict):
             continue
-        fx.fix_api(d, o)
-        kind = o.get("kind")
-        if harden:
-            fx.harden_pod(d, o)
-        if kind == "Route":
-            fx.fix_route(d, o)
-        elif kind == "PodDisruptionBudget":
-            fx.fix_pdb(d, o, [x for x in objs if isinstance(x, dict)])
-        elif kind == "EgressFirewall":
-            fx.fix_egressfirewall(d, o, firewall_namespaces)
-        if kind in {"StorageClass", "PersistentVolumeClaim", "StatefulSet"}:
-            fx.fix_storage(d, o, classes)
-        image_issue = _image_manual(d, o)
-        fx.result.manual.extend(image_issue)
+        if i in unreadable:
+            fx.result.manual.append(
+                f"document {i + 1}: not fixed, because its kind, apiVersion, metadata or spec has the wrong type."
+            )
+            continue
+        # A fix that meets a field of a type it cannot use leaves the WHOLE document as it was and says so: half a
+        # fix on a document kube-noob could not read is worse than none, and a crash exited 1 (G276).
+        before, changes_before = copy.deepcopy(o), len(fx.result.changes)
+        try:
+            _fix_document(fx, d, o, readable, classes, firewall_namespaces, harden)
+        except shape.WrongShape as exc:
+            objs[i] = before
+            del fx.result.changes[changes_before:]
+            fx.result.manual.append(f"{d.ref()}: not fixed, because {exc}; correct the field and run fix again.")
     fx.result.documents = objs
     fx.result.manual = list(dict.fromkeys(fx.result.manual))
     return fx.result
+
+
+# The kinds whose spec some fix reads: a workload's pod template, and the objects fixed by kind below.
+_SPEC_READ_KINDS = frozenset(
+    {
+        "Pod",
+        "Deployment",
+        "StatefulSet",
+        "DaemonSet",
+        "ReplicaSet",
+        "Job",
+        "CronJob",
+        "DeploymentConfig",
+        "Route",
+        "PodDisruptionBudget",
+        "EgressFirewall",
+        "StorageClass",
+        "PersistentVolumeClaim",
+        "Ingress",
+        "HorizontalPodAutoscaler",
+        "NetworkPolicy",
+    }
+)
+
+
+def _fix_document(
+    fx: _Fixer,
+    d: Document,
+    o: dict[str, Any],
+    objs: list[Any],
+    classes: dict[str, str],
+    firewall_namespaces: set[str],
+    harden: bool,
+) -> None:
+    fx.fix_api(d, o)
+    kind = o.get("kind")
+    if harden:
+        fx.harden_pod(d, o)
+    if kind == "Route":
+        fx.fix_route(d, o)
+    elif kind == "PodDisruptionBudget":
+        fx.fix_pdb(d, o, [x for x in objs if isinstance(x, dict)])
+    elif kind == "EgressFirewall":
+        fx.fix_egressfirewall(d, o, firewall_namespaces)
+    if kind in {"StorageClass", "PersistentVolumeClaim", "StatefulSet"}:
+        fx.fix_storage(d, o, classes)
+    fx.result.manual.extend(_image_manual(d, o))
 
 
 def _image_manual(doc: Document, obj: dict[str, Any]) -> list[str]:

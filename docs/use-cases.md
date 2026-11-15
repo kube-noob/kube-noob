@@ -27,9 +27,12 @@ every time, and they run where you put them.
    ([openshift.md](openshift.md)). That client's model does the talking.
 3. **With no AI at all**: the CLI below. Audits, diagnoses, cited search, lessons and evidence bundles need no model
    and no network, which suits CI gates and air-gapped clusters.
-4. **With Claude, knowledge only** (the `kube-noob-skills` plugin): the same seven skills with no MCP server and no
-   code at all, for somewhere a plugin may not run anything. Claude gets the platform facts and the review protocol;
-   it gets no audit, no validator and no diagnosis, and each skill says so rather than implying otherwise.
+4. **With Claude, from the plugin directory** (the `kube-noob-skills` plugin): the same seven skills with no MCP
+   server and no code in the plugin. Each skill checks for the kube-noob CLI you installed, runs it through Claude's
+   Bash tool on your pasted text in a private folder, and reads the verdict and what was not evaluated from the JSON.
+   Ask "is this production ready for OpenShift 4.20?" with a manifest pasted, and Claude runs `kube-noob protocol` on
+   it. With no CLI, the skill says nothing was audited and gives the install command, rather than answering from
+   memory as if it had checked.
 
 `kube-noob ask` is the one optional command that uses a model: one you configure, and only a local one under the
 offline lock.
@@ -83,8 +86,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 145 957 to
-74 544 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 147 568 to
+76 155 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -996,7 +999,10 @@ rights the Kubernetes RBAC good-practices page names). Each path scores exposure
 restricted load balancer 2, internal 1) times blast radius (1-10, cluster-wide above one namespace), lists every step
 with the field that proves it, and ends with a fix. A pod with no token, automounted or projected, has no token
 step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret objects in a bundle are dropped
-unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate. NetworkPolicies
+unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate: exit 1 when a path
+scores above it, exit 5 when an object or a read was refused (an object of the wrong shape, a read the cluster forbade
+or did not answer; listed under `refused`), else 0. A CRD the cluster does not serve or a role the bundle does not
+carry is listed under `notRead` and fails the gate only with `--require-complete`. NetworkPolicies
 on the entry edge are not applied: check a path with `policy reach`. RBAC resources match as the API server
 matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what the scan could not account for:
 a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway
@@ -1006,7 +1012,10 @@ followed and the path says which; two Roles of one name: neither is read), and a
 the shape the API requires (a VirtualService `gateways` string, an HTTPRoute `backendRefs` map, a Service
 `selector` string). Read live, any list the cluster did not answer is in `notRead` -- a 404 included, because
 an Istio older than 1.22 or a Gateway API older than v1.0 answers 404 for the version kube-noob reads, and
-kube-noob does not read API discovery to tell them from a cluster without them. OpenShift's legacy
+kube-noob does not read API discovery to tell them from a cluster without them. `refused` is the part of
+`notRead` the gate fails on: every field of the wrong shape above, a legacy binding the server would refuse, two
+Roles under one bound name, and a live list that was forbidden, timed out, or answered with something that is
+not a list of what was asked; a list the backend's own words say the cluster does not serve is not refused. OpenShift's legacy
 `authorization.openshift.io` Roles and bindings are read as the RBAC objects they proxy. A VirtualService
 delegate takes its parent's gateways, and a mirror counts as a route.
 
@@ -1019,6 +1028,7 @@ that input, which is not the same as it being unexposed.
 ```bash
 kube-noob posture scan -f k8s/
 kube-noob posture scan -f k8s/ --fail-above 17
+kube-noob posture scan -f k8s/ --fail-above 17 --require-complete
 kube-noob --cluster-enabled posture scan --live -n shop -n payments
 ```
 
@@ -1072,10 +1082,11 @@ bindings every cluster carries (`--whole-bundle`): 8 of 10 legs are determined, 
 list; the two still open are the operator's writes to its own custom resource, which kube-noob cannot rank. A set of files cannot show the bindings, Services, Routes or
 Ingresses it leaves out, so for files `none` is only said of what the pod spec decides and the answer is never
 complete unless `--whole-bundle` asserts the files are everything that applies to the workload; `--require-complete`
-exits 5 until then, and a name that matches nothing exits 2. `--format json` prints the graph (schema
-`kube-noob/blast-radius` v1: nodes, edges with their evidence, the not-determined legs, and what was withheld when it
-hit its node, edge or byte cap -- every list is bounded, the open legs first, and a document never exceeds its
-byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
+exits 5 until then, and on anything at all under `notRead`, refused or absent, and a name that matches nothing
+exits 2. `--format json` prints the graph (schema `kube-noob/blast-radius` v1: nodes, edges with their evidence, the
+not-determined legs, `notRead` and the `refused` part of it the posture gate fails on, each with the count it
+withholds, and what was withheld when it hit its node, edge or byte cap -- every list is bounded, the open legs
+first, and a document never exceeds its byte cap), and `--format mermaid` draws the same graph as a flowchart to paste into a pull
 request or a wiki page, with the undetermined legs dashed and the limitations as notes.
 
 ```bash
