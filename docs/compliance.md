@@ -61,7 +61,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
 
-## The 102 audit rules and their controls
+## The 103 audit rules and their controls
 
 | Rule | What it checks | NIST SP 800-53 Rev. 5 controls |
 |---|---|---|
@@ -140,6 +140,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 | KN-S043 | kubelet authorizes every request it authenticates | AC-3, AC-6, CM-6 |
 | KN-S044 | kubelet node protections are turned off | CM-6, CM-7, SC-5 |
 | KN-S045 | kubelet serving TLS is weak or its certificate is never rotated | SC-8, SC-8(1), IA-5 |
+| KN-S046 | Admission webhook CA bundle is missing or not a certificate the API server can use | SC-8, SC-8(1), CM-7 |
 | KN-ST001 | ReadWriteMany requested from a ReadWriteOnce-only StorageClass | CM-6 |
 | KN-ST002 | ReadWriteOnce volume shared by a rolling Deployment | CM-6, CP-10 |
 | KN-ST003 | Zonal storage with Immediate volume binding | SC-36, CM-6 |

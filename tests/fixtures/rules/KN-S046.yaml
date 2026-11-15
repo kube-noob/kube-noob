@@ -1,0 +1,35 @@
+rule: KN-S046
+good: |
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingWebhookConfiguration
+  metadata: {name: deny-example}
+  webhooks:
+  - name: deny.example.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    rules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE]
+      resources: [pods]
+    clientConfig:
+      service: {name: webhook, namespace: example, path: /validate, port: 443}
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJVRENCOTZBREFnRUNBaFFTakE4Ky9EZnh0Zll3T2ZDY0J5RW9pRFRralRBS0JnZ3Foa2pPUFFRREFqQWQKTVJzd0dRWURWUVFEREJKcmRXSmxMVzV2YjJJZ2RtRnNhV1FnWTJFd0lCY05NakF3TVRBeE1EQXdNREF3V2hnUApNakE1T1RBeE1ERXdNREF3TURCYU1CMHhHekFaQmdOVkJBTU1FbXQxWW1VdGJtOXZZaUIyWVd4cFpDQmpZVEJaCk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQkdjdEtWVzhNeGZqSEZPVjRBWW03RlpnNUxTMUV6WVYKVGF6MG9Fdms4SVprRnhUeHhNdWVhTllnYmxzdTJhUUE3OUlRTm1zQWV0cnVUWlpSdFNEcDRpR2pFekFSTUE4RwpBMVVkRXdFQi93UUZNQU1CQWY4d0NnWUlLb1pJemowRUF3SURTQUF3UlFJZ054cHRqNjhLSFhmaE95NnhxUmQ3CmV5YjFZUlBld0hXdGJuWnA0cnk3V3U4Q0lRQ01UZG51TnVtQzRBSDlGWHZ5Q1dlNnl2STVvLzdlMWNIUDlkZEoKVHN6VkVnPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+bad: |
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingWebhookConfiguration
+  metadata: {name: deny-example}
+  webhooks:
+  - name: deny.example.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    rules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE]
+      resources: [pods]
+    clientConfig:
+      service: {name: webhook, namespace: example, path: /validate, port: 443}
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJVakNCK2FBREFnRUNBaFJSNGs0bU13dlNSWEVaM3gwczJuRWszL2RPV1RBS0JnZ3Foa2pPUFFRREFqQWYKTVIwd0d3WURWUVFEREJScmRXSmxMVzV2YjJJZ1pYaHdhWEpsWkNCallUQWVGdzB4T0RBeE1ERXdNREF3TURCYQpGdzB5TURBeE1ERXdNREF3TURCYU1COHhIVEFiQmdOVkJBTU1GR3QxWW1VdGJtOXZZaUJsZUhCcGNtVmtJR05oCk1Ga3dFd1lIS29aSXpqMENBUVlJS29aSXpqMERBUWNEUWdBRWdhdFBRa242Q014SzI3a0VaY3BMME9DMzZLblIKVDBCelJ5a21VRGIvRmtPL0JHcnE2VXFjTTUra1JyYlU0WGtYYWhwaXR5MERkK2p6SnhoL1ordzJyS01UTUJFdwpEd1lEVlIwVEFRSC9CQVV3QXdFQi96QUtCZ2dxaGtqT1BRUURBZ05JQURCRkFpRUFzdHpIWXdUT3JlM2hkVGdoCmNlQ0RReUt6YWVtQ0ErSUo0ckJpQVU4bm5ZWUNJRS9rZzlkRXp1TVozNngybEV4T29yRjhhMEJ6bVFrVDRhY1IKdmxYMVEyUHQKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=

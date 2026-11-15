@@ -163,6 +163,8 @@ RULE_CONTROLS: dict[str, tuple[str, ...]] = {
     "KN-S043": ("AC-3", "AC-6", "CM-6"),  # every request the kubelet authenticated is allowed
     "KN-S044": ("CM-6", "CM-7", "SC-5"),  # node protections the kubelet does by default, turned off
     "KN-S045": ("SC-8", "SC-8(1)", "IA-5"),  # the kubelet's serving TLS and its certificate's lifetime
+    # The trust the API server places in an admission webhook (G303)
+    "KN-S046": ("SC-8", "SC-8(1)", "CM-7"),  # the authority that verifies a check the cluster relies on
 }
 
 

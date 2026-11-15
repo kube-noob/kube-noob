@@ -464,6 +464,9 @@ NOT_GENERATED: dict[str, str] = {
     "KN-S043": _KUBELET_NOT_ADMITTED,
     "KN-S044": _KUBELET_NOT_ADMITTED,
     "KN-S045": _KUBELET_NOT_ADMITTED,
+    "KN-S046": "the API server does not send webhook configurations to admission webhooks and a "
+    "ValidatingAdmissionPolicy cannot validate another one (as KN-S030), and CEL cannot parse an X.509 "
+    "certificate in any case; `kube-noob audit` checks it",
 }
 
 
