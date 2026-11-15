@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+kind: List
+items:
+- apiVersion: v1
+  kind: PodList
+  items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: priv
+      namespace: shop
+    spec:
+      containers:
+      - name: c
+        image: nginx
+        securityContext:
+          privileged: true
+  items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: second
+      namespace: shop
+    spec:
+      containers:
+      - name: c
+        image: nginx
+        securityContext:
+          privileged: true

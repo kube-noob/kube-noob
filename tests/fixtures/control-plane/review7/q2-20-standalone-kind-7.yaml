@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: 7
+metadata:
+  name: q
+  namespace: shop
+spec:
+  containers:
+  - name: c
+    image: nginx
+    securityContext:
+      privileged: true

@@ -69,8 +69,10 @@ def test_one_bad_file_does_not_hide_the_findings_in_the_good_ones(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """RT3-3. Refusing the whole directory over one file meant the real violations in the other files were never
-    reported at all. With --skip-unreadable the readable files are audited, the skipped ones are listed in the
-    output, and the exit code still says the evidence was partial."""
+    reported at all. With --skip-unreadable the readable files are audited and the skipped ones stay named in
+    `unreadable` in every format. The flag is the caller saying "decide without that file", so the exit code is
+    the verdict's and not 5 -- here 0, because the files that were read are clean at `--fail-on never` (the
+    exit-code section of AGENTS.md states the rule; without the flag the same directory is 5, above)."""
     d = _dir(tmp_path, good_yaml=GOOD, second_yaml=SECOND, blob_yaml=b"\x00\xff")
     code = main(["audit", "-f", str(d), "--skip-unreadable", "--fail-on", "never", "--format", "json"])
     out = capsys.readouterr()
