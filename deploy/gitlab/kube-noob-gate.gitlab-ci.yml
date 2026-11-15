@@ -6,6 +6,11 @@
 #     extends: .kube-noob-gate
 #     variables: {KUBE_NOOB_PATHS: "k8s", KUBE_NOOB_PLATFORM: openshift, KUBE_NOOB_VERSION: "4.20"}
 # Findings show in the merge request (code quality report); SARIF and the Markdown summary are kept as artifacts.
+# A later job reads the verdict from the dotenv report: KUBE_NOOB_RESULT (the exit code by name: passed, failed,
+# config-error, clarification, internal-error, evidence-incomplete), KUBE_NOOB_EXIT, KUBE_NOOB_EVIDENCE (complete,
+# incomplete, not-run) and KUBE_NOOB_BECAUSE. With KUBE_NOOB_FAIL_ON=never or allow_failure, gate on the evidence.
+# The one case with no dotenv: the job directory is not writable, which the preamble refuses with exit 2 before any
+# report or variable can be written; a later job then sees KUBE_NOOB_* unset, and `needs` on this job sees the failure.
 .kube-noob-gate:
   stage: test
   image:
@@ -27,26 +32,237 @@
     KUBE_NOOB_OFFLINE: "1"
   script:
     - |
-      set -- --platform "$KUBE_NOOB_PLATFORM" --fail-on "$KUBE_NOOB_FAIL_ON"
-      for p in $KUBE_NOOB_PATHS; do set -- "$@" -f "$p"; done
-      for c in $KUBE_NOOB_CONTAINERFILES; do set -- "$@" --containerfile "$c"; done
-      for r in $KUBE_NOOB_SCANNER_REPORTS; do set -- "$@" --scanner-report "$r"; done
-      for x in $KUBE_NOOB_VEX; do set -- "$@" --vex "$x"; done
-      if [ -n "$KUBE_NOOB_KEV" ]; then set -- "$@" --kev "$KUBE_NOOB_KEV"; fi
-      if [ "$KUBE_NOOB_TRUST_REPORT_VEX" = "true" ]; then set -- "$@" --trust-report-vex; fi
-      for s in $KUBE_NOOB_SARIF_REPORTS; do set -- "$@" --sarif-report "$s"; done
-      if [ -n "$KUBE_NOOB_VERSION" ]; then set -- "$@" --version "$KUBE_NOOB_VERSION"; fi
-      if [ -n "$KUBE_NOOB_EXCEPTIONS" ]; then set -- "$@" --exceptions "$KUBE_NOOB_EXCEPTIONS"; fi
       if [ ! -w . ]; then
         echo "error: cannot write the gate reports in the job directory (uid $(id -u)). This image runs as uid 1001. Run the job as that user so the checkout is writable." >&2
-        exit 1
+        exit 2
       fi
-      kube-noob gate "$@" --sarif kube-noob.sarif --summary kube-noob-summary.md \
-        --codequality gl-code-quality-report.json --format text
+      KN_PATHS=$KUBE_NOOB_PATHS
+      KN_CONTAINERFILES=$KUBE_NOOB_CONTAINERFILES
+      KN_SCANNER_REPORTS=$KUBE_NOOB_SCANNER_REPORTS
+      KN_VEX=$KUBE_NOOB_VEX
+      KN_KEV=$KUBE_NOOB_KEV
+      KN_TRUST_REPORT_VEX=$KUBE_NOOB_TRUST_REPORT_VEX
+      KN_SARIF_REPORTS=$KUBE_NOOB_SARIF_REPORTS
+      KN_PLATFORM=$KUBE_NOOB_PLATFORM
+      KN_VERSION=$KUBE_NOOB_VERSION
+      KN_EXCEPTIONS=$KUBE_NOOB_EXCEPTIONS
+      KN_FAIL_ON=$KUBE_NOOB_FAIL_ON
+      KN_WORK=.kube-noob-gate
+      KN_SARIF=kube-noob.sarif
+      KN_SUMMARY=kube-noob-summary.md
+      KN_REPORT=kube-noob-gate.json
+      KN_CODEQUALITY=gl-code-quality-report.json
+      KN_DOTENV=kube-noob.env
+      mkdir -p "$KN_WORK"
+      # -- scripts/ci/gate.sh follows; written by scripts/ci_wrappers.py, so edit the script, not this file --
+      # kube-noob gate, as the three CI wrappers run it: action.yml calls this file; the Tekton Task and the GitLab
+      # template carry a copy of its body (scripts/ci_wrappers.py writes it, --check holds it). POSIX sh: no arrays,
+      # no brace or command substitution -- the Tekton copy runs through Tekton's own substitution of such text.
+      #
+      # Inputs, through the environment (the wrappers never splice a user value into this text):
+      #   KN_PATHS KN_CHART KN_VALUES KN_NAMESPACE KN_CONTAINERFILES KN_SCANNER_REPORTS KN_VEX KN_KEV
+      #   KN_TRUST_REPORT_VEX KN_SARIF_REPORTS KN_PLATFORM KN_VERSION KN_EXCEPTIONS KN_FAIL_ON KN_ANNOTATIONS
+      # Files it writes: KN_SARIF KN_SUMMARY KN_REPORT (the JSON report) KN_CODEQUALITY (GitLab), scratch in KN_WORK.
+      # Status, to every sink that is set, the same words in each:
+      #   GITHUB_OUTPUT        result= exit-code= evidence= because=
+      #   GITHUB_STEP_SUMMARY  the headline, then the gate's own summary
+      #   KN_DOTENV            KUBE_NOOB_RESULT KUBE_NOOB_EXIT KUBE_NOOB_EVIDENCE KUBE_NOOB_BECAUSE (GitLab dotenv report)
+      #   KN_RESULT_PATH KN_EXIT_PATH KN_EVIDENCE_PATH KN_BECAUSE_PATH KN_COUNTS_PATH (Tekton results)
+      # result is the exit code's name and nothing else: 0 passed, 1 failed, 2 config-error, 3 clarification,
+      # 4 internal-error, 5 evidence-incomplete; any other code is internal-error with its number in exit-code.
+      # evidence is read from the report: complete, incomplete (with because) or not-run -- a report that is missing,
+      # is not JSON or has no notRun list is not-run, never complete. Merge status is not evidence status: a gate
+      # that exits 0 with checks not run says "merge: allowed · evidence: incomplete", never "passed" (G291).
+      set -e
+      if [ -z "$KN_PLATFORM" ]; then KN_PLATFORM=kubernetes; fi
+      if [ -z "$KN_FAIL_ON" ]; then KN_FAIL_ON=high; fi
+      if [ -z "$KN_WORK" ]; then KN_WORK=.; fi
+      if [ -z "$KN_SARIF" ]; then KN_SARIF=kube-noob.sarif; fi
+      if [ -z "$KN_SUMMARY" ]; then KN_SUMMARY=kube-noob-summary.md; fi
+      if [ -z "$KN_REPORT" ]; then KN_REPORT=kube-noob-gate.json; fi
+      set -- --platform "$KN_PLATFORM" --fail-on "$KN_FAIL_ON"
+      if [ -n "$KN_NAMESPACE" ]; then set -- "$@" --namespace "$KN_NAMESPACE"; fi
+      for p in $KN_PATHS; do set -- "$@" -f "$p"; done
+      if [ -n "$KN_CHART" ]; then set -- "$@" --chart "$KN_CHART"; fi
+      for v in $KN_VALUES; do set -- "$@" --values "$v"; done
+      for c in $KN_CONTAINERFILES; do set -- "$@" --containerfile "$c"; done
+      for r in $KN_SCANNER_REPORTS; do set -- "$@" --scanner-report "$r"; done
+      for x in $KN_VEX; do set -- "$@" --vex "$x"; done
+      if [ -n "$KN_KEV" ]; then set -- "$@" --kev "$KN_KEV"; fi
+      if [ "$KN_TRUST_REPORT_VEX" = "true" ]; then set -- "$@" --trust-report-vex; fi
+      for s in $KN_SARIF_REPORTS; do set -- "$@" --sarif-report "$s"; done
+      if [ -n "$KN_VERSION" ]; then set -- "$@" --version "$KN_VERSION"; fi
+      if [ -n "$KN_EXCEPTIONS" ]; then set -- "$@" --exceptions "$KN_EXCEPTIONS"; fi
+      if [ -n "$KN_ANNOTATIONS" ] && [ "$KN_ANNOTATIONS" != "false" ]; then set -- "$@" --github-annotations; fi
+      set -- "$@" --sarif "$KN_SARIF" --summary "$KN_SUMMARY"
+      if [ -n "$KN_CODEQUALITY" ]; then set -- "$@" --codequality "$KN_CODEQUALITY"; fi
+      raw="$KN_WORK/kube-noob-gate.out"
+      status="$KN_WORK/kube-noob-gate-status"
+      # From here nothing may abort before the status is written: a step that dies between the gate and its outputs
+      # is exactly the empty `result` this script exists to refuse.
+      set +e
+      rc=0
+      result=internal-error
+      evidence=not-run
+      because="the gate report could not be read"
+      counts="{}"
+      if ! { rm -rf "$status" && mkdir -p "$status"; } 2>/dev/null; then
+        # A work directory that cannot be created is a configuration error (2), not findings (1): the gate is not run,
+        # the sinks still get their four lines, and the exit says so (review finding 10).
+        rc=2
+        result=config-error
+        because="KN_WORK is not writable: $KN_WORK (no directory could be created there)"
+        status=""
+      else
+        # A gate that exits 2 or 4 writes none of these; what an earlier step in the same job left behind must not be
+        # read, summarised or uploaded as this run's.
+        rm -f "$raw" "$KN_REPORT" "$KN_SUMMARY" "$KN_SARIF"
+        if [ -n "$KN_CODEQUALITY" ]; then rm -f "$KN_CODEQUALITY"; fi
+        kube-noob gate "$@" --format json > "$raw" || rc=$?
+        # Workflow commands and the JSON report both come out on stdout, so the stream is captured once and split: the
+        # `::` lines are echoed to the log, where Actions turns them into annotations, and the rest is the report.
+        grep '^::' "$raw" 2>/dev/null
+        grep -v '^::' "$raw" > "$KN_REPORT" 2>/dev/null
+        case "$rc" in
+          0) result=passed ;;
+          1) result=failed ;;
+          2) result=config-error ;;
+          3) result=clarification ;;
+          4) result=internal-error ;;
+          5) result=evidence-incomplete ;;
+          *) result=internal-error ;;
+        esac
+        python3 -I -c '
+      import json, sys
+      report, out, rc = sys.argv[1], sys.argv[2], sys.argv[3]
+      CUT = 600
+      # The Markdown escape table of kube_noob.gate._cell, written once here so the step summary cannot render a file
+      # name as an image, a link, an HTML tag, a table cell or a comment (tests/test_ci_wrappers.py holds the two equal).
+      ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"}
+      for c in "\\`*_[]!#~":
+          ESCAPE[c] = "\\" + c
+
+
+      def clean(text):
+          # One printable line: control characters and anything invisible (bidi marks, soft hyphens, tags) are
+          # dropped, whitespace is squeezed, and "::" cannot start a workflow command on the Actions log.
+          flat = " ".join("".join(c if c.isprintable() else " " for c in str(text)).split())
+          return flat.replace("::", ": :")
+
+
+      def escape(text):
+          return "".join(ESCAPE.get(c, c) for c in text)
+
+
+      try:
+          text = open(report, encoding="utf-8", errors="replace").read()
+      except OSError:
+          text = ""
+      gaps = []
+      if not text.strip():
+          evidence, because, counts = "not-run", "the gate wrote no report", {}
+      else:
+          try:
+              rep = json.loads(text)
+          except ValueError:
+              rep = None
+          if rep is None:
+              evidence, because, counts = "not-run", "the report is not JSON", {}
+          elif not isinstance(rep, dict):
+              evidence, because, counts = "not-run", "the report is not an object", {}
+          elif not isinstance(rep.get("notRun"), list):
+              evidence, because, counts = "not-run", "the report has no notRun list", {}
+          else:
+              # Every entry is a gap, whatever its shape: an unrecognised shape is listed, never dropped.
+              gaps = [clean(g) for g in rep["notRun"]]
+              unreadable = rep.get("unreadable")
+              if unreadable is not None:
+                  if isinstance(unreadable, list) and all(isinstance(u, dict) and "file" in u for u in unreadable):
+                      gaps += [clean(u.get("file")) + " could not be read" for u in unreadable]
+                  else:
+                      gaps.append("unreadable: unrecognised shape")
+              # Forward-looking: `knownIssuesVerdict` and `requiredEvaluated` are written by the gate once the
+              # fix/live-false-passes work lands (G284/G290). Absent, they are not a gap; present, anything but the one
+              # value that means evaluated is.
+              if "knownIssuesVerdict" in rep:
+                  v = rep["knownIssuesVerdict"]
+                  if not isinstance(v, str):
+                      gaps.append("knownIssuesVerdict: unrecognised shape")
+                  elif v.strip().lower().replace("_", "-") == "not-determined":
+                      gaps.append("reported issues: not-determined")
+              if "requiredEvaluated" in rep and rep["requiredEvaluated"] is not True:
+                  gaps.append("required checks: not all evaluated")
+              evidence = "incomplete" if gaps else "complete"
+              because = "; ".join(gaps)
+              counts = rep.get("counts") if isinstance(rep.get("counts"), dict) else {}
+      if rc == "5" and evidence == "complete":
+          # The gate said 5; the report cannot overrule it (review finding 8).
+          evidence, because = "incomplete", "the gate exited 5 (evidence incomplete)"
+      because = clean(because)
+      if len(because) > CUT:
+          because = because[:CUT] + " … (+%d chars)" % (len(because) - CUT)
+      because = escape(because)
+      for name, value in (("evidence", evidence), ("because", because), ("counts", json.dumps(counts, sort_keys=True))):
+          with open(out + "/" + name, "w", encoding="utf-8") as f:
+              f.write(value + "\n")
+      ' "$KN_REPORT" "$status" "$rc" 2>/dev/null \
+          && read -r evidence < "$status/evidence" \
+          && read -r because < "$status/because" \
+          && read -r counts < "$status/counts" \
+          || { evidence=not-run; because="the gate report could not be read"; counts="{}"; }
+      fi
+      if [ "$rc" = 0 ]; then
+        headline="## kube-noob gate: merge allowed · evidence: $evidence"
+      else
+        headline="## kube-noob gate $result (exit $rc): merge blocked · evidence: $evidence"
+      fi
+      if [ -n "$because" ]; then
+        # In a code span, with its own backticks removed, so nothing in a file name renders (review finding 2).
+        span="$because"
+        if [ -n "$status" ]; then
+          printf '%s\n' "$because" | tr -d '`' > "$status/span"
+          read -r span < "$status/span"
+        fi
+        headline="$headline (\`$span\`)"
+      fi
+      # The gate's own Markdown starts "## kube-noob gate passed|failed"; that heading is replaced by the headline
+      # above, so "passed" never stands beside incomplete evidence. The rest of its summary follows unchanged.
+      summary="$status/summary.md"
+      if [ -z "$status" ]; then summary=/dev/null; fi
+      printf '%s\n' "$headline" > "$summary"
+      first=
+      if [ -f "$KN_SUMMARY" ]; then read -r first < "$KN_SUMMARY" || true; fi
+      case "$first" in
+        "## kube-noob gate passed"|"## kube-noob gate failed") tail -n +2 "$KN_SUMMARY" >> "$summary" ;;
+        "") printf '\n' >> "$summary" ;;
+        *) printf '\n' >> "$summary"; cat "$KN_SUMMARY" >> "$summary" ;;
+      esac
+      if [ -n "$status" ]; then
+        cat "$summary"
+        if [ -n "$GITHUB_STEP_SUMMARY" ]; then cat "$summary" >> "$GITHUB_STEP_SUMMARY"; fi
+      else
+        printf '%s\n\n' "$headline"
+        if [ -n "$GITHUB_STEP_SUMMARY" ]; then printf '%s\n\n' "$headline" >> "$GITHUB_STEP_SUMMARY"; fi
+      fi
+      if [ -n "$GITHUB_OUTPUT" ]; then
+        printf 'result=%s\nexit-code=%s\nevidence=%s\nbecause=%s\n' "$result" "$rc" "$evidence" "$because" >> "$GITHUB_OUTPUT"
+      fi
+      if [ -n "$KN_DOTENV" ]; then
+        printf 'KUBE_NOOB_RESULT=%s\nKUBE_NOOB_EXIT=%s\nKUBE_NOOB_EVIDENCE=%s\nKUBE_NOOB_BECAUSE=%s\n' \
+          "$result" "$rc" "$evidence" "$because" > "$KN_DOTENV"
+      fi
+      if [ -n "$KN_RESULT_PATH" ]; then printf '%s' "$result" > "$KN_RESULT_PATH"; fi
+      if [ -n "$KN_EXIT_PATH" ]; then printf '%s' "$rc" > "$KN_EXIT_PATH"; fi
+      if [ -n "$KN_EVIDENCE_PATH" ]; then printf '%s' "$evidence" > "$KN_EVIDENCE_PATH"; fi
+      if [ -n "$KN_BECAUSE_PATH" ]; then printf '%s' "$because" > "$KN_BECAUSE_PATH"; fi
+      if [ -n "$KN_COUNTS_PATH" ]; then printf '%s' "$counts" > "$KN_COUNTS_PATH"; fi
+      exit "$rc"
   artifacts:
     when: always
     paths:
       - kube-noob.sarif
       - kube-noob-summary.md
+      - kube-noob-gate.json
     reports:
       codequality: gl-code-quality-report.json
+      dotenv: kube-noob.env

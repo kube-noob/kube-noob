@@ -21,6 +21,8 @@ need() { command -v "$1" >/dev/null 2>&1 || { notrun+=("$2 -- $1 is not installe
 
 # ---- ci/plugin: the generated copies and documents match the code they are generated from.
 "$py" scripts/sync_plugin_server.py --check
+"$py" scripts/ci_wrappers.py --check
+"$py" scripts/permissions_doc.py --check
 "$py" scripts/build_skill.py --check
 "$py" scripts/safety_contract.py --check
 "$py" scripts/compliance_doc.py --check
@@ -60,6 +62,13 @@ d="${TMPDIR:-/tmp}/kn-check-demo.out"
 ( cd "${TMPDIR:-/tmp}" && "$w"/bin/kube-noob demo all > "$d" )
 grep -q "kube-noob demo: Show and lock" "$d"
 "$w"/bin/python -I scripts/e2e_mcp_offline.py "$w"/bin/kube-noob >/dev/null
+# ---- ci/airgap: the same installed wheel, driven inside a network namespace with no interface (G294). CI installs
+# it from a local wheel directory with --no-index first; here the venv above stands in for that install.
+if unshare -rn true >/dev/null 2>&1; then
+  scripts/airgap_check.sh checks "$w"/bin/kube-noob
+else
+  notrun+=("ci/airgap: scripts/airgap_check.sh checks -- unshare -rn is not permitted on this machine")
+fi
 
 # ---- ci/publishable
 scripts/check_publishable.sh >/dev/null

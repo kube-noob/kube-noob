@@ -143,7 +143,11 @@ def test_the_cli_prints_them_and_keeps_the_exit_code() -> None:
 def test_the_action_emits_them() -> None:
     """A feature the action does not call is a feature a user of the action does not have."""
     action = (ROOT / "action.yml").read_text(encoding="utf-8")
-    assert "--github-annotations" in action
+    # The action's shell is scripts/ci/gate.sh (G291): the input reaches it as KN_ANNOTATIONS, which adds the flag.
+    assert "KN_ANNOTATIONS: ${{ inputs.annotations }}" in action
+    assert 'sh "$GITHUB_ACTION_PATH/scripts/ci/gate.sh"' in action
+    script = (ROOT / "scripts" / "ci" / "gate.sh").read_text(encoding="utf-8")
+    assert '[ "$KN_ANNOTATIONS" != "false" ]; then set -- "$@" --github-annotations' in script
     assert re.search(r"annotations:\n\s+description:", action), "the behaviour is documented as an input"
 
 

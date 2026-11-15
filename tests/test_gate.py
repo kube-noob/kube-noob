@@ -199,14 +199,15 @@ def test_tekton_task_and_gitlab_template() -> None:
     step = task["spec"]["steps"][0]
     assert "$(params." not in step["script"], "params reach the script only through env (no injection)"
     assert step["securityContext"]["runAsNonRoot"] and step["securityContext"]["capabilities"] == {"drop": ["ALL"]}
-    assert {r["name"] for r in task["spec"]["results"]} == {"result", "counts"}
+    assert {r["name"] for r in task["spec"]["results"]} == {"result", "exit-code", "evidence", "because", "counts"}
     image = next(p for p in task["spec"]["params"] if p["name"] == "image")["default"]
     assert image.endswith(f":{__version__}")
     gl = yaml.safe_load((ROOT / "deploy" / "gitlab" / "kube-noob-gate.gitlab-ci.yml").read_text())
     job = gl[".kube-noob-gate"]
     assert job["image"]["name"].endswith(f":{__version__}") and job["image"]["entrypoint"] == [""]
     assert job["artifacts"]["reports"]["codequality"] == "gl-code-quality-report.json"
-    assert "--codequality gl-code-quality-report.json" in job["script"][0]
+    assert "KN_CODEQUALITY=gl-code-quality-report.json" in job["script"][0]
+    assert '--codequality "$KN_CODEQUALITY"' in job["script"][0]
     assert "args+=" not in job["script"][0] and "${" not in job["script"][0], "POSIX sh: no bash arrays"
 
 
