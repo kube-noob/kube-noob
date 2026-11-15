@@ -138,7 +138,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary` |
+| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `rhacs compare` | always 0 | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
 | `ticket` | 1 = not in the local copy, which is not "no such issue" | `found` | `note` |
 | `search` | always 0; no results is "not in the local knowledge" | `results`, `howToCite` | |
