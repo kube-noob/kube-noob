@@ -391,15 +391,30 @@ def _s045(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 # `KN-S030` already reports `failurePolicy: Ignore`, which decides what happens when a webhook cannot be
 # reached; this rule is about the bundle that decides WHETHER it can be reached, and does not repeat it.
 
-#: Annotations whose controller writes `clientConfig.caBundle` at runtime: OpenShift's service CA operator and
-#: cert-manager's CA injector. With one of these the value in the manifest is not the value the API server uses,
-#: in either direction, so the rule declines rather than reporting an absent or stale bundle (G303).
+#: Annotations whose controller writes `clientConfig.caBundle` at runtime, so the value in the manifest -- its
+#: absence included -- is not the value the API server uses. What each one MEANS depends on whether the thing
+#: that honours it is there, and that is three different answers rather than one (G303, G306):
+#:
+#: * `service.beta.openshift.io/inject-cabundle` is the service CA operator's, and it is the configuration
+#:   OpenShift's own documentation asks for -- `KN-S037`'s remediation asks for it too. On the OpenShift family
+#:   it is therefore CLEAN, not undetermined: the operator fills the bundle and keeps it filled. Off that family
+#:   nothing honours it, so the rule declines and names `--platform openshift`, the way every other rule about an
+#:   OpenShift object does, rather than reporting a finding on a manifest that is probably destined for one.
+#: * `cert-manager.io/inject-ca-from` names a `Certificate` by namespace and name. With that Certificate in the
+#:   input the wiring is complete and visible, so it is clean; without it the injector's source is not in the
+#:   input and the rule declines.
+#: * `cert-manager.io/inject-ca-from-secret` names a Secret, and `cert-manager.io/inject-apiserver-ca` the API
+#:   server's own CA. kube-noob never reads Secrets and has no node to read, so neither can be checked: decline.
+OPENSHIFT_CA_INJECTOR = "service.beta.openshift.io/inject-cabundle"
+CERT_MANAGER_CA_FROM = "cert-manager.io/inject-ca-from"
 CA_BUNDLE_INJECTORS = (
-    "service.beta.openshift.io/inject-cabundle",
-    "cert-manager.io/inject-ca-from",
+    OPENSHIFT_CA_INJECTOR,
+    CERT_MANAGER_CA_FROM,
     "cert-manager.io/inject-ca-from-secret",
     "cert-manager.io/inject-apiserver-ca",
 )
+#: The group cert-manager's `Certificate` is served in. A `Certificate` of another group is a different kind.
+CERT_MANAGER_GROUP = "cert-manager.io"
 #: The group the two webhook configuration kinds are served in. A kind of either name in any other group is a
 #: different resource (class 3).
 ADMISSION_GROUP = "admissionregistration.k8s.io"
@@ -443,12 +458,9 @@ def _s046(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             next((a for a in CA_BUNDLE_INJECTORS if a in annotations), "") if isinstance(annotations, dict) else ""
         )
         if injector:
-            ctx.cannot_decide(
-                r.rule_id,
-                f"{ref} carries an annotation whose controller injects clientConfig.caBundle at runtime, so the "
-                "value in the manifest is not the one the API server uses",
-                ref,
-            )
+            why = _injected(ctx, injector, annotations if isinstance(annotations, dict) else {})
+            if why:
+                ctx.cannot_decide(r.rule_id, f"{ref} {why}", ref)
             continue
         hooks = d.data.get("webhooks") if isinstance(d.data, dict) else None
         if not isinstance(hooks, list):
@@ -478,6 +490,42 @@ def _s046(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             yield from _ca_bundle(ctx, r, d, i, ref, name, config, now)
     if not seen:
         ctx.cannot_decide(r.rule_id)
+
+
+def _injected(ctx: AuditContext, injector: str, annotations: dict[str, Any]) -> str:
+    """ "" when the injecting controller is here and will fill the bundle, else why kube-noob cannot decide.
+
+    A controller that IS there is an answer, not an absence: the OpenShift service CA operator on the OpenShift
+    family, and cert-manager's injector when the `Certificate` the annotation names is in the input. Anything
+    else leaves the bundle to something not in the input, which is a decline and never a finding (class 24).
+    """
+    if injector == OPENSHIFT_CA_INJECTOR:
+        if ctx.is_openshift:
+            return ""  # the service CA operator fills it and keeps it filled: the configuration OpenShift asks for
+        return (
+            "asks OpenShift's service CA operator to inject clientConfig.caBundle, and nothing honours that "
+            "annotation on this platform; pass --platform openshift (or rosa-classic, rosa-hcp) if that is where "
+            "this runs"
+        )
+    if injector == CERT_MANAGER_CA_FROM:
+        named = annotations.get(CERT_MANAGER_CA_FROM)
+        wanted = tuple(named.split("/", 1)) if isinstance(named, str) and named.count("/") == 1 else None
+        if wanted and any(
+            d.kind == "Certificate"
+            and d.api_version.split("/", 1)[0] == CERT_MANAGER_GROUP
+            and (d.namespace or "") == wanted[0]
+            and d.name == wanted[1]
+            for d in ctx.docs
+        ):
+            return ""  # the Certificate it names is here, so the wiring is complete and visible
+        return (
+            "asks cert-manager's CA injector to fill clientConfig.caBundle from a Certificate that is not in the "
+            "input, so what the API server will verify against was not read"
+        )
+    return (
+        "asks a controller to inject clientConfig.caBundle from a Secret or from the API server's own CA, "
+        "neither of which kube-noob reads, so what the API server will verify against was not read"
+    )
 
 
 def _ca_bundle(

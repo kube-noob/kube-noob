@@ -567,6 +567,7 @@ def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
         "EV": str(events),
         "DEN": str(denial),
         "OUT": str(tmp_path / "out.json"),
+        "OUTY": str(tmp_path / "out.yaml"),
         "T": plain,
     }
 
@@ -576,7 +577,8 @@ DRIVEN: dict[str, list[list[str]]] = {
     "audit": [["-f", "M"], ["-f", "M", "--compact"], ["--format", "yaml", "-f", "M"], ["--format", "sarif", "-f", "M"]],
     "validate": [["-f", "M"]],
     "redteam": [["-f", "M"]],
-    "fix": [["-f", "M"]],
+    # `fix -o` with --format json puts the change log on stdout as JSON (G276): both streams are driven.
+    "fix": [["-f", "M"], ["--format", "json", "-f", "M", "-o", "OUTY"]],
     "gate": [["-f", "M"], ["-f", "M", "--github-annotations"], ["--format", "yaml", "-f", "M"]],
     "policy reach": [["--from", "shop:app=web", "--to", "shop:app=web", "--port", "8080", "-f", "M"]],
     "policy explain": [["-f", "DEN"], ["--format", "yaml", "-f", "DEN"]],
@@ -585,7 +587,12 @@ DRIVEN: dict[str, list[list[str]]] = {
     "insight": [["-f", "EV"], ["--format", "yaml", "-f", "EV"]],
     "known-issues": [["T"]],
     "vuln threat": [["-f", "M"], ["--format", "yaml", "-f", "M"]],
-    "posture scan": [["-f", "M"]],
+    # The gate (G276): --fail-above with and without --require-complete, and the JSON that carries `refused`.
+    "posture scan": [
+        ["-f", "M"],
+        ["-f", "M", "--fail-above", "30", "--require-complete"],
+        ["--format", "json", "-f", "M", "--fail-above", "30"],
+    ],
     "posture snapshot": [["-f", "M", "-o", "OUT"]],
     "posture reach": [
         ["deployment/web", "-n", "shop", "-f", "A"],
@@ -796,6 +803,29 @@ def test_every_command_writes_through_the_boundary(
         assert out.out == f"{' '.join(leaf)} {HOSTILE}\n" == out.err  # untouched, byte for byte
         return
     assert _clean(out.out + out.err) and " ".join(leaf) in out.out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["posture", "scan", "-f", "M", "--fail-above", "30"], ["audit", "-f", "M"], ["vuln", "threat", "-f", "M"]],
+    ids=" ".join,
+)
+def test_the_model_mode_prints_none_of_it_either(
+    argv: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """KUBE_NOOB_FOR_MODEL=1 (G276) rewrites the JSON document for a model reader: sanitised, flagged, the
+    not-read keys first. It is still a document written through the boundary, and hostile input stays out of it."""
+    from kube_noob.cli import main
+
+    monkeypatch.setenv("KUBE_NOOB_FOR_MODEL", "1")
+    monkeypatch.setenv("KUBE_NOOB_LEARNING_ENABLED", "false")
+    inputs = _hostile_inputs(tmp_path)
+    rc = main(["--format", "json", *(inputs.get(x, x) for x in argv)])
+    out = capsys.readouterr()
+    assert rc in (0, 1), (rc, out.err[-300:])
+    doc = json.loads(out.out)
+    assert doc["forModel"] is True and next(iter(doc)) == "forModel"
+    assert _clean(out.out + out.err) and "\ud800" not in out.out and "\x07" not in out.out, ascii(out.out)[:400]
 
 
 def test_only_the_three_servers_are_left_unwrapped() -> None:

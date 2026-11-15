@@ -60,19 +60,74 @@ def test_the_archive_is_byte_reproducible() -> None:
     assert hashlib.sha256(km.archive()).hexdigest() != ""
 
 
+def test_the_archive_bytes_do_not_depend_on_the_zlib_build() -> None:
+    """The digest has to be the same on every machine that builds it, and compressed output is not: zlib and zlib-ng
+    (which some Python builds link) produce different deflate streams for the same input. The archive with LICENSE in it
+    hashed b586a8ef... on a zlib-ng Python and b641267b... on CI's zlib, so CI failed while the local gate passed.
+    Stored (uncompressed) deflate blocks have exactly one encoding, so every block must be one."""
+    data = km.archive()
+    assert data[:4] == b"\x1f\x8b\x08\x00", "gzip, deflate, no optional header fields"
+    pos, final = 10, False
+    while not final:
+        header = data[pos]
+        final, btype = bool(header & 1), (header >> 1) & 3
+        assert btype == 0, f"a compressed deflate block at byte {pos}: its bytes depend on the zlib build"
+        size = int.from_bytes(data[pos + 1 : pos + 3], "little")
+        assert int.from_bytes(data[pos + 3 : pos + 5], "little") == size ^ 0xFFFF
+        pos += 5 + size
+    assert len(data) == pos + 8, "nothing after the last block but the CRC-32 and the size"
+    import gzip
+    import zlib
+
+    payload = gzip.decompress(data)
+    assert data[pos:] == zlib.crc32(payload).to_bytes(4, "little") + len(payload).to_bytes(4, "little")
+
+
 def test_the_manifest_digest_is_the_archive_digest(doc: dict) -> None:
     platform = doc["spec"]["platforms"][0]
     assert platform["sha256"] == hashlib.sha256(km.archive()).hexdigest()
     assert len(platform["sha256"]) == 64
 
 
-def test_the_archive_holds_one_executable_named_as_krew_expects(doc: dict) -> None:
+def test_the_archive_holds_the_executable_named_as_krew_expects_and_the_licence(doc: dict) -> None:
+    """krew's pre-submit checklist: "Adopt an open source license, and add it to your plugin archive file" and
+    "Make sure to extract the LICENSE file during the plugin installation"
+    (https://krew.sigs.k8s.io/docs/developer-guide/release/new-plugin/, read 2026-11-12). With no `files` in the
+    manifest krew extracts everything, so the licence is installed beside the script (G276)."""
     with tarfile.open(fileobj=io.BytesIO(km.archive()), mode="r:gz") as tar:
         members = tar.getmembers()
-    assert [m.name for m in members] == [km.BIN]
+        licence = tar.extractfile("LICENSE")
+        assert licence is not None
+        shipped = licence.read().decode("utf-8")
+    assert [m.name for m in members] == [km.BIN, "LICENSE"]
+    assert shipped == (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert doc["spec"]["platforms"][0]["bin"] == km.BIN
-    assert members[0].mode == 0o755 and members[0].mtime == 0
-    assert members[0].uid == 0 and members[0].gid == 0 and members[0].uname == ""
+    assert "files" not in doc["spec"]["platforms"][0], "with no `files`, krew extracts the licence too"
+    assert members[0].mode == 0o755 and members[1].mode == 0o644
+    for m in members:
+        assert m.mtime == 0 and m.uid == 0 and m.gid == 0 and m.uname == ""
+
+
+def test_the_description_lists_no_commands(doc: dict) -> None:
+    """The manifest guide: "Avoid including a list of commands or options for your plugin" in `description`
+    (https://krew.sigs.k8s.io/docs/developer-guide/plugin-manifest/, read 2026-11-12)."""
+    lines = [ln.strip() for ln in doc["spec"]["description"].splitlines()]
+    assert not [ln for ln in lines if ln.startswith("kubectl ")], "a command line in the description"
+    assert "--help" in doc["spec"]["description"], "point at the help instead of listing commands"
+
+
+def test_the_install_hints_name_only_documented_install_routes() -> None:
+    """The script once told a user to `brew install kube-noob/tap/kube-noob`, a tap the install guide never names.
+    The Homebrew route is the guide's three commands (tests/test_distribution.py holds them there)."""
+    out = subprocess.run(
+        [SH, str(km.SCRIPT), "audit"], capture_output=True, text=True, check=False, env={"PATH": "/nonexistent"}
+    )
+    assert "kube-noob/tap" not in out.stderr and "kube-noob/tap" not in km.MANIFEST.read_text(encoding="utf-8")
+    assert "brew tap kube-noob/kube-noob https://github.com/kube-noob/kube-noob" in out.stderr
+    from tests.test_distribution import OLD_OWNER
+
+    assert OLD_OWNER not in km.SCRIPT.read_text(encoding="utf-8"), "the org moved; G275 repoints every link"
+    assert "brew trust --formula kube-noob/kube-noob/kube-noob" in out.stderr
 
 
 def test_the_plugin_name_and_bin_follow_krew_naming(doc: dict) -> None:
@@ -141,3 +196,37 @@ def test_with_nothing_installed_it_says_so_and_exits_127() -> None:
     # a heredoc fed to `cat` printed "cat: not found" here instead of the instructions.
     for line in ("pipx install", "brew install", "astral.sh/uv", "offline by default"):
         assert line in out.stderr, f"the install message lost {line!r} -- is it using an external command?"
+
+
+def _bash_blocks(path: Path) -> list[str]:
+    return re.findall(r"^```bash\n(.*?)^```", path.read_text(encoding="utf-8"), flags=re.M | re.S)
+
+
+def test_the_no_krew_install_stops_on_a_failed_digest_check() -> None:
+    """Four separate lines, pasted as a block, extracted the archive after a FAILED check (G276). One chained line:
+    nothing after the check runs unless it printed OK, and it works where `shasum` is missing (minimal Linux)."""
+    install = ROOT / "docs" / "install.md"
+    blocks = [b for b in _bash_blocks(install) if "kubectl-noob-v" in b]
+    assert len(blocks) == 1
+    lines = blocks[0].strip().splitlines()
+    assert len(lines) == 1, "one line, so a failed step stops the rest"
+    line = lines[0]
+    assert "#" not in line.replace("sha256: ", ""), "no comments in a block the owner pastes"
+    check = line.index("-c -")
+    assert line.index("tar -xzf") > check and " && mkdir" in line[check:]
+    assert "sha256sum -c -" in line and "shasum -a 256 -c -" in line and 'test -n "$want"' in line
+    assert f"/v{__version__}/" in line, "the release the manifest at that tag describes"
+
+
+def test_the_krew_index_steps_refuse_an_archive_without_the_licence() -> None:
+    """Run today, the steps would have opened the krew-index pull request with the v0.9.2 manifest, whose archive has
+    no LICENSE; krew's checklist refuses that. Both the check and the pull request step now stop first, and the
+    branch is created only after the asynchronous fork exists."""
+    blocks = _bash_blocks(ROOT / "krew" / "SUBMIT.md")
+    check = next(b for b in blocks if "shasum" in b)
+    pr = next(b for b in blocks if "gh pr create" in b)
+    assert "grep -qx LICENSE" in check and "grep -qx LICENSE" in pr
+    assert pr.index("grep -qx LICENSE") < pr.index("gh repo fork")
+    assert "sleep" in pr and pr.index("sleep") < pr.index('git/refs" -f ref=')
+    for b in blocks:
+        assert len(b.strip().splitlines()) == 1 and not b.lstrip().startswith("#"), "one pasteable line each"

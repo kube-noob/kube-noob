@@ -255,13 +255,27 @@ def test_fix_refuses_a_document_the_api_server_refuses_for_a_duplicate_key(
     assert code == 1 and not out.exists() and "second occurrence on line 15" in err
 
 
-def test_fix_format_json_prints_json(capsys: pytest.CaptureFixture[str]) -> None:
-    code, _, err = _cli(
-        ["fix", "-f", str(FX6 / "q3-01-b4-value-with-eq.yaml"), "--format", "json", "-o", "/dev/null"], capsys
-    )
+def test_fix_format_json_prints_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--format json` means JSON, on whichever stream is free.
+
+    Both halves of one decision, and they used to disagree. With `-o` the document went to the file, so stdout is
+    free and the change log goes there as JSON (G276). Without `-o` the document is on stdout, so the log goes to
+    stderr -- and that was YAML whatever `--format` said, which is what this round fixed (G272, seventh review).
+    """
+    src = str(FX6 / "q3-01-b4-value-with-eq.yaml")
+
+    out = tmp_path / "fixed.yaml"
+    code, stdout, err = _cli(["fix", "-f", src, "--format", "json", "-o", str(out)], capsys)
+    assert code == 0 and out.exists()
+    log = json.loads(stdout)
+    assert set(log) == {"output", "changes", "manualFollowUps", "after"}
+    assert err == "" or not err.strip().startswith("{")
+
+    code, stdout, err = _cli(["fix", "-f", src, "--format", "json"], capsys)
     assert code == 0
     summary = json.loads(err)
     assert set(summary) == {"changes", "manualFollowUps", "after"}
+    assert stdout.lstrip().startswith(("apiVersion:", "---")), "the document itself still goes to stdout"
 
 
 # --- 4 / 5 / 13: one reader and one decision block for the k3s argv and the Rancher config ---

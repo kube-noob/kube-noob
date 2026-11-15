@@ -247,29 +247,80 @@ def test_a_url_webhook_with_no_ca_bundle_is_not_a_finding() -> None:
     assert _clean(_report(_webhook({"url": "https://admission.example.com/validate"})))
 
 
+OPENSHIFT_INJECTOR = {"service.beta.openshift.io/inject-cabundle": "true"}
+CERT_MANAGER_INJECTOR = {"cert-manager.io/inject-ca-from": "example/webhook-cert"}
+
+
+def _certificate(namespace: str = "example", name: str = "webhook-cert") -> str:
+    return yaml.safe_dump(
+        {
+            "apiVersion": "cert-manager.io/v1",
+            "kind": "Certificate",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {"secretName": name + "-tls", "issuerRef": {"name": "ca-issuer", "kind": "Issuer"}},
+        },
+        sort_keys=False,
+    )
+
+
+def test_the_openshift_service_ca_annotation_is_clean_on_the_openshift_family() -> None:
+    """It is the configuration OpenShift's own documentation asks for, and KN-S037's remediation asks for it too:
+    the operator fills the bundle and keeps it filled, so this is an answer and not an absence (G306)."""
+    for platform in ("openshift", "rosa-classic", "rosa-hcp"):
+        report = _report(_webhook(dict(SERVICE), annotations=OPENSHIFT_INJECTOR), platform=platform)
+        assert _clean(report), (platform, _why(report), [f.message for f in _hits(report)])
+
+
+def test_the_openshift_service_ca_annotation_is_declined_where_nothing_honours_it() -> None:
+    """Off the OpenShift family no operator reads it, and the manifest is probably destined for one, so the rule
+    names --platform openshift as every other rule about an OpenShift object does -- it does not report."""
+    report = _report(_webhook(dict(SERVICE), annotations=OPENSHIFT_INJECTOR))
+    assert not _hits(report)
+    assert _declined(report)
+    assert "--platform openshift" in _why(report)
+
+
+def test_the_cert_manager_annotation_is_clean_when_the_certificate_it_names_is_in_the_input() -> None:
+    text = _webhook(dict(SERVICE), annotations=CERT_MANAGER_INJECTOR) + "---\n" + _certificate()
+    assert _clean(_report(text))
+
+
 @pytest.mark.parametrize(
-    "annotation",
+    "certificate",
     [
-        "service.beta.openshift.io/inject-cabundle",
-        "cert-manager.io/inject-ca-from",
+        pytest.param(None, id="no-certificate"),
+        pytest.param(_certificate(name="other-cert"), id="another-name"),
+        pytest.param(_certificate(namespace="other"), id="another-namespace"),
+        pytest.param(_certificate().replace("cert-manager.io/v1", "example.com/v1"), id="another-group"),
     ],
 )
-def test_a_bundle_a_controller_injects_is_declined_not_reported(annotation: str) -> None:
-    """The manifest's value is not what the API server uses, so neither its absence nor its content decides."""
-    report = _report(_webhook(dict(SERVICE), annotations={annotation: "true"}))
-    assert _declined(report)
-    assert "injects" in _why(report)
-
-
-def test_an_injected_bundle_is_declined_even_when_the_value_in_the_manifest_is_expired() -> None:
-    """class 21: the neighbouring input -- an injector annotation beside a bundle, not instead of one."""
-    report = _report(
-        _webhook(
-            {**SERVICE, "caBundle": _b64(EXPIRED_CA)}, annotations={"service.beta.openshift.io/inject-cabundle": "true"}
-        )
-    )
-    assert _declined(report)
+def test_the_cert_manager_annotation_is_declined_when_that_certificate_is_not_here(certificate: str | None) -> None:
+    """class 3 and class 21: the Certificate is matched on group, namespace AND name, so a near miss is a miss."""
+    text = _webhook(dict(SERVICE), annotations=CERT_MANAGER_INJECTOR)
+    if certificate:
+        text += "---\n" + certificate
+    report = _report(text)
     assert not _hits(report)
+    assert _declined(report)
+    assert "not in the input" in _why(report)
+
+
+@pytest.mark.parametrize("annotation", ["cert-manager.io/inject-ca-from-secret", "cert-manager.io/inject-apiserver-ca"])
+def test_an_injector_that_reads_a_secret_or_the_api_servers_ca_is_declined(annotation: str) -> None:
+    """kube-noob never reads Secrets and has no node to read, so neither source can be checked."""
+    report = _report(_webhook(dict(SERVICE), annotations={annotation: "true"}))
+    assert not _hits(report)
+    assert _declined(report)
+
+
+def test_an_injected_bundle_is_not_reported_even_when_the_value_in_the_manifest_is_expired() -> None:
+    """class 21: the neighbouring input -- an injector annotation beside a bundle, not instead of one. The
+    controller replaces whatever is written there, so a stale certificate in the manifest decides nothing."""
+    report = _report(
+        _webhook({**SERVICE, "caBundle": _b64(EXPIRED_CA)}, annotations=OPENSHIFT_INJECTOR), platform="openshift"
+    )
+    assert not _hits(report)
+    assert _clean(report)
 
 
 # =====================================================================================================
@@ -320,5 +371,5 @@ def test_the_failure_policy_rule_is_not_repeated_here() -> None:
 
 def test_no_decline_reason_repeats_text_from_the_input() -> None:
     marker = "ZZmarkerZZ"
-    text = _webhook({**SERVICE, "caBundle": marker}, annotations={"service.beta.openshift.io/inject-cabundle": marker})
+    text = _webhook({**SERVICE, "caBundle": marker}, annotations={"cert-manager.io/inject-ca-from": marker})
     assert marker not in _why(_report(text))

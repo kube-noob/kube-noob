@@ -686,12 +686,20 @@ jobs:
           trap 'echo "::error title=admission chart::line $LINENO: $BASH_COMMAND"' ERR
           base="--set auth.existingSecret=kn-token --set admission.enabled=true"
           at() { helm template kn deploy/helm/kube-noob -n kube-noob $base "$@"; }
+          # A real CA, not a stand-in: KN-S046 reads clientConfig.caBundle, and a chart rendered with a value
+          # that is not a PEM certificate is a webhook the API server could never call (G303). `Zm9v` ("foo")
+          # was here while nothing read the field, and this step's own dogfood audit now reports it HIGH.
+          d=$(mktemp -d)
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$d/ca.key" -out "$d/ca.crt" -days 3650 \
+            -subj "/CN=kube-noob-ci-admission-ca" >/dev/null 2>&1
+          CA_PEM=$(base64 -w0 "$d/ca.crt")
+          export CA_PEM
           helm lint --strict deploy/helm/kube-noob $base
           exc="--exceptions .github/kube-noob-exceptions.yaml"
           kube-noob exceptions check .github/kube-noob-exceptions.yaml
           for v in 1.33.0 1.35.0; do
             at --kube-version "$v" --set networkPolicy.allowRouter=false \
-              --set admission.certificates=secret --set admission.tls.secretName=kn-tls --set admission.tls.caBundle=Zm9v \
+              --set admission.certificates=secret --set admission.tls.secretName=kn-tls --set "admission.tls.caBundle=$CA_PEM" \
               | kube-noob audit -f - --platform kubernetes --fail-on medium $exc
           done
           for v in 4.20:1.33.0 4.22:1.35.0; do
@@ -703,9 +711,11 @@ jobs:
           at --kube-version 1.33.0 --set admission.certificates=cert-manager \
             --set admission.certManager.issuerRef.name=ca-issuer > /tmp/adm-cm.yaml
           at --kube-version 1.29.0 --set admission.certificates=secret --set admission.tls.secretName=kn-tls \
-            --set admission.tls.caBundle=Zm9v --set admission.lookups=true \
+            --set "admission.tls.caBundle=$CA_PEM" --set admission.lookups=true \
             --set "networkPolicy.egress.apiServerCIDRs={10.96.0.1/32}" > /tmp/adm-secret.yaml
           python - <<'PY'
+          import os
+
           import yaml
 
           def load(path):
@@ -764,7 +774,8 @@ jobs:
           assert cert["dnsNames"] == [name + ".kube-noob.svc", name + ".kube-noob.svc.cluster.local"], cert
           sec = load("/tmp/adm-secret.yaml")
           hook = one(sec, "ValidatingWebhookConfiguration")["webhooks"][0]
-          assert hook["clientConfig"]["caBundle"] == "Zm9v" and "matchConditions" not in hook, "1.29: no matchConditions"
+          assert hook["clientConfig"]["caBundle"] == os.environ["CA_PEM"], "the chart passes the CA through"
+          assert "matchConditions" not in hook, "1.29: no matchConditions"
           vol = {v["name"]: v for v in one(sec, "Deployment", name)["spec"]["template"]["spec"]["volumes"]}
           assert vol["tls"]["secret"]["secretName"] == "kn-tls", vol
           role = one(sec, "ClusterRole")
