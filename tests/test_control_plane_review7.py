@@ -71,6 +71,33 @@ def test_an_undetermined_audit_exits_1_whatever_fail_on_says(capsys: pytest.Capt
     assert rep["summary"]["scoreWithheld"] == "1 rule not evaluated in full: KN-S038"
 
 
+def test_refused_evidence_is_5_and_the_same_evidence_waived_is_the_undetermined_1(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hinge of the exit-code rule in AGENTS.md: 1 and 5 answer different questions, so the order matters.
+
+    One directory, one flag. Without `--skip-unreadable` a file that cannot be read is refused and no verdict is
+    attempted, which is 5. With it, the caller has said "decide without that file", a verdict IS reached, and this
+    bundle's verdict is undetermined -- so it is 1, at `--fail-on never`, with the skipped file still named. Both
+    codes on one input, so neither can quietly become the other.
+    """
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "declined.yaml").write_text((FX6 / "q2-declined.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (d / "blob.yaml").write_bytes(b"\x00\x01binary\xff")
+
+    code, _, err = _cli(["audit", "-f", str(d), "--fail-on", "never"], capsys)
+    assert code == 5, err
+    assert "blob.yaml" in err
+
+    code, out, _ = _cli(["audit", "-f", str(d), "--skip-unreadable", "--fail-on", "never", "--format", "json"], capsys)
+    assert code == 1, out
+    rep = json.loads(out)
+    assert rep["summary"]["score"] is None
+    assert rep["summary"]["scoreWithheld"] == "1 rule not evaluated in full: KN-S038"
+    assert [u["path"] for u in rep["unreadable"]] == ["blob.yaml"]
+
+
 def test_the_gate_is_incomplete_not_passed_on_an_undetermined_audit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

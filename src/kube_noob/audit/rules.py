@@ -125,10 +125,16 @@ class AuditContext:
     def looked_at(self, rule_id: str, resource: str) -> None:
         self.examined.setdefault(rule_id, set()).add(resource)
 
-    def cannot_decide(self, rule_id: str, reason: str | None = None, resource: str | None = None) -> None:
+    def cannot_decide(self, rule_id: str, why: str | None = None, resource: str | None = None) -> None:
+        """`why` is the fixed-phrase reason, `resource` the object it declined on.
+
+        The parameter is `why` because that is the name `docs/architecture.md` states, the key the record carries
+        in `Report.not_audited` and in the JSON, and the name every caller of this method already reads. It was
+        `reason` here and `why` everywhere else, which is one name too many for one thing (class 9).
+        """
         self.undecided.add(rule_id)
-        if reason:
-            entry = (resource or "", reason)
+        if why:
+            entry = (resource or "", why)
             seen = self.declined.setdefault(rule_id, [])
             if entry not in seen:
                 seen.append(entry)

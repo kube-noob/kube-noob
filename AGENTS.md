@@ -103,7 +103,7 @@ A behaviour change updates, in the same commit:
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | findings at or above `--fail-on` |
+| 1 | findings at or above `--fail-on`, or a verdict that is undetermined |
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |
@@ -116,6 +116,38 @@ through the same output boundary (G279).
 
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations.
+
+### 1 and 5 are not two answers to the same question (G272)
+
+Three-valued verdicts make two codes available for a run that is not a clean pass, and they answer different
+questions. **1 means a verdict was reached and it is not a pass.** **5 means no verdict was reached, because the
+evidence offered was not enough to reach one.** A command picks by which of those happened, never by how bad the
+result feels, and the two are not a disagreement between commands: they are a disagreement between "may this
+pass?" and "could this be decided at all?".
+
+So an **undetermined verdict is exit 1**, not 5. A rule that declined on the only API server it could see, an
+object nothing read, a tie between two policies: the run looked, got as far as an answer, and the answer is not a
+pass. `audit`, `gate` and `policy reach` all exit 1 there, and **`--fail-on` and `--min-severity` never lower it**
+-- an undetermined report is not a clean one at any threshold, so "no severity is worth failing on" cannot turn it
+into a 0. `gate`'s headline for it is `incomplete`, never `passed`
+(`tests/test_control_plane_review7.py::test_an_undetermined_audit_exits_1_whatever_fail_on_says`,
+`tests/test_control_plane_review7.py::test_the_gate_is_incomplete_not_passed_on_an_undetermined_audit`,
+`tests/test_netpol_anp.py::test_the_reach_command_prints_and_exits_on_an_undetermined_verdict`).
+
+**5 is for evidence kube-noob refused to decide from**: a file that could not be read and `--skip-unreadable` was
+not given, so no verdict was attempted at all, and `--require-complete` on a command whose answer is not complete,
+where the caller has said that a partial answer is not an answer
+(`tests/test_red_team_rt3.py::test_a_crash_never_wears_the_exit_code_of_a_policy_failure`,
+`tests/test_blast_radius.py::test_require_complete_exits_5_when_a_leg_is_not_determined`). `--skip-unreadable` is
+the caller saying "decide without that file", so the run does decide: the file stays named in `unreadable` in
+every format, and the exit code is the verdict's, not 5
+(`tests/test_red_team_rt3.py::test_one_bad_file_does_not_hide_the_findings_in_the_good_ones`). The order follows
+from that: the refusal is checked before the verdict, so an unreadable file in a directory that would also have
+been undetermined is 5, and the same directory with `--skip-unreadable` is 1.
+
+A command whose own answer is a decision rather than a score reads the same rule the other way round: when it
+cannot decide whether to allow something, no verdict was reached, so that is a 5 and not a 1. That is the same
+sentence, not an exception to it.
 
 ## Versions
 
