@@ -38,6 +38,19 @@ class Stage(enum.Enum):
     RED_TEAM = "red-team"
 
 
+def fingerprint_for(rule_id: str, resource: str, locator: str) -> str:
+    """The one definition of a finding's identity: the rule, the object and the name-keyed location.
+
+    A function rather than only a method, because the receipt (``kube_noob.receipt``) needs it for data that is
+    no longer a ``Finding``: the gate's finding dicts, which carry CVE and SAST results beside audit rules. A
+    second implementation of this key would drift from this one, which is the defect class where a private copy
+    of a shared list turns out to be a subset of it -- so there is one definition, here, and
+    ``Finding.fingerprint`` calls it. The identity is unchanged: G190's reasons are in that method's docstring.
+    """
+    key = "\x1f".join((rule_id, resource, locator))
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
 @dataclass
 class Finding:
     rule_id: str
@@ -67,8 +80,7 @@ class Finding:
         This is separate from the SARIF ``partialFingerprints`` that gate.py emits, and does not touch
         it: that one is GitHub's alert-matching key and redefining it would reset every alert's history.
         """
-        key = "\x1f".join((self.rule_id, self.resource, self.locator or self.path))
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        return fingerprint_for(self.rule_id, self.resource, self.locator or self.path)
 
     def citation_objects(self) -> list[Citation]:
         return [SOURCES[c] for c in self.citations if c in SOURCES]
