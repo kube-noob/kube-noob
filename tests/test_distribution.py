@@ -556,7 +556,6 @@ _KEPT_OLD_OWNER: tuple[tuple[str, str, int, str], ...] = (
     # A migration step for someone who followed the instructions before the move.
     ("docs/install.md", "`{old}/kube-noob`", 1, "the tap name used before the move, which a user may still have"),
     ("docs/install.md", "brew untap {old}/kube-noob", 1, "removing that tap"),
-    ("docs/website-updates.md", "grep -rn {old} .", 1, "the command that finds what the site still has"),
     # A record of what was true when written.
     ("AGENTS.md", "`{old}/kube-noob-www` is the wrong target", 1, "records which site target was wrong"),
     ("AGENTS.md", "CNAMEs to `{old}.github.io`", 1, "the DNS record as it stands; an owner action"),
