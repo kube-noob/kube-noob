@@ -1313,6 +1313,8 @@ class Toolkit:
         return {
             "platform": r.platform,
             "kubernetesVersion": r.kubernetes_version,
+            # What the scenarios could not rely on, as the audit says it: an `undecided` scenario points here (G276).
+            "assumptions": r.assumptions,
             "scenarios": [s.as_dict() for s in r.scenarios],
         }
 

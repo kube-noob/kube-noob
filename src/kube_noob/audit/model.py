@@ -97,7 +97,7 @@ class Finding:
 class RedTeamScenario:
     scenario_id: str
     question: str
-    verdict: str  # "exposed" | "mitigated" | "not-applicable"
+    verdict: str  # "exposed" | "mitigated" | "not-applicable" | "undecided" (an input it could not read, G276)
     severity: Severity
     evidence: list[str]
     blast_radius: str
