@@ -111,6 +111,11 @@ def test_positioning_says_no_ai_inside_and_never_claims_otherwise() -> None:
         ROOT / "src" / "kube_noob" / "cli.py",
         *sorted((ROOT / "docs").glob("*.md")),
         *sorted((ROOT / "plugin" / "kube-noob" / "skills").glob("*/SKILL.md")),
+        ROOT / "plugin" / "kube-noob-skills" / ".claude-plugin" / "plugin.json",
+        ROOT / "plugin" / "kube-noob-skills" / "README.md",
+        *sorted((ROOT / "plugin" / "kube-noob-skills" / "skills").glob("*/SKILL.md")),
+        ROOT / "krew" / "noob.yaml",
+        ROOT / "krew" / "SUBMIT.md",
         *sorted((ROOT / "demos").glob("*.md")),
         *sorted((ROOT / "demos" / "video").glob("*.html")),
     ]
