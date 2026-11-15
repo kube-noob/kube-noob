@@ -56,3 +56,25 @@ def test_the_component_rules_are_defined_in_the_component_module_and_not_in_rule
     for rule_id in COMPONENT_RULES:
         assert f'"{rule_id}",' in components, rule_id
         assert f'    "{rule_id}",\n    "' not in rules, rule_id
+
+
+def test_the_kubelet_rules_are_skipped_at_admission_as_the_generated_policies_skip_them() -> None:
+    """The webhook and the generated policies must not disagree about a rule (G307).
+
+    Four of the five shapes a kubelet is configured in never reach the API server, so refusing the two that do
+    would stop a `KubeletConfig` while leaving every kubelet already running as it is -- the same reason
+    `KN-S038` and `KN-S039` are skipped, one component along. The two lists are kept in step here rather than
+    by hand, because a rule in one and not the other is a rule the two surfaces answer differently (class 25).
+    """
+    from kube_noob.admission import CROSS_OBJECT, SKIPPED_RULES
+    from kube_noob.generate.policies import NOT_GENERATED
+
+    kubelet = {"KN-S042", "KN-S043", "KN-S044", "KN-S045"}
+    assert kubelet <= SKIPPED_RULES
+    assert kubelet <= set(NOT_GENERATED)
+    assert not kubelet & CROSS_OBJECT
+    # KN-S046 is NOT skipped: the webhook evaluates whatever object it is given, and a webhook configuration it
+    # is given is one it can read in full. It has no generated policy because a ValidatingAdmissionPolicy
+    # cannot validate another one, which is a different reason.
+    assert "KN-S046" not in SKIPPED_RULES
+    assert "KN-S046" in NOT_GENERATED

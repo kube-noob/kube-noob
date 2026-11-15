@@ -80,6 +80,17 @@ SKIPPED_RULES = frozenset(
         # `kube-noob audit` reads the manifest itself (G272).
         "KN-S038",
         "KN-S039",
+        # The same, one component along, and with a second reason. Four of the five shapes a kubelet is
+        # configured in never reach the API server at all -- a static pod on the node's disk, a
+        # KubeletConfiguration file, a systemd command line -- so refusing the two that do would stop a
+        # `KubeletConfig` or `MachineConfig` while leaving every kubelet already running as it is, and would
+        # pass a cluster configured in any of the other three. This is the same decision as these rules'
+        # entries in `generate.policies.NOT_GENERATED`, taken for the same reason, so the webhook and the
+        # generated policies cannot disagree about them (G307).
+        "KN-S042",
+        "KN-S043",
+        "KN-S044",
+        "KN-S045",
     }
 )
 CROSS_OBJECT = frozenset(
