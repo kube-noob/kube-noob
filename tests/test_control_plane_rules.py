@@ -630,13 +630,37 @@ def test_the_reason_reaches_sarif_the_text_view_and_the_mcp_result(
 
 
 def test_hostile_argv_is_bounded_and_never_crashes() -> None:
-    """Twenty thousand tokens, a dangling value flag, non-string tokens and URLs that do not parse."""
+    """Twenty thousand tokens, a dangling value flag, non-string tokens and URLs that do not parse.
+
+    The bound is the SHAPE of the growth, not a stopwatch reading. This assertion used to be
+    `time.monotonic() - start < 5` against a single 20,000-token parse, and it failed on CI at 5.58 s while the
+    identical tree passed on another sha minutes earlier: on a shared runner the parse costs about 1.5 s unloaded
+    and four times that under load, so the ceiling sat below the noise floor rather than above the defect. That is
+    review class 10 -- a wall-clock reading compared against a fixed expectation -- and it cost a green run.
+
+    What the test is actually for is review class 12: an index rebuilt per token would make a within-bounds input
+    take minutes. So it parses two sizes in the one process and asserts the growth is not quadratic. Quadratic
+    would be about 16x for 4x the tokens; linear is about 4x; measured here it is 0.45 s and 1.49 s. The machine's
+    speed cancels between the two readings, so load moves both and the ratio survives it. The absolute ceiling
+    stays only as a hang catcher, set from the thing it protects -- a quadratic scan of 20,000 tokens is minutes --
+    instead of from a quiet machine's best case.
+    """
     import time
 
-    noise = [f"--x{i}" for i in range(20_000)]
-    start = time.monotonic()
-    report = _report(_apiserver(*noise, "--authorization-mode"))
-    assert time.monotonic() - start < 5
+    def parse(n: int) -> tuple[float, object]:
+        noise = [f"--x{i}" for i in range(n)]
+        start = time.monotonic()
+        out = _report(_apiserver(*noise, "--authorization-mode"))
+        return time.monotonic() - start, out
+
+    small, _ = parse(5_000)
+    big, report = parse(20_000)
+    assert big < 60, f"20,000 tokens took {big:.1f}s: that is a hang, not a slow runner"
+    if small > 0.05:  # too fast to divide reliably; the ceiling above still holds
+        assert big < small * 8, (
+            f"4x the tokens cost {big / small:.1f}x the time ({small:.2f}s -> {big:.2f}s). Linear is about 4x and "
+            f"quadratic about 16x, so the argv scan is rebuilding something per token."
+        )
     assert _declined(report, "KN-S038")  # a dangling --authorization-mode: kube-apiserver would not start
     weird = _pod("kube-apiserver", ["kube-apiserver"]).replace("- kube-apiserver", "- kube-apiserver\n      - 7")
     assert not _hits(_report(weird), "KN-S038")  # a non-string token: not a command line kube-noob can read
