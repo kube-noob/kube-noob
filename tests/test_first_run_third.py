@@ -92,14 +92,29 @@ def test_known_issues_on_the_command_line_takes_a_long_paste_and_says_it_was_cut
 
 # -- 2. one version grammar on every surface -------------------------------------------------------------------------
 
+
+def _past_the_index() -> tuple[str, str]:
+    """The newest 4.22 update the index reaches, and the one after it.
+
+    They were typed here as 4.22.18 and 4.22.19, and the next refresh of the index moved the boundary and failed
+    four tests without anything being wrong: the boundary is a datum the index already holds (class 9).
+    """
+    from kube_noob import known_issues
+
+    reach = known_issues.get_index().newest()["4.22"]
+    head, z = reach.rsplit(".", 1)
+    return reach, f"{head}.{int(z) + 1}"
+
+
+INDEXED_THROUGH_422, PAST_422 = _past_the_index()
 ACCEPTED = {
     "4.21.3": "determined",
-    "4.22.18": "determined",
-    "4.22.19": "not-determined",
+    INDEXED_THROUGH_422: "determined",
+    PAST_422: "not-determined",
     "4.21.0-rc.1": "not-determined",
     "4.20.0-okd-scos.6": "not-determined",
     "4.21": "determined",
-    "4.16.20": "not-determined",
+    "4.13.20": "not-determined",  # below the oldest release the index holds
     NIGHTLY: "not-determined",
     "4.21.3-x86_64": "determined",
 }

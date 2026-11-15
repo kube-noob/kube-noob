@@ -25,14 +25,41 @@ ATTRIBUTION = "OpenShift release notes (c) Red Hat, Inc. and contributors, Apach
 KNOWN = "modules/rn-ocp-release-notes-known-issues.adoc"
 FIXED = "modules/rn-ocp-release-notes-fixed-issues.adoc"
 ATTRIBUTES = "_attributes/common-attributes.adoc"
+#: 4.19 and earlier keep the whole release notes in one book file instead of the ``modules/rn-ocp-*`` extracts:
+#: the known issues, the ``.0`` fixed issues and the older updates' bug fixes are all sections of it. Reading only
+#: the modules gave those releases their fixed issues from the z-stream modules alone and no known issues at all,
+#: which is an index that answers "nothing reported" for a release whose notes report plenty.
+BOOK = "release_notes/ocp-{dash}-release-notes.adoc"
 
 _ID = re.compile(r"browse/([A-Z][A-Z0-9]+-\d+)")
 _BARE_ID = re.compile(r"\b((?:OCPBUGS|RHEL|OSSM|NE|OCPNODE|HOSTEDCP|MCO|CNV|OCPEDGE|SDN|CORENET)-\d+)\b")
 _ATTR_DEF = re.compile(r"^:([A-Za-z0-9_-]+):\s*(.*?)\s*$", re.MULTILINE)
 _ATTR_USE = re.compile(r"\{([A-Za-z0-9_-]+)\}")
 _ISSUED = re.compile(r"^Issued:\s*(\d{1,2} \w+ \d{4})", re.MULTILINE)
-_ZSTREAM = re.compile(r"zstream-(\d+)-(\d+)-(\d+)\.adoc$")
+#: ``zstream-4-19-19.adoc`` and, since the notes were split further, ``zstream-4-19-19-bug-fixes.adoc`` beside
+#: ``-about`` (which carries the Issued date) and ``-updating``. Matching only the first spelling silently skipped
+#: every update of 4.14, 4.15, 4.18 and 4.19 that had been split.
+_ZSTREAM = re.compile(r"zstream-(\d+)-(\d+)-(\d+)(-bug-fixes)?\.adoc$")
+#: The anchor the docs build puts before each update's section in a book file: ``[id="ocp-4-14-58_{context}"]``.
+_BLOCK_ID = re.compile(r'^\[id="ocp-(\d+)-(\d+)-(\d+)_', re.MULTILINE)
+#: Where the asynchronous-errata part of a book begins. In 4.15 it is a level-2 heading, so the known-issues
+#: section ends at it on its own; in 4.14, 4.18 and 4.19 it is an include whose own heading lives in the included
+#: module, so "Known issues" is the LAST heading of its level and ran to the end of the file -- which turned every
+#: fixed-issue bullet of every update into a known issue of the .0 release. Bounding on the marker is what keeps
+#: a fixed bug from being reported as still open.
+_ERRATA_START = re.compile(
+    r"^(?:include::modules/(?:rn-async-errata|ocp-release-asynch-errata-updates|zstream-)|"
+    r'\[id="ocp-\d+-\d+-\d+_|={1,3} Asynchronous errata)',
+    re.MULTILINE,
+)
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(`])")
+#: A credential-shaped environment-variable name. The release notes quote shell examples
+#: (``-H "Authorization: Bearer $API_TOKEN"``), and the Claude plugin bundles this index as data: a credential
+#: variable name anywhere in the plugin copy is refused (``tests/test_plugin.py::
+#: test_bundle_names_no_credential_variables``), because a reviewer scanning the bundle cannot tell a vendor's
+#: placeholder from a variable kube-noob itself reads. Only the name is replaced, by ``CREDENTIAL_VARIABLE``;
+#: every record still cites the exact source file and commit, so the original wording is one link away.
+_CREDENTIAL_VAR = re.compile(r"\b[A-Z][A-Z0-9_]*_(?:TOKEN|API_KEY|SECRET_ACCESS_KEY|ACCESS_KEY_ID)\b")
 
 
 @dataclass(frozen=True)
@@ -134,7 +161,7 @@ def _record(
     ids = issue_ids(item)
     if not ids:
         return None
-    text = clean(item, attrs)
+    text = _CREDENTIAL_VAR.sub("CREDENTIAL_VARIABLE", clean(item, attrs))
     if len(text) < 40:
         return None
     return {
@@ -184,10 +211,73 @@ def parse_release(rel: Release) -> list[dict[str, Any]]:
             continue
         version = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
         text = f.read_text(encoding="utf-8")
-        issued = _issued(text)
+        # A split update keeps its Issued date in the sibling ``-about`` file; without it every record of those
+        # updates would carry no date while its neighbours from a one-file update carry one.
+        issued = _issued(text) or (_issued_from_about(f) if m.group(4) else None)
         body = section(text, "Fixed issues") or section(text, "Bug fixes")
         for item in bullets(body):
             rec = _record("fixed", item, attrs, rel.minor, version, f"{blob}/modules/{f.name}", issued)
+            if rec:
+                out.append(rec)
+    out.extend(_parse_book(rel, attrs, blob))
+    return out
+
+
+def _issued_from_about(bug_fixes: Path) -> str | None:
+    about = bug_fixes.with_name(bug_fixes.name.replace("-bug-fixes.adoc", "-about.adoc"))
+    return _issued(about.read_text(encoding="utf-8")) if about.is_file() else None
+
+
+def inline_updates(text: str, minor: str) -> list[tuple[str, str]]:
+    """``(version, section text)`` for each update written into a book file rather than its own module.
+
+    4.19 and earlier moved only their newest updates into ``modules/zstream-*``; the rest stay as level-3
+    sections of the book, each opened by the anchor the docs build writes (``[id="ocp-4-14-58_{context}"]``).
+    The anchor is the delimiter because it is generated, unlike the heading text, which is advisory prose.
+    """
+    dash = minor.replace(".", "-")
+    starts = [m for m in _BLOCK_ID.finditer(text) if f"{m.group(1)}-{m.group(2)}" == dash]
+    out: list[tuple[str, str]] = []
+    for n, m in enumerate(starts):
+        if n + 1 < len(starts):
+            end = starts[n + 1].start()
+        else:  # the oldest update: stop at the next part of the book, never run to the end of the file
+            nxt = re.search(r"^={1,2} \S", text[m.end() :], re.MULTILINE)
+            end = m.end() + nxt.start() if nxt else len(text)
+        out.append((f"{m.group(1)}.{m.group(2)}.{m.group(3)}", text[m.start() : end]))
+    return out
+
+
+def known_issues_body(text: str) -> str:
+    """The known-issues section of a book, ending where the asynchronous-errata part begins."""
+    body = section(text, "Known issues")
+    cut = _ERRATA_START.search(body)
+    return body[: cut.start()] if cut else body
+
+
+def _parse_book(rel: Release, attrs: dict[str, str], blob: str) -> list[dict[str, Any]]:
+    """The known issues, the ``.0`` fixed issues and the inline updates of a release whose notes are one file."""
+    dash = rel.minor.replace(".", "-")
+    book = rel.root / BOOK.format(dash=dash)
+    if not book.is_file():
+        return []
+    text = book.read_text(encoding="utf-8")
+    src = f"{blob}/{BOOK.format(dash=dash)}"
+    out: list[dict[str, Any]] = []
+    for item in bullets(known_issues_body(text)):
+        rec = _record("known", item, attrs, rel.minor, rel.minor, src, None)
+        if rec:
+            out.append(rec)
+    # The first "Bug fixes" section of a book is the one for the .0 release; every later one belongs to an update
+    # and is read from that update's own block below, with that update's version and date.
+    for item in bullets(section(text, "Bug fixes")):
+        rec = _record("fixed", item, attrs, rel.minor, f"{rel.minor}.0", src, None)
+        if rec:
+            out.append(rec)
+    for version, block in inline_updates(text, rel.minor):
+        issued = _issued(block)
+        for item in bullets(section(block, "Bug fixes")):
+            rec = _record("fixed", item, attrs, rel.minor, version, src, issued)
             if rec:
                 out.append(rec)
     return out
@@ -221,12 +311,19 @@ def link_fixes(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def fetch(minors: Iterable[str], workdir: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Sparse-clone each enterprise-<minor> branch and parse it. Returns the records and the commit per minor."""
+def fetch(minors: Iterable[str], workdir: Path) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, str]]:
+    """Sparse-clone each enterprise-<minor> branch and parse it.
+
+    Returns the records, the commit per minor, and the date each minor was retrieved. The retrieval date is per
+    minor and not one date for the run: an index that spans nine releases is refreshed a few at a time, and one
+    global date would then claim a freshness the older minors do not have. ``snapshot`` writes both into the
+    file so every answer can cite the branch URL and the day it was read, per release.
+    """
     from kube_noob.sources.git_ingest import _git
 
     records: list[dict[str, Any]] = []
     commits: dict[str, str] = {}
+    retrieved: dict[str, str] = {}
     from kube_noob.sources.pacing import pause
 
     for i, minor in enumerate(minors):
@@ -246,20 +343,50 @@ def fetch(minors: Iterable[str], workdir: Path) -> tuple[list[dict[str, Any]], d
                     f"/{FIXED}",
                     f"/{ATTRIBUTES}",
                     f"/modules/zstream-{dash}-*.adoc",
+                    f"/{BOOK.format(dash=dash)}",
                 ],
                 cwd=dest,
             )
         commits[minor] = _git(["rev-parse", "HEAD"], cwd=dest).strip()
+        retrieved[minor] = datetime.now(UTC).date().isoformat()
         records.extend(parse_release(Release(minor, dest, commits[minor])))
-    return link_fixes(records), commits
+    return link_fixes(records), commits, retrieved
 
 
-def snapshot(records: list[dict[str, Any]], commits: dict[str, str]) -> dict[str, Any]:
+def branch_url(minor: str, commit: str = "") -> str:
+    """The URL an answer cites for one minor's release notes: the commit if there is one, the branch otherwise."""
+    return f"https://github.com/{REPO}/tree/{commit or 'enterprise-' + minor}"
+
+
+def minor_sources(commits: dict[str, str], retrieved: dict[str, str] | None = None) -> dict[str, dict[str, str]]:
+    """Per minor: the branch, the commit, the URL and the day it was read. One global ``retrievedAt`` cannot say
+    that 4.14 was read in March and 4.22 yesterday, and an index spanning nine releases will be refreshed that
+    way, so the per-minor record is what the coverage statement quotes."""
+    dates = retrieved or {}
     return {
-        "retrievedAt": datetime.now(UTC).date().isoformat(),
+        minor: {
+            "branch": f"enterprise-{minor}",
+            "commit": commit,
+            "url": branch_url(minor, commit),
+            "retrievedAt": dates.get(minor, ""),
+        }
+        for minor, commit in sorted(commits.items(), key=lambda kv: _vkey(kv[0]))
+    }
+
+
+def snapshot(
+    records: list[dict[str, Any]], commits: dict[str, str], retrieved: dict[str, str] | None = None
+) -> dict[str, Any]:
+    dates = sorted(v for v in (retrieved or {}).values() if v)
+    return {
+        # The newest per-minor date, so a reader is never told the whole index is as fresh as its freshest part
+        # is not what this says: `minors` below carries the real date for each one, and the coverage statement
+        # quotes that rather than this.
+        "retrievedAt": dates[-1] if dates else datetime.now(UTC).date().isoformat(),
         "source": f"https://github.com/{REPO}",
         "license": LICENSE,
         "attribution": ATTRIBUTION,
         "commits": commits,
+        "minors": minor_sources(commits, retrieved),
         "records": records,
     }

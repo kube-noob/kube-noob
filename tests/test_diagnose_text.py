@@ -83,8 +83,8 @@ def test_commands_that_run_in_a_container_are_labelled_as_needing_approval(
 
 
 def test_the_text_view_carries_what_was_not_determined(capsys: pytest.CaptureFixture[str]) -> None:
-    out = _run(["diagnose", "etcd leader changed", "--platform", "openshift", "--version", "4.16.20"], capsys)
-    assert "NOT DETERMINED for OpenShift 4.16.20" in out
+    out = _run(["diagnose", "etcd leader changed", "--platform", "openshift", "--version", "4.13.20"], capsys)
+    assert "NOT DETERMINED for OpenShift 4.13.20" in out
 
 
 def test_the_text_view_carries_the_notes(capsys: pytest.CaptureFixture[str]) -> None:
@@ -115,7 +115,7 @@ def test_every_field_of_the_structured_result_has_a_decision_in_the_text_view() 
     for name in ("events-scc.txt", "events-crashloop.txt", "alertmanager-etcd.json"):
         assert set(_structured((EXAMPLES / name).read_text(encoding="utf-8"))) <= handled, name
     assert set(_structured("HEALTH_WARN 1 osds down; OSD_DOWN 1 osds down")) <= handled
-    assert set(_structured("etcd leader changed", platform="openshift", version="4.16.20")) <= handled
+    assert set(_structured("etcd leader changed", platform="openshift", version="4.13.20")) <= handled
     assert all(why for why in dx.TEXT_OMITTED.values())
 
 

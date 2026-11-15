@@ -22,7 +22,7 @@ What kube-noob answers, what it leaves unanswered and where it is weak, measured
 | Diagnosis playbooks | 67 | `python -c "from kube_noob.debug.playbooks import PLAYBOOKS; print(len(PLAYBOOKS))"` |
 | Knowledge documents | 65 | `python -c "from kube_noob.knowledge.store import builtin_chunks; print(len({c.doc_id for c in builtin_chunks()}))"` |
 | Knowledge sections | 288 | `python -c "from kube_noob.knowledge.store import builtin_chunks; print(len(builtin_chunks()))"` |
-| Reported issues bundled (distinct bugs) | 921 | `python -c "from kube_noob.known_issues import bundled; print(len({i.id for i in bundled()[0]}))"` |
+| Reported issues bundled (distinct bugs) | 3518 | `python -c "from kube_noob.known_issues import bundled; print(len({i.id for i in bundled()[0]}))"` |
 | Self-test cases | 63 | `python -c "from kube_noob.evals.selftest import cases; print(len(cases()))"` |
 
 The community-question numbers are quoted in the last section; their command needs the owner's question file, which is not in this repository.
@@ -41,7 +41,7 @@ The community-question numbers are quoted in the last section; their command nee
 - 93 audit rules (56 audit, 13 calibrate, 24 validate).
 - 67 diagnosis playbooks with 170 root causes.
 - 288 knowledge sections in 65 documents.
-- 921 reported issues from the bundled OpenShift release notes.
+- 3518 reported issues from the bundled OpenShift release notes.
 - 63 self-test cases, 151 golden questions, 114 held-out and 171 training triage questions.
 
 What is bundled for each technology is listed in [supported-technologies.md](evals/supported-technologies.md).

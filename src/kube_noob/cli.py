@@ -543,6 +543,10 @@ def _print_known_issues(out: dict[str, Any]) -> None:
         _tprint(out["note"])
     k = out["knowledge"]
     print(f"index: release-note issues as of {k['knownIssuesAsOf']} for OpenShift {', '.join(k['openshiftReleases'])}")
+    # Per release, not only the list: nine releases were read on their own days and to their own newest update,
+    # and one "as of" over all of them would claim a freshness the older ones may not have (G303).
+    for row in k.get("openshiftReleaseDetail") or []:
+        print(f"index: OpenShift {row['minor']} read to {row['indexedThrough']} as of {row['asOf']}")
     if k.get("recordsRejected"):
         print(f"index: {k['recordsRejected']} record(s) left out as unusable: {'; '.join(k['rejectedRecords'])}")
     if k.get("localCopyNote"):
@@ -4631,12 +4635,13 @@ def _corpus(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
         minors = [m.strip() for m in a.minors.split(",") if m.strip()]
         with tempfile.TemporaryDirectory(prefix="kube-noob-rn-") as tmp:
-            records, commits = fetch(minors, Path(tmp))
+            records, commits, retrieved = fetch(minors, Path(tmp))
         out_dir = s.data_dir / "known_issues"
         out_dir.mkdir(parents=True, exist_ok=True)
         target = out_dir / "openshift-release-notes.json"
-        target.write_text(json_document(snapshot(records, commits), ensure_ascii=False) + "\n", encoding="utf-8")
-        _emit({"file": str(target), "issues": len(records), "commits": commits}, fmt)
+        doc = snapshot(records, commits, retrieved)
+        target.write_text(json_document(doc, ensure_ascii=False) + "\n", encoding="utf-8")
+        _emit({"file": str(target), "issues": len(records), "commits": commits, "minors": doc["minors"]}, fmt)
         return 0
     if cc == "build":
         from kube_noob.sources.git_ingest import ingest

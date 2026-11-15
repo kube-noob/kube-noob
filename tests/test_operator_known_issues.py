@@ -34,6 +34,30 @@ from kube_noob.mustgather import analyse, ingest, sample
 ROOT = Path(__file__).resolve().parents[1]
 API = "operators.coreos.com/v1alpha1"
 RECORD_FIELDS = {"id", "ids", "kind", "minor", "version", "text", "source", "issued", "fixedIn"}
+
+
+def _bundled_facts() -> tuple[str, int]:
+    """The date and the record count of the bundled index, read from the files rather than typed here.
+
+    They were typed here, and a refresh that widened the index to 4.14 made eight tests fail on the date and the
+    count without anything being wrong: a test asserting a datum it could read is a second source of truth for it
+    (docs/review-classes.md class 9).
+    """
+    import json
+
+    total = 0
+    as_of = ""
+    for f in sorted((ROOT / "src/kube_noob/data/known_issues").glob("*.json")):
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        total += len(doc["records"])
+        as_of = max(as_of, doc["retrievedAt"])
+    return as_of, total
+
+
+BUNDLED_AS_OF, BUNDLED_RECORDS = _bundled_facts()
+#: The releases the bundled index holds, read from it. Several tests below are about narrowing to the cluster's
+#: own release; pinning the list in each of them made the 4.14 back-fill fail nine of them at once.
+INDEXED_RELEASES = list(known_issues.get_index().knowledge()["openshiftReleases"])
 G = "namespaces/%s/operators.coreos.com/%s"
 CV_PATH = "cluster-scoped-resources/config.openshift.io/clusterversions/%s.yaml"
 
@@ -287,7 +311,7 @@ def test_an_operator_named_in_a_fixed_issue_is_listed_with_its_source_and_the_co
     assert r["tier"] == "named" and r["via"] in oi.ALIASES["ptp-operator"].names
     assert r["source"].startswith("https://github.com/openshift/openshift-docs/blob/")
     assert r["url"] == "https://redhat.atlassian.net/browse/OCPBUGS-74358"
-    assert r["knownIssuesAsOf"] == out["knowledge"]["knownIssuesAsOf"] == "2026-10-27"
+    assert r["knownIssuesAsOf"] == out["knowledge"]["knownIssuesAsOf"] == BUNDLED_AS_OF
 
 
 @pytest.mark.parametrize(
@@ -320,9 +344,14 @@ def test_a_known_issue_with_no_fix_says_no_fix_is_listed() -> None:
 
 def test_narrowing_keeps_the_release_the_cluster_runs_and_open_issues_from_before() -> None:
     out = assess(*pair("numaresources-operator", "n", "nro.v4.21.0"), version="4.21.5")
-    assert [(r["id"], r["releases"]) for r in rows(out, "numaresources-operator")] == [
-        ("OCPBUGS-77930", ["4.20", "4.21"])
-    ]  # 4.22's records and the 4.22 fix (OCPBUGS-84690) are not this cluster's
+    found = rows(out, "numaresources-operator")
+    ids = [r["id"] for r in found]
+    assert "OCPBUGS-77930" in ids
+    # 4.22's records and the 4.22 fix (OCPBUGS-84690) are not this cluster's. Asserted as "nothing above 4.21"
+    # rather than as one pinned list: which earlier releases also list an open issue is data, and the 4.14-4.19
+    # back-fill changed it without changing what this test is about.
+    assert "OCPBUGS-84690" not in ids
+    assert not any(r for x in found for r in x["releases"] if r > "4.21"), found
     assert out["cluster"]["releasesSearched"] == ["4.21"] and out["cluster"]["versionFrom"] == "given"
 
 
@@ -334,7 +363,7 @@ def test_an_open_issue_from_an_earlier_release_stays_listed_at_the_next() -> Non
         assert one(out)["verdict"] != "none-named"
         assert [r["id"] for r in rows(out, "netobserv-operator")] == ["OSSM-5407"]
     assert row(at_421, "netobserv-operator", "OSSM-5407")["listed"] == (
-        "listed for OpenShift 4.20; no fix listed since"
+        "listed for OpenShift 4.19, 4.20; no fix listed since"
     )
     assert "listed" not in row(at_420, "netobserv-operator", "OSSM-5407")
 
@@ -466,7 +495,10 @@ def test_an_update_in_progress_searches_both_releases_and_is_incomplete() -> Non
     assert out["cluster"]["openshiftVersion"] == "4.21.9" and out["cluster"]["updatingTo"] == "4.22.1"
     assert out["cluster"]["releasesSearched"] == ["4.21", "4.22"]
     assert out["complete"] is False and any("updating to 4.22.1" in r for r in out["incompleteBecause"])
-    assert {r for x in rows(out, "vertical-pod-autoscaler") for r in x["releases"]} == {"4.21", "4.22"}
+    listed = {r for x in rows(out, "vertical-pod-autoscaler") for r in x["releases"]}
+    # Both searched releases are there, and nothing above them. An earlier release is in a row when that release
+    # listed the issue and no fix is listed since -- which is why this is not an equality any more.
+    assert {"4.21", "4.22"} <= listed and not any(r > "4.22" for r in listed), listed
     only_partial = live(docs, cv_doc(("4.22.1", "Partial"), ("4.22.0", "Partial")))
     assert only_partial["cluster"]["versionFrom"] == "clusterversion-desired" and only_partial["complete"] is False
     empty = live(docs, cv_doc(desired="4.22.1"))
@@ -548,18 +580,19 @@ def test_a_cluster_past_the_newest_indexed_update_is_said() -> None:
 
 
 def test_a_cluster_version_outside_the_index_is_not_determined_for_every_operator() -> None:
-    out = assess(*pair("ptp-operator", "p", "ptp.v4.18.0"), *pair("my-operator", "m", "my.v1"), version="4.18.5")
+    out = assess(*pair("ptp-operator", "p", "ptp.v4.18.0"), *pair("my-operator", "m", "my.v1"), version="4.13.5")
     assert out["verdict"] == "not-determined" and out["complete"] is False
     assert {o["verdict"] for o in out["operators"]} == {"not-determined"} and out["issues"] == {}
     assert out["cluster"]["indexed"] is False
-    assert any("4.18" in c and "4.20, 4.21, 4.22" in c for c in out["caveats"])
+    assert any("4.13" in c and "4.14, 4.15, 4.16, 4.17, 4.18, 4.19, 4.20, 4.21, 4.22" in c for c in out["caveats"])
 
 
 def test_without_a_cluster_version_matches_are_not_narrowed_and_the_answer_is_incomplete() -> None:
     out = assess(*pair("numaresources-operator", "n", "n.v1"), version=None)
     assert out["complete"] is False and out["verdict"] == "partial"
     assert out["cluster"]["openshiftVersion"] is None and out["cluster"]["indexed"] is None
-    assert row(out, "numaresources-operator", "OCPBUGS-77930")["releases"] == ["4.20", "4.21", "4.22"]
+    listed = row(out, "numaresources-operator", "OCPBUGS-77930")["releases"]
+    assert {"4.20", "4.21", "4.22"} <= set(listed) <= set(INDEXED_RELEASES) and listed == sorted(listed)
     assert any("was searched; pass --openshift-version" in c for c in out["caveats"])
 
 
@@ -766,14 +799,14 @@ def test_a_local_corpus_record_that_is_not_what_it_claims_is_left_out_and_counte
 def test_a_local_corpus_whose_date_is_not_a_date_does_not_replace_the_bundled_one(tmp_path: Path) -> None:
     data = _write_corpus(tmp_path, {"retrievedAt": "2099-01-01\u202e<b>", "records": [GOOD]})
     index = known_issues.get_index(data)
-    assert index.knowledge()["knownIssuesAsOf"] == "2026-10-27" and len(index.issues) == 957
+    assert index.knowledge()["knownIssuesAsOf"] == BUNDLED_AS_OF and len(index.issues) == BUNDLED_RECORDS
     assert "not a date" in index.knowledge()["localCopyNote"]
     assert not known_issues.valid_date("2026-02-30") and known_issues.valid_date("2026-02-28")
 
 
 def test_the_bundled_corpus_loads_every_record_unchanged() -> None:
     issues, meta = known_issues.bundled()
-    assert len(issues) == 957 and "_rejected" not in meta
+    assert len(issues) == BUNDLED_RECORDS and "_rejected" not in meta
     assert "recordsRejected" not in known_issues.get_index().knowledge()
 
 
@@ -873,7 +906,7 @@ def test_the_cli_reads_the_same_three_inputs_and_exits_5_only_when_asked(
     argv = ["operators", "issues", "-f", str(full), "--openshift-version", "4.22.3"]
     assert main([*argv, "--require-complete"]) == 0
     text = capsys.readouterr().out
-    assert "OCPBUGS-74358" in text and "no alias" in text and "2026-10-27" in text
+    assert "OCPBUGS-74358" in text and "no alias" in text and BUNDLED_AS_OF in text
     assert main([*argv, "--format", "json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["complete"] is True and out["cluster"]["versionFrom"] == "given"
@@ -986,10 +1019,10 @@ def _every_verdict_path() -> dict[str, dict[str, Any]]:
         "not-matched": assess(*unaliased),
         "unverified catalog only": assess(*pair("metallb-operator", "m", "m.v1", source="mirror")),
         "version not known": assess(*vpa, version=None),
-        "release not indexed": assess(*vpa, version="4.18.5"),
+        "release not indexed": assess(*vpa, version="4.13.5"),
         "nothing to match": assess(*nothing),
         "nothing to match, version not known": assess(*nothing, version=None),
-        "nothing to match, release not indexed": assess(*nothing, version="4.18.5"),
+        "nothing to match, release not indexed": assess(*nothing, version="4.13.5"),
         "nothing to match, not openshift": live(nothing[1:], error=NOT_SERVED % "clusterversions"),
         "blind input": assess({"kind": "ConfigMap", "metadata": {"name": "x"}}),
         "csv not read": assess(csv("other.v1", "a"), sub("vpa", "a", "vertical-pod-autoscaler", "vpa.v4.21.0")),
@@ -1051,9 +1084,9 @@ def test_there_is_no_matching_gate_and_require_complete_says_why_it_refuses(
         main([*base, "--openshift-version", "4.21.9", "--require-matched"])
     assert gone.value.code == 2
     capsys.readouterr()
-    assert main([*base, "--openshift-version", "4.18.5", "--require-complete"]) == 5
+    assert main([*base, "--openshift-version", "4.13.5", "--require-complete"]) == 5
     err = capsys.readouterr().err
-    assert "OpenShift 4.18 is not in the indexed release notes" in err
+    assert "OpenShift 4.13 is not in the indexed release notes" in err
     assert main([*base, "--openshift-version", OKD_VERSIONS[0], "--require-complete"]) == 5
     assert "OKD" in capsys.readouterr().err
     assert main([*base, "--openshift-version", "4.21.9", "--require-complete"]) == 0
@@ -1158,16 +1191,16 @@ def test_releases_searched_lists_only_what_was_searched_in_one_caveat() -> None:
     assert up["cluster"]["releasesSearched"] == ["4.22"]
     said = [c for c in up["caveats"] if "4.23" in c]
     assert len(said) == 1 and "searched OpenShift 4.22" in said[0] and "both" not in said[0], said
-    assert {r for x in rows(up, "vertical-pod-autoscaler") for r in x["releases"]} <= {"4.20", "4.21", "4.22"}
-    down = live(vpa, cv_doc(("4.20.1", "Partial"), ("4.19.9", "Completed")))
+    assert {r for x in rows(up, "vertical-pod-autoscaler") for r in x["releases"]} <= set(INDEXED_RELEASES)
+    down = live(vpa, cv_doc(("4.13.1", "Partial"), ("4.12.9", "Completed")))
     assert down["cluster"]["releasesSearched"] == [] and down["issues"] == {}
     assert not any("both releases are searched" in c for c in down["caveats"])
-    assert any("an update to 4.20.1 is in progress: no release was searched" in c for c in down["caveats"])
+    assert any("an update to 4.13.1 is in progress: no release was searched" in c for c in down["caveats"])
     both = live(vpa, cv_doc(("4.22.1", "Partial"), ("4.21.9", "Completed")))
     assert both["cluster"]["releasesSearched"] == ["4.21", "4.22"]
     assert any("searched OpenShift 4.21, 4.22" in c for c in both["caveats"])
     unknown = assess(*vpa, version=None)
-    assert unknown["cluster"]["releasesSearched"] == ["4.20", "4.21", "4.22"]  # every indexed release was searched
+    assert unknown["cluster"]["releasesSearched"] == INDEXED_RELEASES  # every indexed release was searched
     assert assess(*pair("my-operator", "m", "my.v1"))["cluster"]["releasesSearched"] == []  # nothing was looked up
     assert "searched no release" in oi.render_text(assess(*pair("my-operator", "m", "my.v1")))
 
@@ -1239,7 +1272,7 @@ def test_the_tool_refuses_a_version_with_whitespace_like_the_cli(
 def test_a_valid_local_copy_older_than_the_bundled_one_is_said(tmp_path: Path) -> None:
     data = _write_corpus(tmp_path, {"retrievedAt": "2020-01-01", "records": [GOOD]})
     k = known_issues.get_index(data).knowledge()
-    assert k["knownIssuesAsOf"] == "2026-10-27"
+    assert k["knownIssuesAsOf"] == BUNDLED_AS_OF
     assert "older than the bundled" in k["localCopyNote"] and "2020-01-01" in k["localCopyNote"]
     newer = _write_corpus(tmp_path / "n", {"retrievedAt": "2027-01-01", "records": [GOOD]})
     assert "localCopyNote" not in known_issues.get_index(newer).knowledge()

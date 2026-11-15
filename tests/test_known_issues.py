@@ -114,14 +114,17 @@ def test_bundled_index_cites_every_issue_and_fits_the_plugin_limits() -> None:
         json.loads(raw.decode("utf-8"))
     idx = ki.get_index()
     k = idx.knowledge()
-    assert {"4.20", "4.21", "4.22"} <= set(k["openshiftReleases"])
+    assert {f"4.{y}" for y in range(14, 23)} <= set(k["openshiftReleases"])
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", k["knownIssuesAsOf"])
     assert len(idx.issues) > 500
     for issue in idx.issues:
         assert re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", issue.id), issue.id
         assert issue.url == f"https://redhat.atlassian.net/browse/{issue.id}"
+        # ``modules/`` for a release whose notes are split into extracts, ``release_notes/`` for 4.19 and earlier,
+        # which keep the known issues and the older updates' fixed issues in one book file.
         assert re.match(
-            r"https://github.com/openshift/openshift-docs/blob/[0-9a-f]{40}/modules/\S+\.adoc$", issue.source
+            r"https://github.com/openshift/openshift-docs/blob/[0-9a-f]{40}/(modules|release_notes)/\S+\.adoc$",
+            issue.source,
         )
         assert not re.search(
             r"\{(product-title|product-version|nbsp|aws-first|azure-short|hcp|sno|op-system)\}", issue.text
@@ -172,7 +175,10 @@ def test_version_filter_and_status_messages() -> None:
     assert "OCPBUGS-56599" not in [m["id"] for m in newer], "already fixed in the version the user runs"
     open_issue = ki.match(POSITIVE["OCPBUGS-57440"], "rosa-hcp", "4.21.4")["matches"][0]
     assert open_issue["kind"] == "known" and open_issue["foundIn"] == "4.20"
-    assert ki.match(POSITIVE["OCPBUGS-57440"], "openshift", "4.19.10")["matches"] == [], "issue starts in 4.20"
+    # The 4.14-4.19 back-fill found this one listed in 4.19's own known issues too, so the release below where it
+    # starts is 4.18, not 4.19. The point of the assertion is unchanged: a release before the issue was reported
+    # does not list it.
+    assert ki.match(POSITIVE["OCPBUGS-57440"], "openshift", "4.18.10")["matches"] == [], "issue starts in 4.19"
 
 
 def test_plain_kubernetes_is_not_matched_against_openshift_issues() -> None:

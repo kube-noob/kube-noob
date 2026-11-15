@@ -168,6 +168,7 @@ def test_the_website_queue_states_the_real_numbers() -> None:
     from kube_noob.audit.redteam import SCENARIOS
     from kube_noob.config import load_settings
     from kube_noob.debug.playbooks import PLAYBOOKS
+    from kube_noob.known_issues import get_index
     from kube_noob.learn.tutor import curriculum
     from kube_noob.tool_profiles import PROFILES
     from kube_noob.toolkit import Toolkit
@@ -183,6 +184,8 @@ def test_the_website_queue_states_the_real_numbers() -> None:
         f"{len(tracks)} tracks with {sum(len(t.get('lessons', [])) for t in tracks)} lessons",
         f"{len(Toolkit(load_settings()).specs())} MCP tools",
         f"{len(PROFILES)} MCP tool profiles",
+        f"{len(get_index().knowledge()['openshiftReleases'])} indexed OpenShift releases",
+        f"{len({i.id for i in get_index().issues})} distinct reported bugs",
     ]
     for fact in expected:
         assert fact in queue, fact

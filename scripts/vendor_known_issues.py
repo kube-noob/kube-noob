@@ -26,6 +26,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "src" / "kube_noob" / "data" / "known_issues"
 PART_LIMIT = 200_000
+#: The minors the bundled index covers, oldest first. 4.20-4.22 left every cluster on a supported earlier release
+#: reading "not determined" from `known-issues`, `operators issues` and the gate -- correct, and useless, since
+#: most clusters run 4.14-4.19. Extending it down is data, not mechanism: the coverage statement already says
+#: per release what was indexed and as of when, so a release outside this list still answers "not determined"
+#: with its reason rather than an empty list.
+MINORS = ("4.14", "4.15", "4.16", "4.17", "4.18", "4.19", "4.20", "4.21", "4.22")
 sys.path.insert(0, str(ROOT / "src"))
 
 
@@ -109,7 +115,7 @@ def check() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--minors", default="4.20,4.21,4.22")
+    ap.add_argument("--minors", default=",".join(MINORS))
     ap.add_argument("--workdir", type=Path)
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
@@ -119,8 +125,8 @@ def main() -> int:
 
     minors = [m.strip() for m in a.minors.split(",") if m.strip()]
     with tempfile.TemporaryDirectory(prefix="kube-noob-rn-") as tmp:
-        records, commits = fetch(minors, a.workdir or Path(tmp))
-    snap = snapshot(records, commits)
+        records, commits, retrieved = fetch(minors, a.workdir or Path(tmp))
+    snap = snapshot(records, commits, retrieved)
     meta = {k: v for k, v in snap.items() if k != "records"}
     compacted = [compact(r, commits[r["minor"]]) for r in records]
     files = write_parts(compacted, meta)

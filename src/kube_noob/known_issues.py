@@ -295,6 +295,11 @@ class Index:
         out: dict[str, Any] = {
             "knownIssuesAsOf": self.meta.get("retrievedAt"),
             "openshiftReleases": minors,
+            # Per release, beside the list: how far that release's notes were read and on what day, with the URL
+            # they were read from. The index spans nine releases now, and one "as of" over all of them would
+            # claim a freshness the older ones may not have while one "indexed through" would hide that 4.14's
+            # notes reach a different update from 4.22's (docs/review-classes.md class 15).
+            "openshiftReleaseDetail": self.release_detail(),
             "issues": len(self.issues),
         }
         rejected = self.meta.get("_rejected") or []
@@ -316,10 +321,33 @@ class Index:
             self._newest = out
         return self._newest
 
+    def release_detail(self) -> list[dict[str, str]]:
+        """One row per indexed release: the newest update its notes reach, the day they were read, and the URL."""
+        raw = self.meta.get("minors")
+        where: dict[str, Any] = raw if isinstance(raw, dict) else {}
+        newest = self.newest()
+        rows: list[dict[str, str]] = []
+        for minor in sorted({i.minor for i in self.issues}, key=vkey):
+            raw_one = where.get(minor)
+            one: dict[str, Any] = raw_one if isinstance(raw_one, dict) else {}
+            rows.append(
+                {
+                    "minor": minor,
+                    # A release whose records carry no three-part version leaves this at the minor itself rather
+                    # than borrowing another release's reach.
+                    "indexedThrough": newest.get(minor, minor),
+                    "asOf": str(one.get("retrievedAt") or self.meta.get("retrievedAt") or ""),
+                    "source": str(one.get("url") or self.meta.get("source") or ""),
+                }
+            )
+        return rows
+
     def coverage(self, version: str | None) -> dict[str, Any]:
         """Whether the index can answer for ``version`` (see ``version_coverage``)."""
         k = self.knowledge()
-        return version_coverage(version, k["openshiftReleases"], k["knownIssuesAsOf"], self.newest())
+        return version_coverage(
+            version, k["openshiftReleases"], k["knownIssuesAsOf"], self.newest(), k["openshiftReleaseDetail"]
+        )
 
     def _tokens(self, issue: Issue) -> set[str]:
         key = f"{issue.id}@{issue.version}"
@@ -516,8 +544,17 @@ def cut_coverage(cov: dict[str, Any], cut: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reach_sentence(rows: list[dict[str, str]]) -> str:
+    """``4.14 to 4.14.76 (read 2026-11-15)``, per release, for the text views."""
+    return "; ".join(f"{r['minor']} to {r['indexedThrough']} (read {r['asOf']})" for r in rows if r.get("asOf"))
+
+
 def version_coverage(
-    version: str | None, releases: list[str], as_of: str | None, newest: dict[str, str] | None = None
+    version: str | None,
+    releases: list[str],
+    as_of: str | None,
+    newest: dict[str, str] | None = None,
+    detail: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Whether "no match" can mean "no reported issue" for ``version``: three-valued, never left to a note.
 
@@ -530,13 +567,19 @@ def version_coverage(
     """
     held = ", ".join(releases) or "no release"
     dated = f" as of {as_of}" if as_of else ""
+    # Per release, in every answer whatever the status: a reader of a 4.14 cluster's verdict needs 4.14's own
+    # reach and date, not the newest of the nine the index holds.
+    rows = list(detail or [])
+    indexed = {"indexed": rows} if rows else {}
     shown = shown_version(version)
     cv = read_version(version)
     if shown is None:
         return {
             "status": "not-narrowed",
+            **indexed,
             "why": f"No version was given, so the answer is not narrowed by version: it covers every indexed release "
-            f"({held}{dated}), including issues already fixed in yours. Give the version to leave those out.",
+            f"({held}{dated}), including issues already fixed in yours. Give the version to leave those out. "
+            + (f"Each release's own reach and date: {_reach_sentence(rows)}." if rows else ""),
         }
     if cv is None:
         # The grammar (kube_noob.versions, shared with `operators issues`) takes the value exactly as typed: one with
@@ -551,6 +594,7 @@ def version_coverage(
         return {
             "status": "not-narrowed",
             "version": shown,
+            **indexed,
             "why": f"{what}, so the answer is not narrowed by version: it covers every indexed release "
             f"({held}{dated}).",
         }
@@ -562,6 +606,7 @@ def version_coverage(
             "status": "not-determined",
             "version": shown,
             **(extra or {}),
+            **indexed,
             "why": f"Known issues NOT DETERMINED for OpenShift {shown}: {reason} {fix}",
         }
 
@@ -587,7 +632,8 @@ def version_coverage(
             f"narrowed as for {cv.numeric}, but whether a fix listed for {cv.numeric} or later is in this build is "
             "not known."
         )
-    through = (newest or {}).get(minor)
+    row = next((r for r in rows if r.get("minor") == minor), {})
+    through = (newest or {}).get(minor) or row.get("indexedThrough")
     if cv.has_z and through and vkey(cv.numeric) > vkey(through):
         return undetermined(
             f"the {minor} release notes in the index reach {through}{dated}, and {shown} is newer. Issues fixed in "
@@ -595,11 +641,15 @@ def version_coverage(
             f"{through}, and issues first reported after {through} are not in the index.",
             {"indexedThrough": through},
         )
+    # The sentence quotes THIS release's reach and date. It used to quote the index's one global date, which with
+    # one release in the index said the same thing and with nine does not.
+    own = f" Its notes were read to {through} as of {row['asOf']}." if through and row.get("asOf") else ""
     return {
         "status": "determined",
         "version": shown,
+        **indexed,
         "why": f"OpenShift {minor} is in the index ({held}{dated}): issues that cannot affect {shown} are left "
-        "out, so no match means none of its reported issues matches.",
+        f"out, so no match means none of its reported issues matches.{own}",
     }
 
 

@@ -218,7 +218,7 @@ def _mustgather_at(tmp_path: Path, version: str) -> Path:
         if f.is_file() and not f.name.endswith(".gz"):
             data = f.read_bytes()
             if b"4.20.3" in data:
-                f.write_bytes(data.replace(b"4.20.4", b"4.16.21").replace(b"4.20.3", version.encode()))
+                f.write_bytes(data.replace(b"4.20.4", b"4.13.21").replace(b"4.20.3", version.encode()))
     return root
 
 
@@ -300,7 +300,7 @@ def test_selftest_scores_an_undetermined_answer_as_not_determined(
     cases = tmp_path / "cases.yaml"
     cases.write_text(
         'cases:\n  - id: etcd-416\n    input: "etcd leader changed frequently, apiserver timeouts after upgrade"\n'
-        '    platform: openshift\n    version: "4.16.20"\n    expect:\n      playbook: DBG-ETCD\n'
+        '    platform: openshift\n    version: "4.13.20"\n    expect:\n      playbook: DBG-ETCD\n'
         "      notMention: [OCPBUGS-]\n",
         encoding="utf-8",
     )
@@ -311,7 +311,7 @@ def test_selftest_scores_an_undetermined_answer_as_not_determined(
     text = _out(["selftest", "--cases", str(cases)], capsys)
     assert "Passed | 0 of 1" in text and "Not determined" in text
     # The neighbour: the same case inside the index is scored as before.
-    cases.write_text(cases.read_text(encoding="utf-8").replace("4.16.20", "4.21.3"), encoding="utf-8")
+    cases.write_text(cases.read_text(encoding="utf-8").replace("4.13.20", "4.21.3"), encoding="utf-8")
     assert json.loads(_out(["selftest", "--cases", str(cases), "--format", "json"], capsys))["passed"] == 1
 
 
@@ -337,20 +337,20 @@ def _text_toolkit(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
     log = tmp / "build.log"
     log.write_text("STEP 1/3: FROM registry.redhat.io/ubi9\nerror: build error: etcd leader changed\n")
     views = [
-        _out(["known-issues", ETCD, "--version", "4.16.20"], capsys),
-        _out(["diagnose", ETCD, "--platform", "openshift", "--version", "4.16.20"], capsys),
-        _out(["build", "diagnose", "-f", str(log), "--platform", "openshift", "--version", "4.16.20"], capsys),
+        _out(["known-issues", ETCD, "--version", "4.13.20"], capsys),
+        _out(["diagnose", ETCD, "--platform", "openshift", "--version", "4.13.20"], capsys),
+        _out(["build", "diagnose", "-f", str(log), "--platform", "openshift", "--version", "4.13.20"], capsys),
     ]
     # Every one of them, not the concatenation: one view saying it must not cover for another that does not.
     return views[0] if all("NOT DETERMINED" in v for v in views) else ""
 
 
 def _text_insight(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
-    return _out(["insight", "OCPBUGS-73881", "--platform", "openshift", "--version", "4.16.20"], capsys)
+    return _out(["insight", "OCPBUGS-73881", "--platform", "openshift", "--version", "4.13.20"], capsys)
 
 
 def _text_bundle(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
-    cov = known_issues.match(ETCD, "openshift", "4.16.20")["versionCoverage"]
+    cov = known_issues.match(ETCD, "openshift", "4.13.20")["versionCoverage"]
     return dx.bundle_markdown({"target": "d/s/a", "backend": "t", "knownIssues": [], "knownIssuesCoverage": cov})
 
 
@@ -361,7 +361,7 @@ def _text_watch(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
     from kube_noob.watch import Watcher
 
     w = Watcher(load_settings(), backend=None, namespaces=["openshift-etcd"], platform="openshift")
-    w.version = "4.16.20"
+    w.version = "4.13.20"
     obs = Observation(namespace="openshift-etcd", workload="etcd", signal="LeaderChanged", evidence=[ETCD])
     analysis = w.analyse(obs, {}, datetime(2026, 11, 11, tzinfo=UTC))
     head = _headline(
@@ -373,7 +373,7 @@ def _text_watch(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
 def _text_mustgather(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
     from kube_noob.mustgather import analyse, ingest, report
 
-    b = ingest.open_bundle(_mustgather_at(tmp / "mg", "4.16.20"))
+    b = ingest.open_bundle(_mustgather_at(tmp / "mg", "4.13.20"))
     r = report.build(b, analyse.analyse(b), data_dir=tmp / "data")
     return report.markdown(r) + report.case_draft(r)
 
@@ -382,13 +382,13 @@ def _text_gate(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
     from kube_noob import gate
 
     cm = gate.Source("cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c, namespace: shop}\n")
-    return gate.markdown(gate.run([cm], platform="openshift", version="4.16"))
+    return gate.markdown(gate.run([cm], platform="openshift", version="4.13"))
 
 
 def _text_selftest(tmp: Path, capsys: pytest.CaptureFixture[str]) -> str:
     cases = tmp / "c.yaml"
     cases.write_text(
-        "cases:\n  - input: 'etcd leader changed'\n    platform: openshift\n    version: '4.16.20'\n"
+        "cases:\n  - input: 'etcd leader changed'\n    platform: openshift\n    version: '4.13.20'\n"
         "    expect: {notMention: [OCPBUGS-]}\n",
         encoding="utf-8",
     )
@@ -677,7 +677,7 @@ def test_every_field_of_every_diagnosis_has_a_decision_and_every_list_is_shown_o
 
 
 def test_a_fix_in_another_release_is_not_update_advice_outside_the_index(capsys: pytest.CaptureFixture[str]) -> None:
-    out = _out(["insight", "OCPBUGS-73881", "--platform", "openshift", "--version", "4.16.20"], capsys)
+    out = _out(["insight", "OCPBUGS-73881", "--platform", "openshift", "--version", "4.13.20"], capsys)
     assert "updating to" not in out and "backport" in out
     inside = _out(["insight", "OCPBUGS-73881", "--platform", "openshift", "--version", "4.21.0"], capsys)
     assert "updating to 4.21.1" in inside

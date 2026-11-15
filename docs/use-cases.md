@@ -255,10 +255,12 @@ kube-noob search 'CVE-2023-44487 openshift haproxy router'
 
 ### Is this a known bug?
 
-`known-issues` matches an error or symptom against the issues Red Hat lists in the OpenShift 4.20, 4.21 and 4.22 release
+`known-issues` matches an error or symptom against the issues Red Hat lists in the OpenShift 4.14 through 4.22 release
 notes: known issues, and the issues each update fixed. You get the issue link, whether a fix exists and in which
 version, the workaround, and the release-notes file it came from. Pass your version and issues already fixed there are
-left out. A version outside the index (4.16, or a release newer than the snapshot) is answered `versionCoverage:
+left out. The coverage statement says **per release** how far that release's notes were read and on what day
+(`indexed`, and one `index:` line per release in the text view), because 4.14's notes reach a different update from
+4.22's. A version outside the index (4.13, or a release newer than the snapshot) is answered `versionCoverage:
 not-determined` with the reason, in the text view too: no match there is not "no known issue". So is a
 pre-release or nightly build, an OKD build (the index is OpenShift Container Platform release notes, which do not say
 which OKD build has a fix), and a z-stream newer than the newest one the notes reach (`indexedThrough`). Matches are
@@ -517,7 +519,7 @@ is affected. Most operators have no table entry and are `no-alias` -- not matche
   is incomplete, even when the version you give is the one it is updating from; `releasesSearched` lists only the
   releases actually searched. A version taken from `status.desired` says so. A cluster that does not serve
   ClusterVersion is not OpenShift, and an OKD version (`4.20.0-okd-scos.6`) is not OpenShift Container Platform: the
-  notes do not apply to either, and a release outside 4.20-4.22 is not determined for every operator.
+  notes do not apply to either, and a release outside 4.14-4.22 is not determined for every operator.
 - **One gate, for the evidence.** `complete` is exactly "`incompleteBecause` is empty", and `--require-complete` exits 5
   unless it is: the inventory read in full, and the release known, settled, indexed and OpenShift's. So a cluster the
   release notes do not cover -- not OpenShift, OKD, or a release outside the index -- exits 5 too, and the refusal

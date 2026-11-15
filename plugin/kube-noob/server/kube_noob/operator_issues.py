@@ -2,8 +2,8 @@
 
 This is a lookup in the release notes, not a vulnerability check, and not a gate on "do my operators have known
 issues". What the bundled corpus can support decides what it is. ``kube_noob/data/known_issues`` holds the known and
-fixed issues of the OpenShift 4.20-4.22 release notes, one record per issue and release: an issue id, ``kind``, the
-OpenShift ``minor`` and ``version``, the release-note text and its source file, and for five records an OpenShift
+fixed issues of the OpenShift 4.14-4.22 release notes, one record per issue and release: an issue id, ``kind``, the
+OpenShift ``minor`` and ``version``, the release-note text and its source file, and for 37 records an OpenShift
 ``fixedIn``. No record carries a component, a package or an operator version (``tests/test_operator_known_issues.py``
 and ``scripts/vendor_known_issues.py --check`` both fail if one appears, so the join gets upgraded rather than
 ignoring it). On 2026-11-12, 957 records (921 issue ids).
