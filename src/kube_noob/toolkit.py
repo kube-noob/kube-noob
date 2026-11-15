@@ -2348,13 +2348,33 @@ class Toolkit:
         }
 
     def config_status(self, _: EmptyIn) -> dict[str, Any]:
-        from kube_noob import __version__
+        from kube_noob import __version__, tool_profiles
         from kube_noob.posture import posture
 
+        # The profile and, by name, the tools it leaves out. A narrowed `tools/list` is a match tier, and a tier
+        # that does not say what it excluded invites a client to conclude kube-noob cannot do the excluded thing
+        # (docs/review-classes.md class 15). This tool is in every profile so the answer is always reachable.
+        offered = {spec.name for spec in self.specs()}
+        profile = tool_profiles.resolve(self.settings.server.tools)
+        held = tool_profiles.select(profile, offered)
+        tools: dict[str, Any] = {
+            "profile": profile,
+            "offered": sorted(held),
+            "profiles": list(tool_profiles.NAMES),
+        }
+        outside = sorted(offered - held)
+        tools["outsideProfile"] = outside
+        tools["outsideProfileNote"] = (
+            f"{len(outside)} tool(s) this configuration has are not offered under the {profile!r} profile; they "
+            "exist, and a call for one of them is refused by name. --tools all offers every one."
+            if outside
+            else f"No tool this configuration has is outside the {profile!r} profile."
+        )
         return {
             "version": __version__,
             "posture": posture(self.settings),
             "config": self.settings.public_view(),
+            "tools": tools,
             "knowledge": self.store().stats(),
             "knowledgeStatus": knowledge_status(self.settings.data_dir),
         }

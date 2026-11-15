@@ -25,3 +25,6 @@ server:
   host: 127.0.0.1
   port: 8080
   authTokenEnv: KUBE_NOOB_HTTP_TOKEN
+  # Which MCP tools to offer: all (the default, every tool), incident, review, compliance or learn.
+  # docs/mcp-tool-profiles.md says what each one holds. A tool outside the profile is refused by name.
+  tools: all

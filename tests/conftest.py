@@ -39,6 +39,7 @@ def _isolated_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "KUBE_NOOB_LLM_MODEL",
         "KUBE_NOOB_DEFAULT_PLATFORM",
         "KUBE_NOOB_OFFLINE",
+        "KUBE_NOOB_MCP_TOOLS",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("kube_noob.config.SYSTEM_CONFIG", tmp_path / "no-system-config.yaml")

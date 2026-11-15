@@ -26,6 +26,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { notrun+=("$2 -- $1 is not installe
 "$py" scripts/compliance_doc.py --check
 "$py" scripts/doc_numbers.py --check
 "$py" scripts/fedramp_ksi.py --check
+"$py" scripts/tool_profiles_doc.py --check
 
 # ---- ci/lint
 "$py" -m ruff check src tests scripts skill

@@ -169,6 +169,7 @@ def test_the_website_queue_states_the_real_numbers() -> None:
     from kube_noob.config import load_settings
     from kube_noob.debug.playbooks import PLAYBOOKS
     from kube_noob.learn.tutor import curriculum
+    from kube_noob.tool_profiles import PROFILES
     from kube_noob.toolkit import Toolkit
 
     queue = (ROOT / "docs" / "website-updates.md").read_text(encoding="utf-8")
@@ -181,6 +182,7 @@ def test_the_website_queue_states_the_real_numbers() -> None:
         f"{len(SCENARIOS)} red-team scenarios",
         f"{len(tracks)} tracks with {sum(len(t.get('lessons', [])) for t in tracks)} lessons",
         f"{len(Toolkit(load_settings()).specs())} MCP tools",
+        f"{len(PROFILES)} MCP tool profiles",
     ]
     for fact in expected:
         assert fact in queue, fact

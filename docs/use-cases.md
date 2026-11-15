@@ -1451,6 +1451,22 @@ audit's or the gate's either way, so the verdict is the same with the flag as wi
 Install the plugin or add the MCP server (see the [README](../README.md)), then ask for the `getting_started` prompt.
 It reads your saved profile, asks for your role and platform, and suggests the first three tools to use.
 
+### Fewer tools, named: `--tools`
+
+The server offers every tool by default, and a client reads all of their schemas before it calls one. If that is
+more of your context window than you want to spend, start it with a named profile:
+
+```bash
+kube-noob mcp --tools incident
+```
+
+`incident`, `review`, `compliance` and `learn` are tested sets, listed tool by tool in
+[mcp-tool-profiles.md](mcp-tool-profiles.md) and generated from the code. `--tools all` is the default. A tool
+outside the profile is **not hidden**: calling it returns an error saying the tool exists, which profiles hold it
+and the flag that offers it, so neither you nor your client concludes kube-noob cannot do it. The profile is in
+the server's `initialize` response and in `config_status`, which every profile carries. The same choice is
+available as `KUBE_NOOB_MCP_TOOLS` or `server.tools` for a host that cannot pass a flag.
+
 ### Chat on claude.ai: the Agent Skill
 
 The local MCP server does not run in chat on claude.ai. Upload `kube-noob-skill-<version>.zip` (a release asset, or

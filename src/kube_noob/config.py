@@ -493,6 +493,17 @@ class ServerSettings(_Base):
     allowed_hosts: list[str] = Field(default_factory=list)
     allowed_origins: list[str] = Field(default_factory=list)
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
+    #: Which MCP tools this server offers (``kube_noob.tool_profiles``): a named set, or ``all``. It narrows the
+    #: MCP tool surface only -- the per-tool REST routes of ``kube-noob serve`` are addressed by path, cost a
+    #: client no context and are not narrowed by it.
+    tools: str = "all"
+
+    @field_validator("tools")
+    @classmethod
+    def _known_profile(cls, v: str) -> str:
+        from kube_noob.tool_profiles import resolve
+
+        return resolve(v)
 
 
 def _default_data_dir() -> Path:
@@ -649,6 +660,7 @@ def _env_overrides() -> dict[str, Any]:
         ("KUBE_NOOB_CLUSTER_BACKEND", ("cluster", "backend")),
         ("KUBE_NOOB_DEFAULT_PLATFORM", ("defaultPlatform",)),
         ("KUBE_NOOB_SERVER_HOST", ("server", "host")),
+        ("KUBE_NOOB_MCP_TOOLS", ("server", "tools")),
     ):
         val = _env(env)
         if val:

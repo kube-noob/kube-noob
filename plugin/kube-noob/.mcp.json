@@ -19,7 +19,8 @@
         "KUBE_NOOB_WEB_ENABLED": "false",
         "KUBE_NOOB_CLUSTER_ENABLED": "false",
         "KUBE_NOOB_LLM_PROVIDER": "none",
-        "KUBE_NOOB_MUST_GATHER_ENABLED": "false"
+        "KUBE_NOOB_MUST_GATHER_ENABLED": "false",
+        "KUBE_NOOB_MCP_TOOLS": "all"
       }
     }
   }

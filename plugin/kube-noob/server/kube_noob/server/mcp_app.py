@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import inspect
 import logging
+import re
 import time
 import traceback
 from importlib import resources
@@ -23,7 +24,7 @@ from pydantic_core import PydanticUndefined
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from kube_noob import __version__, alert_report, sanitize, tool_runner
+from kube_noob import __version__, alert_report, sanitize, tool_profiles, tool_runner
 from kube_noob.audit.engine import list_rules
 from kube_noob.config import Settings
 from kube_noob.errors import KubeNoobError, ServerBusy, StoredStateError
@@ -283,16 +284,60 @@ def _forbid_unknown_arguments(mcp: MCPServer, name: str) -> None:
     tool.parameters["additionalProperties"] = False
 
 
+def _profile_sentence(profile: str, offered: frozenset[str], all_specs: list[ToolSpec], settings: Settings) -> str:
+    """The tool-profile sentence the ``initialize`` response carries, including the tools the instructions above
+    name that this profile does NOT offer.
+
+    The instructions are one long piece of prose that names about thirty tools by name ("start with
+    kubenoob_insight", "check kubenoob_known_issues"). Under a narrowed profile some of those are not registered,
+    so without this the server's own first message would send a client to tools it cannot call -- the caveat
+    existing in `tools/list` and nowhere a model reads it (docs/review-classes.md class 6).
+    """
+    everything = {spec.name for spec in all_specs}
+    named = {m.removeprefix(TOOL_PREFIX) for m in re.findall(rf"{TOOL_PREFIX}[a-z0-9_]+", _instructions(settings))}
+    unoffered = sorted(n for n in named if n in everything and n not in offered)
+    return tool_profiles.profile_line(profile, len(offered), len(all_specs), [TOOL_PREFIX + n for n in unoffered])
+
+
+def _refuse_outside_the_profile(mcp: MCPServer, profile: str, excluded: list[str]) -> None:
+    """Make ``tools/call`` for a tool this profile left out say so, naming the profiles that hold it.
+
+    The tool is not registered, so the SDK would answer "Unknown tool", which is the defect this exists to refuse:
+    a client told a real capability does not exist stops asking for it, and so does the person reading the
+    transcript. ``call_tool`` is the one method ``_handle_call_tool`` goes through, so one wrapper covers every
+    transport.
+    """
+    if not excluded:
+        return
+    outside = {TOOL_PREFIX + name: name for name in excluded}
+    inner = mcp.call_tool
+
+    async def call_tool(name: str, arguments: dict[str, Any], context: Any = None) -> Any:
+        if name in outside:
+            raise ToolError(tool_profiles.outside_message(outside[name], profile, TOOL_PREFIX))
+        return await inner(name, arguments, context)
+
+    mcp.call_tool = call_tool  # type: ignore[method-assign]
+
+
 def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, gate: Any = None) -> MCPServer:
     """``rest``: the HTTP server's TransportSecuritySettings; given, the REST routes (``kube_noob.server.rest``) are
     added beside MCP with the same Host and Origin checks. ``gate``: the HTTP server's large-body tickets
     (``admission.LargeBodies``); given, the MCP alert report takes its report slot on the event loop."""
     toolkit = Toolkit(settings, shared=shared)
+    # The profile narrows what is REGISTERED as an MCP tool, so `tools/list` is the profile and nothing else has to
+    # agree with it. What it leaves out is not forgotten: `_refuse_outside_the_profile` answers a call for one of
+    # those tools by name, because "unknown tool" for a tool kube-noob has is an absence reading as "no such
+    # thing" (docs/review-classes.md classes 13 and 15).
+    all_specs = toolkit.specs()
+    profile = tool_profiles.resolve(settings.server.tools)
+    offered = tool_profiles.select(profile, (spec.name for spec in all_specs))
+    specs_offered = [spec for spec in all_specs if spec.name in offered]
     mcp = MCPServer(
         name="kube_noob_mcp",
         title="kube-noob",
         version=__version__,
-        instructions=_instructions(settings),
+        instructions=_instructions(settings) + _profile_sentence(profile, offered, all_specs, settings),
         website_url="https://github.com/kube-noob/kube-noob",
         icons=_icons(),
     )
@@ -301,8 +346,8 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, 
     logging.getLogger("mcp.server.mcpserver.server").setLevel(logging.WARNING)
     knowledge = knowledge_line(settings.data_dir)
     # So an unexpected tool label becomes `other` rather than growing the metric's label space (N11).
-    metrics.REGISTRY.known_tools(frozenset(spec.name for spec in toolkit.specs()))
-    for spec in toolkit.specs():
+    metrics.REGISTRY.known_tools(frozenset(spec.name for spec in all_specs))
+    for spec in specs_offered:
         mcp.tool(
             name=TOOL_PREFIX + spec.name,
             title=spec.title,
@@ -316,6 +361,7 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, 
             ),
         )(_wrapper(spec, knowledge, toolkit if gate is not None else None))
         _forbid_unknown_arguments(mcp, TOOL_PREFIX + spec.name)
+    _refuse_outside_the_profile(mcp, profile, [spec.name for spec in all_specs if spec.name not in offered])
 
     @mcp.prompt(
         name="master_controller",
@@ -425,7 +471,10 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, 
     if rest is not None:
         from kube_noob.server import rest as rest_routes
 
-        specs = toolkit.specs()
+        # Every tool, whatever the profile: a REST route is one URL a caller already knows, so it costs the
+        # context window nothing and narrowing it would remove a capability without buying anything back. Said in
+        # docs/mcp-tool-profiles.md and held by a test, so the difference is documented rather than discovered.
+        specs = all_specs
         from kube_noob.alert_store import Receiver
 
         rest_routes.register(

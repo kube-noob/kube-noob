@@ -186,6 +186,8 @@ jobs:
         run: python scripts/doc_numbers.py --check
       - name: FedRAMP KSI crosswalk matches the vendored dataset
         run: python scripts/fedramp_ksi.py --check
+      - name: MCP tool profile document matches the code
+        run: python scripts/tool_profiles_doc.py --check
       - name: Plugin lock matches its pyproject
         run: uv lock --check --project plugin/kube-noob --default-index https://pypi.org/simple
       - name: Plugin dependency vulnerability audit

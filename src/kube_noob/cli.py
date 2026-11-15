@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from kube_noob import __version__, completion, sanitize
+from kube_noob import __version__, completion, sanitize, tool_profiles
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
 from kube_noob.yamlio import json_document
@@ -2388,11 +2388,23 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="Optional: ask a model you configure, which calls these tools")
     ask.add_argument("question")
 
-    sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mcpp = sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mcpp.add_argument(
+        "--tools",
+        metavar="PROFILE",
+        help="which tools to offer: " + ", ".join(tool_profiles.NAMES) + " (default: all, every tool). A tool "
+        "outside the profile is refused by name, never as an unknown tool; see docs/mcp-tool-profiles.md",
+    )
     sv = sub.add_parser("serve", help="Run the MCP server over streamable HTTP (sidecar/service)")
     sv.add_argument("--host")
     sv.add_argument("--port", type=int)
     sv.add_argument("--allow-unauthenticated", action="store_true")
+    sv.add_argument(
+        "--tools",
+        metavar="PROFILE",
+        help="which MCP tools to offer: " + ", ".join(tool_profiles.NAMES) + " (default: all). The per-tool REST "
+        "routes are addressed by path and are not narrowed; see docs/mcp-tool-profiles.md",
+    )
     sv.add_argument("--watch", action="store_true", help="also run the incident watch (watch.enabled)")
 
     c = sub.add_parser("corpus", help="Build / inspect the local corpus (network: maintainers & CI)")
@@ -3295,6 +3307,11 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "mcp":
         from kube_noob.server.mcp_app import build_server
 
+        if a.tools is not None:
+            try:
+                s.server.tools = tool_profiles.resolve(a.tools)
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from None
         build_server(s).run("stdio")
         return 0
 
@@ -3303,6 +3320,11 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
 
         from kube_noob.server.http import http_app
 
+        if a.tools is not None:
+            try:
+                s.server.tools = tool_profiles.resolve(a.tools)
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from None
         if a.host:
             s.server.host = a.host
         if a.port:
