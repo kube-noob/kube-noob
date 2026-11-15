@@ -77,6 +77,60 @@ SOURCES: dict[str, Citation] = {
         "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#failure-policy",
         "CC-BY-4.0",
     ),
+    # The control-plane rules (KN-S037..KN-S041, G272): upstream source files at the commit they were read at
+    # (2026-11-11). Code, so Apache-2.0; linked, not copied.
+    "k8s-apiservice-types": Citation(
+        "k8s-apiservice-types",
+        "kube-aggregator apiregistration/v1 APIServiceSpec (insecureSkipTLSVerify, caBundle, service)",
+        "https://github.com/kubernetes/kubernetes/blob/fba15ecefa95cd275b3e6d8dd68b983e976e40dd/staging/src/k8s.io/"
+        "kube-aggregator/pkg/apis/apiregistration/v1/types.go",
+        "Apache-2.0",
+    ),
+    "k8s-apiserver-authn-options": Citation(
+        "k8s-apiserver-authn-options",
+        "kube-apiserver authentication options (--anonymous-auth default, --authentication-config)",
+        "https://github.com/kubernetes/kubernetes/blob/fba15ecefa95cd275b3e6d8dd68b983e976e40dd/pkg/kubeapiserver/"
+        "options/authentication.go",
+        "Apache-2.0",
+    ),
+    "k8s-apiserver-authz-options": Citation(
+        "k8s-apiserver-authz-options",
+        "kube-apiserver authorization options (--authorization-mode default, --authorization-config)",
+        "https://github.com/kubernetes/kubernetes/blob/fba15ecefa95cd275b3e6d8dd68b983e976e40dd/pkg/kubeapiserver/"
+        "options/authorization.go",
+        "Apache-2.0",
+    ),
+    "etcd-embed-config": Citation(
+        "etcd-embed-config",
+        "etcd server configuration flags and defaults (listen URLs, client-cert-auth)",
+        "https://github.com/etcd-io/etcd/blob/d11eca9a9c16b12ae9d93f80f70945dc818c9976/server/embed/config.go",
+        "Apache-2.0",
+    ),
+    "etcd-flags-env": Citation(
+        "etcd-flags-env",
+        "etcd flags from ETCD_* environment variables, shadowed by the command line",
+        "https://github.com/etcd-io/etcd/blob/d11eca9a9c16b12ae9d93f80f70945dc818c9976/pkg/flags/flag.go",
+        "Apache-2.0",
+    ),
+    "openshift-api-apiserver-types": Citation(
+        "openshift-api-apiserver-types",
+        "openshift/api config/v1 APIServer (spec.encryption.type)",
+        "https://github.com/openshift/api/blob/61403fc4e89fad877aba1b000d72a992f388f549/config/v1/types_apiserver.go",
+        "Apache-2.0",
+    ),
+    "openshift-api-oauth-types": Citation(
+        "openshift-api-oauth-types",
+        "openshift/api config/v1 OAuth identity providers (LDAP insecure)",
+        "https://github.com/openshift/api/blob/61403fc4e89fad877aba1b000d72a992f388f549/config/v1/types_oauth.go",
+        "Apache-2.0",
+    ),
+    "hypershift-hostedcluster-types": Citation(
+        "hypershift-hostedcluster-types",
+        "HyperShift HostedCluster (spec.secretEncryption, spec.configuration.oauth)",
+        "https://github.com/openshift/hypershift/blob/f4540b4168b891692eb1c508a336bd4410179803/api/hypershift/"
+        "v1beta1/hostedcluster_types.go",
+        "Apache-2.0",
+    ),
     "k8s-networkpolicy": Citation(
         "k8s-networkpolicy",
         "Network Policies",
