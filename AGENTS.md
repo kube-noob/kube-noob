@@ -145,13 +145,18 @@ agree. Tagging, releasing and publishing are the maintainer's, never an agent's.
 
 Every change here edits two append-only files: a `G<n>` row at the end of `docs/guidance.md`, numbered from the
 highest one already there, and a bullet under `## Unreleased` in `CHANGELOG.md`. Two branches cut from the same
-`main` therefore pick the **same** next number and insert at the **same** line, so any two parallel pull requests
-conflict on both files. That is not bad luck; it is arithmetic, and it has cost this repository several rounds of
-conflict resolution that produced no code.
+`main` therefore pick the **same** next number and insert at the **same** line. That is not bad luck; it is
+arithmetic, and it cost this repository several rounds of conflict resolution that produced no code.
+
+Both files are append-only, so `.gitattributes` gives them `merge=union` and a merge keeps both sides' lines
+instead of stopping (G297). It does not pick your `G<n>` for you: two branches can still land the same number, and
+`tests/test_guidance.py` fails on a duplicate. Nothing whose lines are rewritten -- `docs/roadmap.md`,
+`docs/limits.md`, `docs/use-cases.md`, `docs/compliance.md`, `docs/safety-contract.md` -- is merged that way, so
+those still conflict and are resolved by regenerating them with their script.
 
 So: open one pull request, land it, then start the next. If a second branch is already open, merge `origin/main`
-into it (never rebase, never force-push) and take the higher `G<n>` for the later change before asking anyone to
-merge it.
+into it (never rebase, never force-push), take the higher `G<n>` for the later change, and regenerate the
+generated documents before asking anyone to merge it.
 
 ## Commits
 
