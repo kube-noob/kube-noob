@@ -130,17 +130,22 @@ def test_repository_text_that_looks_like_an_instruction_is_framed_and_flagged(ws
 
 
 def test_the_hook_answers_inside_its_budget_whatever_the_input(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The deadline is enforced on a CHILD PROCESS, which is killed: a check stuck in C code (a backtracking regular
-    expression, which holds the interpreter and so cannot be interrupted by a thread) still ends in exit 2 at the
-    budget. Before, the deadline was a thread join, and a Makefile line built to be slow ran 62 s."""
+    """The deadline is enforced on a CHILD PROCESS, which is killed: a check stuck in C code holds the interpreter
+    and so cannot be interrupted by a thread, and it still ends in exit 2 at the budget. Before, the deadline was a
+    thread join, and a Makefile line built to be slow ran 62 s.
+
+    `pow` on a large integer is that C code: one call, no bytecode boundary a thread could be scheduled at, and a
+    bounded, predictable allocation (about 6 MB here). Measured at 5.8 s on the development machine against the
+    1.0 s budget below, so the child cannot finish first. A backtracking regular expression would do the same job
+    and reads as a vulnerability in a security tool's own repository, which is why it is not used.
+    """
     import io
-    import re
     import time
 
     from kube_noob import verify
 
     def stuck_in_c(*a: object, **k: object) -> None:
-        re.match(r"(a+)+$", "a" * 40 + "b")  # minutes of backtracking inside the regex engine
+        pow(3, 20_000_000)
 
     monkeypatch.setattr(verify, "evaluate", stuck_in_c)
     stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
@@ -313,13 +318,13 @@ def test_install_merges_without_clobbering_and_is_idempotent(tmp_path: Path) -> 
         },
     }
     path.write_text(json.dumps(mine))
-    os.chmod(path, 0o640)
+    os.chmod(path, 0o600)
     assert hook.write_settings(path) is True
     got = json.loads(path.read_text())
     assert got["permissions"] == mine["permissions"] and got["hooks"]["Stop"] == mine["hooks"]["Stop"]
     assert got["hooks"]["PreToolUse"][0] == mine["hooks"]["PreToolUse"][0]
     assert got["hooks"]["PreToolUse"][1] == hook.settings_snippet()["hooks"]["PreToolUse"][0]
-    assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_mode & 0o777 == 0o600
     assert hook.write_settings(path) is False
     assert json.loads(path.read_text()) == got
     assert [p.name for p in path.parent.iterdir()] == ["settings.json"], "no temporary file is left behind"
@@ -365,10 +370,10 @@ def test_install_refuses_a_read_only_file_and_repeated_keys(tmp_path: Path) -> N
     path = tmp_path / ".claude" / "settings.json"
     path.parent.mkdir()
     path.write_text("{}")
-    os.chmod(path, 0o444)
+    os.chmod(path, 0o400)
     with pytest.raises(hook.InstallError, match="read-only"):
         hook.write_settings(path)
-    os.chmod(path, 0o644)
+    os.chmod(path, 0o600)
     dup = '{"hooks": {"Stop": []}, "hooks": {"PreToolUse": []}}'
     path.write_text(dup)
     with pytest.raises(hook.InstallError, match="repeats the key"):
@@ -671,10 +676,11 @@ def test_the_plugin_hook_runs_from_the_bundled_copy(ws: Path) -> None:
 def test_the_budget_message_states_the_budget_the_hook_ran_with(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The message said "20-second" whatever the budget was; it states the real one."""
     import io
-    import re
 
     def stuck_in_c(*a: object, **k: object) -> None:
-        re.match(r"(a+)+$", "a" * 40 + "b")
+        # The same C-bound computation as above, for the same reason: the child must still be running at the
+        # budget so the parent is the one that prints the message.
+        pow(3, 20_000_000)
 
     # in-process: the deadline is already past, so the check itself (fast) ends in the budget message
     code, _, err = _hook(_input("kubectl apply -f k8s/good.yaml", ws), {}, budget=-1)
