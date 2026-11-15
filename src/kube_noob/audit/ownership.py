@@ -54,6 +54,15 @@ class Ownership:
     #: The reason a rule declines, as a sentence fragment with no text from the input (G281). "" when theirs.
     why: str = ""
 
+    @property
+    def cited(self) -> str:
+        """``why`` with the document it came from, which is what a rule prints.
+
+        A reader told "this is not yours to configure" is being told something about their support contract, and
+        they should be able to check it against the page it came from rather than take kube-noob's word (G309).
+        """
+        return f"{self.why} ({RESPONSIBILITY_SOURCE})" if self.why else ""
+
 
 _CUSTOMERS = Ownership(theirs=True)
 

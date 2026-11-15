@@ -151,6 +151,28 @@ def test_the_control_plane_kubelet_is_not_the_customers_on_rosa() -> None:
         assert not owner(platform, "kubelet").theirs, platform
 
 
+def test_every_decline_cites_the_document_the_split_came_from() -> None:
+    """A reader told "this is not yours to configure" is being told something about their support contract, and
+    should be able to check it against the page it came from rather than take kube-noob's word (G309)."""
+    from kube_noob.audit.ownership import RESPONSIBILITY_SOURCE
+
+    assert "retrieved" in RESPONSIBILITY_SOURCE
+    for platform, row in RESPONSIBILITY.items():
+        for component, own in row.items():
+            if own.theirs:
+                assert own.cited == "", (platform, component)
+            else:
+                assert own.cited.endswith(f"({RESPONSIBILITY_SOURCE})"), (platform, component)
+                assert own.why in own.cited
+
+
+@pytest.mark.parametrize(("text", "rule_id"), [(APISERVER, "KN-S038"), (ETCD, "KN-S039"), (KUBELET, "KN-S042")])
+def test_the_reason_a_rule_prints_names_that_document(text: str, rule_id: str) -> None:
+    from kube_noob.audit.ownership import RESPONSIBILITY_SOURCE
+
+    assert RESPONSIBILITY_SOURCE in _why(_report(text, "rosa-hcp"), rule_id)
+
+
 def test_an_unknown_platform_is_read_rather_than_silenced() -> None:
     """A typo must not turn every control-plane rule off; the CLI refuses a platform outside PLATFORMS."""
     assert owner("rosa-hpc", "kube-apiserver").theirs

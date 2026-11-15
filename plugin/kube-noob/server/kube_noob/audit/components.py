@@ -80,7 +80,7 @@ def _kubelet_sources(ctx: AuditContext, r: Rule) -> list[KubeletSettings]:
         own = component_owner(ctx.platform, "kubelet-worker" if s.role == "worker" else "kubelet")
         if not own.theirs:
             stated = "" if s.role else ", and this object does not say which node role it configures"
-            ctx.cannot_decide(r.rule_id, f"{s.where} configures a kubelet, and {own.why}{stated}", s.ref)
+            ctx.cannot_decide(r.rule_id, f"{s.where} configures a kubelet, and {own.cited}{stated}", s.ref)
             continue
         if s.declined:
             ctx.cannot_decide(r.rule_id, f"{s.where} {s.declined}", s.ref)

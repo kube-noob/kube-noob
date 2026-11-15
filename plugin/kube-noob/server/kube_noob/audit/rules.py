@@ -4558,7 +4558,7 @@ def _s038(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         runs = "may run" if launch.maybe else "runs"
         own = component_owner(ctx.platform, "kube-apiserver")
         if not own.theirs:
-            ctx.cannot_decide(r.rule_id, f"{where} {runs} kube-apiserver, and {own.why}", ref)
+            ctx.cannot_decide(r.rule_id, f"{where} {runs} kube-apiserver, and {own.cited}", ref)
             continue
         if launch.declined:
             starts = "may start" if launch.maybe else "starts"
@@ -4868,7 +4868,7 @@ def _s039(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         own = component_owner(ctx.platform, "etcd")
         if not own.theirs:
             runs = "may run" if launch.maybe else "runs"
-            ctx.cannot_decide(r.rule_id, f"{where} {runs} etcd, and {own.why}", ref)
+            ctx.cannot_decide(r.rule_id, f"{where} {runs} etcd, and {own.cited}", ref)
             continue
         if launch.declined:
             starts = "may start" if launch.maybe else "starts"
