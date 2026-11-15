@@ -80,7 +80,9 @@ def test_a_run_with_no_exceptions_is_unchanged() -> None:
     before = _audit()
     assert not any("excepted" in c for c in before["controlSummary"]["controls"])
     assert "excepted" not in before["controlSummary"]["note"]
-    # `rulesNotEvaluated` and `rulesEvaluatedWithout` are the coverage record's own (G281), present with or
+    # `rulesNotEvaluated` names the rules that reached no verdict WITH the reason, `rulesEvaluatedWithout` the
+    # kinds a rule that did run asked for and did not get (G281), and `partlyEvaluatedRules` the rules that
+    # found something and declined elsewhere (G272). All three are the coverage record's own, present with or
     # without an exceptions file; what this guards is that the exceptions path adds nothing of its own.
     assert set(before["controlSummary"]) == {
         "catalog",
@@ -88,6 +90,7 @@ def test_a_run_with_no_exceptions_is_unchanged() -> None:
         "note",
         "rulesNotEvaluated",
         "rulesEvaluatedWithout",
+        "partlyEvaluatedRules",
     }
     assert set(_audit(EXCEPTION)["controlSummary"]) == set(before["controlSummary"])
 

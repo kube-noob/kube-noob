@@ -86,8 +86,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 155 465 to
-84 052 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 115 findings over 21 rules, and the JSON goes from 159 868 to
+88 455 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -863,49 +863,6 @@ kube-noob redteam -f k8s/ --platform openshift
 kube-noob explain KN-S004
 ```
 
-### What was checked, and what only looked checked: the coverage record
-
-Every audit carries a coverage record beside its findings: `controlSummary` in `audit`, `audit_manifests` and
-the gate, `coverage` in a posture snapshot, the columns of `ksi`. Per NIST control it separates `findings`,
-`excepted`, `withheld`, `clean` and `notEvaluated`, because a control with no finding is either one every rule
-checked or one nothing looked at, and an assessor cannot tell which from a zero.
-
-`clean` means a rule had something of its kind to look at and found nothing. Every rule declares what it is
-about -- a Service, a Role or ClusterRole, a pod spec, a NetworkPolicy and a pod spec together -- matched with
-its API group, so a Knative `Service` or an ACM `Subscription` is not the subject of a rule written for the
-core or OLM one (an `extensions/v1beta1` Deployment is, because that is a group Kubernetes itself served the
-kind under; an object with no `apiVersion`, as a live cluster lists them, is read; a Deployment in a group the
-rules do not know is named in the assumptions as not audited). A rule whose subject is not in the input does
-not run and is `notEvaluated`, with the reason
-`no Service in the input` (`no operators.coreos.com Subscription in the input` for a kind outside the core
-group) -- a file with one ConfigMap is not "no privileged container, no wildcard RBAC, no NodePort", it is 11
-rules evaluated (the per-document validations and the two ConfigMap rules) and 82 waiting for their kind. The
-record names them: `rulesNotEvaluated` lists every unevaluated rule with its reason (an absent kind; a stage
-you left out; `does not apply on kubernetes` for an OpenShift rule; a guard's own words, such as `part of a
-namespace was passed, so the namespace's NetworkPolicies were not passed`), each control row lists its own
-under `notEvaluatedRules`, and a rule that reads a kind beside its subject names it when absent under
-`rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`). The text view groups the same list by reason and
-prints the same count, so the two cannot disagree; the SARIF carries one notification per reason, and the gate's
-summary one line. The exit code does not change for an absent kind: it is not a finding and not an unreadable
-file. An object the rules REFUSED to read is different -- a kind they know under an apiVersion that is not a
-string, not shaped like an API (`v1/`, `APPS/v1`, a leading space) or in a group the kind is not known under
-(a `Deployment` in `example.com/v1`, a Knative `Service`): it is listed under `notAudited` with the object and
-a fixed reason, printed in the text view, carried by the gate's JSON, Markdown, HTML and SARIF (one `note`
-result per object and the list on the invocation), and the verdict is undetermined: `audit` and `gate` exit 1,
-never 0, whatever `--fail-on` says. The subject reason says `1 Deployment not audited (...)` rather than "no
-pod spec in the input", because that would be false. A pod spec in a kind with no reader (an Argo Rollout) and a
-`kind` that is not a kind name are not audited the same way; `summary.score` is `null` and `summary.verdict`
-is `undetermined` while any such object is open. To accept one as reviewed, add a `notAudited:` entry to the
-exception list -- `notAudited: {namespace: prod, kind: Service, name: hello, apiGroup: serving.knative.dev}`
-with `owner`, `reason` and `expires` -- and the row stays listed with `acceptedBy` while the verdict is
-determined again. An unknown kind in an unknown group (`example.com/v1 Widget`) is neither audited nor
-listed: nothing claims to read it.
-
-```bash
-kube-noob audit -f k8s/ --format json | jq '.controlSummary.rulesNotEvaluated'
-kube-noob audit -f k8s/ | grep -A20 '^rules:'
-```
-
 ### Something a reviewer will actually open
 
 `--html` writes one self-contained page: `gate --html report.html`, `posture report --html`, `posture diff --html`,
@@ -997,8 +954,7 @@ whole of what an assistant reads and a count without that second sentence is the
 A row whose rules reach it only through a shared control carries a `warning` as well. Without an audit there are no
 counts at all and `audited` is `false`: zeroes on 28 rows would read as 28 clean results. When a rule declines, the
 row names it -- `notEvaluatedRules: ["KN-N014"]` on an AdminNetworkPolicy bundle is the rule asking for the
-cluster's CNI, which `--cni` and the tool's `cni` supply -- and `rulesNotEvaluated` carries each rule's reason,
-the audit's own, so a rule whose kind was not in the input is not counted clean on any indicator. And when the target version is past the removal table's
+cluster's CNI, which `--cni` and the tool's `cni` supply. And when the target version is past the removal table's
 ceiling the reply carries `notCheckedBeyond`, because SA-22's evidence is exactly those removed-API rules.
 
 The dataset is vendored with its version and sha256 and the crosswalk is generated from it, because the hand-written
@@ -1183,7 +1139,7 @@ object and the path, and `posture scan` records the same in `notRead`. You get a
 clean report you cannot trust, and a kind worth reading properly can be added with its published schema.
 
 ```bash
-kube-noob audit -f serving/            # the same 93 rules, now reaching the components
+kube-noob audit -f serving/            # the same 98 rules, now reaching the components
 kube-noob posture scan -f serving/     # per-component attack paths
 kube-noob --cluster-enabled posture scan --live -n model-serving
 ```
@@ -1312,10 +1268,7 @@ open, and in which namespaces. A finding counts once for every control its rule 
 to the finding total. Beside it, `controlStanding` separates the two things a count cannot: a control whose rules
 ran and found nothing (`clean`) from one nothing evaluated (`notEvaluated`). That needs the snapshot to record
 which rules ran, so a snapshot taken before that record existed gets the counts and no standing at all, and the
-report says why -- a control with no open finding is not a control that passed. The snapshot also records why
-each rule did not run (`coverage.notEvaluated`: the kind that was not there, with the resource named when the
-cluster refused to show it), and the standing names them per control in JSON, Markdown and HTML, so a `Not
-evaluated` column is never a bare number.
+report says why -- a control with no open finding is not a control that passed.
 
 A live snapshot records what it could not read, and the diff uses it. An object that was in yesterday's snapshot
 and is missing from today's is only `removed` if today's run could read its kind; if the backend refused that
@@ -1377,6 +1330,77 @@ than a family of checks about a SIEM kube-noob has no credentials for.
 oc get apiserver cluster -o yaml > apiserver.yaml
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20
 kube-noob audit -f apiserver.yaml --platform openshift --version 4.20 --format json | jq .detectionCoverage
+```
+
+### Does the control plane check who it talks to?
+
+Five rules read the settings that decide whether the cluster's own components verify, authenticate and encrypt.
+`KN-S037` reports an APIService that sends its API group to an extension API server with `insecureSkipTLSVerify`
+(an absent `caBundle` is not a finding: the API server then uses its system trust roots, and OpenShift's service CA
+fills it). `KN-S038` reads a kubeadm-style kube-apiserver static pod for the AlwaysAllow authorizer and anonymous
+authentication; `KN-S039` reads the etcd static pod for plaintext listeners on a network address and for client
+certificates switched off (a trusted CA file switches them on too, as etcd reads it; `--auto-tls` with no
+`--cert-file` or `--key-file` switches them off again, because etcd then replaces its TLS settings with a generated
+certificate's). Both recognise the component by what the container runs, never by its name or a label, and
+recognition is fail-safe: a container is passed over only when nothing points at the binary -- no image whose name
+has it as a dash-separated component (`etcd-amd64`, `kube-apiserver-amd64`, `hyperkube`; not `etcd-operator`),
+none of its flags, no `ETCD_*` variable, no mention of it (or of k3s, rke2 or k0s) as a command word in argv, args,
+env values or a script -- or when it is positively something else: `etcdctl`, `k3s agent`, or a script on the
+etcd image made only of etcdctl and coreutils. A path is the program only in a `bin` or `sbin` directory, `.` or
+`/`, so `tar czf b /var/lib/etcd` is not etcd. Every list kind in the input (`List`, `PodList`, a list inside a list) is opened into
+its items, an item that is not an object is reported by `KN-V001` and declined here, and a list past the 1,000-document
+cap is refused by every command alike. the insecure port on a network address is a CRITICAL finding on a
+stated release up to 1.19;
+kube-apiserver's flags are read as its parser reads them (`--authorization_mode` is `--authorization-mode`), and an
+absent flag is the upstream default, named in the finding with the releases it was checked at:
+anonymous authentication is on unless `--anonymous-auth=false`, and an API server given neither
+`--authorization-mode` nor `--authorization-config` authorizes everything. On OpenShift, `KN-S040` reports
+encryption at rest switched off on the same `APIServer` object `KN-S035` reads, and `KN-S041` an LDAP identity
+provider with `insecure: true` and an `ldap://` URL.
+
+Each says so when it cannot decide, and that is most of the work. An `--authorization-config` or
+`--authentication-config` file is on the node and not in the input; a `--config-file` replaces every etcd flag;
+`envFrom` can set any `ETCD_*` variable (an empty `--config-file=` falls through to `ETCD_CONFIG_FILE`, as etcd
+reads it); a shell script (directly, as `busybox sh` or after `env`), a wrapper such as `tini` or `go-runner`, an
+image entrypoint (no `command`, or `command: []`), or any other entrypoint -- a script file, `s6-svscan`, `/pause`,
+`python3 -c` -- that something points at is not executed; k3s, rke2 and k0s set the API server's other flags from
+their own defaults (an AlwaysAllow passed through `--kube-apiserver-arg` is still read as a finding); ABAC and
+Webhook authorize from a file not in the input; a non-zero insecure port on 1.20-1.23, and any insecure-port flag on 1.24 or later or an assumed version, is a
+setting the server refuses; an object that writes the flags -- a kubeadm `ClusterConfiguration`, Cluster API's
+`KubeadmControlPlane`, the `kubeadm-config` ConfigMap, a kind cluster, a k0s `ClusterConfig`, a Rancher `Cluster` --
+is read for AlwaysAllow, an explicit `anonymous-auth: true` and a plaintext etcd URL, and named as not read for the rest; `--enable-v2` is refused by etcd 3.6 unless the image says 3.5; a kubeadm
+`ClusterConfiguration` or an OpenShift `KubeAPIServer` writes the flags and is named as seen and not read; a `$(VAR)` anywhere in argv is not expanded; a flag
+kube-noob does not know, given without `=` before another flag, may swallow it (so `--version` or `-h` there is
+not read as one); an authorization-mode combination the API server refuses to start with, and a `KMS` encryption
+type with no `kms` block, are not read as a setting; an encryption type or identity provider type openshift/api
+does not define is not guessed at. On ROSA with HCP the API server, etcd
+and the OAuth server are configured from the `HostedCluster` on the management cluster, on the rest of the
+OpenShift family the API server is operator-managed, and off OpenShift the OpenShift objects are not read (the
+reason names `--platform openshift`). In each case the rule is left out of the evaluated list and the report states why -- naming every declined
+object, up to a cap -- in the text view, the JSON (`declined`), the SARIF notifications, the MCP result and the
+gate's JSON, SARIF, Markdown and HTML. When the rule found nothing anywhere, its controls count it as not
+evaluated and `controlSummary.notEvaluatedRules` names it. When it found something on one object and declined on
+another, the finding is reported and counted under its controls as a finding, the decline is still stated in
+`assumptions` and `declined`, and `controlSummary.partlyEvaluatedRules` names it (as do the KSI rows, the OSCAL
+control remarks, the text view, the SARIF and the gate); it is not in `notEvaluatedRules`, which lists rules that
+reached no verdict at all, so every rule not evaluated in full is in exactly one of the two. `declined[rule].decided`
+says how many objects the rule read in full beside the ones it declined. An
+input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
+"not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
+`exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While anything was
+not audited -- a rule declined on an object, a pod spec in a kind kube-noob has no reader for, a container whose
+image an operator supplies, an object in a group the reader refuses -- the headline score is withheld:
+`summary.score` is `null`, `summary.scoreWithheld` names the rules and the objects, and the text view prints
+`score=not determined (N rules not evaluated in full and M pod specs not audited)` -- a number above "was not
+evaluated in full" or "were NOT audited" would be a verdict on what was not read. Undetermined is exit 1 whatever
+`--fail-on` says, and the gate is `incomplete` rather than passed; `notAudited` and `notEvaluated` in the JSON name
+the objects and the rules. Every output reads the same predicate (`fix`'s `after`, the gate, the MCP tools and
+every finding-derived check of the eval grader included). The per-control counts stay as they are.
+
+```bash
+kube-noob audit -f /etc/kubernetes/manifests/ --platform kubernetes --version 1.33
+oc get apiserver cluster -o yaml > cp.yaml; echo --- >> cp.yaml; oc get oauth cluster -o yaml >> cp.yaml
+kube-noob audit -f cp.yaml --platform openshift --version 4.20
 ```
 
 ### Enforce the audit rules at admission
@@ -1478,9 +1502,7 @@ kube-noob gate  -f k8s/ --platform openshift --version 4.22 --oscal > assessment
 An OSCAL 1.2.3 assessment-results document, from either command: each finding becomes an observation with
 method `EXAMINE`, and each control becomes an OSCAL finding targeting that control's objective id
 (`ac-6.10_obj`). What it will not say is the point. A control is `satisfied` only where its rules actually ran
-over an object of their kind and produced nothing. A control no rule evaluated is named under `exclude-controls`
-and gets no finding at all, and the selection's remarks say why each rule was not evaluated, grouped: `no Service
-in the input: KN-N004, KN-N005, KN-N008`.
+and produced nothing. A control no rule evaluated is named under `exclude-controls` and gets no finding at all.
 A control whose rules ran and reported findings that a `--min-severity` filter removed is `not-satisfied` with
 reason `other`, never a pass -- so the verdict per control is the same at every filter level, and no flag turns
 a failing audit into a clean record. An accepted exception is `not-satisfied` too, with the same reason: a

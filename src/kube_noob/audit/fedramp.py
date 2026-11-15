@@ -844,6 +844,7 @@ BY_CONTROL: dict[str, tuple[str, ...]] = {
     "IA-5(7)": ("KSI-PIY-RSD",),
     "SA-22": ("KSI-SCR-MIT",),
     "SC-28": ("KSI-SVC-SIN",),
+    "SC-28(1)": ("KSI-SVC-SIN",),
     "SC-36": (),
     "SC-39": ("KSI-IAM-ELP", "KSI-IAM-JIT", "KSI-SVC-EIS"),
     "SC-4": ("KSI-CNA-ULN", "KSI-IAM-ELP", "KSI-PIY-RSD", "KSI-SVC-PRR", "KSI-SVC-SIN"),
@@ -1174,6 +1175,7 @@ def summary(
     not_checked_beyond: dict[str, str] | None = None,
     not_evaluated: Mapping[str, str] | None = None,
     absent_subjects: Mapping[str, Sequence[str]] | None = None,
+    partly_evaluated: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The KSI view of an audit: every indicator, and what kube-noob's findings say about it.
 
@@ -1190,7 +1192,8 @@ def summary(
 
     ``not_evaluated`` is the audit's reason per rule that did not run (``rulesNotEvaluated`` here, as in the
     audit's own summary): "no Service in the input" is not the same fact as "the CNI was not given", and a row's
-    ``notEvaluatedRules`` alone cannot tell them apart. ``absent_subjects`` is ``rulesEvaluatedWithout`` (G281).
+    ``notEvaluatedRules`` alone cannot tell them apart. ``absent_subjects`` is ``rulesEvaluatedWithout`` (G281),
+    and ``partly_evaluated`` the rules that reported on one object and declined on another (G272).
     """
     from kube_noob.audit.controls import RULE_CONTROLS, rules_evaluated_without, rules_not_evaluated
 
@@ -1252,6 +1255,17 @@ def summary(
                     row["clean"] = sum(1 for r in rest if r not in hidden and r in ran)
                     undecided = [r for r in rest if r not in hidden and r not in ran]
                     row["notEvaluated"] = len(undecided)
+                    # From the caller's record, not inferred from "has findings and did not run": a partly
+                    # evaluated rule DID run (G281, D4), so this page held its own copy of an inference that
+                    # could never fire again -- the KSI view is one of the four surfaces that then carried a
+                    # rule it could not account for.
+                    partly = [r for r in rules if r in (partly_evaluated or {})]
+                    if partly:
+                        # Found something here and declined elsewhere (G272): counted under findings or withheld,
+                        # and named, so a declined object never reads as covered by this indicator.
+                        row["partlyEvaluatedRules"] = partly[:MAX_NAMED_RULES]
+                        if len(partly) > MAX_NAMED_RULES:
+                            row["morePartlyEvaluated"] = len(partly) - MAX_NAMED_RULES
                     if undecided:
                         # Naming them matters: a bare notEvaluated: 1 on an AdminNetworkPolicy bundle is the one
                         # rule that knows the policy may be inert (KN-N014), and a caller who cannot see which

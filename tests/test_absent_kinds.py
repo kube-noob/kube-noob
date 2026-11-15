@@ -184,11 +184,23 @@ def test_an_exception_list_file_is_not_ninety_one_clean_rules() -> None:
     assert all(RULES[r].stage is Stage.VALIDATE for r in clean), sorted(clean)
 
 
-def test_without_reasons_the_summary_keeps_the_older_shape() -> None:
-    from kube_noob.audit.controls import summary
+def test_without_reasons_the_summary_invents_none() -> None:
+    """A caller that can say what ran, and not why the rest did not, gets the rules named and no reason made up.
+
+    G281 left `rulesNotEvaluated` out entirely here, so that a caller without reasons got no coverage claim it
+    had not earned. G272 names every rule that did not run whatever the caller knows, because a rule that
+    declined quietly was invisible outside the KSI view. Both hold: the rules are NAMED, and every reason reads
+    the record's own "no reason" phrase rather than one this summary guessed. `rulesEvaluatedWithout` is still
+    absent, because it is about absent subjects the caller did not pass and there is nothing honest to say.
+    """
+    from kube_noob.audit.controls import NO_REASON_RECORDED, summary
 
     out = summary([], None, ["KN-V001"])
-    assert "rulesNotEvaluated" not in out and "rulesEvaluatedWithout" not in out
+    assert "rulesEvaluatedWithout" not in out
+    rows = out["rulesNotEvaluated"]
+    assert rows, "the rules that did not run must be named"
+    assert all(row["why"] == NO_REASON_RECORDED for row in rows), "no reason may be invented here"
+    assert "KN-V001" not in {row["ruleId"] for row in rows}, "the rule that ran is not in the not-evaluated list"
     assert all("notEvaluatedRules" not in c for c in out["controls"])
 
 
@@ -352,7 +364,13 @@ def test_a_diff_against_a_snapshot_from_before_this_fix_reports_nothing_regresse
     # And the other way round: the old record's standing is not consulted, so nothing is "regressed" there either.
     back = drift.diff(new, old)
     assert back["findings"]["new"] == [] and back["findings"]["fixed"] == []
-    assert "rulesNotEvaluated" not in (back.get("controlStanding") or {}), "an old record has no reasons to show"
+    # An old record has no reasons to show: the rules are still named, as their per-control counts always were,
+    # and every reason reads the record's own "no reason" phrase rather than one this report invented for a
+    # snapshot that never recorded it (G281 + G272).
+    from kube_noob.audit.controls import NO_REASON_RECORDED
+
+    standing_rows = (back.get("controlStanding") or {}).get("rulesNotEvaluated") or []
+    assert all(row["why"] == NO_REASON_RECORDED for row in standing_rows), standing_rows
 
 
 def test_no_input_derived_text_reaches_a_reason() -> None:
@@ -532,7 +550,10 @@ def test_a_rule_that_declined_on_one_object_and_fired_on_another_is_evaluated_no
     rep = analyze(MIXED, "kubernetes", None)
     assert "KN-V011" in rep.fired_rules and "KN-V011" in rep.evaluated_rules
     assert "KN-V011" not in rep.not_evaluated
-    assert any("KN-V011" in a and "declined" in a for a in rep.assumptions), rep.assumptions
+    # The decline is stated as a note, in G272's wording ("was not evaluated in full, so it is not counted as
+    # clean: ..."). G281 added a second sentence of its own for the same rule, which repeated the same reason
+    # verbatim, so that one is gone and this reads the line that carries the claim.
+    assert any("KN-V011" in a and "not evaluated in full" in a for a in rep.assumptions), rep.assumptions
     snap = drift.snapshot(_objects(MIXED), source="manifests", taken_at=dt.datetime(2026, 11, 12, tzinfo=dt.UTC))
     listed = {r["ruleId"] for r in snap["coverage"]["notEvaluated"]}
     assert "KN-V011" in snap["coverage"]["firedRules"] and "KN-V011" not in listed
@@ -620,8 +641,11 @@ LIVE_NOAPI: list[dict[str, Any]] = [
 # What 0.9.2 reported for LIVE_NOAPI, measured with `kube_noob.drift.snapshot(objs, source="live")` on main.
 LIVE_NOAPI_FIRED = {
     "KN-C001", "KN-C002", "KN-C004", "KN-C005", "KN-C007", "KN-C016", "KN-N007", "KN-S001", "KN-S002",
-    "KN-S003", "KN-S006", "KN-S007", "KN-S008", "KN-S012", "KN-S014", "KN-S015", "KN-S032", "KN-V001", "KN-V002",
+    "KN-S003", "KN-S006", "KN-S007", "KN-S008", "KN-S012", "KN-S014", "KN-S015", "KN-S032", "KN-V001",
 }  # fmt: skip
+# No KN-V002: an apiVersion that is ABSENT is KN-V001's "missing", not a wrong one, so the field gets exactly
+# one message (G272). KN-V002 still speaks for an apiVersion that is present and wrong, or present and not a
+# string (G281, review 5, item 9).
 
 
 def test_an_object_with_no_api_version_is_an_unknown_group_not_a_contradiction() -> None:
@@ -907,12 +931,17 @@ def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
     """
     import ast
 
+    from kube_noob.audit import cprules as cprules_module
     from kube_noob.audit import rules as rules_module
 
+    # Both modules that hold rule bodies: KN-S037..KN-S041 live in `cprules.py` so the generated plugin copy of
+    # `rules.py` stays under the directory's 256 KiB per-file limit, and a walk that read only `rules.py` would
+    # quietly stop checking five rules -- a gate that passes because it looked at less.
+    namespace = {**vars(rules_module), **vars(cprules_module)}
     funcs: dict[str, ast.FunctionDef] = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
     def constant(expr: ast.expr) -> Any:
-        return eval(ast.unparse(expr), vars(rules_module))  # noqa: S307 -- the module's own source, not input
+        return eval(ast.unparse(expr), dict(namespace))  # noqa: S307 -- the modules' own source, not input
 
     def loop_values(fn: ast.FunctionDef, name: str) -> set[str]:
         for loop in ast.walk(fn):
@@ -933,7 +962,7 @@ def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
             return {k for elt in arg.elts for k in kinds_of(fn, elt)}
         if isinstance(arg, ast.Starred):
             return {str(v) for v in constant(arg.value)}
-        if isinstance(arg, ast.Name) and arg.id in vars(rules_module):
+        if isinstance(arg, ast.Name) and arg.id in namespace:
             value = constant(arg)
             return {value} if isinstance(value, str) else {str(v) for v in value}
         if isinstance(arg, ast.Name):
@@ -1000,8 +1029,12 @@ def _by_kind_calls_per_rule() -> dict[str, set[str]]:
     """Every kind each rule's check reads, by rule id (see `_kinds_asked`)."""
     import ast
 
-    src = (ROOT / "src" / "kube_noob" / "audit" / "rules.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    # Every module that holds a `@rule` body, not just `rules.py` (see `_kinds_asked`).
+    audit = ROOT / "src" / "kube_noob" / "audit"
+    body: list[ast.stmt] = []
+    for name in ("rules.py", "cprules.py"):
+        body += ast.parse((audit / name).read_text(encoding="utf-8")).body
+    tree = ast.Module(body=body, type_ignores=[])
     checks: dict[str, str] = {}
     for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
         for deco in fn.decorator_list:
@@ -1067,22 +1100,24 @@ def test_the_first_diff_after_stamping_names_api_version_as_the_one_changed_fiel
     objects, findings = report["objects"], report["findings"]
     assert [(row["object"], row["fields"]) for row in objects["changed"]] == [("Deployment/shop/web", ["apiVersion"])]
     assert objects["unchanged"] == len(LIVE_NOAPI) - 1
-    # The only findings that go: "missing apiVersion" (KN-V001/V002), which the stamped record no longer earns.
+    # The only finding that goes: "missing apiVersion" (KN-V001), which the stamped record no longer earns.
+    # KN-V002 is not here because an absent apiVersion is KN-V001's alone -- one field, one message (G272).
     assert findings["new"] == []
-    assert {f["ruleId"] for f in findings["fixed"]} == {"KN-V001", "KN-V002"}
+    assert {f["ruleId"] for f in findings["fixed"]} == {"KN-V001"}
 
 
 def test_the_oscal_numbers_the_changelog_quotes_for_a_deployment_only_directory() -> None:
-    """`kube-noob audit -f <dir holding DEPLOYMENT> --format json --oscal`: 9 of 30 controls excluded, 7 satisfied
-    (0.9.2 excluded none and reported 16 satisfied). The CHANGELOG sentence is measured here, not remembered."""
+    """`kube-noob audit -f <dir holding DEPLOYMENT> --format json --oscal`: 10 of 31 controls excluded, 7
+    satisfied (0.9.2 excluded none and reported 16). The CHANGELOG sentence is measured here, not remembered.
+    31, not 30: G272 added SC-28(1) to the control catalogue, and a Deployment-only directory excludes it."""
     from kube_noob import oscal
     from kube_noob.audit.controls import RULE_CONTROLS
 
     rep = analyze(DEPLOYMENT, "kubernetes", None, partial_bundle=False).as_dict()
     result = oscal.assessment_results(rep)["assessment-results"]["results"][0]
     selection = result["reviewed-controls"]["control-selections"][0]
-    assert len({c for cs in RULE_CONTROLS.values() for c in cs}) == 30
-    assert len(selection["exclude-controls"]) == 9
+    assert len({c for cs in RULE_CONTROLS.values() for c in cs}) == 31
+    assert len(selection["exclude-controls"]) == 10
     assert sum(1 for f in result["findings"] if f["target"]["status"]["state"] == "satisfied") == 7
 
 
@@ -1576,7 +1611,12 @@ def test_a_pod_spec_the_reader_cannot_read_is_not_audited_and_the_verdict_undete
     assert rep["summary"]["score"] is None and rep["summary"]["verdict"] == "undetermined"
     assert not any(f["ruleId"] == "KN-V011" for f in rep["findings"])
     code, text_view = _cli(capsys, "audit", "-f", str(d))
-    assert code == 1 and "score=not determined (1 object(s) not audited)" in text_view.splitlines()[0]
+    # The headline carries the verdict word and a reason in the score's place, never a number. The reason is
+    # the SHORT form of the one predicate's text, which since G272 also counts the rules that declined, so the
+    # claim is asserted rather than one branch's exact wording.
+    first = text_view.splitlines()[0]
+    assert code == 1 and "score=not determined (" in first, first
+    assert "not audited" in first and "score=100" not in first, first
 
 
 def test_not_audited_is_non_empty_whenever_a_reason_says_not_audited() -> None:
@@ -1671,14 +1711,18 @@ def test_the_verdict_word_is_on_every_headline_and_the_score_is_withheld(
     )
     text = knative + "---" + DEPLOYMENT
     rep = analyze(text, "kubernetes", None)
-    assert rep.undetermined() == "1 object(s) not audited"
+    # One predicate, and its text names what was not read. Since G272 it also names the rules that declined on
+    # an object, so the claim is that the Knative Service is named and the verdict is withheld -- not the exact
+    # sentence one branch wrote.
+    why = rep.undetermined()
+    assert why is not None and "1 Service not audited" in why and "Service/prod/hello" in why, why
     summary = rep.as_dict()["summary"]
     assert summary["score"] is None and summary["verdict"] == "undetermined"
     d = tmp_path / "v"
     d.mkdir()
     (d / "v.yaml").write_text(text, encoding="utf-8")
     _, text_view = _cli(capsys, "audit", "-f", str(d))
-    assert "score=not determined (1 object(s) not audited)" in text_view.splitlines()[0]
+    assert "score=not determined (" in text_view.splitlines()[0] and "not audited" in text_view.splitlines()[0]
     report = gate.run([gate.Source(uri="v.yaml", text=text, lines=text.count("\n"))], fail_on="never")
     assert gate.markdown(report).startswith("## kube-noob gate incomplete")
     assert "The gate is incomplete" in report_html.render(report)

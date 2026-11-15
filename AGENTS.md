@@ -103,7 +103,7 @@ A behaviour change updates, in the same commit:
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | findings at or above `--fail-on`, or a verdict that is undetermined (`audit`/`gate`/`ksi`/`posture diff|report`: an object the rules did not read and no `notAudited:` exception accepted -- `summary.verdict`; the exceptions gate) -- never 0 for undetermined, whatever `--fail-on` says (G281) |
+| 1 | findings at or above `--fail-on`, or a verdict that is undetermined (`audit`/`gate`/`ksi`/`posture diff|report`: an object the rules did not read and no `notAudited:` exception accepted, or a rule that declined on every object it had -- `summary.verdict`; the exceptions gate) -- never 0 for undetermined, whatever `--fail-on` says (G272, G281) |
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |
@@ -118,6 +118,46 @@ Never add a meaning to an existing code. 5 exists because a gate that crashed us
 that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
 Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
 shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
+
+### 1 and 5 are not two answers to the same question (G272)
+
+Three-valued verdicts make two codes available for a run that is not a clean pass, and they answer different
+questions. **1 means a verdict was reached and it is not a pass.** **5 means no verdict was reached, because the
+evidence offered was not enough to reach one.** A command picks by which of those happened, never by how bad the
+result feels, and the two are not a disagreement between commands: they are a disagreement between "may this
+pass?" and "could this be decided at all?".
+
+So an **undetermined verdict is exit 1**, not 5. A rule that declined on the only API server it could see, an
+object nothing read, a tie between two policies: the run looked, got as far as an answer, and the answer is not a
+pass. `audit`, `gate` and `policy reach` all exit 1 there, and **`--fail-on` and `--min-severity` never lower it**
+-- an undetermined report is not a clean one at any threshold, so "no severity is worth failing on" cannot turn it
+into a 0. `gate`'s headline for it is `incomplete`, never `passed`
+(`tests/test_control_plane_review7.py::test_an_undetermined_audit_exits_1_whatever_fail_on_says`,
+`tests/test_control_plane_review7.py::test_the_gate_is_incomplete_not_passed_on_an_undetermined_audit`,
+`tests/test_netpol_anp.py::test_the_reach_command_prints_and_exits_on_an_undetermined_verdict`).
+
+**5 is for evidence kube-noob refused to decide from**: a file that could not be read and `--skip-unreadable` was
+not given, so no verdict was attempted at all, and `--require-complete` on a command whose answer is not complete,
+where the caller has said that a partial answer is not an answer
+(`tests/test_red_team_rt3.py::test_a_crash_never_wears_the_exit_code_of_a_policy_failure`,
+`tests/test_blast_radius.py::test_require_complete_exits_5_when_a_leg_is_not_determined`). `--skip-unreadable` is
+the caller saying "decide without that file", so the run does decide: the file stays named in `unreadable` in
+every format, and the exit code is the verdict's, not 5
+(`tests/test_red_team_rt3.py::test_one_bad_file_does_not_hide_the_findings_in_the_good_ones`). The order follows
+from that: the refusal is checked before the verdict, so an unreadable file in a directory that would also have
+been undetermined is 5, and the same directory with `--skip-unreadable` is 1.
+
+That is the general shape and not an exception: **a waiver the person asked for does not change the exit code, and
+the evidence it waived is still named in the output.** `--skip-unreadable` and an accepted `notAudited` row are
+the same move -- the person has taken responsibility for what was not read, so a verdict WAS reached on the
+evidence that remained and the code is that verdict's. What the waiver must never do is make the gap disappear:
+the skipped file stays in `unreadable` and the accepted record stays in `notAudited`, in the text view and in
+JSON and YAML and in the MCP result alike. A waiver is an answer about less evidence, never a cleaner answer about
+the same evidence.
+
+A command whose own answer is a decision rather than a score reads the same rule the other way round: when it
+cannot decide whether to allow something, no verdict was reached, so that is a 5 and not a 1. That is the same
+sentence, not an exception to it.
 
 ## Versions
 

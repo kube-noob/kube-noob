@@ -1175,15 +1175,15 @@ class Toolkit:
                 r.findings = kept
                 used |= exc_mod.accept_not_audited(review, r.not_audited)
                 excepted_ids = [str(e["ruleId"]) for e in excepted if "ruleId" in e]
-                exceptions_block = {
-                    **review.summary(),
-                    "unused": [e.id for e in review.active if e.id not in used],
-                }
+                # `self._unused`, not a bare list comprehension over `review.active`: it is the one place that
+                # decides what "unused" means, and it reads the evaluated rules too (G272).
+                exceptions_block = {**review.summary(), **self._unused(review, used, r.evaluated_rules)}
             not_audited = [dict(row) for row in r.not_audited]
             verdict = r.undetermined()
             rule_ids = [f.rule_id for f in r.findings]
             evaluated, fired = sorted(r.evaluated_rules), sorted(r.fired_rules)
             reasons, absent = dict(r.not_evaluated), dict(r.absent_subjects)
+            partly = dict(r.partly_evaluated)
             assumptions = list(r.assumptions)
             ceiling = not_checked_beyond(r.kubernetes_version)
         out = fedramp.summary(
@@ -1198,6 +1198,7 @@ class Toolkit:
             not_checked_beyond=ceiling,
             not_evaluated=reasons,
             absent_subjects=absent,
+            partly_evaluated=partly,
         )
         if exceptions_block is not None:
             out["exceptions"] = exceptions_block
@@ -1271,6 +1272,19 @@ class Toolkit:
             excepted.append({**f.as_dict(), "exception": {"id": hit.id, "owner": hit.owner, "expires": hit.expires}})
         return kept, excepted, used
 
+    @staticmethod
+    def _unused(review: Any, used: set[str], evaluated: list[str]) -> dict[str, list[str]]:
+        """Active exceptions that covered no finding -- and, apart, those whose rule did not reach a verdict.
+
+        "Covers no finding" reads as "stale, delete it", which is wrong when the rule declined on this input: the
+        object it names may be right there, unread (G272). `unusedNotEvaluated` is a subset of `unused`, present
+        only when non-empty so a result with none is byte-identical to before.
+        """
+        unused = [e.id for e in review.active if e.id not in used]
+        ran = set(evaluated)
+        undecided = [e.id for e in review.active if e.id not in used and e.rule not in ran]
+        return {"unused": unused, **({"unusedNotEvaluated": undecided} if undecided else {})}
+
     def audit(self, p: AuditIn) -> dict[str, Any]:
         from kube_noob.audit import exceptions as exc
         from kube_noob.audit.engine import refuse_if_not_manifests
@@ -1301,7 +1315,7 @@ class Toolkit:
         out = r.as_dict()
         if review is not None:
             out["excepted"] = excepted
-            out["exceptions"] = {**review.summary(), "unused": [e.id for e in review.active if e.id not in used]}
+            out["exceptions"] = {**review.summary(), **self._unused(review, used, r.evaluated_rules)}
             # `as_dict` built controlSummary from the findings that survived the filter, so a control held only by
             # excepted findings disappeared -- an owned, reviewed, expiring exception looked exactly like a control
             # nothing had ever evaluated. Rebuild it with both sets, counted apart.
@@ -2407,9 +2421,12 @@ class Toolkit:
                 "Audit manifests",
                 "Full deterministic audit: security, network exposure, storage access modes, reliability and "
                 "red-team scenarios. Findings carry rule ids, line numbers, fixes, citations and matching RHACS "
-                "policy names. On a large manifest set pass compact=true: the same report, with each rule's "
-                "constants hoisted once into ruleInfo instead of repeated on every finding, which is lossless and "
-                "about a third smaller.",
+                "policy names. Read what was NOT decided as part of the answer: `assumptions`, `declined` (per rule, "
+                "the objects it could not read and why), controlSummary.notEvaluatedRules (rules that reached no "
+                "verdict: neither clean nor findings) and controlSummary.partlyEvaluatedRules (rules that found "
+                "something and declined on other objects). On a large manifest set pass compact=true: the same report, "
+                "with each rule's constants hoisted once into ruleInfo instead of repeated on every finding, which "
+                "is lossless and about a third smaller.",
                 AuditIn,
                 self.audit,
             ),

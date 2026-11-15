@@ -108,3 +108,52 @@ def test_a_stage_filter_shows_up_as_not_evaluated() -> None:
     assert len(rep.evaluated_rules) < len(RULE_CONTROLS), "the stage filter ran everything"
     entries = {c["id"]: c for c in rep.as_dict()["controlSummary"]["controls"]}
     assert any(e["notEvaluated"] > 0 for e in entries.values()), "rules were skipped and nothing said so"
+
+
+# A bundle that makes G272's control-plane rules decline QUIETLY: no APIService, no OpenShift singleton and no
+# container that runs a control-plane binary, so `cannot_decide(rule_id)` is called with no reason at all.
+_NO_CONTROL_PLANE = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: prod}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers: [{name: c, image: registry.example.com/c@sha256:%s}]
+""" % ("a" * 64)
+
+
+def test_every_rule_is_in_exactly_one_bucket_of_the_published_record() -> None:
+    """The report says, for every rule, either that it ran or why it did not -- never neither, and never both.
+
+    The context-level invariant is held above; this one is about the record four surfaces actually read
+    (`controlSummary`, the KSI page, the OSCAL document and the gate). Merging G272 with G281 produced a rule in
+    NEITHER bucket: a control-plane rule whose kind is simply absent declines with no reason at all, so it was
+    missing from `evaluated_rules`, from `declined` and from `no_subject` alike, and each of those four surfaces
+    carried a rule it could not account for. A quiet decline is still an answer about a rule, and it has to be
+    in the record for one to be given.
+    """
+    from kube_noob.audit.rules import RULES
+
+    for name, text, platform in (
+        ("clean configmap", _CLEAN, "kubernetes"),
+        ("no control plane", _NO_CONTROL_PLANE, "kubernetes"),
+        ("on openshift", _NO_CONTROL_PLANE, "openshift"),
+    ):
+        rep = analyze(text, platform, None)
+        ran, not_run = set(rep.evaluated_rules), set(rep.not_evaluated)
+        assert ran | not_run == set(RULES), f"{name}: unaccounted: {sorted(set(RULES) - ran - not_run)}"
+        assert not ran & not_run, f"{name}: in both buckets: {sorted(ran & not_run)}"
+        assert all(rep.not_evaluated[rid] for rid in not_run), f"{name}: a rule is not-evaluated with no reason"
+
+        # And on the published control summary, where `partlyEvaluated` is a third, disjoint bucket: a rule that
+        # found something on one object and declined on another RAN, and is never also not-evaluated (G272, D4).
+        cs = rep.as_dict()["controlSummary"]
+        named = {row["ruleId"] for row in cs["rulesNotEvaluated"]}
+        partly = set(cs["partlyEvaluatedRules"])
+        assert not named & partly, f"{name}: a rule is both not-evaluated and partly evaluated"
+        assert partly <= ran, f"{name}: a partly evaluated rule must be recorded as having run"
+        assert named == not_run & set(RULE_CONTROLS), f"{name}: the summary and the report disagree on which"

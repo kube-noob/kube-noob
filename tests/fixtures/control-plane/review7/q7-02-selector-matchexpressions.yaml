@@ -1,0 +1,16 @@
+apiVersion: provisioning.cattle.io/v1
+kind: Cluster
+metadata:
+  name: c
+  namespace: fleet-default
+spec:
+  kubernetesVersion: v1.31.0+rke2r1
+  rkeConfig:
+    machineSelectorConfig:
+    - machineLabelSelector:
+        matchExpressions:
+        - key: rke.cattle.io/control-plane-role
+          operator: Exists
+      config:
+        kube-apiserver-arg:
+        - authorization-mode=AlwaysAllow

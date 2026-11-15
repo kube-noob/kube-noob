@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kube_noob import shape
+from kube_noob.audit.argv import (
+    _quoted,
+    _shown,
+    shown_value,
+)
 from kube_noob.audit.controls import controls_for
 from kube_noob.audit.model import Finding, Severity, Stage
 from kube_noob.audit.podspec import (
@@ -70,6 +75,11 @@ ANY_OBJECT = "any object"
 REPLICATED: tuple[str, ...] = tuple(sorted(REPLICATED_KINDS))
 LONG_RUNNING: tuple[str, ...] = tuple(sorted(LONG_RUNNING_KINDS))
 
+#: The group an APIService lives in. A kind of that name in any other group is a different resource.
+APISERVICE_GROUP = "apiregistration.k8s.io"
+#: The group OpenShift's OAuth singleton lives in.
+OAUTH_GROUP = "config.openshift.io"
+
 #: The API group(s) each kind a rule may ask for is served in. A `kind` is matched WITH its group (class 3): an
 #: ACM or Knative `Subscription`, a Knative `Service`, a `MachineConfigPool` from somebody else's CRD are not
 #: the objects the rules know, and counting one as the subject made KN-S034 evaluated and clean on a bundle
@@ -77,6 +87,11 @@ LONG_RUNNING: tuple[str, ...] = tuple(sorted(LONG_RUNNING_KINDS))
 #: the published CRD groups the rules already read for the rest (G281).
 _EXTRA_GROUPS: dict[str, frozenset[str]] = {
     "APIServer": frozenset({"config.openshift.io"}),
+    # The two kinds G272's control-plane rules read. Declared here so those rules can state their subjects and
+    # be accounted for like every other rule: a kind a rule asks for and this table does not know is a kind
+    # `has_subject` can never match, so the rule would be skipped on every input (G281 + G272).
+    "APIService": frozenset({APISERVICE_GROUP}),
+    "OAuth": frozenset({OAUTH_GROUP}),
     ANP_KIND: frozenset({"policy.networking.k8s.io"}),
     BANP_KIND: frozenset({"policy.networking.k8s.io"}),
     "ReplicationController": frozenset({""}),
@@ -255,12 +270,33 @@ class AuditContext:
     # registries an organisation approved, so KN-S036 declines without it rather than passing every image.
     allowed_registries: tuple[str, ...] = ()
     undecided: set[str] = field(default_factory=set)
-    #: Why each rule in `undecided` declined, in the rule's own words, for the coverage record (G281).
-    declined: dict[str, str] = field(default_factory=dict)
-    #: The objects a rule declined on, when it named them (`cannot_decide(..., resource=)`), per rule.
-    declined_objects: dict[str, list[str]] = field(default_factory=dict)
+    # Why, for the rules that can say. A declined rule already shows up as `notEvaluated` in the control summary;
+    # without the reason a reader sees a count and has to guess whether the input was incomplete, the platform
+    # was wrong, or the object was in a shape kube-noob does not read. `analyze` turns these into assumptions,
+    # so the reason reaches the text view, the JSON and the MCP result alike (G272).
+    # Each entry is (the object it is about, or "" for the bundle; the reason). The object is kept apart from the
+    # reason so a report can name every declined object even when it lists only the first few reasons. This is
+    # the ONE record of what a rule declined on: G281 kept a `declined` reason and a `declined_objects` list
+    # beside it, which is the same fact in two shapes and one of them always the stale one (class 9).
+    declined: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    # Every object a rule looked at, declined or not, so a partial verdict can say how many objects it DID read
+    # in full beside the ones it declined: "clean on N, declined on M" rather than one word for both (G272).
+    examined: dict[str, set[str]] = field(default_factory=dict)
+    # Whether the caller stated the version, rather than kube-noob assuming its default. A rule whose answer
+    # depends on a release (a flag removed in 1.24) declines on an assumed one.
+    version_stated: bool = False
+    #: Rules that reached no verdict because there was nothing HERE for them to judge, with the reason: a
+    #: platform they do not apply to, part of a namespace where the object they compare against lives in a file
+    #: nobody passed, a policy nobody configured. Not evaluated and never clean (G281), and NOT a reason to
+    #: withhold the score: nothing went unread, which is what `undetermined` is about, and these are exactly the
+    #: declines G272 says keep the number. Routed through `declined` instead, every plain Kubernetes audit and
+    #: every partial bundle lost its score.
+    no_verdict_reasons: dict[str, str] = field(default_factory=dict)
     #: Rules whose declared subject was not in the input: nothing to evaluate, so not evaluated, and not
-    #: clean. The value is the reason the record shows: "no Service in the input" (G281).
+    #: clean. The value is the reason the record shows: "no Service in the input" (G281). This is what keeps a
+    #: rule that declined QUIETLY (`cannot_decide` with no reason, because its kind is simply absent) from
+    #: being in neither `evaluated_rules` nor `not_evaluated`, which is how four surfaces each carried a rule
+    #: they did not account for.
     no_subject: dict[str, str] = field(default_factory=dict)
     #: Rules that ran, with the declared `context` kinds they did not get: "KN-S014 without ServiceAccount".
     absent_subjects: dict[str, list[str]] = field(default_factory=dict)
@@ -275,14 +311,26 @@ class AuditContext:
     unreadable_partners: dict[str, set[str]] = field(default_factory=dict)
     _has_workloads: bool | None = field(default=None, repr=False)
 
-    def cannot_decide(self, rule_id: str, why: str = "", resource: str | None = None) -> None:
-        """The rule declines on this input. ``why`` is a fixed phrase for the record; ``resource`` names the one
-        object it declined on, when there is one (the shape rules/control-plane keeps per object, so the two
-        branches union: here it is kept beside the reason under `declined_objects`)."""
+    def looked_at(self, rule_id: str, resource: str) -> None:
+        self.examined.setdefault(rule_id, set()).add(resource)
+
+    def cannot_decide(self, rule_id: str, why: str | None = None, resource: str | None = None) -> None:
+        """`why` is the fixed-phrase reason, `resource` the object it declined on.
+
+        The parameter is `why` because that is the name `docs/architecture.md` states, the key the record carries
+        in `Report.not_audited` and in the JSON, and the name every caller of this method already reads. It was
+        `reason` here and `why` everywhere else, which is one name too many for one thing (class 9).
+
+        The ONE recorder of a decline. `not_applicable` is a message convention over it, not a second store: a
+        rule that declines with no reason at all is a QUIET decline (its kind is simply absent), and
+        `no_subject` -- filled from the rule's own `subjects=` declaration -- is what still accounts for it.
+        """
         self.undecided.add(rule_id)
-        self.declined[rule_id] = why or "the rule declined to decide on this input (see the assumptions)"
-        if resource:
-            self.declined_objects.setdefault(rule_id, []).append(resource)
+        if why:
+            entry = (resource or "", why)
+            seen = self.declined.setdefault(rule_id, [])
+            if entry not in seen:
+                seen.append(entry)
 
     def not_applicable(self, rule_id: str, why: str) -> None:
         """The rule does not apply to this platform or version, so it is not evaluated here: not clean (G281).
@@ -290,8 +338,19 @@ class AuditContext:
         A rule that returned on its platform guard was recorded as evaluated, and an OpenShift-only rule then
         read as checked-and-clean on every Kubernetes bundle.
         """
-        self.undecided.add(rule_id)
-        self.declined[rule_id] = f"does not apply on {self.platform}: {why}"
+        self.nothing_to_judge(rule_id, f"does not apply on {self.platform}: {why}")
+
+    def nothing_to_judge(self, rule_id: str, why: str) -> None:
+        """The rule reached no verdict because there is nothing HERE for it to judge, and says why.
+
+        Not evaluated and never clean (G281) -- and the score stands, because nothing went unread. `undetermined`
+        reads `declined`, so a reason put there withholds the score; "no NetworkPolicy in this part of the
+        namespace to judge", "no registry allowlist is configured" and "this rule is OpenShift's" are complete
+        answers about a rule rather than objects this run failed to read, and G272 keeps the number for exactly
+        those. The decline itself is quiet; the reason is kept for the coverage record (`notEvaluated`).
+        """
+        self.cannot_decide(rule_id)
+        self.no_verdict_reasons[rule_id] = why
 
     def has_subject(self, subject: tuple[str, ...]) -> bool:
         """Whether any kind of ``subject`` (group-matched) is in the input; `ANY_OBJECT` needs one document."""
@@ -756,6 +815,22 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
 # VALIDATE
 # =====================================================================================================
 
+#: Configuration FILES that carry `apiVersion` and `kind` but are not API objects and have no `metadata`: the
+#: kubeadm and kind configuration kinds `cpconfig.read_config` reads, by (group, kind) so a CRD of the same name in
+#: another group still needs a name. KN-V001 reported `metadata.name` missing on every one of them (G272).
+CONFIG_FILE_KINDS = frozenset(
+    {
+        ("kubeadm.k8s.io", "ClusterConfiguration"),
+        ("kubeadm.k8s.io", "InitConfiguration"),
+        ("kubeadm.k8s.io", "JoinConfiguration"),
+        ("kubeadm.k8s.io", "ResetConfiguration"),
+        ("kubeadm.k8s.io", "UpgradeConfiguration"),
+        ("kubelet.config.k8s.io", "KubeletConfiguration"),
+        ("kubeproxy.config.k8s.io", "KubeProxyConfiguration"),
+        ("kind.x-k8s.io", "Cluster"),
+    }
+)
+
 
 @rule(
     "KN-V001",
@@ -768,17 +843,42 @@ def ingress_nginx_vulnerable_tag_regex() -> str:
     subjects=(ANY_OBJECT,),
 )
 def _v001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    from kube_noob.yamlio import is_empty_list, is_list_kind
+
     for d in ctx.docs:
         if not isinstance(d.data, dict):
             yield r.finding(
                 d, (), "Document is not a mapping; it cannot be a Kubernetes object.", resource=f"doc[{d.index}]"
             )
             continue
-        # Absent, null or "" is missing; `[]`, `0` or `false` is present and not a string, which the refusal
-        # and KN-V002 say -- "missing" beside "not a string" was two verdicts for one field (review 5, item 9).
+        if is_empty_list(d.data):
+            continue  # the record that a list held nothing is not an object (G272)
+        # Absent, null or "" is missing; `[]`, `0` or `false` is present and not a string, which the loop just
+        # below reports -- "missing" beside "not a string" was two verdicts for one field (G281, review 5,
+        # item 9), and `not d.data.get(k)` made every non-string field both at once.
         missing = [k for k in ("apiVersion", "kind") if d.data.get(k) is None or d.data.get(k) == ""]
+        wrapper = is_list_kind(d.data)  # a list wrapper of any shape has no metadata.name: not a wrapper field
+        # A `kind: 7` or `kind: [List]` is truthy, so it was never "missing", and once the schema lookup for it
+        # failed nothing else looked: a PodList item with `kind: 7` and a privileged container scored 100 with
+        # exit 0 (G272, sixth review). The API server refuses a non-string identity field outright.
+        # `kind` only: every rule keys on the kind, so nothing else can catch a non-string one, while a
+        # non-string `apiVersion` is KN-V002's -- that rule is about the apiVersion, and a field judged by two
+        # rules was two verdicts for one field (G281, review 5, item 9).
+        value = d.data.get("kind")
+        if value and not isinstance(value, str):
+            what = (
+                "a mapping" if isinstance(value, dict) else "a list" if isinstance(value, list) else shown_value(value)
+            )
+            yield r.finding(
+                d, ("kind",), f"kind is not a string ({what}); the API server refuses it.", resource=f"doc[{d.index}]"
+            )
         meta = d.data.get("metadata")
-        if not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
+        if wrapper or (api_group(d.api_version), d.kind) in CONFIG_FILE_KINDS:
+            # A kubeadm or kind configuration file, not an API object: it has no metadata by design, and asking
+            # it for a name failed every kubeadm file at HIGH (G272, sixth review). Nor has a list wrapper whose
+            # `items` the loader could not open (seventh review): the control-plane rules decline it instead.
+            pass
+        elif not isinstance(meta, dict) or not (meta.get("name") or meta.get("generateName")):
             missing.append("metadata.name")
         elif not isinstance(meta.get("name") or meta.get("generateName"), str):
             missing.append("metadata.name as a string")
@@ -806,8 +906,11 @@ def _v002(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if not valid or d.api_version in valid:
             continue
         raw = d.data.get("apiVersion")
-        if raw is not None and not isinstance(raw, str):
-            # Named by shape, never by Python's repr of it (review 4, R6).
+        if raw is None or raw == "":
+            continue  # an absent or null apiVersion is KN-V001's "missing", not a wrong one (G272)
+        if not isinstance(raw, str):
+            # Named by shape, never by Python's repr of it (G281, review 4, R6). This rule is the one that
+            # speaks for apiVersion, so the field gets exactly one message here and none from KN-V001.
             yield r.finding(d, ("apiVersion",), f"{d.kind}'s apiVersion is not a string. Use {' or '.join(valid)}.")
             continue
         if not claims_a_known_group(d.api_version):
@@ -1316,8 +1419,30 @@ def _v017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _v018(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.docs:
+        notes = {path: "; ".join(note for p, _, note in d.refused_keys if p == path) for path, _, _ in d.refused_keys}
         for path, line in d.duplicate_keys:
-            f = r.finding(d, path, f"Duplicate key '{fmt_path(path)}' (second occurrence on line {line}).")
+            note = notes.get(path, "")
+            f = r.finding(
+                d,
+                path,
+                f"Duplicate key '{fmt_path(path)}' (second occurrence on line {line})"
+                + (f"; {note}; the API server refuses the whole list." if note else "."),
+            )
+            f.line = line
+            yield f
+        # The wrapper this object was opened out of had the key twice (`items` twice, `kind` twice): the loader
+        # kept every object under every sequence `items`, and the record travels with the first of them, naming
+        # the wrapper that has the key and what became of an occurrence that was not a list, because the API
+        # server's strict decoder refuses the whole file and the wrapper itself is no longer a document (G272).
+        for path, line, wrapper, note in d.wrapper_duplicate_keys:
+            holds = "object" if wrapper == d.from_list else d.from_list
+            f = r.finding(
+                d,
+                path,
+                f"Duplicate key '{fmt_path(path)}' in the {wrapper} that holds this {holds} (second occurrence on "
+                f"line {line}){'; ' + note if note else ''}; the API server refuses the whole list.",
+                resource=f"{wrapper}/<wrapper>",
+            )
             f.line = line
             yield f
 
@@ -1534,7 +1659,7 @@ _FLATTENED_GROUP_VERSION = "resource.k8s.io/v1beta1"
 def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # a claim that lives in a file you did not pass is not a missing claim (G186)
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id,
             "part of a namespace was passed, so a claim that lives in a file you did not pass is not a missing claim",
         )
@@ -1694,7 +1819,7 @@ def _v022(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # The namespace's ResourceQuota and LimitRange were not passed, so their absence here means nothing.
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id, "part of a namespace was passed, so the namespace's ResourceQuota and LimitRange were not passed"
         )
         return
@@ -2454,7 +2579,7 @@ def _s036(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         # No manifest states which registries an organisation has approved. Reporting every image as fine
         # because no policy was configured is the absence-read-as-pass failure this catalogue is built against,
         # so the rule declines and `run_rules` keeps it out of the evaluated list (G241).
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id,
             "no registry allowlist is configured (audit.allowedRegistries), and without the policy no image can be "
             "judged",
@@ -3183,7 +3308,7 @@ def _s026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             yield r.finding(
                 d,
                 ("data", str(key)),
-                f"ConfigMap key '{key}' {why}; a ConfigMap is not secret (readable with the view role, not "
+                f"ConfigMap key {_quoted(key, 160)} {why}; a ConfigMap is not secret (readable with the view role, not "
                 "encrypted at rest). Move it to a Secret.",
             )
 
@@ -3300,7 +3425,7 @@ _N001_KINDS: tuple[str, ...] = tuple(sorted(LONG_RUNNING_KINDS | LONG_RUNNING_EM
 def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's NetworkPolicies were not passed, so their absence here means nothing
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id, "part of a namespace was passed, so the namespace's NetworkPolicies were not passed"
         )
         return
@@ -3838,7 +3963,7 @@ def _egress_allows_dns(spec: dict[str, Any]) -> bool:
 def _n013(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # another policy in the namespace may allow 53, and it was not passed
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id,
             "part of a namespace was passed, so another policy in the namespace that allows port 53 was not passed",
         )
@@ -3908,7 +4033,7 @@ def _n014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     docs = ctx.by_kind(ADMIN_TIER_KINDS[0], ADMIN_TIER_KINDS[1])
     if not ctx.cni:
         if docs:
-            ctx.cannot_decide(
+            ctx.nothing_to_judge(
                 r.rule_id, "no CNI was given (--cni), and no manifest states whether it enforces the admin tiers"
             )
         return  # nothing of this kind is nothing to decide, whatever the CNI
@@ -4480,7 +4605,7 @@ def _pdbs_for(ctx: AuditContext, d: Document, labels: dict[str, str], rule_id: s
 def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     if ctx.partial_bundle:
         # the namespace's PodDisruptionBudgets were not passed, so no match here means nothing
-        ctx.cannot_decide(
+        ctx.nothing_to_judge(
             r.rule_id, "part of a namespace was passed, so the namespace's PodDisruptionBudgets were not passed"
         )
         return
@@ -4683,6 +4808,66 @@ AUDIT_PROFILE_NONE = "None"
 #: different resource that happens to share a name.
 APISERVER_GROUP = "config.openshift.io"
 
+#: The platforms whose control plane HyperShift runs outside the cluster. Their kube-apiserver, etcd and OAuth
+#: server are configured from the `HostedCluster` on the management cluster, so an object in the hosted cluster
+#: is not where those settings are decided (openshift/hypershift api/hypershift/v1beta1/hostedcluster_types.go at
+#: f4540b4168b8: `spec.secretEncryption`, `spec.configuration.oauth`).
+HOSTED_CONTROL_PLANE_PLATFORMS = frozenset({"rosa-hcp"})
+
+
+def cluster_apiservers(ctx: AuditContext) -> list[Document]:
+    """Every `config.openshift.io` APIServer in the bundle: the one reader KN-S035 and KN-S040 share."""
+    # Exact group, not a prefix. `apiVersion` is a Kubernetes group/version, and comparing the group
+    # itself says what is meant -- any served version of config.openshift.io, and nothing whose group
+    # merely begins with those characters. CodeQL reads a dotted literal in `startswith` as URL
+    # validation and flags it; it was not exploitable here (the trailing slash makes it a true prefix),
+    # but a split on the separator is what the data model actually is.
+    return [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
+
+
+def _singleton(docs: list[Document]) -> tuple[Document | None, str]:
+    """The cluster-scoped config object the platform reads, or why there is none to read.
+
+    OpenShift reads only the object named `cluster`. A lone object with another name is not that one, so its
+    settings say nothing about the cluster, and two objects named `cluster` -- which the API server cannot hold
+    at once -- are a bundle that disagrees with itself. Both decline with their own reason (G272).
+    """
+    named = [d for d in docs if d.name == "cluster"]
+    if len(named) == 1:
+        return named[0], ""
+    kind = docs[0].kind if docs else "object"
+    if not named:
+        refs = ", ".join(_shown(d.ref(), 120) for d in docs[:5])
+        more = f" and {len(docs) - 5} more" if len(docs) > 5 else ""
+        return None, (
+            f"the bundle carries config.openshift.io {kind} objects ({refs}{more}) and none named 'cluster', the "
+            "only one the platform reads"
+        )
+    return None, (
+        f"the bundle carries {len(named)} objects named 'cluster' of kind config.openshift.io {kind}, which the API "
+        "server cannot hold at once, so which configuration the cluster has cannot be read from it"
+    )
+
+
+def _off_openshift(ctx: AuditContext, r: Rule, docs: list[Document]) -> None:
+    """An OpenShift-only rule on another platform: not evaluated, and said so when its object IS in the bundle.
+
+    Returning quietly used to count the rule as evaluated and clean, so a plain Kubernetes audit reported SC-28(1)
+    and AU-2 as satisfied by rules that never looked at anything (G272).
+    """
+    if not docs:
+        ctx.cannot_decide(r.rule_id)
+        return
+    refs = ", ".join(_shown(d.ref(), 120) for d in docs[:5])
+    # The object IS in this bundle and went unread, which is what `undetermined` is about, so this one withholds
+    # the verdict and gets its own sentence (G272). `not_applicable`, which keeps the number, is for the bare
+    # platform guard above, where nothing of the kind is here to read at all.
+    ctx.cannot_decide(
+        r.rule_id,
+        f"{refs} is OpenShift configuration, audited here as {ctx.platform}: pass --platform openshift (or "
+        "rosa-classic, rosa-hcp) to read it",
+    )
+
 
 @rule(
     "KN-S035",
@@ -4712,48 +4897,47 @@ def _s035(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     same shape again, in someone else's API (G202, G216).
 
     On a bundle that does not carry the object this declines rather than passing: on OpenShift the singleton
-    always exists, so its absence means it was not collected, not that auditing is on.
+    always exists, so its absence means it was not collected, not that auditing is on. Off OpenShift it declines
+    too, saying which flag reads the object when it is there, and an object not named `cluster` is not the
+    singleton (G272).
     """
+    docs = cluster_apiservers(ctx)
     if not ctx.is_openshift:
-        # the resource does not exist off OpenShift; see N15 on telling that apart from a pass
-        ctx.not_applicable(r.rule_id, "config.openshift.io APIServer is an OpenShift object")
+        _off_openshift(ctx, r, docs)
         return
-    # Exact group, not a prefix. `apiVersion` is a Kubernetes group/version, and comparing the group
-    # itself says what is meant -- any served version of config.openshift.io, and nothing whose group
-    # merely begins with those characters. CodeQL reads a dotted literal in `startswith` as URL
-    # validation and flags it; it was not exploitable here (the trailing slash makes it a true prefix),
-    # but a split on the separator is what the data model actually is.
-    docs = [d for d in ctx.by_kind("APIServer") if d.api_version.split("/", 1)[0] == APISERVER_GROUP]
     if not docs:
-        ctx.cannot_decide(r.rule_id, "no config.openshift.io APIServer in the input")
+        ctx.cannot_decide(r.rule_id)
         return
-    for d in docs:
-        spec = d.data.get("spec") if isinstance(d.data, dict) else None
-        audit = spec.get("audit") if isinstance(spec, dict) else None
-        if not isinstance(audit, dict):
-            continue  # the default is Default; an absent audit block is not an absent profile
-        if str(audit.get("profile", "")) == AUDIT_PROFILE_NONE:
-            yield r.finding(
-                d,
-                ("spec", "audit", "profile"),
-                "spec.audit.profile is None, so the API server records no requests at all: there is no audit "
-                "evidence for anything that happens on this cluster, and nothing to forward to a SIEM.",
-            )
-        rules = audit.get("customRules")
-        if not isinstance(rules, list):
+    d, why = _singleton(docs)
+    if d is None:
+        ctx.cannot_decide(r.rule_id, why)
+        return
+    spec = d.data.get("spec") if isinstance(d.data, dict) else None
+    audit = spec.get("audit") if isinstance(spec, dict) else None
+    if not isinstance(audit, dict):
+        return  # the default is Default; an absent audit block is not an absent profile
+    if str(audit.get("profile", "")) == AUDIT_PROFILE_NONE:
+        yield r.finding(
+            d,
+            ("spec", "audit", "profile"),
+            "spec.audit.profile is None, so the API server records no requests at all: there is no audit "
+            "evidence for anything that happens on this cluster, and nothing to forward to a SIEM.",
+        )
+    rules = audit.get("customRules")
+    if not isinstance(rules, list):
+        return
+    for i, entry in enumerate(rules):
+        if not isinstance(entry, dict) or str(entry.get("profile", "")) != AUDIT_PROFILE_NONE:
             continue
-        for i, entry in enumerate(rules):
-            if not isinstance(entry, dict) or str(entry.get("profile", "")) != AUDIT_PROFILE_NONE:
-                continue
-            group = str(entry.get("group") or "(unnamed group)")
-            yield r.finding(
-                d,
-                ("spec", "audit", "customRules", i, "profile"),
-                f"spec.audit.customRules[{i}] logs nothing for group {group!r}. customRules are evaluated in "
-                f"order and the first match overrides spec.audit.profile "
-                f"({str(audit.get('profile') or 'Default')!r}), so this cluster looks audited and is not, for "
-                f"everyone in that group.",
-            )
+        group = _shown(entry.get("group") or "(unnamed group)", 120)
+        yield r.finding(
+            d,
+            ("spec", "audit", "customRules", i, "profile"),
+            f"spec.audit.customRules[{i}] logs nothing for group '{group}'. customRules are evaluated in "
+            f"order and the first match overrides spec.audit.profile "
+            f"('{_shown(audit.get('profile') or 'Default', 60)}'), so this cluster looks audited and is not, for "
+            f"everyone in that group.",
+        )
 
 
 # What a rule raises when an object has a field of a type it cannot use. ArithmeticError: `.nan` and `.inf` reach
@@ -4951,11 +5135,23 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             # `produced`, not a length comparison on `findings`: G276's retry can replace what the rule produced
             # rather than append to it, so counting the list afterwards would miss a rule that found something.
             # G276's own decline carries no `why` (`cannot_decide(rule_id)` alone), so the note falls back to the
-            # unreadable-shape reason rather than popping a key that is not there.
+            # unreadable-shape reason rather than reading a key that is not there.
+            # The entries are NOT removed from `ctx.declined`: that is the one store of what each rule declined
+            # on, and G272's per-object record (`Report.declined`, the "not evaluated in full" line and
+            # `partlyEvaluatedRules`) is built from it for exactly these partly-evaluated rules. The rule is kept
+            # out of `notEvaluated` by `analyze` skipping what is in `evaluated_rules`, not by emptying the store.
             ctx.undecided.discard(r.rule_id)
-            ctx.partly_declined[r.rule_id] = ctx.declined.pop(r.rule_id, "") or ctx.unreadable_shapes.get(
+            entries = ctx.declined.get(r.rule_id) or []
+            ctx.partly_declined[r.rule_id] = (entries[0][1] if entries else "") or ctx.unreadable_shapes.get(
                 r.rule_id, "a field in this input has a type it cannot read"
             )
         if evaluated is not None and r.rule_id not in ctx.undecided:
             evaluated.append(r.rule_id)
     return findings
+
+
+# Registers KN-S037..KN-S041, which live in their own module so the generated plugin copy of this one stays
+# under the directory's 256 KiB per-file limit. Last line of the module on purpose: these rules import the
+# decorator and the helpers above, so the import resolves only once this module is fully built. Importing it
+# here, rather than leaving it to a caller, keeps `RULES` the same whatever path reached this module.
+from kube_noob.audit import cprules as _cprules  # noqa: E402,F401  (registration import; see cprules.py)

@@ -23,7 +23,7 @@ import yaml
 
 from kube_noob import __version__, sanitize
 from kube_noob.audit.controls import coverage_line, grouped_reasons
-from kube_noob.audit.model import Severity
+from kube_noob.audit.model import Severity, open_not_audited
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
@@ -353,28 +353,35 @@ def run(
 
         if review is not None:
             exc.accept_not_audited(review, report.not_audited)
+        # ONE call of the one predicate, and ONE failure line from it. The merge of G272 and G281 left this
+        # computed twice and appended twice, so a gate that reached no verdict listed the same fact as two
+        # failures (class 9).
         undetermined = report.undetermined()
         if undetermined:
-            # Objects the rules did not read (an apiVersion that is not a string, not shaped like an API, or in a
-            # group the kind is not known under; a kind that is not a kind name; a pod spec in a kind with no
-            # reader) and no exception accepted: not findings, not absences. A typo in apiVersion turned a
-            # failing gate into a passing one whose every output said no workload was present (review 4, R1).
-            open_rows = [r for r in report.not_audited if not r.get("acceptedBy")]
-            failures.append(
-                f"{undetermined}, so the verdict is undetermined: "
-                + "; ".join(f"{r['object']} ({r['why']})" for r in open_rows[:MAX_NOT_AUDITED_NAMED])
-                + (
-                    f"; and {len(open_rows) - MAX_NOT_AUDITED_NAMED} more"
-                    if len(open_rows) > MAX_NOT_AUDITED_NAMED
-                    else ""
-                )
-            )
+            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh
+            # review). Objects the rules did not read (an apiVersion that is not a string, not shaped like an
+            # API, or in a group the kind is not known under; a kind that is not a kind name; a pod spec in a
+            # kind with no reader) and no exception accepted are not findings and not absences: a typo in
+            # apiVersion turned a failing gate into a passing one whose every output said no workload was
+            # present (G281, review 4, R1). The reason carries the counts and the names; this line adds the
+            # per-object `why`, which the reason does not have.
+            open_rows = open_not_audited(report.not_audited)
+            named = "; ".join(f"{r['object']} ({r['why']})" for r in open_rows[:MAX_NOT_AUDITED_NAMED])
+            if len(open_rows) > MAX_NOT_AUDITED_NAMED:
+                named += f"; and {len(open_rows) - MAX_NOT_AUDITED_NAMED} more"
+            failures.append(f"the audit is undetermined: {undetermined}" + (f" -- {named}" if named else ""))
         coverage = {
             "kubernetesVersion": report.kubernetes_version,
             "resources": report.resources,
+            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
+            # API server the audit had declined, and said nothing anywhere (G272). The rows carry the file and
+            # line of the object they name, as the findings do (G281) -- the raw rows beside them would have
+            # overwritten exactly that.
             "assumptions": list(report.assumptions),
             "notAudited": [_located_row(r, sources, chart_path) for r in report.not_audited],
-            **({"verdict": "undetermined", "verdictReason": undetermined} if undetermined else {}),
+            # ONE key for the reason: `verdict_word`, the Markdown headline, the HTML masthead and the SARIF
+            # invocation all read `incomplete`, which is this key being present.
+            **({"undetermined": undetermined} if undetermined else {}),
             "controlSummary": control_summary(
                 kept_rules,
                 excepted_rules or None,
@@ -382,7 +389,10 @@ def run(
                 report.fired_rules or None,
                 not_evaluated=report.not_evaluated or None,
                 absent_subjects=report.absent_subjects or None,
+                partly_evaluated=report.partly_evaluated or None,
             ),
+            **({"declined": report.declined} if report.declined else {}),
+            **({"notEvaluated": report.not_evaluated} if report.not_evaluated else {}),
         }
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
@@ -461,6 +471,9 @@ def run(
         "version": version,
         "failOn": fail_on,
         "passed": not failures,
+        # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
+        # false and the headline says "incomplete", not "failed" (G272).
+        "incomplete": "undetermined" in coverage,
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -862,6 +875,15 @@ def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
     return props
 
 
+def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
+    """The audit's assumptions and the rules that reached no verdict, as SARIF warnings (G269, G272)."""
+    from kube_noob.cli import caveat_lines
+
+    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes += [{"level": "warning", "message": {"text": ln}} for ln in caveat_lines(rep.get("controlSummary") or {})]
+    return notes
+
+
 def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
     """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
 
@@ -887,7 +909,7 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         }
         for f in rep["findings"]
     ]
-    notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
+    notes = _caveat_notes(rep)
     # The coverage record, one notification per reason: a consumer of the SARIF alone can see that the Service
     # rules never ran rather than passed (G281). Grouped, so a Deployment-only file is a few lines, not seventy.
     notes += [
@@ -1048,9 +1070,17 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     return out
 
 
+def verdict_word(report: dict[str, Any]) -> str:
+    """ "passed", "failed", or "incomplete" while the audit under the gate is undetermined."""
+    if report.get("incomplete"):
+        return "incomplete"
+    return "passed" if report["passed"] else "failed"
+
+
 def markdown(report: dict[str, Any], top: int = 25) -> str:
-    # Three words, one predicate: undetermined is neither passed nor failed, and the headline says which.
-    verdict = "incomplete" if report.get("verdict") == "undetermined" else ("passed" if report["passed"] else "failed")
+    # Three words, one predicate, called and never re-derived: undetermined is neither passed nor failed, and
+    # the headline says which.
+    verdict = verdict_word(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
         f"## kube-noob gate {verdict}",
@@ -1081,7 +1111,8 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
             "",
         ]
     if report["failures"]:
-        lines += ["### Why it failed", "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
+        why = "### Why it is incomplete" if verdict == "incomplete" else "### Why it failed"
+        lines += [why, "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
     if report["findings"]:
         lines += ["### Findings", "", "| Severity | Rule | Where | Finding | Admission |", "|---|---|---|---|---|"]
         for r in report["findings"][:top]:
@@ -1138,13 +1169,81 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
+    # Two sections, not one: "assumed 1.35" is how the audit read the input, and everything else is something it
+    # did not read. "Assumptions" is an ALLOWLIST -- the assumed-version lines -- because a split by "is this a
+    # declined rule" put a RayCluster's unaudited pods and a kind with no bundled schema under "Assumptions", as if
+    # they had been read (G272).
+    from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
+    from kube_noob.cli import caveat_lines
+
+    caveats = [str(a) for a in report.get("assumptions") or []]
+    assumed = [a for a in caveats if a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps = [a for a in caveats if not a.startswith(ASSUMED_VERSION_PREFIXES)]
+    gaps += caveat_lines(report.get("controlSummary") or {})
+    for heading, items in (("### Assumptions", assumed), ("### Not evaluated in full", gaps)):
+        if not items:
+            continue
+        shown = items[:MD_CAVEATS]
+        more = [f"- and {len(items) - MD_CAVEATS} more in the JSON report"] if len(items) > MD_CAVEATS else []
+        lines += [heading, "", *[f"- {_cell(a, 1200)}" for a in shown], *more, ""]
     return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
+
+
+#: How many audit caveats the Markdown summary lists before pointing at the JSON report.
+MD_CAVEATS = 20
+
+
+def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
+    """The gate's SARIF: its results, and what the audit under it could not decide, as the audit's SARIF carries.
+
+    The gate runs the same audit and dropped its caveats on the way out: a static pod the audit declined left the
+    gate's SARIF, Markdown and HTML silent, and `passed: true` (G272).
+    """
+    notes = _caveat_notes(report)
+    notes += [
+        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
+        for u in report.get("unreadable") or []
+    ]
+    undetermined = report.get("undetermined")
+    if not notes and not undetermined:
+        return sarif(report)
+    invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
+    if undetermined:
+        # The incomplete state as a property of the invocation AND one note-level result, so a consumer that
+        # reads only results sees it (G272, seventh review).
+        invocation["properties"] = {"incomplete": True, "undetermined": undetermined}
+    out = sarif(report, invocation=invocation)
+    if undetermined:
+        run = out["runs"][0]
+        run["tool"]["driver"].setdefault("rules", []).append(
+            {
+                "id": "kube-noob/undetermined",
+                "name": "AuditUndetermined",
+                "shortDescription": {"text": "The audit reached no verdict on part of the input"},
+                "fullDescription": {
+                    "text": "Something was not read: a rule declined on an object, or an object no rule audited. "
+                    "The gate is incomplete, not passed."
+                },
+                "helpUri": INFO_URI,
+                "defaultConfiguration": {"level": "note"},
+            }
+        )
+        run["results"].append(
+            {
+                "ruleId": "kube-noob/undetermined",
+                "ruleIndex": len(run["tool"]["driver"]["rules"]) - 1,
+                "level": "note",
+                "message": {"text": f"gate incomplete: {undetermined}"},
+            }
+        )
+    return out
 
 
 def write(report: dict[str, Any], *, sarif_path: str | None, summary: str | None, quality: str | None) -> None:
     if sarif_path:
-        # json_document: a CI step that prints the file must not run a workflow command from it (G279)
-        Path(sarif_path).write_text(json_document(sarif(report), indent=1) + "\n", encoding="utf-8")
+        # json_document: a CI step that prints the file must not run a workflow command from it (G279); the gate's
+        # SARIF carries the audit's caveats and the undetermined state (G272), and goes through the same boundary.
+        Path(sarif_path).write_text(json_document(sarif_of_gate(report), indent=1) + "\n", encoding="utf-8")
     if summary:
         Path(summary).write_text(markdown(report), encoding="utf-8", errors="replace")
     if quality:
