@@ -456,7 +456,13 @@ def test_verify_cannot_check_a_receipt_whose_run_it_cannot_replay_and_says_which
     assert rc == 5
     answer = json.loads(text)
     assert answer["status"] == "cannot-be-checked"
-    assert any(c["what"] == "replay" for c in answer["cannotCheck"])
+    entry = next(c for c in answer["cannotCheck"] if c["what"] == "replay")
+    assert entry["which"] == "gate" and "Containerfile" in entry["why"]
+    # The text view names the thing and the reason once each, not the reason twice.
+    rc_text, out_text, _ = _run(["receipt", "verify", str(out)])
+    assert rc_text == 5
+    assert "cannot check the replay gate:" in out_text
+    assert out_text.count("a Containerfile was audited as a build") == 1
 
 
 def test_stdin_is_bound_by_hash_but_cannot_be_checked_because_its_bytes_are_not_a_file(

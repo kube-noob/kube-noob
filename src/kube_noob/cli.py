@@ -1143,7 +1143,7 @@ def _receipt_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if a.format == "text":
         _tprint(rc.summary_line(answer))
         for entry in answer["cannotCheck"]:
-            _tprint(f"  could not get the {entry['what']} {entry['which']}: {entry['why']}")
+            _tprint(f"  cannot check the {entry['what']} {entry['which']}: {entry['why']}")
         for entry in answer["differs"]:
             _tprint(f"  {entry['field']}: the receipt says {entry['receipt']!r}, re-running gives {entry['rerun']!r}")
         _tprint(f"integrity: SHA-256, unsigned. This checks {rc.PROVES}.")

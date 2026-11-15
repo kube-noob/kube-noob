@@ -505,8 +505,10 @@ def verify(doc: dict[str, Any], *, replay: Replay, base: Path | None = None) -> 
     if not plan.get("supported"):
         cannot.append(
             {
+                # The command, not the reason: ``which`` names the thing that could not be got and ``why`` says
+                # why, and putting the reason in both made the text view print the same sentence twice.
                 "what": "replay",
-                "which": plan.get("notSupportedBecause") or "(unstated)",
+                "which": payload.get("command") or "(unstated)",
                 "why": str(
                     plan.get("notSupportedBecause") or "this run cannot be replayed from the files this receipt binds"
                 ),
