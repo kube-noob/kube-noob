@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from kube_noob.audit.argv import _quoted, _shown
+from kube_noob.audit.cpflags import _unread_lists
 from kube_noob.audit.kubelet import (
     INSECURE_CIPHER_SUITES,
     KUBELET_AUTHORIZATION_MODES,
@@ -49,15 +50,25 @@ from kube_noob.yamlio import Document, PathT
 # configuration object), rather than filling it from a default it did not read (G302).
 
 
+#: How many of one object's unread settings a decline names in full before giving a count (class 2: a cap must
+#: say what it withheld).
+MAX_UNREAD_NAMED = 3
+
+
 def _kubelet_sources(ctx: AuditContext, r: Rule) -> list[KubeletSettings]:
     """Every kubelet in the input, with the ones that could not be read already declined and named.
 
     No kubelet at all is a QUIET decline: "nothing to look at" is not "looked and found it clean", and counting
     it clean would make every application bundle evidence for AC-3 and AC-14 (class 14).
     """
+    # A list whose items were not read, and any document holding a pod spec no reader looks at, may carry the
+    # kubelet: `KN-S038` and `KN-S039` decline those and these rules have to make the same decline, or the same
+    # bundle is undetermined for the API server and clean for the kubelet (class 25).
+    unread = _unread_lists(ctx, r)
     sources = kubelet_sources(ctx)
     if not sources:
-        ctx.cannot_decide(r.rule_id)
+        if not unread:
+            ctx.cannot_decide(r.rule_id)
         return []
     out: list[KubeletSettings] = []
     for s in sources:
@@ -74,41 +85,79 @@ def _kubelet_sources(ctx: AuditContext, r: Rule) -> list[KubeletSettings]:
         if s.declined:
             ctx.cannot_decide(r.rule_id, f"{s.where} {s.declined}", s.ref)
             continue
-        for why in s.unread[:3]:
+        for why in s.unread[:MAX_UNREAD_NAMED]:
             ctx.cannot_decide(r.rule_id, f"{s.where} {why}", s.ref)
+        if len(s.unread) > MAX_UNREAD_NAMED:
+            held = len(s.unread) - MAX_UNREAD_NAMED
+            ctx.cannot_decide(
+                r.rule_id, f"{s.where} has {held} further setting(s) kube-noob did not read and did not name", s.ref
+            )
         out.append(s)
     return out
 
 
 def _kubelet_value(
-    ctx: AuditContext, r: Rule, s: KubeletSettings, setting: str, reader: Callable[[Any], Any]
+    ctx: AuditContext, r: Rule, s: KubeletSettings, setting: str, reader: Callable[[Any, str], Any]
 ) -> tuple[str, Any]:
     """("stated"|"default", the parsed value) -- or ("unknown", None) with the decline already recorded.
 
-    A value the kubelet's own parser would refuse means the kubelet does not start, so it is declined with the
-    FIELD named and never the value: a decline reason carries no text from the input (G281).
+    The reader is given the shape's spelling, because a file and a command line are decoded by different things
+    and a value one accepts the other refuses (`kubelet.read_bool` and its neighbours). A value the shape's own
+    decoder would refuse means the kubelet does not start, so it is declined with the FIELD named and never the
+    value: a decline reason carries no text from the input (G281).
     """
     how, value = kubelet_resolve(s, setting)
     if how == "unknown":
         ctx.cannot_decide(r.rule_id, f"{s.where} does not state {s.flag(setting)}, and {value}", s.ref)
         return "unknown", None
-    parsed = reader(value)
+    # A STATED value is written in the shape's own syntax; a DEFAULT comes from `kubelet.ARGV_DEFAULTS` or
+    # `SHARED_DEFAULTS` as a Python value, which is the native form a decoded file holds, so it is read that way
+    # whatever shape asked for it. Reading a default as argv text declined every absent flag (class 21).
+    parsed = reader(value, s.spelling if how == "stated" else "file")
     if parsed is None:
         ctx.cannot_decide(
             r.rule_id,
-            f"{s.where} sets {s.flag(setting)} to a value the kubelet does not parse, so it does not start",
+            f"{s.where} sets {s.flag(setting)} to a value the kubelet does not accept, so it does not start",
             s.ref,
         )
         return "unknown", None
     return how, parsed
 
 
+def _kubelet_number(
+    ctx: AuditContext, r: Rule, s: KubeletSettings, setting: str, low: int, high: int
+) -> tuple[str, int | None]:
+    """An integer setting, declined when it is outside the range the kubelet's own validation accepts.
+
+    `ValidateKubeletConfiguration` refuses a negative `eventRecordQPS` and a `readOnlyPort` outside 0-65535, so
+    such a value is a kubelet that does not start -- not a read-only port on 99999 and not an event rate that
+    happens not to be zero (class 4).
+    """
+    how, value = _kubelet_value(ctx, r, s, setting, kubelet_int)
+    if how == "unknown":
+        return "unknown", None
+    if not low <= value <= high:
+        ctx.cannot_decide(
+            r.rule_id,
+            f"{s.where} sets {s.flag(setting)} outside the range the kubelet accepts, so it does not start",
+            s.ref,
+        )
+        return "unknown", None
+    return how, value
+
+
 def _said(s: KubeletSettings, setting: str, how: str) -> str:
-    """How a message introduces the value: what the object says, or the upstream default for its shape."""
+    """How a message introduces the value: what the object says, or the upstream default for its shape.
+
+    Only a COMMAND LINE has a default to name. A configuration object declines what it does not state, because
+    the command line that would override it is not in the input, so `how` is never "default" for one.
+    """
     if how == "stated":
         return f"{s.where} sets {s.flag(setting)}"
-    table = "the kubelet's command-line defaults" if s.defaults == "argv" else "a KubeletConfiguration's defaults"
-    return f"{s.where} does not state {s.flag(setting)}, so {table} apply ({KUBELET_DEFAULTS_CHECKED})"
+    return (
+        f"{s.where} does not state {s.flag(setting)}, so the kubelet's command-line defaults apply "
+        f"({KUBELET_DEFAULTS_CHECKED})"
+    )
 
 
 @rule(
@@ -138,7 +187,7 @@ def _s042(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 "as system:anonymous in group system:unauthenticated, and what it may read or run on the node is "
                 "whatever the kubelet's authorizer allows those names.",
             )
-        how, ca = _kubelet_value(ctx, r, s, "clientCAFile", lambda v: v if isinstance(v, str) else None)
+        how, ca = _kubelet_value(ctx, r, s, "clientCAFile", lambda v, _s: v if isinstance(v, str) else None)
         if how != "unknown" and not ca.strip():
             yield r.finding(
                 s.doc,
@@ -147,7 +196,7 @@ def _s042(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 "client certificate at all: x509 authentication is off and only bearer tokens remain.",
                 severity=Severity.MEDIUM,
             )
-        how, port = _kubelet_value(ctx, r, s, "readOnlyPort", kubelet_int)
+        how, port = _kubelet_number(ctx, r, s, "readOnlyPort", 0, 65535)
         if how != "unknown" and port != 0:
             yield r.finding(
                 s.doc,
@@ -179,7 +228,7 @@ def _s043(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             r,
             s,
             "authorizationMode",
-            lambda v: v if isinstance(v, str) and v in KUBELET_AUTHORIZATION_MODES else None,
+            lambda v, _s: v if isinstance(v, str) and v in KUBELET_AUTHORIZATION_MODES else None,
         )
         if how == "unknown" or mode != "AlwaysAllow":
             continue
@@ -231,14 +280,21 @@ def _s044(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     f"{_said(s, setting, how)} to {str(value).lower()}: {why}.",
                 )
         how, idle = _kubelet_value(ctx, r, s, "streamingConnectionIdleTimeout", kubelet_duration)
-        if how != "unknown" and idle == 0:
+        if how != "unknown" and idle < 0:
+            ctx.cannot_decide(
+                r.rule_id,
+                f"{s.where} sets {s.flag('streamingConnectionIdleTimeout')} to a negative duration, which the "
+                "kubelet's own validation refuses, so it does not start",
+                s.ref,
+            )
+        elif how != "unknown" and idle == 0:
             yield r.finding(
                 s.doc,
                 s.path("streamingConnectionIdleTimeout") or ("kind",),
                 f"{_said(s, 'streamingConnectionIdleTimeout', how)} to 0, which the kubelet reads as no timeout: an "
                 "exec, attach or port-forward connection stays open until something else closes it.",
             )
-        how, qps = _kubelet_value(ctx, r, s, "eventRecordQPS", kubelet_int)
+        how, qps = _kubelet_number(ctx, r, s, "eventRecordQPS", 0, 2**31 - 1)
         if how != "unknown" and qps == 0:
             yield r.finding(
                 s.doc,
@@ -270,9 +326,9 @@ def _s045(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             r,
             s,
             "tlsCipherSuites",
-            lambda v: (
+            lambda v, sp: (
                 names
-                if (names := kubelet_strings(v)) is not None
+                if (names := kubelet_strings(v, sp)) is not None
                 and all(n in INSECURE_CIPHER_SUITES or n in PREFERRED_CIPHER_SUITES for n in names)
                 else None
             ),
@@ -309,7 +365,7 @@ def _s045(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 )
         if not s.stated("featureGates"):
             continue
-        gates = kubelet_gates(s.values["featureGates"][0])
+        gates = kubelet_gates(s.values["featureGates"][0], s.spelling)
         if gates is None:
             ctx.cannot_decide(
                 r.rule_id,

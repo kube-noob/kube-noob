@@ -110,6 +110,10 @@ SHARED_DEFAULTS: dict[str, Any] = {
     "serverTLSBootstrap": False,
 }
 
+#: The one lookup a command line's absent setting goes through: the shared defaults, then the legacy ones. One
+#: table, so a setting cannot be in two with different values (class 9).
+ARGV_OR_SHARED: dict[str, Any] = {**ARGV_DEFAULTS, **SHARED_DEFAULTS}
+
 #: The authorization modes the kubelet accepts (`pkg/kubelet/apis/config/v1beta1/types.go`,
 #: KubeletAuthorizationModeAlwaysAllow and KubeletAuthorizationModeWebhook). Any other value makes the kubelet
 #: refuse to start, so it is declined rather than read as one of these.
@@ -535,46 +539,59 @@ def resolve(source: KubeletSettings, setting: str) -> tuple[str, Any]:
     """
     if setting in source.values:
         return "stated", source.values[setting][0]
+    if source.defaults == "argv" and setting in ARGV_OR_SHARED:
+        return "default", ARGV_OR_SHARED[setting]
     if source.defaults == "argv":
-        return "default", SHARED_DEFAULTS[setting] if setting in SHARED_DEFAULTS else ARGV_DEFAULTS[setting]
+        # A setting in `SETTINGS` but in neither default table: kube-noob has not read its upstream default, so
+        # it says so rather than raising on a key it does not have (a `KeyError` here would reach the CLI as
+        # exit 4, which is a crash where an honest "not read" was available).
+        return "unknown", "kube-noob has not read that setting's upstream default"
     return "unknown", source.no_defaults
 
 
-def read_bool(value: Any) -> bool | None:
-    """A kubelet boolean as the shape writes it: a YAML bool in a file, a Go boolean string on the command line."""
+def read_bool(value: Any, spelling: str) -> bool | None:
+    """A kubelet boolean, by the decoder of the shape that carries it, or None when that decoder would refuse it.
+
+    The two shapes are decoded by different things and they are not interchangeable. A FILE goes through
+    `DecodeKubeletConfiguration` into a `*bool`, so a YAML string -- `anonymousAuth: "true"` -- is a decode error
+    and the kubelet does not start; only a YAML boolean is a boolean. A COMMAND LINE goes through pflag's
+    `BoolVar`, so the value is text and `strconv.ParseBool` decides (`1`, `t`, `TRUE` and the rest). Reading a
+    file's string as a boolean would report a finding on a kubelet that never starts, and refusing a command
+    line's would decline one that does (class 4).
+    """
     if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
+        return value if spelling == "file" else None
+    if isinstance(value, str) and spelling == "argv":
         return _go_bool(value)
     return None
 
 
-def read_int(value: Any) -> int | None:
-    """An int32 field as either shape writes it. A YAML bool is not a number, and neither is a float."""
+def read_int(value: Any, spelling: str) -> int | None:
+    """An `int32` field, by its shape's decoder. A YAML bool is not a number in either, and nor is a float."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
-    if isinstance(value, str):
+        return value if spelling == "file" else None
+    if isinstance(value, str) and spelling == "argv":
         text = value.strip()
+        if text != value or not text:
+            return None
         try:
-            return int(text) if text == value and text else None
+            return int(text)
         except ValueError:
             return None
     return None
 
 
-def read_duration(value: Any) -> int | None:
-    """A Go duration in nanoseconds, or None when `time.ParseDuration` would refuse it.
+def read_duration(value: Any, spelling: str) -> int | None:
+    """A Go duration in nanoseconds, or None when the shape's decoder would refuse it.
 
-    A bare `0` is the one unitless value Go accepts (`time.ParseDuration`), and it is the value that turns the
-    timeout off, so it is read rather than declined.
+    `metav1.Duration.UnmarshalJSON` takes a STRING, so a YAML number in a duration field is a decode error in a
+    file however reasonable `streamingConnectionIdleTimeout: 0` looks; `time.ParseDuration` then decides, and a
+    bare `0` is the one unitless value it accepts. pflag's `DurationVar` reads the same text on the command line.
+    A negative duration is parsed here and refused by the rule, not silently read as "not zero".
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value * 1_000_000_000  # a plain number in a metav1.Duration field is seconds in YAML's eyes
-    if not isinstance(value, str):
+    if isinstance(value, bool) or not isinstance(value, str):
         return None
     text = value.strip()
     if text != value:
@@ -586,8 +603,8 @@ def read_duration(value: Any) -> int | None:
     units = {
         "ns": 1,
         "us": 1_000,
-        "µs": 1_000,
-        "μs": 1_000,
+        "\u00b5s": 1_000,
+        "\u03bcs": 1_000,
         "ms": 1_000_000,
         "s": 10**9,
         "m": 60 * 10**9,
@@ -595,27 +612,35 @@ def read_duration(value: Any) -> int | None:
     }
     total = 0.0
     sign = -1 if text.startswith("-") else 1
-    for number, unit in re.findall(r"(\d+(?:\.\d+)?)(ns|us|µs|μs|ms|s|m|h)", text):
+    for number, unit in re.findall(r"(\d+(?:\.\d+)?)(ns|us|\u00b5s|\u03bcs|ms|s|m|h)", text):
         total += float(number) * units[unit]
     return int(sign * total)
 
 
-def read_strings(value: Any) -> list[str] | None:
-    """A string-slice field: a YAML list of strings, or a comma-separated string as pflag reads it."""
+def read_strings(value: Any, spelling: str) -> list[str] | None:
+    """A string-slice field: a YAML list of strings in a file, a comma-separated value on the command line.
+
+    `tlsCipherSuites` is `[]string` in the API type, so `tlsCipherSuites: "A,B"` in a file is a decode error, not
+    a two-element list; pflag's `StringSliceVar` reads exactly that text as two elements.
+    """
     if isinstance(value, list):
         return [v for v in value if isinstance(v, str)] if all(isinstance(v, str) for v in value) else None
-    if isinstance(value, str):
+    if isinstance(value, str) and spelling == "argv":
         return [v for v in value.split(",") if v]
     return None
 
 
-def read_gates(value: Any) -> dict[str, bool] | None:
-    """`featureGates` as a mapping of name to bool, or `--feature-gates=Name=true,Other=false` as pflag reads it."""
+def read_gates(value: Any, spelling: str) -> dict[str, bool] | None:
+    """`featureGates` as a mapping of name to bool: a YAML mapping in a file, `Name=true,Other=false` on argv.
+
+    The field is `map[string]bool`, so a file's value must be a mapping of booleans; component-base's
+    `--feature-gates` takes the CSV form and nothing else.
+    """
     if isinstance(value, dict):
         if not all(isinstance(k, str) and isinstance(v, bool) for k, v in value.items()):
             return None
         return dict(value)
-    if not isinstance(value, str):
+    if not isinstance(value, str) or spelling != "argv":
         return None
     out: dict[str, bool] = {}
     for item in value.split(","):

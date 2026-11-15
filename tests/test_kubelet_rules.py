@@ -538,3 +538,107 @@ def test_no_decline_reason_repeats_text_from_the_input(rule_id: str) -> None:
     )
     report = _report(text)
     assert marker not in _why(report, rule_id)
+
+
+# =====================================================================================================
+# A setting is parsed by the decoder of the shape that carries it (G305)
+# =====================================================================================================
+# A file goes through `DecodeKubeletConfiguration` into typed Go fields; a command line goes through pflag,
+# where every value is text. The two are not interchangeable, and reading one with the other's decoder reports a
+# finding on a kubelet that never starts, or declines one that does.
+
+
+@pytest.mark.parametrize(
+    ("fields", "rule_id"),
+    [
+        pytest.param({"authentication": {"anonymous": {"enabled": "true"}}}, "KN-S042", id="bool-as-string"),
+        pytest.param({"readOnlyPort": "10255"}, "KN-S042", id="int-as-string"),
+        pytest.param({"protectKernelDefaults": "false"}, "KN-S044", id="other-bool-as-string"),
+        pytest.param({"eventRecordQPS": "0"}, "KN-S044", id="other-int-as-string"),
+        pytest.param({"streamingConnectionIdleTimeout": 0}, "KN-S044", id="duration-as-number"),
+        pytest.param({"tlsCipherSuites": "TLS_RSA_WITH_RC4_128_SHA"}, "KN-S045", id="slice-as-string"),
+        pytest.param({"featureGates": "RotateKubeletServerCertificate=false"}, "KN-S045", id="map-as-string"),
+    ],
+)
+def test_a_value_a_kubeletconfiguration_cannot_decode_is_declined_not_read(fields: Any, rule_id: str) -> None:
+    report = _report(_config(**fields))
+    assert not _hits(report, rule_id), [f.message for f in _hits(report, rule_id)]
+    assert _declined(report, rule_id)
+
+
+@pytest.mark.parametrize(
+    ("flags", "rule_id"),
+    [
+        pytest.param(["--anonymous-auth=1"], "KN-S042", id="go-bool-one"),
+        pytest.param(["--anonymous-auth=TRUE"], "KN-S042", id="go-bool-upper"),
+        pytest.param(["--tls-cipher-suites=TLS_RSA_WITH_RC4_128_SHA,TLS_AES_128_GCM_SHA256"], "KN-S045", id="csv"),
+        pytest.param(["--feature-gates=RotateKubeletServerCertificate=false"], "KN-S045", id="gates-csv"),
+    ],
+)
+def test_the_command_line_spellings_of_the_same_values_are_read(flags: list[str], rule_id: str) -> None:
+    """class 21: the other shape. pflag's text forms must not be declined the way a file's would be."""
+    assert _hits(_report(_argv(*flags)), rule_id)
+
+
+@pytest.mark.parametrize(
+    ("fields", "rule_id"),
+    [
+        pytest.param({"readOnlyPort": 99999}, "KN-S042", id="port-above-the-range"),
+        pytest.param({"readOnlyPort": -1}, "KN-S042", id="port-below-the-range"),
+        pytest.param({"eventRecordQPS": -1}, "KN-S044", id="negative-event-qps"),
+        pytest.param({"streamingConnectionIdleTimeout": "-5m"}, "KN-S044", id="negative-duration"),
+    ],
+)
+def test_a_value_the_kubelets_own_validation_refuses_is_declined_not_reported(fields: Any, rule_id: str) -> None:
+    """`ValidateKubeletConfiguration` refuses these, so the kubelet does not start: not a port on 99999, and not
+    an event rate that merely happens not to be zero (class 4)."""
+    report = _report(_config(**fields))
+    assert not _hits(report, rule_id), [f.message for f in _hits(report, rule_id)]
+    assert _declined(report, rule_id)
+
+
+def test_a_valid_read_only_port_at_the_edge_of_the_range_is_still_reported() -> None:
+    """class 26: the range check must not swallow the last value inside it."""
+    assert any("65535" in f.message for f in _hits(_report(_config(readOnlyPort=65535)), "KN-S042"))
+
+
+@pytest.mark.parametrize("rule_id", KUBELET_RULES)
+def test_a_pod_spec_in_a_kind_with_no_reader_is_declined_as_it_is_for_the_api_server(rule_id: str) -> None:
+    """class 25: `KN-S038` and `KN-S039` decline these; a bundle undetermined for the API server and clean for
+    the kubelet would be the same gap one layer along."""
+    doc = yaml.safe_dump(
+        {
+            "apiVersion": "example.com/v1",
+            "kind": "SomeOperatorThing",
+            "metadata": {"name": "x"},
+            "spec": {
+                "items": [{"spec": {"containers": [{"name": "kubelet", "image": "registry.k8s.io/kubelet:v1.35.0"}]}}]
+            },
+        }
+    )
+    report = _report(doc)
+    assert _declined(report, rule_id)
+
+
+def test_many_unread_settings_in_one_object_say_how_many_were_not_named() -> None:
+    """class 2: a cap states what it withheld rather than dropping it."""
+    text = _config(authorization="not a mapping", authentication="not a mapping")
+    report = _report(text)
+    said = _why(report, "KN-S042")
+    assert said
+    assert "not read" in said
+
+
+def test_every_setting_resolves_in_both_shapes_without_raising() -> None:
+    """A setting in `SETTINGS` but in neither default table used to raise `KeyError`, which `cli.main` reports as
+    exit 4 -- a crash where "not read" was the answer available (class 16)."""
+    from kube_noob.audit.kubelet import ARGV_DEFAULTS, SETTINGS, SHARED_DEFAULTS, KubeletSettings, resolve
+
+    assert not set(ARGV_DEFAULTS) & set(SHARED_DEFAULTS), "a setting must not be in two default tables"
+    for defaults in ("argv", ""):
+        source = KubeletSettings(where="w", ref="r", spelling="argv", defaults=defaults, no_defaults="because")
+        for setting in SETTINGS:
+            how, value = resolve(source, setting)
+            assert how in ("default", "unknown"), (setting, defaults)
+            if how == "unknown":
+                assert isinstance(value, str) and value, (setting, defaults)
