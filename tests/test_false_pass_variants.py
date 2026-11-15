@@ -378,7 +378,9 @@ def test_review_classes_names_the_generator_under_class_twenty_one() -> None:
 def test_the_ledger_is_read_from_the_filed_cases_and_nowhere_else() -> None:
     """One source of truth: a case filed for a kinder neighbour says so in its own provenance, in the sentence the
     generator writes into every variant. There is no second list to keep in step (class 9)."""
-    assert LEDGER, "nothing is on the ledger; this test and the three below are about the ones that are"
+    # An EMPTY ledger is the stronger state, not a broken test: nothing is forgiven, and the law above then runs
+    # every derived neighbour of every enforced case. G312..G315 emptied it by landing the four filed cases, so
+    # the loop below is the test and it holds vacuously on nothing.
     for (parent, transform), owner in LEDGER.items():
         assert parent in {c.id for c in CASES}, parent
         assert transform in {t.name for t in fpv.TRANSFORMS}, transform
@@ -399,7 +401,6 @@ def test_every_filed_case_holds_the_bytes_the_generator_derives() -> None:
     by_owner: dict[str, list[tuple[str, str]]] = {}
     for (parent, transform), owner in LEDGER.items():
         by_owner.setdefault(owner.id, []).append((parent, transform))
-    assert by_owner
     for owner_id, owned in sorted(by_owner.items()):
         owner = next(c for c in CASES if c.id == owner_id)
         assert owner.inputs is not None, owner_id
@@ -415,6 +416,8 @@ def test_every_filed_case_holds_the_bytes_the_generator_derives() -> None:
 
 
 def test_a_waiting_filed_case_takes_its_neighbour_off_the_law_and_an_enforcing_one_does_not(tmp_path: Path) -> None:
+    if not LEDGER:
+        pytest.skip("the ledger is empty: nothing is forgiven, so the law above already runs every neighbour")
     derivation = next(d for d in LAW if any((d.case.id, v.transform) in LEDGER for v in d.variants))
     checked = fpv.check(derivation, tmp_path / "with", ledger=LEDGER)
     assert checked.on_the_ledger, derivation.case.id
@@ -430,7 +433,8 @@ def test_the_ledger_forgives_a_small_minority_of_the_neighbours_and_names_each()
     forgiven neighbour is named by the case that owns it, and they stay a small minority of what the law runs."""
     derived = [(d.case.id, v.transform) for d in LAW for v in d.variants]
     forgiven = [k for k in derived if (o := LEDGER.get(k)) is not None and not o.enforced]
-    assert forgiven, "nothing is forgiven; this test is about the ones that are"
+    if not forgiven:
+        pytest.skip("nothing is forgiven, which is what this test wants to stay true of a non-empty ledger")
     assert len(forgiven) * 10 < len(derived), f"{len(forgiven)} of {len(derived)} neighbours are on the ledger"
     for key in forgiven:
         assert LEDGER[key].expected_on, key

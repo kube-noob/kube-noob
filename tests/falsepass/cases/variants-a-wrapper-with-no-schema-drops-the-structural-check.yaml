@@ -7,25 +7,8 @@ summary: 'The PodList of its parent -- first item the number 7, second an Always
   wrapper, so the structural check is skipped for everything inside it: KN-V007 is gone, and the score RISES to 90
   beside an assumption line that says structural checks were skipped. The caveat survived the extra wrapper and the
   finding and the number did not.'
-provenance: 'neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines:
-  nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G311). Open on main and
-  no branch owns the fix, so it waits. The probe holds when the structural check reaches an item inside a wrapper
-  kube-noob has no schema for.'
-expected_on: main
-probe:
-  json:
-    argv:
-    - audit
-    - -f
-    - '{probes}/nested-list-odd-item.yaml'
-    - --platform
-    - kubernetes
-    - --version
-    - '1.35'
-    - --format
-    - json
-    path: findings[*].ruleId
-    value: KN-V007
+provenance: 'neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines by the transformations
+  nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G311). Fixed by `fix/wrapper-false-passes` (G314): every list wrapper a document was opened out of is structurally checked itself, at every depth, so opening a list no longer hides the container from the one check that reports an item which is not an object.'
 inputs: variants-nested-list-odd-item
 cli:
   argv:

@@ -277,18 +277,57 @@ def _alerts(doc: Any) -> list[dict[str, Any]] | None:
     return named or None
 
 
+def _body(text: str) -> str:
+    """``text`` without a byte order mark in front of it.
+
+    A single leading U+FEFF is a mark that says how the bytes were encoded, not a character of the document:
+    editors, PowerShell redirections and Windows tooling write one, and ``json.loads`` refuses it. The SIGNAL
+    reader never saw it (it matches alert names anywhere in the text), so with the mark the two readers of the
+    same bytes disagreed about whether this was a payload at all -- and the names a suggested command is filled
+    with then came from the summary annotation an attacker writes rather than from the labels (G312).
+
+    Only the FIRST one: a mark further in is a character of the document, and removing it would let a payload
+    carry one past this reader into a name a later reader compares.
+    """
+    return text[1:] if text[:1] == "﻿" else text
+
+
 def _load(text: str) -> tuple[Any, list[dict[str, Any]]] | None:
-    head = text.lstrip()[:1]
-    if head not in {"{", "["} or len(text) > MAX_PAYLOAD:
+    body = _body(text)
+    head = body.lstrip()[:1]
+    if head not in {"{", "["} or len(body) > MAX_PAYLOAD:
         return None
-    if not sanitize.json_nesting_ok(text):
+    if not sanitize.json_nesting_ok(body):
         return None
     try:
-        doc = json.loads(text)
+        doc = json.loads(body)
     except (ValueError, RecursionError):
         return None
     alerts = _alerts(doc)
     return (doc, alerts) if alerts is not None else None
+
+
+#: What an Alertmanager payload's JSON always names, whichever of the three spellings it is: the alert list and
+#: each alert's identifying label. ``refused`` reads these out of the raw text because it runs on bytes ``json``
+#: has already refused, where there is no document left to inspect.
+_PAYLOAD_SHAPE = ('"alerts"', '"alertname"')
+
+
+def refused(text: str) -> bool:
+    """Whether ``text`` is an Alertmanager payload that could not be read.
+
+    ``parse`` returning None means two different things and its caller cannot tell them apart: "this is not a
+    payload, read it as text", and "this IS a payload and nothing could read it". The second is a REFUSAL, and a
+    refusal read one layer up as "no labels, so use the prose" is exactly how three bytes of byte order mark came
+    to put the namespace out of an alert's summary annotation into every command the answer suggested (class 24,
+    G312). Shape only, and deliberately generous about what counts as a payload: withholding a name is the safe
+    direction, and naming one out of somebody else's prose is not.
+    """
+    body = _body(text)
+    if body.lstrip()[:1] not in {"{", "["}:
+        return False
+    head = body[:MAX_PAYLOAD]
+    return all(marker in head for marker in _PAYLOAD_SHAPE) and parse(text) is None
 
 
 _STARTS_AT = re.compile(

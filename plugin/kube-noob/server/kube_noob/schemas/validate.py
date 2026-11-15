@@ -89,11 +89,80 @@ def _message(err: ValidationError) -> str:
     return str(err.message)
 
 
+def _finding(err: ValidationError, source: Document, *, resource: str, doc_index: int, line_from: Document) -> Finding:
+    path = tuple(err.absolute_path)
+    if err.validator == "additionalProperties" and isinstance(err.instance, dict):
+        allowed = set((err.schema.get("properties") or {}).keys())
+        extra = [k for k in err.instance if k not in allowed]
+        if extra:
+            path = (*path, extra[0])
+    return Finding(
+        rule_id="KN-V007",
+        title="Schema validation error",
+        severity=Severity.HIGH,
+        stage=Stage.VALIDATE,
+        category="schema",
+        resource=resource,
+        message=f"{_message(err)} (schema: Kubernetes {SCHEMA_K8S_VERSION} strict)",
+        remediation="Fix the field name/type; `kubectl explain <kind>.<field>` shows the expected schema.",
+        path=fmt_path(path),
+        line=line_from.line_for(path),
+        doc_index=doc_index,
+        citations=["k8s-deprecation-guide"] if err.validator == "additionalProperties" else [],
+    )
+
+
+def _wrapper_errors(wrapper: Document, validator: Draft7Validator) -> list[ValidationError]:
+    """The wrapper's OWN schema errors: everything that is not an item which was opened into its own document.
+
+    An item that is a mapping was opened and is validated as a document of its own, so keeping the wrapper's
+    error about it would report the same defect twice. An item that is NOT a mapping was never validated by
+    anything -- no kind, so no schema -- and the wrapper's schema is the only check that sees it (`7 is not of
+    type 'object'`, KN-V007). Everything outside `items` is the container's own metadata, which nothing checked
+    at all (class 23, G314).
+    """
+    items = wrapper.data.get("items") if isinstance(wrapper.data, dict) else None
+    kept: list[ValidationError] = []
+    for err in validator.iter_errors(_drop_nulls(wrapper.data)):
+        path = list(err.absolute_path)
+        if len(path) >= 2 and path[0] == "items" and isinstance(path[1], int) and isinstance(items, list):
+            index = path[1]
+            if 0 <= index < len(items) and isinstance(items[index], dict):
+                continue  # that item is a document of its own and was validated as one
+        kept.append(err)
+    return sorted(kept, key=lambda e: list(map(str, e.absolute_path)))
+
+
 def validate_documents(docs: list[Document]) -> tuple[list[Finding], list[str]]:
-    """Return schema findings and notes about kinds that could not be schema-checked."""
+    """Return schema findings and notes about kinds that could not be schema-checked.
+
+    Every list WRAPPER a document was opened out of is checked here too (``Document.wrappers``). Without that,
+    opening a list hid the container from this function entirely: nothing applied the bundled `PodList` schema,
+    so `items: [7, ...]` lost its KN-V007, and one more `List` around a bundle deleted a finding and raised the
+    score (G314). A wrapper kind with no bundled schema -- `v1 List` has none upstream, it is a client-side
+    envelope -- says so in a note instead, so a skipped check is stated rather than silent.
+    """
     findings: list[Finding] = []
     notes: list[str] = []
     for d in docs:
+        for wrapper in d.wrappers:
+            if not isinstance(wrapper.data, dict) or not wrapper.kind or not wrapper.api_version:
+                continue
+            group, _, version = wrapper.api_version.rpartition("/")
+            validator = _validator_for(group, version, wrapper.kind)
+            ref = f"{wrapper.kind_label()}/<wrapper>"
+            if validator is None:
+                notes.append(
+                    f"No bundled schema for {wrapper.api_version} {wrapper.kind} ({ref}); structural checks skipped."
+                )
+                continue
+            errors = _wrapper_errors(wrapper, validator)
+            findings += [
+                _finding(err, wrapper, resource=ref, doc_index=d.index, line_from=wrapper)
+                for err in errors[:MAX_ERRORS_PER_DOC]
+            ]
+            if len(errors) > MAX_ERRORS_PER_DOC:
+                notes.append(f"{ref}: {len(errors) - MAX_ERRORS_PER_DOC} more schema errors not shown.")
         if not isinstance(d.data, dict) or not d.kind or not d.api_version:
             continue
         group, _, version = d.api_version.rpartition("/")
@@ -102,29 +171,11 @@ def validate_documents(docs: list[Document]) -> tuple[list[Finding], list[str]]:
             notes.append(f"No bundled schema for {d.api_version} {d.kind} ({d.ref()}); structural checks skipped.")
             continue
         errors = sorted(validator.iter_errors(_drop_nulls(d.data)), key=lambda e: list(e.absolute_path))
-        for err in errors[:MAX_ERRORS_PER_DOC]:
-            path = tuple(err.absolute_path)
-            if err.validator == "additionalProperties" and isinstance(err.instance, dict):
-                allowed = set((err.schema.get("properties") or {}).keys())
-                extra = [k for k in err.instance if k not in allowed]
-                if extra:
-                    path = (*path, extra[0])
-            findings.append(
-                Finding(
-                    rule_id="KN-V007",
-                    title="Schema validation error",
-                    severity=Severity.HIGH,
-                    stage=Stage.VALIDATE,
-                    category="schema",
-                    resource=d.ref(),
-                    message=f"{_message(err)} (schema: Kubernetes {SCHEMA_K8S_VERSION} strict)",
-                    remediation="Fix the field name/type; `kubectl explain <kind>.<field>` shows the expected schema.",
-                    path=fmt_path(path),
-                    line=d.line_for(path),
-                    doc_index=d.index,
-                    citations=["k8s-deprecation-guide"] if err.validator == "additionalProperties" else [],
-                )
-            )
+        findings += [
+            _finding(err, d, resource=d.ref(), doc_index=d.index, line_from=d) for err in errors[:MAX_ERRORS_PER_DOC]
+        ]
         if len(errors) > MAX_ERRORS_PER_DOC:
             notes.append(f"{d.ref()}: {len(errors) - MAX_ERRORS_PER_DOC} more schema errors not shown.")
-    return findings, notes
+    # A `List` inside a `List` produces the same sentence twice, which says nothing the first one did not; first
+    # occurrence order is kept, so the same input still writes the same bytes.
+    return findings, list(dict.fromkeys(notes))

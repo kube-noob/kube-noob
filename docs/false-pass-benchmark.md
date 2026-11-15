@@ -39,10 +39,10 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 
 | Class | Shape | Cases | On main | Waiting for a merge | Neighbour variants |
 |---|---|---|---|---|---|
-| 1 | a skipped input reads as complete | 8 | 5 | 3 | 32 |
+| 1 | a skipped input reads as complete | 8 | 6 | 2 | 32 |
 | 2 | truncation hides the worst item | 3 | 3 | 0 | 0 |
 | 3 | substring matching on errors or kinds | 5 | 5 | 0 | 20 |
-| 4 | an unknown or unrecognised value reads as the benign default | 21 | 18 | 3 | 72 |
+| 4 | an unknown or unrecognised value reads as the benign default | 21 | 19 | 2 | 72 |
 | 5 | duplicates and ordering | 4 | 4 | 0 | 16 |
 | 6 | the caveat exists only in JSON | 6 | 6 | 0 | 16 |
 | 7 | input-derived strings forge output | 4 | 3 | 1 | 16 |
@@ -51,17 +51,17 @@ it the defect class number and one line of provenance, and run `pytest tests/tes
 | 10 | tests that fail only in CI | 0 | 0 | 0 | 0 |
 | 11 | the object asked about is not the object answered | 3 | 3 | 0 | 12 |
 | 12 | quadratic loops inside caps | 0 | 0 | 0 | 0 |
-| 13 | the verdict word contradicts the counts | 6 | 2 | 4 | 24 |
+| 13 | the verdict word contradicts the counts | 6 | 3 | 3 | 24 |
 | 14 | a rule about a kind that is absent counts as evaluated and clean | 4 | 2 | 2 | 16 |
 | 15 | a match tier hides what it did not match | 2 | 2 | 0 | 8 |
 | 16 | a crash, an empty stdout or a truncated document is read as an answer | 8 | 6 | 2 | 28 |
-| 17 | untrusted text in fields that read as the tool's own words | 3 | 2 | 1 | 12 |
+| 17 | untrusted text in fields that read as the tool's own words | 3 | 3 | 0 | 12 |
 | 18 | a fixed, guessable delimiter, temp path or id | 0 | 0 | 0 | 0 |
 | 19 | a network-reachable endpoint with no time budget | 0 | 0 | 0 | 0 |
 | 20 | a default that silently loses data across replicas or sessions | 0 | 0 | 0 | 0 |
 | 21 | fixing the reported shape, not its neighbours | 5 | 1 | 4 | 20 |
 | 22 | parsing argv or flags without the real parser's rules | 12 | 0 | 12 | 36 |
-| | **total** | **95** | **63** | **32** | **332** |
+| | **total** | **95** | **67** | **28** | **332** |
 
 Classes with no case, and where the shape is held instead:
 
@@ -150,15 +150,6 @@ The corpus derives **332** neighbours over 83 of its 95 cases, at most 4 per cas
 - `verify-a-heredoc-cluster-admin-grant-is-denied`: the case has no input files
 - `verify-a-heredoc-privileged-pod-is-denied`: the case has no input files
 
-A neighbour the corpus already holds its own case for is not judged twice: the case is the record, the benchmark runs it, and the law would otherwise fail the suite for a defect that is filed and owned. Each one is named here and by the case that owns it, and the day that case's probe holds it stops waiting and the law judges the neighbour again:
-
-| Filed case | Neighbour of | Transformations it owns |
-|---|---|---|
-| `variants-a-byte-order-mark-moves-the-namespace-to-the-prose` | `injection-diagnose-reads-names-from-labels-not-prose` | `bidi-in-the-api-version`, `hidden-characters-in-the-wrapper-kind`, `list-item-not-an-object`, `list-items-empty`, `list-items-mapping`, `list-items-null`, `list-items-scalar`, `list-wrap`, `nested-list-wrap`, `utf8-bom` |
-| `variants-a-clusterversion-that-could-not-be-read-is-not-not-okd` | `issues-an-okd-must-gather-is-not-openshift` | `hidden-characters-in-the-wrapper-kind`, `list-items-mapping`, `nested-list-wrap` |
-| `variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated` | `shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated` | `hidden-characters-in-the-wrapper-kind`, `nested-list-wrap` |
-| `variants-a-wrapper-with-no-schema-drops-the-structural-check` | `control-plane-a-list-with-an-item-that-is-not-an-object-declines` | `hidden-characters-in-the-wrapper-kind`, `nested-list-wrap`, `typed-list-wrap` |
-
 ## The cases
 
 ### Class 1: a skipped input reads as complete
@@ -188,11 +179,11 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
   - `kube-noob posture reach deployment/web -n shop --live --require-complete --format json`
   - forbidden: not reached by any exposure, complete: true, notDetermined [], exit 0
   - found: posture/blast-radius review of 4d7b00d (G273), defect 9 (landed on main as 266f4f2, so this case enforces)
-- **`variants-a-wrapper-with-no-schema-drops-the-structural-check`** (finding -- known failing on main)
+- **`variants-a-wrapper-with-no-schema-drops-the-structural-check`** (finding)
   - The PodList of its parent -- first item the number 7, second an AlwaysAllow API server -- wrapped in one more `List`. On the parent, the bundled Kubernetes schema for `PodList` reports the non-object item as KN-V007 (`7 is not of type object`) and the bundle scores 80. Nested one level deeper there is no bundled schema for the wrapper, so the structural check is skipped for everything inside it: KN-V007 is gone, and the score RISES to 90 beside an assumption line that says structural checks were skipped. The caveat survived the extra wrapper and the finding and the number did not.
   - `kube-noob audit -f {inputs}/d --platform kubernetes --version 1.35 --format json`
   - forbidden: KN-V007 gone and the score up from 80 to 90, beside "structural checks skipped"
-  - found: neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines: nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G311). Open on main and no branch owns the fix, so it waits. The probe holds when the structural check reaches an item inside a wrapper kube-noob has no schema for.
+  - found: neighbour variants of control-plane-a-list-with-an-item-that-is-not-an-object-declines by the transformations nested-list-wrap, typed-list-wrap, hidden-characters-in-the-wrapper-kind on d/list.yaml (G311). Fixed by `fix/wrapper-false-passes` (G314): every list wrapper a document was opened out of is structurally checked itself, at every depth, so opening a list no longer hides the container from the one check that reports an item which is not an object.
 - **`verify-a-pipe-from-curl-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - `-f -` fed by curl: the manifests arrive from the network when the line runs; nothing on this machine shows them.
   - `kube-noob verify --command curl -sL https://example.com/install.yaml \| kubectl apply -f - --format json`; tool `verify_change`
@@ -347,11 +338,11 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
   - `kube-noob audit -f {inputs}/k.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: the document with the unreadable kind absent from assumptions, the bundle clean
   - found: plugin/directory-engine reviews one and two (G276)
-- **`variants-a-clusterversion-that-could-not-be-read-is-not-not-okd`** (not-determined -- known failing on main)
+- **`variants-a-clusterversion-that-could-not-be-read-is-not-not-okd`** (not-determined)
   - The OKD must-gather of its parent, with the ClusterVersion document wrapped in a `List`: every field that carries the version goes honestly null -- `openshiftVersion`, `versionFrom`, `indexed` -- and the two booleans beside them do not. `cluster.okd: false` and `cluster.notOpenShift: false` assert that this cluster is not OKD and is OpenShift, from a document nothing could read, and `releasesSearched` lists three releases the lookup searched for a version it never had. A boolean has no third value, so the absence reads as the negative.
   - `kube-noob operators issues --must-gather {inputs} --require-complete --format json`
   - forbidden: cluster.okd false and cluster.notOpenShift false for a ClusterVersion nothing could read
-  - found: neighbour variants of issues-an-okd-must-gather-is-not-openshift: nested-list-wrap, list-items-mapping, hidden-characters-in-the-wrapper-kind on cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml (G311). The exit code is honest (5, `complete: false`); the booleans are not. Open on main and no branch owns the fix, so it waits. The probe holds when `cluster.okd` is null for a version that could not be read.
+  - found: neighbour variants of issues-an-okd-must-gather-is-not-openshift by the transformations nested-list-wrap, list-items-mapping, hidden-characters-in-the-wrapper-kind on cluster-scoped-resources/config.openshift.io/clusterversions/version.yaml (G311). The exit code is honest (5, `complete: false`); the booleans are not. Fixed by `fix/wrapper-false-passes` (G313): `Release.product_read` makes `cluster.okd` and `cluster.notOpenShift` three-valued, null while nothing read says what this cluster is.
 - **`verify-a-strategic-merge-patch-is-not-determined`** (not-determined -- waits for `verify/pre-action`)
   - A strategic merge patch that turns hostNetwork on, against an object verify does not have: strategic merge joins lists by keys only the API server knows, so the result cannot be computed and must not be allowed.
   - `kube-noob verify --command kubectl patch deployment web -p '{"spec":{"template":{"spec":{"hostNetwork":true}}}}' --format json`; tool `verify_change`
@@ -490,11 +481,11 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
   - `kube-noob redteam -f {inputs}/pdb.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: a traceback with exit 1, or RT-UPGRADE-BLOCK mitigated
   - found: plugin/directory-engine reviews one and two (G276)
-- **`variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated`** (not-evaluated -- known failing on main)
+- **`variants-a-wrapper-with-no-reader-turns-exposed-into-mitigated`** (not-evaluated)
   - The bundle of its parent -- a Deployment and two PodDisruptionBudgets, one with `selector: 7` -- wrapped in a `List` kube-noob has no reader for. The parent answers seven scenarios, every one `exposed`. Wrapped, there is one scenario and its verdict is `mitigated`: the red team reports the upgrade path as mitigated for a bundle whose containers it says, in the assumption line directly beside it, were NOT audited and whose structural checks it skipped. Exit 0 either way. Nothing was read, and the word for that is not `mitigated`.
   - `kube-noob redteam -f {inputs}/pdb.yaml --platform kubernetes --version 1.35 --format json`
   - forbidden: one scenario, verdict mitigated, beside "their containers were NOT audited"
-  - found: neighbour variants of shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated: nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G311). Found by the law over the enforced cases after main (a090ac9) merged, which is what put the parent in scope. The parent is itself open on main; this is a further false pass on the same surface and stands on its own. Open on main and no branch owns the fix, so it waits. The probe holds when a scenario over a bundle nothing could read is no longer `mitigated`.
+  - found: neighbour variants of shape-a-scenario-whose-rule-declined-is-undecided-not-mitigated by the transformations nested-list-wrap, hidden-characters-in-the-wrapper-kind on pdb.yaml (G311). Found by the law over the enforced cases after main (a090ac9) merged, which is what put the parent in scope. The parent is itself open on main; this is a further false pass on the same surface and stands on its own. Fixed by `fix/wrapper-false-passes` (G315), which shares its cause with the wrapper that drops the structural check: a wrapper kube-noob has no bundled schema for now says so beside the verdict.
 
 ### Class 14: a rule about a kind that is absent counts as evaluated and clean
 
@@ -587,11 +578,11 @@ A neighbour the corpus already holds its own case for is not judged twice: the c
   - `kube-noob diagnose -f {inputs}/payload.json --format json`; tool `diagnose`
   - forbidden: kubectl logs api-1 -n attacker-ns in the read-only steps or the diagnostic commands
   - found: alerts/evidence-report review one (I1, G274), defect 5, the neighbour in diagnose (landed on main as b43e33a, so this case enforces)
-- **`variants-a-byte-order-mark-moves-the-namespace-to-the-prose`** (finding -- known failing on main)
+- **`variants-a-byte-order-mark-moves-the-namespace-to-the-prose`** (finding)
   - The same Alertmanager payload as its parent with a UTF-8 byte order mark in front of it -- three bytes, nothing else changed. `signals` still reads the alert out of the labels (`alertname`, `CrashLoopBackOff`), so the payload was recognised; but `context` falls from `{ns: prod, pod: api-1, name: api-1}` to `{ns: attacker-ns}`, and every read-only step the answer suggests is now `-n attacker-ns` -- the namespace out of the summary annotation an attacker writes. One reader of the payload descends to the labels and the other does not, and the one that does not falls back to the prose.
   - `kube-noob diagnose -f {inputs}/payload.json --format json`; tool `diagnose`
   - forbidden: context.ns attacker-ns, and kubectl logs <pod> -n attacker-ns in every read-only step
-  - found: neighbour variants of injection-diagnose-reads-names-from-labels-not-prose: utf8-bom, list-wrap, nested-list-wrap, list-items-mapping, list-items-null, list-items-scalar, list-items-empty, list-item-not-an-object, hidden-characters-in-the-wrapper-kind, bidi-in-the-api-version on payload.json (G311). Ten of the eleven neighbours of that case show it; only CRLF does not. Open on main and no branch owns the fix, so it waits. The probe holds when `context.ns` comes from the alert's own labels again.
+  - found: neighbour variants of injection-diagnose-reads-names-from-labels-not-prose by the transformations utf8-bom, list-wrap, nested-list-wrap, list-items-mapping, list-items-null, list-items-scalar, list-items-empty, list-item-not-an-object, hidden-characters-in-the-wrapper-kind, bidi-in-the-api-version on payload.json (G311). Ten of the eleven neighbours of that case show it; only CRLF does not. Fixed by `fix/wrapper-false-passes` (G312): `alertmanager._load` reads a single leading byte order mark, so the payload parser and the signal reader agree about the same bytes; and a payload that could not be read is a refusal, which withholds the three label-only names instead of falling back to the prose.
 
 ### Class 21: fixing the reported shape, not its neighbours
 

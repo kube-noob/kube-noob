@@ -397,13 +397,21 @@ class Release:
     from_desired: bool = False
     updating_to: str | None = None
     not_openshift: bool = False
+    #: Whether anything read says WHICH PRODUCT this cluster is. False by default, because nothing does until
+    #: something is read: a must-gather whose ClusterVersion could not be read, one that holds none, and a bundle
+    #: of OLM objects with no ClusterVersion anywhere all leave it False. ``notOpenShift`` and ``okd`` are then
+    #: null rather than false -- a boolean has no third value, and the absence read as the negative asserted that
+    #: this cluster is not OKD and IS OpenShift, about a document nothing could read (class 4, G313). A live read
+    #: that ANSWERED about `clusterversions` -- forbidden, or the object missing from a type that IS served --
+    #: proves the type is served, so those stay determined.
+    product_read: bool = False
     notes: list[str] = field(default_factory=list)
 
 
 def _from_history(first: Any, completed: Any, desired: Any, source: str) -> Release:
     """``first`` is the newest history entry, ``completed`` the newest Completed entry's version as written (or
     None), ``desired`` status.desired.version as written."""
-    rel = Release(detected_from=source)
+    rel = Release(detected_from=source, product_read=True)
     want = parse_version(desired)
     if completed is not None:
         rel.detected = parse_version(completed)
@@ -444,14 +452,19 @@ def live_release(backend: Any) -> Release:
         if ops._not_served("clusterversions", exc, group="config.openshift.io", version="v1"):
             return Release(
                 detected_from="live",
+                product_read=True,
                 not_openshift=True,
                 notes=[
                     "the cluster does not serve ClusterVersion (404): it is not OpenShift, so the OpenShift "
                     "release notes do not apply to it"
                 ],
             )
+        # The type answered (forbidden, or the object missing from a type that IS served), so this cluster serves
+        # ClusterVersion and is OpenShift; only its version is unknown.
         return Release(
-            detected_from="live", notes=[f"the ClusterVersion could not be read ({ops._text(message, 200)})"]
+            detected_from="live",
+            product_read=True,
+            notes=[f"the ClusterVersion could not be read ({ops._text(message, 200)})"],
         )
     status = ops._d(ops._d(cv).get("status"))
     history = [h for h in ops._l(status.get("history"))[:200] if isinstance(h, dict)]
@@ -463,10 +476,15 @@ def live_release(backend: Any) -> Release:
 
 def must_gather_release(cluster: dict[str, Any]) -> Release:
     """From ``must-gather analyze``'s cluster block (the analyser reads the ClusterVersion named ``version`` only)."""
+    # Two shapes where NOTHING about the product was read: a ClusterVersion the analyser could not read (wrapped in
+    # a `List`, items of the wrong shape, a duplicate key) and a must-gather that holds none. Neither says this is
+    # OpenShift and neither says it is not OKD, so `product_read` is False and both flags go null (G313).
     if cluster.get("clusterVersionNote"):
-        return Release(detected_from="must-gather", notes=[str(cluster["clusterVersionNote"])])
+        return Release(detected_from="must-gather", product_read=False, notes=[str(cluster["clusterVersionNote"])])
     if "desiredVersion" not in cluster:
-        return Release(detected_from="must-gather", notes=["the must-gather holds no ClusterVersion"])
+        return Release(
+            detected_from="must-gather", product_read=False, notes=["the must-gather holds no ClusterVersion"]
+        )
     history = cluster.get("history") or []
     completed = cluster.get("completedVersion")
     return _from_history(history[0] if history else None, completed, cluster.get("desiredVersion"), "must-gather")
@@ -630,6 +648,15 @@ def assess(
             "given one is used"
         )
     okd = okd_version(rel)
+    # Whether anything says which product this cluster is: a ClusterVersion that was read, or a version the caller
+    # gave (saying `--version 4.21` is saying this is OpenShift 4.21). Nothing else does, and with nothing the two
+    # product flags are null rather than false (G313).
+    product_known = rel.product_read or bool(given)
+    if not product_known:
+        caveats.append(
+            "no ClusterVersion was read, so whether this cluster is OpenShift and whether it runs OKD are both "
+            "not determined: the absence of a readable ClusterVersion is not evidence either way"
+        )
     versions = [version] if version else []
     if rel.updating_to and _release(rel.updating_to) != _release(version or rel.updating_to):
         versions.append(rel.updating_to)  # an update in progress is a fact about the cluster, given a version or not
@@ -951,8 +978,10 @@ def assess(
             "updatingTo": rel.updating_to,
             "releasesSearched": searched,
             "indexed": None if not version or rel.not_openshift else not not_indexed,
-            "notOpenShift": rel.not_openshift,
-            "okd": okd is not None,
+            # Three-valued, like `indexed` beside them: null while nothing read decides what this cluster is
+            # (`Release.product_read`), never the negative read off an absence (class 4, G313).
+            "notOpenShift": rel.not_openshift if product_known else None,
+            "okd": (okd is not None) if product_known else None,
         },
         "knowledge": {
             "knownIssuesAsOf": as_of,
@@ -1070,6 +1099,14 @@ def render_text(out: dict[str, Any]) -> str:
         version = f"{product} {cl['openshiftVersion']} ({cl['versionFrom']})"
     else:
         version = "OpenShift version not known"
+    if cl.get("notOpenShift") is None or cl.get("okd") is None:
+        # The two nulls the JSON carries, in the one line the text view has for the cluster: a reader of the text
+        # must not be told less than a reader of the JSON (class 6, G313).
+        version += (
+            "; whether this is OpenShift, and whether it runs OKD, are not determined (no ClusterVersion was read)"
+        )
+    elif cl.get("notOpenShift"):
+        version = "not OpenShift: the cluster does not serve ClusterVersion"
     if cl["detectedVersion"] and cl["detectedVersion"] != cl["openshiftVersion"]:
         version += f"; the ClusterVersion says {cl['detectedVersion']}"
     if cl["updatingTo"]:

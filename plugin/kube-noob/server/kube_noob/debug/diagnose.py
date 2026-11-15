@@ -16,7 +16,7 @@ from kube_noob.debug.cluster import Backend, list_items, redact_text
 from kube_noob.debug.playbooks import EXIT_CODES, PLAYBOOKS, Cause, Playbook
 from kube_noob.debug.steps import classify_step, split_comment
 from kube_noob.errors import ClusterAccessError
-from kube_noob.signals import Signal, for_text, playbooks_for
+from kube_noob.signals import Signal, alertmanager, for_text, playbooks_for
 from kube_noob.signals.ceph import advice as ceph_advice
 
 MAX_INPUT = 400_000
@@ -433,6 +433,21 @@ def diagnose(
         text = text[-MAX_INPUT:]
     text = redact_text(text)
     ctx = extract_context(text)
+    withheld_names = ""
+    if context is None and alertmanager.refused(text):
+        # An Alertmanager payload nothing could read is a REFUSAL, and a refusal is not "a text with no labels".
+        # Read as the second, it sent `extract_context` at the payload's own prose, and the namespace in every
+        # suggested command came from the summary annotation whoever writes the alert rule controls (class 24,
+        # G312). The three names the labels alone may set are withheld instead, so a step keeps its `<namespace>`
+        # placeholder, and the answer says why the name is not there. Decided here and not at a call site so the
+        # CLI, the MCP tool and every command that embeds a diagnosis get the same answer (class 25).
+        context = {}
+        withheld_names = (
+            "This text is an Alertmanager payload that could not be read, so its labels were not available: the "
+            "namespace, pod and object names are left as placeholders rather than taken from the payload's own "
+            "summary and description text, which is written by whoever wrote the alert rule. Fill them in, or "
+            "pass the payload as the JSON Alertmanager sends."
+        )
     if context is not None:
         # An Alertmanager payload: the namespace and the pod, which decide what every step reads, come from its labels
         # and never from its annotations, which are prose that anyone writing the alert rule controls (G274). A service
@@ -509,6 +524,8 @@ def diagnose(
     # Ceph health codes and Rook/ODF alerts: what each means, read-only steps for the platform, and when to stop.
     ceph = ceph_advice(signals, text, platform, openshift or rosa)
     notes: list[str] = []
+    if withheld_names:
+        notes.append(withheld_names)
     if not results and not ceph:
         cli = "kubectl" if steps_platform == "kubernetes" else "oc"
         notes.append(

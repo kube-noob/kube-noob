@@ -51,6 +51,13 @@ class Document:
     #: The same notes for this document's OWN `items` occurrences, when it was not opened (every sequence
     #: occurrence was empty): `(path, line, note)`.
     refused_keys: list[tuple[PathT, int, str]] = field(default_factory=list, repr=False, compare=False)
+    #: The list WRAPPERS this document was opened out of, outermost first, carried by the first document opened
+    #: from each -- the same way `wrapper_duplicate_keys` travels, and for the same reason. Opening a list
+    #: replaces it with its items, so every reader downstream sees the items and never the container: the bundled
+    #: schema for `PodList`, the one check that reports an item which is not an object, was applied to nothing,
+    #: and the wrapper's own fields were checked by nothing at all. Wrapping a bundle in one more `List` then
+    #: deleted a finding and RAISED the score (class 23, class 1, G314). `schemas.validate` reads these.
+    wrappers: list[Document] = field(default_factory=list, repr=False, compare=False)
 
     def line_for(self, path: PathT) -> int:
         """Best line for a path: exact match, else nearest existing ancestor, else doc start."""
@@ -337,6 +344,9 @@ def _open_list(d: Document, first_index: int) -> list[Document]:
                 refused_keys=refused_by_item.get(i, []),
                 from_list=kind,
                 wrapper_duplicate_keys=wrapper_dups if not out else [],
+                # This wrapper, and the ones it was itself opened out of, travel with the FIRST item so each is
+                # structurally checked exactly once however deep the nesting goes (G314).
+                wrappers=[*d.wrappers, d] if not out else [],
             )
         )
     return out
