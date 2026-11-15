@@ -137,6 +137,9 @@ SCHEMA: dict[str, Any] = {
         "paths",
         "pathsWithheld",
         "notRead",
+        "notReadWithheld",
+        "refused",
+        "refusedWithheld",
         "droppedUnread",
         "limitations",
     ],
@@ -257,6 +260,10 @@ SCHEMA: dict[str, Any] = {
         "paths": {"type": "array", "items": {"type": "object"}},
         "pathsWithheld": {"type": "integer", "minimum": 0},
         "notRead": _STR_LIST,
+        "notReadWithheld": {"type": "integer", "minimum": 0},
+        #: The part of notRead a gate fails on by itself: objects of the wrong shape, reads the cluster refused (G276).
+        "refused": _STR_LIST,
+        "refusedWithheld": {"type": "integer", "minimum": 0},
         "droppedUnread": {"type": "integer", "minimum": 0},
         "limitations": _STR_LIST,
     },
@@ -1194,6 +1201,8 @@ def reach(
     resolved_all = [r.ref for _, r in pairs]
     # What the scan names, reach names: failed reads, duplicates, fronts to nothing, malformed exposure fields.
     not_read_all = sorted(set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in ap.dangling(inv)})
+    # The part of it a gate fails on by itself, as `posture scan` lists it (G276): read after the RBAC walk above.
+    refused_all = ap.refused_lines(inv)
     worst = {"not determined": 0, "reached": 1, "none": 2}
 
     def build(n_cap: int, e_cap: int, list_cap: int, str_cap: int = MAX_STRING) -> dict[str, Any]:
@@ -1242,6 +1251,9 @@ def reach(
             "paths": [p.as_dict(i + 1) for i, p in enumerate(paths[: min(MAX_LISTED, list_cap)])],
             "pathsWithheld": max(0, len(paths) - min(MAX_LISTED, list_cap)),
             "notRead": not_read_all[: min(50, list_cap)],
+            "notReadWithheld": max(0, len(not_read_all) - min(50, list_cap)),
+            "refused": refused_all[: min(50, list_cap)],
+            "refusedWithheld": max(0, len(refused_all) - min(50, list_cap)),
             "droppedUnread": inv.dropped_unread,
             "limitations": limitations,
         }
@@ -1424,7 +1436,14 @@ def render_text(graph: dict[str, Any]) -> str:
             f"(caps {t['maxNodes']} nodes, {t['maxEdges']} edges, {t['maxBytes']} bytes)"
         )
     if graph["notRead"]:
-        out.append("\nnot read: " + "; ".join(flat(x) for x in graph["notRead"][:10]))
+        total = len(graph["notRead"]) + int(graph.get("notReadWithheld", 0))
+        more = f"; and {total - 10} more" if total > 10 else ""
+        out.append(f"\n{total} object(s) not read: " + "; ".join(flat(x) for x in graph["notRead"][:10]) + more)
+    if graph.get("refused"):
+        total = len(graph["refused"]) + int(graph.get("refusedWithheld", 0))
+        more = f"; and {total - 10} more" if total > 10 else ""
+        listed = "; ".join(flat(x) for x in graph["refused"][:10])
+        out.append(f"{total} of them refused (a gate fails on these): {listed}{more}")
     ignored = graph["droppedUnread"]
     if ignored:
         out.append(f"{ignored} Secret object(s) in the input were ignored, unread.")
