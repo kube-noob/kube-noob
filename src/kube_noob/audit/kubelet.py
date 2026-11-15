@@ -289,15 +289,41 @@ def _read_fields(data: Any, base: PathT, out: KubeletSettings) -> None:
         out.values[setting] = (node, full)
 
 
-def _ignition_files(data: Any, base: PathT) -> Iterator[tuple[dict[str, Any], PathT]]:
-    """Every `storage.files` entry of a MachineConfig's embedded ignition, with the path that holds it."""
+def _ignition_files(data: Any, base: PathT) -> tuple[list[tuple[dict[str, Any], PathT]], str]:
+    """(every `storage.files` entry of a MachineConfig's embedded ignition, why one was not walked).
+
+    The second half is what stops a MachineConfig this reader cannot walk from being passed over in silence:
+    `spec.config` given as a raw string (older MachineConfigs carry the ignition that way), a `storage` or
+    `files` that is not the shape ignition decodes, an entry that is not a mapping, and an entry whose `path` is
+    not a string -- in which case kube-noob cannot tell whether it is `kubelet.conf` and must not assume it is
+    not. Without this, a bundle whose kubelet settings lived in such a MachineConfig read CLEAN as soon as any
+    other kubelet object was there to be read (class 1).
+    """
+    if data is not None and not isinstance(data, dict):
+        return [], "an embedded ignition configuration that is not a mapping, so the files it writes were not read"
     storage = data.get("storage") if isinstance(data, dict) else None
+    if storage is not None and not isinstance(storage, dict):
+        return [], "an ignition storage section that is not a mapping, so the files it writes were not read"
     files = storage.get("files") if isinstance(storage, dict) else None
+    if files is None:
+        return [], ""
     if not isinstance(files, list):
-        return
+        return [], "an ignition storage.files that is not a list, so the files it writes were not read"
+    out: list[tuple[dict[str, Any], PathT]] = []
+    why = ""
     for i, entry in enumerate(files):
-        if isinstance(entry, dict):
-            yield entry, (*base, "storage", "files", i)
+        if not isinstance(entry, dict):
+            why = why or "an ignition file entry that is not a mapping, so what it writes was not read"
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str):
+            why = why or (
+                "an ignition file entry whose path is not a string, so whether it is the kubelet's "
+                "configuration was not read"
+            )
+            continue
+        out.append((entry, (*base, "storage", "files", i)))
+    return out, why
 
 
 def _decode_ignition(entry: dict[str, Any]) -> tuple[str | None, str]:
@@ -425,9 +451,17 @@ def _machine_config_role(d: Document) -> str:
 
 
 def _machine_config(d: Document, ref: str) -> Iterator[KubeletSettings]:
-    config = d.data.get("spec", {}).get("config") if isinstance(d.data.get("spec"), dict) else None
+    spec = d.data.get("spec")
+    config = spec.get("config") if isinstance(spec, dict) else None
     role = _machine_config_role(d)
-    for entry, path in _ignition_files(config, ("spec", "config")):
+    entries, why = _ignition_files(config, ("spec", "config"))
+    if why:
+        # The MachineConfig is a SOURCE that could not be walked, so it is a decline and not an absence: a
+        # bundle holding one of these read clean the moment any other kubelet object was readable.
+        out = _file_record(ref, d, role)
+        out.declined = f"carries {why}"
+        yield out
+    for entry, path in entries:
         if entry.get("path") not in KUBELET_CONF_PATHS:
             continue
         out = _file_record(ref, d, role)

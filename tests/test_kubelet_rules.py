@@ -642,3 +642,71 @@ def test_every_setting_resolves_in_both_shapes_without_raising() -> None:
             assert how in ("default", "unknown"), (setting, defaults)
             if how == "unknown":
                 assert isinstance(value, str) and value, (setting, defaults)
+
+
+# =====================================================================================================
+# A MachineConfig this reader cannot walk is a source it declined, not a source that is not there (G308)
+# =====================================================================================================
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param("ignition as a raw string", id="config-not-a-mapping"),
+        pytest.param({"ignition": {"version": "3.4.0"}, "storage": "files"}, id="storage-not-a-mapping"),
+        pytest.param({"ignition": {"version": "3.4.0"}, "storage": {"files": {"path": "/x"}}}, id="files-not-a-list"),
+        pytest.param({"ignition": {"version": "3.4.0"}, "storage": {"files": ["/x"]}}, id="entry-not-a-mapping"),
+        pytest.param(
+            {"ignition": {"version": "3.4.0"}, "storage": {"files": [{"path": 7, "contents": {"source": "data:,x"}}]}},
+            id="path-not-a-string",
+        ),
+    ],
+)
+def test_a_machineconfig_whose_ignition_cannot_be_walked_is_declined(config: Any) -> None:
+    doc = yaml.safe_dump(
+        {
+            "apiVersion": "machineconfiguration.openshift.io/v1",
+            "kind": "MachineConfig",
+            "metadata": {"name": "99-worker", "labels": {"machineconfiguration.openshift.io/role": "worker"}},
+            "spec": {"config": config},
+        }
+    )
+    report = _report(doc, platform="openshift")
+    assert _declined(report, "KN-S042")
+    assert "ignition" in _why(report, "KN-S042")
+
+
+def test_such_a_machineconfig_beside_a_readable_kubelet_does_not_let_the_bundle_read_clean() -> None:
+    """class 1 and class 24: the whole point. A source that could not be walked made the bundle clean as soon as
+    anything else was readable, which is an absence reading as a pass."""
+    unwalkable = yaml.safe_dump(
+        {
+            "apiVersion": "machineconfiguration.openshift.io/v1",
+            "kind": "MachineConfig",
+            "metadata": {"name": "99-worker", "labels": {"machineconfiguration.openshift.io/role": "worker"}},
+            "spec": {"config": "ignition as a raw string"},
+        }
+    )
+    good = _kubeletconfig_cr(
+        readOnlyPort=0,
+        authorization={"mode": "Webhook"},
+        authentication={"anonymous": {"enabled": False}, "x509": {"clientCAFile": "/etc/ca.crt"}},
+    )
+    report = _report(good + "---\n" + unwalkable, platform="openshift")
+    assert not _clean(report, "KN-S042")
+    assert _declined(report, "KN-S042")
+
+
+def test_a_machineconfig_with_no_storage_section_is_simply_not_a_kubelet_subject() -> None:
+    """class 21: the neighbour of the fix. A MachineConfig that writes no files is not an unwalkable one -- it
+    is not a kubelet object at all, and declining it with a reason would be noise on every kernel-argument MC."""
+    doc = yaml.safe_dump(
+        {
+            "apiVersion": "machineconfiguration.openshift.io/v1",
+            "kind": "MachineConfig",
+            "metadata": {"name": "99-worker-kargs"},
+            "spec": {"config": {"ignition": {"version": "3.4.0"}}, "kernelArguments": ["nosmt"]},
+        }
+    )
+    report = _report(doc, platform="openshift")
+    assert _not_evaluated(report, "KN-S042")
