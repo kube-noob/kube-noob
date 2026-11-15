@@ -44,6 +44,22 @@ spec:
 """
 
 
+_ROLLOUT = """apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: {name: ro, namespace: prod}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: ro}}
+  template:
+    metadata: {labels: {app: ro}}
+    spec:
+      containers:
+        - name: api
+          image: acme/api:latest
+          securityContext: {privileged: true}
+"""
+
+
 def _run(argv: list[str]) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -226,21 +242,25 @@ def test_the_scope_names_what_was_read_and_what_was_not(tmp_path: Path) -> None:
     assert scope["resources"]
 
 
-def test_the_score_is_withheld_with_a_reason_when_an_input_could_not_be_read(tmp_path: Path) -> None:
-    """One predicate decides it, and both commands call that predicate: the score is the headline number and it
-    must not sit beside a file nobody could read (class 13, class 25)."""
-    d = tmp_path / "manifests"
-    d.mkdir()
-    (d / "ok.yaml").write_text(_DEPLOY, encoding="utf-8")
-    (d / "broken.yaml").write_text("a: [unclosed\n", encoding="utf-8")
+def test_the_receipt_records_the_score_the_command_gave_and_never_a_second_judgement(tmp_path: Path) -> None:
+    """ONE predicate decides whether a score is withheld: ``Report.undetermined()`` (G272). The receipt reads its
+    answer out of the report as ``summary.score`` and ``summary.scoreWithheld`` and records it. A receipt with a
+    withholding rule of its own could withhold a score the command printed, or print one the command withheld,
+    and then the document would disagree with the run it claims to describe."""
+    f = tmp_path / "ro.yaml"
+    f.write_text(_ROLLOUT, encoding="utf-8")
     out = tmp_path / "r.json"
-    _run(["audit", "-f", str(d), "--skip-unreadable", "--receipt", str(out)])
+    _, text, _ = _run(["audit", "-f", str(f), "--format", "json", "--receipt", str(out)])
+    report = json.loads(text)
     v = _doc(out)["payload"]["verdict"]
-    assert v["score"] is None
-    assert "could not be read" in v["scoreWithheld"]
+    assert v["score"] == report["summary"]["score"] is None
+    assert v["scoreWithheld"] == report["summary"]["scoreWithheld"]
+    assert "not audited" in v["scoreWithheld"]
 
 
 def test_a_complete_run_records_the_score_the_command_reported(tmp_path: Path) -> None:
+    """The other direction of the same rule: a determined run has a score, and the receipt records that number
+    rather than one of its own."""
     d = tmp_path / "manifests"
     d.mkdir()
     (d / "ok.yaml").write_text(_DEPLOY, encoding="utf-8")
@@ -248,19 +268,51 @@ def test_a_complete_run_records_the_score_the_command_reported(tmp_path: Path) -
     _, text, _ = _run(["audit", "-f", str(d), "--format", "json", "--receipt", str(out)])
     v = _doc(out)["payload"]["verdict"]
     assert v["scoreWithheld"] is None
-    assert v["score"] == json.loads(text)["summary"]["score"]
+    assert v["score"] == json.loads(text)["summary"]["score"] is not None
 
 
-def test_one_file_withholds_the_score_because_the_absence_rules_were_not_evaluated(
-    bundle: Path, tmp_path: Path
-) -> None:
-    """`audit -f one.yaml` is a partial bundle: the rules that fire on an absence did not run, so the headline
-    number would sit beside a question nobody asked. Same predicate, a second surface (class 25)."""
+def test_an_undetermined_report_is_exit_1_in_the_receipt_whatever_fail_on_says(tmp_path: Path) -> None:
+    """AGENTS.md, "1 and 5 are not two answers to the same question": 1 means a verdict was reached and it is not
+    a pass, and an undetermined report is not a clean one at any threshold, so `--fail-on never` cannot turn it
+    into a 0. A receipt that recorded 0 there would disagree with the exit code the command returned, which is a
+    published contract -- and a receipt that disagrees with it is worse than no receipt."""
+    f = tmp_path / "ro.yaml"
+    f.write_text(_ROLLOUT, encoding="utf-8")
     out = tmp_path / "r.json"
-    _run(["audit", "-f", str(bundle), "--receipt", str(out)])
-    v = _doc(out)["payload"]["verdict"]
-    assert v["score"] is None
-    assert "part of a namespace" in v["scoreWithheld"]
+    rc, _, _ = _run(["audit", "-f", str(f), "--fail-on", "never", "--receipt", str(out)])
+    assert rc == 1
+    assert _doc(out)["payload"]["verdict"]["exitCode"] == 1
+    assert _doc(out)["payload"]["verdict"]["score"] is None
+
+
+def test_the_one_exit_code_rule_lives_in_one_place() -> None:
+    """`receipt.audit_exit_code` is what the CLI returns, what the receipt records and what the MCP verifier
+    recomputes on a replay, and it READS `summary.scoreWithheld` rather than deciding undetermined again."""
+    withheld = {"summary": {"counts": {}, "score": None, "scoreWithheld": "1 rule not evaluated in full: KN-S038"},
+                "findings": []}  # fmt: skip
+    assert receipt.audit_exit_code(withheld, "never") == 1
+    assert receipt.audit_exit_code(withheld, "critical") == 1
+    clean = {"summary": {"counts": {}, "score": 100.0}, "findings": []}
+    assert receipt.audit_exit_code(clean, "never") == 0
+    assert receipt.audit_exit_code(clean, "high") == 0
+    assert not hasattr(receipt, "score_withheld"), "a second withheld-score predicate came back"
+
+
+def test_an_input_the_caller_waived_stays_named_and_does_not_change_the_score(tmp_path: Path) -> None:
+    """`--skip-unreadable` is the caller saying "decide without that file", so a verdict WAS reached on the
+    evidence that remained and the score is that verdict's. What the waiver must never do is make the gap
+    disappear: the file stays named in the receipt's scope (AGENTS.md, G272)."""
+    d = tmp_path / "manifests"
+    d.mkdir()
+    (d / "ok.yaml").write_text(_DEPLOY, encoding="utf-8")
+    (d / "broken.yaml").write_text("a: [unclosed\n", encoding="utf-8")
+    out = tmp_path / "r.json"
+    rc, text, _ = _run(["audit", "-f", str(d), "--skip-unreadable", "--format", "json", "--receipt", str(out)])
+    assert rc == 1
+    payload = _doc(out)["payload"]
+    assert payload["verdict"]["score"] == json.loads(text)["summary"]["score"]
+    assert payload["verdict"]["scoreWithheld"] is None
+    assert [b["path"] for b in payload["scope"]["inputsNotRead"]] == ["broken.yaml"]
 
 
 def test_the_document_states_that_it_proves_integrity_and_not_authenticity(bundle: Path, tmp_path: Path) -> None:
@@ -531,27 +583,20 @@ def test_writing_a_receipt_says_on_stderr_what_it_does_not_prove(bundle: Path, t
     assert "receipt verify" in err
 
 
-def test_a_gate_receipt_withholds_the_score_by_the_same_predicate(tmp_path: Path) -> None:
-    """One predicate, both commands: the gate has no score of its own, and it must still say WHY there is none
-    when an input could not be read, rather than leaving the field null with no reason (class 25)."""
-    d = tmp_path / "manifests"
-    d.mkdir()
-    (d / "ok.yaml").write_text(_DEPLOY, encoding="utf-8")
-    (d / "broken.yaml").write_text("a: [unclosed\n", encoding="utf-8")
+def test_a_gate_receipt_records_the_gates_own_headline_word(tmp_path: Path) -> None:
+    """The gate's headline is `incomplete`, never `passed`, while the audit under it reached no verdict (G272).
+    The receipt records that word beside the exit code, from `gate.verdict_word` -- the same function every
+    renderer calls -- so the two cannot be read apart."""
+    f = tmp_path / "ro.yaml"
+    f.write_text(_ROLLOUT, encoding="utf-8")
     out = tmp_path / "r.json"
-    _run(["gate", "-f", str(d), "--skip-unreadable", "--receipt", str(out)])
-    v = _doc(out)["payload"]["verdict"]
-    assert v["score"] is None
-    assert "could not be read" in (v["scoreWithheld"] or "")
-
-
-def test_the_withheld_reason_says_how_many_unread_inputs_it_did_not_name() -> None:
-    """A reason that names five and does not say how many it left out reads as the whole list (class 2)."""
-    scope = {"inputsNotRead": [{"path": f"f{i}.yaml"} for i in range(9)]}
-    why = receipt.score_withheld(scope, {}) or ""
-    assert "9 input(s) could not be read" in why and "and 4 more" in why
-    few = receipt.score_withheld({"inputsNotRead": [{"path": "a.yaml"}]}, {}) or ""
-    assert "more" not in few, few
+    rc, _, _ = _run(["gate", "-f", str(f), "--fail-on", "never", "--receipt", str(out)])
+    assert rc == 1
+    payload = _doc(out)["payload"]
+    assert payload["scope"]["gateVerdict"] == "incomplete"
+    assert payload["verdict"]["exitCode"] == 1
+    assert "not audited" in (payload["verdict"]["scoreWithheld"] or "")
+    assert payload["scope"]["notAudited"]
 
 
 def test_a_scope_list_that_was_cut_says_how_much(tmp_path: Path) -> None:
@@ -597,10 +642,14 @@ def test_a_gate_that_exits_5_still_has_a_verdict_and_the_receipt_records_that_co
     out = tmp_path / "r.json"
     rc, _, err = _run(["gate", "-f", str(d), "--receipt", str(out)])
     assert rc == 5, err
-    v = _doc(out)["payload"]["verdict"]
-    assert v["exitCode"] == 5
-    assert "could not be read" in (v["scoreWithheld"] or "")
-    assert _doc(out)["payload"]["scope"]["inputsNotRead"]
+    payload = _doc(out)["payload"]
+    assert payload["verdict"]["exitCode"] == 5
+    # 5 is "no verdict was reached because the evidence offered was not enough", which is a different question
+    # from "is this a pass": the audit under the gate WAS determined, so nothing is withheld and the gate's own
+    # word is `failed` (AGENTS.md, G272). The unread file is named either way.
+    assert payload["verdict"]["scoreWithheld"] is None
+    assert payload["scope"]["gateVerdict"] == "failed"
+    assert [b["path"] for b in payload["scope"]["inputsNotRead"]]
 
 
 # --- the output boundary -------------------------------------------------------------------------------------------

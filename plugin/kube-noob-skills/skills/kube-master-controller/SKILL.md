@@ -143,7 +143,7 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `protocol` | 0 ready, 1 blocked (a HIGH or CRITICAL finding remains), 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
-| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary` |
+| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
 | `redteam` | always 0 | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
 | `fix` | always 0 | `changes`, `manualFollowUps`, `after` | |
@@ -190,11 +190,15 @@ kube-noob learning profile --platform openshift --openshift 4.20 --format json
 
 ## Output format
 
-1. **Brief**: platform, versions, every assumption, the severity counts before and after, and plainly what kube-noob
-   checked and what it reported as not evaluated.
-2. **The manifest**: the YAML kube-noob wrote or fixed.
-3. **Red team findings and what the user must run**: the exposures that remain, and the verification commands. Never
-   apply anything yourself.
+1. **Brief** — platform, versions, every assumption, the severity counts before and after, and plainly what was
+   checked against what. When the user pastes a `kube-noob audit --format json` report, what it did not decide is
+   part of the answer: `assumptions`, `declined` (per rule, the objects it could not read and why) and
+   `controlSummary.notEvaluatedRules` (rules that reached no verdict). A rule listed there is neither clean nor a
+   finding; never report it as passed. `controlSummary.partlyEvaluatedRules` found something and declined on other
+   objects: report the findings, and never the declined objects as covered.
+2. **The manifest** — the final YAML kube-noob wrote or fixed.
+3. **Red team findings and what the user must run** — the exposures that remain, and the verification commands.
+   Never apply anything yourself:
 
 ```
 kubectl apply --dry-run=server -f manifests.yaml

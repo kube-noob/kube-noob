@@ -5,7 +5,9 @@ not evidence, so ``audit --receipt PATH`` and ``gate --receipt PATH`` write one 
 place: the schema it is written to, the kube-noob that wrote it, every input by SHA-256 (file by file, with the path
 as given and the path it resolved to), the identity and the **meaning** of every rule in the rule set, the settings
 and flags that changed the verdict, the scope actually read and what was not read, and the verdict itself -- counts,
-score or the reason the score is withheld, exit code, and every finding by ``Finding.fingerprint()``.
+score or the reason the score is withheld (the command's own, from ``Report.undetermined()`` -- a receipt
+records the verdict it was given and never re-judges it), exit code, and every finding by
+``Finding.fingerprint()``.
 
 ``kube-noob receipt verify PATH`` re-runs those inputs and answers one of three things:
 
@@ -211,34 +213,6 @@ def _locator(f: dict[str, Any]) -> str:
     return _s(f, "locator") or _s(f, "path")
 
 
-#: What makes a score not worth printing. ONE predicate, called by every command that writes a receipt: the score is
-#: the headline number, and the defect this guards is the one where it was withheld beside a declined rule and not
-#: beside an unread file, which is the same kind of record (class 25).
-def score_withheld(scope: dict[str, Any], settings: dict[str, Any]) -> str | None:
-    """Why this run's score is withheld, or None.
-
-    Only what kube-noob could not LOOK at withholds the score -- an input it could not read, an input it skipped, a
-    bundle the caller declared partial, a target past the release its removal table was read at. A rule with no
-    subject in the input is not that: the shipped report prints a score beside it, and a receipt records the verdict
-    the command gave rather than quietly giving a different one.
-    """
-    why: list[str] = []
-    if scope.get("inputsNotRead"):
-        n = len(scope["inputsNotRead"])
-        named = ", ".join(str(b.get("path")) for b in scope["inputsNotRead"][:5])
-        # ``and N more``, not a bare list of five: a reason that names some of them and does not say how many it
-        # left out reads as the whole list, which is truncation hiding what it dropped.
-        why.append(f"{n} input(s) could not be read: {named}" + (f" and {n - 5} more" if n > 5 else ""))
-    if scope.get("inputsSkipped"):
-        n = len(scope["inputsSkipped"])
-        why.append(f"{n} input(s) were skipped as not manifests to audit")
-    if settings.get("partialBundle"):
-        why.append("the input was declared part of a namespace, so rules that fire on an absence were not evaluated")
-    if scope.get("notCheckedBeyond"):
-        why.append(f"the target is past {scope['notCheckedBeyond']}, the release the removal table was read at")
-    return "; ".join(why) or None
-
-
 def capped(values: list[Any], limit: int = MAX_SCOPE_LIST) -> tuple[list[Any], int]:
     """``limit`` entries and how many were left out. The count is always recorded, even when it is zero: a reader
     who does not find the number cannot tell a complete list from one that was cut."""
@@ -246,16 +220,26 @@ def capped(values: list[Any], limit: int = MAX_SCOPE_LIST) -> tuple[list[Any], i
 
 
 def audit_exit_code(report: dict[str, Any], fail_on: str) -> int:
-    """The exit code an ``audit`` report means, in ONE place.
+    """The exit code an ``audit`` report means, in ONE place, by the rule AGENTS.md publishes.
 
-    The CLI computes it to return it, the receipt records it, and the MCP verifier recomputes it when it replays a
-    run. Three copies of this arithmetic would be three chances for a receipt to record an exit code the command
-    did not return -- and the exit code is a published contract (AGENTS.md), so a receipt that disagrees with it is
-    worse than no receipt. It lives here, in the module that has no command of its own to favour.
+    ``1`` means a verdict was reached and it is not a pass; ``5`` means no verdict was reached at all, and ``5``
+    is decided before this is called (an unreadable file without ``--skip-unreadable``), never here. So an
+    **undetermined** report is 1, and ``--fail-on`` cannot lower it: an undetermined report is not a clean one at
+    any threshold, so "no severity is worth failing on" must not turn it into a 0
+    (AGENTS.md, "1 and 5 are not two answers to the same question", G272).
+
+    Whether the report is undetermined is NOT decided here. ``Report.undetermined()`` is the one predicate, and
+    it reaches this function already serialised as ``summary.scoreWithheld`` -- which is also why there is no
+    second withheld-score rule in this module: a receipt records the verdict the command gave, including the
+    reason its score is withheld, and does not re-judge it. The CLI returns this, the receipt records it, and the
+    MCP verifier recomputes it when it replays a run; three copies of the arithmetic would be three chances for a
+    receipt to record an exit code the command did not return, and the exit code is a published contract.
     """
     from kube_noob.audit.model import Severity
 
     if report.get("exceptions") and not report["exceptions"]["gate"]:
+        return 1
+    if report.get("summary", {}).get("scoreWithheld"):
         return 1
     if fail_on == "never":
         return 0
@@ -267,23 +251,26 @@ def verdict(
     *,
     counts: dict[str, int],
     score: float | None,
+    score_withheld: str | None,
     exit_code: int,
     findings: list[dict[str, Any]],
-    scope: dict[str, Any],
-    settings: dict[str, Any],
     excepted: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The verdict as a receipt records it.
+    """The verdict as a receipt records it -- the verdict the command gave, never a second judgement of it.
+
+    ``score`` and ``score_withheld`` are passed in from the report the command produced, where
+    ``Report.undetermined()`` already decided them: the ONE predicate (G272). A receipt that applied its own rule
+    for withholding a score could withhold one the command printed, or print one the command withheld, and then
+    the document would disagree with the run it claims to describe.
 
     ``excepted`` findings are carried apart rather than mixed in: the counts exclude them, so putting them in
     ``findings`` would make the list disagree with the numbers beside it -- and an exception is a reviewed, owned,
     expiring decision about a control, which is evidence of its own and must not vanish from the record.
     """
-    withheld = score_withheld(scope, settings)
     return {
         "counts": dict(sorted(counts.items())),
-        "score": None if withheld else score,
-        "scoreWithheld": withheld,
+        "score": None if score_withheld else score,
+        "scoreWithheld": score_withheld,
         "exitCode": exit_code,
         "findings": findings_of(findings),
         "excepted": findings_of(excepted or []),

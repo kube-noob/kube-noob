@@ -510,6 +510,9 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         if r.get("notEvaluatedRules"):
             more = f" and {r['moreNotEvaluated']} more" if r.get("moreNotEvaluated") else ""
             lines.append(f"{'':<19}not evaluated: {', '.join(r['notEvaluatedRules'])}{more}")
+        if r.get("partlyEvaluatedRules"):
+            more = f" and {r['morePartlyEvaluated']} more" if r.get("morePartlyEvaluated") else ""
+            lines.append(f"{'':<19}partly evaluated: {', '.join(r['partlyEvaluatedRules'])}{more}")
         # From the row, not from EVIDENCE: one source, so the text and the JSON cannot drift apart.
         if r.get("warning"):
             lines.append(f"{'':<19}WARNING: {r['warning']}")
@@ -601,14 +604,66 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+#: How many rule ids the text view and the SARIF name on the "not evaluated" line before giving a count.
+MAX_NOT_EVALUATED_NAMED = 20
+
+
+#: How long one line of the audit's text view may be. A manifest-derived string (a container name, a flag value)
+#: is the user's text, and a newline in it forged a line of the report; a 100,000-character one flooded it (G272).
+MAX_TEXT_LINE = 2000
+
+
+def _one_line(value: object) -> str:
+    """One terminal line: `sanitize.visible`, then whitespace collapsed to single spaces, and capped."""
+    from kube_noob.sanitize import visible
+
+    text = " ".join(visible(str(value)).split())
+    return text if len(text) <= MAX_TEXT_LINE else f"{text[:MAX_TEXT_LINE]}... ({len(text) - MAX_TEXT_LINE} more)"
+
+
+def partly_evaluated_line(summary: dict[str, Any]) -> str:
+    """One bounded line naming the rules that found something and declined on some object, or ""."""
+    ids = [str(r) for r in summary.get("partlyEvaluatedRules") or []]
+    if not ids:
+        return ""
+    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
+    return (
+        f"partly evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules found something and "
+        "declined on other objects; their findings are counted, and the declined objects are not clean"
+    )
+
+
+def caveat_lines(summary: dict[str, Any]) -> list[str]:
+    """The not-evaluated and partly-evaluated lines, in that order, leaving out an empty one."""
+    return [ln for ln in (not_evaluated_line(summary), partly_evaluated_line(summary)) if ln]
+
+
+def not_evaluated_line(summary: dict[str, Any]) -> str:
+    """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did."""
+    ids = [str(r) for r in summary.get("notEvaluatedRules") or []]
+    if not ids:
+        return ""
+    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
+    return (
+        f"not evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules reached no verdict on "
+        "this input, so they are neither clean nor findings"
+    )
+
+
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
+    # "not determined", not a number, while a rule declined on an object (`scoreWithheld` says which): a number
+    # printed above "was not evaluated in full" read as a verdict on what was not read (G272).
+    withheld = s.get("scoreWithheld")
+    score = f"not determined ({_one_line(withheld).partition(':')[0]})" if withheld else str(s["score"])
     print(
-        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={s['score']} | "
+        f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={score} | "
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
     )
     for a in rep.get("assumptions", []):
-        print(f"  note: {a}")
+        print(f"  note: {_one_line(a)}")
+    for line in caveat_lines(rep.get("controlSummary") or {}):
+        print(f"  {line}")
     if limit := rep.get("notCheckedBeyond"):
         # Print it before the findings, not after: somebody reading a short report in a terminal has to see the
         # limit before they read an empty finding list as a clean one.
@@ -619,12 +674,19 @@ def _print_report(rep: dict[str, Any]) -> None:
         where = f"{f['file']}:{f['line']}" if f.get("file") and f.get("line") else ""
         if not where:
             where = f.get("file") or (f"L{f['line']}" if f.get("line") else "")
-        print(f"[{f['severity'].upper():8}] {f['ruleId']:9} {f['resource']} {where} {f['path']}")
-        print(f"           {f['message']}")
-        print(f"           fix: {f['remediation']}")
+        # The path and the file name are the input's text too: a ConfigMap key with a newline in it is a path
+        # (`data.<key>`), and it forged a whole finding line before the second review (G272).
+        print(
+            f"[{f['severity'].upper():8}] {f['ruleId']:9} {_one_line(f['resource'])} {_one_line(where)} "
+            f"{_one_line(f['path'])}"
+        )
+        print(f"           {_one_line(f['message'])}")
+        print(f"           fix: {_one_line(f['remediation'])}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
-    touched = (rep.get("controlSummary") or {}).get("controls") or []
+    # Only controls that HAVE findings: the list also holds clean and not-evaluated controls, and printing those
+    # as "(0)" made a control no rule looked at read exactly like a clean one (G272).
+    touched = [c for c in (rep.get("controlSummary") or {}).get("controls") or [] if c.get("findings")]
     if touched:
         print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
     if cov := rep.get("detectionCoverage"):
@@ -638,7 +700,7 @@ def _print_report(rep: dict[str, Any]) -> None:
             label = sc["severity"].upper() if sc["verdict"] == "exposed" else "UNDECIDED"
             print(f"[RED-TEAM {label}] {sc['scenarioId']}: {sc['question']}")
             for e in sc["evidence"][:4]:
-                print(f"           - {e}")
+                print(f"           - {_one_line(e)}")
 
 
 def _print_exceptions(rep: dict[str, Any]) -> None:
@@ -649,12 +711,22 @@ def _print_exceptions(rep: dict[str, Any]) -> None:
     print(f"exceptions: {c['active']} active, {c['expired']} expired, {c['refused']} refused")
     for e in ex["entries"]:
         if e["status"] != "active":
-            print(f"  [{e['status'].upper()}] {e['id']} ({e['rule']}): {e['reason']}")
+            print(f"  [{e['status'].upper()}] {_one_line(e['id'])} ({_one_line(e['rule'])}): {_one_line(e['reason'])}")
     for f in rep.get("excepted", []):
+        # The owner is the exception file's text: a newline in it forged a report line (G272).
         x = f["exception"]
-        print(f"  excepted {f['ruleId']} {f['resource']} by {x['id']} (owner {x['owner']}, until {x['expires']})")
+        print(
+            f"  excepted {f['ruleId']} {_one_line(f['resource'])} by {_one_line(x['id'])} "
+            f"(owner {_one_line(x['owner'])}, until {x['expires']})"
+        )
+    undecided = set(ex.get("unusedNotEvaluated") or [])
     for eid in ex.get("unused", []):
-        print(f"  unused {eid}: covers no finding; delete it if the object is gone")
+        if eid in undecided:
+            # Its rule declined on this input (an object it could not read, or none of its kind), so "covers no
+            # finding" is not evidence the exception is stale (G272).
+            print(f"  unused {_one_line(eid)}: covers no finding, but its rule was not evaluated in full on this input")
+        else:
+            print(f"  unused {_one_line(eid)}: covers no finding; delete it if the object is gone")
     if not ex["gate"]:
         print("gate: failed (an exception is expired or refused)")
 
@@ -843,15 +915,20 @@ def _write_audit_receipt(
         "notRun": [],
         "controlCoverage": _control_roll_up(rep.get("controlSummary")),
         "notCheckedBeyond": rep.get("notCheckedBeyond"),
+        # The three records that make a report undetermined (G272), recorded whether or not any is present so a
+        # reader cannot tell a receipt that withheld them from one written before they existed. `declined` is
+        # rule -> why, `notEvaluated` rule -> why, `notAudited` the objects nothing read.
+        "declinedRules": dict(sorted((rep.get("declined") or {}).items())),
+        "notEvaluatedRules": dict(sorted((rep.get("notEvaluated") or {}).items())),
+        "notAudited": list(rep.get("notAudited") or []),
     }
     verdict = rc.verdict(
         counts=dict(rep["summary"]["counts"]),
         score=rep["summary"].get("score"),
+        score_withheld=rep["summary"].get("scoreWithheld"),
         exit_code=exit_code,
         findings=list(rep.get("findings") or []),
         excepted=list(rep.get("excepted") or []),
-        scope=scope,
-        settings=settings,
     )
     rc.write(
         target,
@@ -891,6 +968,7 @@ def _write_gate_receipt(
     started: float,
 ) -> None:
     from kube_noob import receipt as rc
+    from kube_noob.gate import verdict_word as gate_verdict_word
 
     inputs: list[dict[str, Any]] = []
     pairs: list[tuple[str, str]] = []
@@ -953,14 +1031,19 @@ def _write_gate_receipt(
         "notRun": list(report.get("notRun") or []),
         "controlCoverage": _control_roll_up(report.get("controlSummary")),
         "notCheckedBeyond": None,
+        "declinedRules": dict(sorted((report.get("declined") or {}).items())),
+        "notEvaluatedRules": dict(sorted((report.get("notEvaluated") or {}).items())),
+        "notAudited": list(report.get("notAudited") or []),
+        # The gate's own headline word, which is `incomplete` and never `passed` while the audit under it reached
+        # no verdict (G272). Recorded beside the exit code so the two cannot be read apart.
+        "gateVerdict": gate_verdict_word(report),
     }
     verdict = rc.verdict(
         counts=dict(report.get("counts") or {}),
         score=None,
+        score_withheld=report.get("undetermined"),
         exit_code=exit_code,
         findings=list(report.get("findings") or []),
-        scope=scope,
-        settings=settings,
     )
     rc.write(
         target,
@@ -1032,22 +1115,16 @@ def _replay_audit(payload: dict[str, Any], s: Settings, base: Path | None) -> di
     except (KubeNoobError, ValueError) as exc:
         raise rc.CannotCheck("replay", given, f"re-running the audit was refused: {exc}") from exc
     rep["unreadable"] = bad
-    scope = {
-        "inputsNotRead": [{"path": b["path"], "why": b["why"]} for b in bad],
-        "inputsSkipped": [],
-        "notCheckedBeyond": rep.get("notCheckedBeyond"),
-    }
     exit_code = rc.audit_exit_code(rep, str(settings.get("failOn") or "high"))
     if bad and not settings.get("skipUnreadable"):
         exit_code = 5
     return rc.verdict(
         counts=dict(rep["summary"]["counts"]),
         score=rep["summary"].get("score"),
+        score_withheld=rep["summary"].get("scoreWithheld"),
         exit_code=exit_code,
         findings=list(rep.get("findings") or []),
         excepted=list(rep.get("excepted") or []),
-        scope=scope,
-        settings=settings,
     )
 
 
@@ -1098,21 +1175,15 @@ def _replay_gate(payload: dict[str, Any], s: Settings, base: Path | None) -> dic
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise rc.CannotCheck("replay", files, f"re-running the gate was refused: {exc}") from exc
-    scope = {
-        "inputsNotRead": [{"path": u["file"], "why": u["why"]} for u in report.get("unreadable") or []],
-        "inputsSkipped": [{"path": u["file"], "why": u["why"]} for u in report.get("skipped") or []],
-        "notCheckedBeyond": None,
-    }
     exit_code = 0 if report["passed"] else 1
     if report.get("unreadable") and not settings.get("skipUnreadable"):
         exit_code = 5
     return rc.verdict(
         counts=dict(report.get("counts") or {}),
         score=None,
+        score_withheld=report.get("undetermined"),
         exit_code=exit_code,
         findings=list(report.get("findings") or []),
-        scope=scope,
-        settings=settings,
     )
 
 
@@ -3315,7 +3386,16 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if a.cmd == "redteam":
             _emit(kit.red_team(tk.ManifestsIn(manifests=text, platform=platform, version=a.pversion)), fmt)
             return 0
-        res = kit.fix(tk.FixIn(manifests=text, platform=platform, version=a.pversion, harden=not a.no_harden))
+        from kube_noob.audit.fixer import FixRefused
+
+        try:
+            res = kit.fix(tk.FixIn(manifests=text, platform=platform, version=a.pversion, harden=not a.no_harden))
+        except FixRefused as exc:
+            # Nothing written and nothing printed as output: a file the API server refuses (a key twice) is not
+            # one to rewrite last-wins, and a wrapper that merged or lost an `items` occurrence is not one to
+            # write back as if it had been read whole (G272, seventh review).
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         if len(sources) > 1:
             # One stream out of several files in, and the file boundaries are gone: a caller who redirected
             # this over their directory would have one file where they had five. Said on stderr, where the
@@ -3336,7 +3416,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 return 0
         else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
             _write_document(res["manifests"])
-        print(yaml.safe_dump(log, sort_keys=False), file=sys.stderr)
+        # The summary in the format asked for: `--format json` printed YAML before (G272, seventh review). G276
+        # already sends it to stdout as JSON when `--output` freed stdout; this is the other branch of that same
+        # decision, where the document went to stdout and the log goes to stderr.
+        print(
+            json.dumps(log, indent=2, default=str) if fmt == "json" else yaml.safe_dump(log, sort_keys=False),
+            file=sys.stderr,
+        )
         return 0
 
     if a.cmd == "protocol":
@@ -4535,19 +4621,26 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 _OPERATOR_SUFFIXES = (".yaml", ".yml", ".json")
 
 
-def _operator_files(paths: list[str]) -> tuple[list[tuple[str, list[Any]]], list[dict[str, str]]]:
+def _operator_files(
+    paths: list[str],
+) -> tuple[list[tuple[str, list[Any]]], list[dict[str, str]], list[dict[str, str]]]:
     """Each file parsed on its own. A file named on the command line that cannot be read is refused (exit 2 or 4);
     a file found in a directory that cannot be read is named in the answer and makes it partial, because dropping it
     and answering from the rest is a shorter list that reads as a complete one (G270). In a directory every
     ``.yaml``, ``.yml`` and ``.json`` file is read, whatever the case of its suffix; links are not followed."""
+    from kube_noob.operators import duplicate_key_note
     from kube_noob.yamlio import load_documents
 
     sources: list[tuple[str, list[Any]]] = []
     unreadable: list[dict[str, str]] = []
+    refused: list[dict[str, str]] = []
     for given in paths:
         d = Path(given)
         if given == "-" or not d.is_dir():
-            sources.append((given, [doc.data for doc in load_documents(_read(given))]))
+            docs_in = load_documents(_read(given))
+            if (note := duplicate_key_note(docs_in)) is not None:
+                refused.append({"path": given, "reason": note})
+            sources.append((given, [doc.data for doc in docs_in]))
             continue
         for f in sorted(d.rglob("*")):
             if not f.name.lower().endswith(_OPERATOR_SUFFIXES):
@@ -4558,7 +4651,10 @@ def _operator_files(paths: list[str]) -> tuple[list[tuple[str, list[Any]]], list
                     unreadable.append({"path": rel, "reason": "a link (not followed)"})
                 continue
             try:
-                docs = [doc.data for doc in load_documents(f.read_text(encoding="utf-8"))]
+                docs_in = load_documents(f.read_text(encoding="utf-8"))
+                docs = [doc.data for doc in docs_in]
+                if (note := duplicate_key_note(docs_in)) is not None:
+                    refused.append({"path": rel, "reason": note})
             except (UnicodeDecodeError, OSError) as exc:
                 unreadable.append({"path": rel, "reason": f"not readable as UTF-8 text ({type(exc).__name__})"})
                 continue
@@ -4566,7 +4662,7 @@ def _operator_files(paths: list[str]) -> tuple[list[tuple[str, list[Any]]], list
                 unreadable.append({"path": rel, "reason": " ".join(str(exc).split())[:300]})
                 continue
             sources.append((rel, docs))
-    return sources, unreadable
+    return sources, unreadable, refused
 
 
 def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
@@ -4613,8 +4709,8 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
 
             release = operator_issues.must_gather_release(analyse.analyse(bundle).as_dict()["cluster"])
     else:
-        sources, unreadable = _operator_files(a.file)
-        collected = operators.from_sources(sources, unreadable)
+        sources, unreadable, refused = _operator_files(a.file)
+        collected = operators.from_sources(sources, unreadable, refused)
     if issues:
         release.given = a.openshift_version
         found = operator_issues.assess(

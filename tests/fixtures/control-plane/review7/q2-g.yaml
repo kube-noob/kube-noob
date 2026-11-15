@@ -1,0 +1,358 @@
+tool:
+  name: kube-noob
+  version: 0.9.2
+platform: kubernetes
+version: '1.30'
+failOn: high
+passed: true
+failures: []
+files:
+- /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+skipped: []
+unreadable: []
+containerfiles: []
+counts:
+  critical: 0
+  high: 0
+  medium: 5
+  low: 4
+  info: 1
+excepted: 0
+findings:
+- ruleId: KN-N001
+  title: Namespace has workloads but no NetworkPolicy
+  severity: medium
+  message: No NetworkPolicy for namespace kube-system in this bundle.
+  resource: Pod/kube-system/kube-apiserver
+  path: metadata
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 3
+  remediation: Add a default-deny ingress NetworkPolicy plus explicit allows (router/ingress controller, monitoring, same-app
+    traffic).
+  admission: 'not an admission policy: needs the NetworkPolicies of the namespace (other objects); `kube-noob audit` checks
+    the bundle'
+  helpUri: https://kubernetes.io/docs/concepts/services-networking/network-policies/
+- ruleId: KN-C004
+  title: Missing CPU/memory requests
+  severity: medium
+  message: Container 'kube-apiserver' has no cpu/memory request.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].resources
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: Set resources.requests.cpu and resources.requests.memory from observed usage (p95).
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+- ruleId: KN-C005
+  title: Missing memory limit
+  severity: medium
+  message: Container 'kube-apiserver' has no memory limit.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].resources
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: Set resources.limits.memory (typically 1-2x the request).
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+- ruleId: KN-S002
+  title: Privilege escalation not disabled
+  severity: medium
+  message: 'Container ''kube-apiserver'' does not set allowPrivilegeEscalation: false.'
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].securityContext.allowPrivilegeEscalation
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: 'Set securityContext.allowPrivilegeEscalation: false on every container.'
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- ruleId: KN-S003
+  title: Container may run as root
+  severity: medium
+  message: 'Container ''kube-apiserver'' does not enforce runAsNonRoot: true.'
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].securityContext
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: 'Set runAsNonRoot: true (pod or container securityContext) and build images with a non-root USER.'
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- ruleId: KN-S008
+  title: Seccomp profile not set to RuntimeDefault
+  severity: low
+  message: Container 'kube-apiserver' has no RuntimeDefault seccomp profile.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.securityContext.seccompProfile
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 6
+  remediation: 'Set securityContext.seccompProfile.type: RuntimeDefault at pod level.'
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- ruleId: KN-S014
+  title: ServiceAccount token automounted
+  severity: low
+  message: Pod automounts the token of ServiceAccount 'default'.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 6
+  remediation: 'Set automountServiceAccountToken: false on the pod (or ServiceAccount) unless the app calls the API.'
+  admission: 'refused in enforce mode (partly: a ServiceAccount that opts out is not visible at admission; set automountServiceAccountToken:
+    false on the pod too)'
+  helpUri: https://kubernetes.io/docs/concepts/security/rbac-good-practices/
+- ruleId: KN-S006
+  title: Capabilities not dropped
+  severity: low
+  message: Container 'kube-apiserver' does not drop ALL capabilities.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].securityContext.capabilities
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: 'Set securityContext.capabilities.drop: ["ALL"].'
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- ruleId: KN-S007
+  title: Writable root filesystem
+  severity: low
+  message: Container 'kube-apiserver' has a writable root filesystem.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].securityContext
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 8
+  remediation: 'Set readOnlyRootFilesystem: true and mount emptyDir volumes for paths the app writes (e.g. /tmp).'
+  admission: refused in enforce mode
+  helpUri: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- ruleId: KN-S012
+  title: Mutable image reference
+  severity: info
+  message: Container 'kube-apiserver' image 'registry.k8s.io/kube-apiserver:v1.30.0' is not pinned by digest.
+  resource: Pod/kube-system/kube-apiserver
+  path: spec.containers[0].image
+  uri: /tmp/rt-cp7/src/tests/fixtures/control-plane/review6/q2-declined.yaml
+  line: 9
+  remediation: Pin an explicit version tag, ideally an immutable digest (image@sha256:...).
+  admission: 'not refused: the admission policies refuse low severity and above'
+  helpUri: https://kubernetes.io/docs/concepts/containers/images/
+kubernetesVersion: '1.30'
+resources:
+- Pod/kube-system/kube-apiserver
+controlSummary:
+  catalog: NIST SP 800-53 Rev. 5
+  controls:
+  - id: CM-7
+    title: Least Functionality
+    findings: 5
+    clean: 13
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6
+    title: Least Privilege
+    findings: 4
+    clean: 14
+    notEvaluated: 0
+    withheld: 0
+  - id: CM-6
+    title: Configuration Settings
+    findings: 2
+    clean: 29
+    notEvaluated: 2
+    withheld: 0
+  - id: SC-6
+    title: Resource Availability
+    findings: 2
+    clean: 4
+    notEvaluated: 0
+    withheld: 0
+  - id: SI-7
+    title: Software, Firmware, and Information Integrity
+    findings: 2
+    clean: 1
+    notEvaluated: 1
+    withheld: 0
+  - id: AC-4
+    title: Information Flow Enforcement
+    findings: 1
+    clean: 6
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6(10)
+    title: Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions
+    findings: 1
+    clean: 0
+    notEvaluated: 0
+    withheld: 0
+  - id: CM-2
+    title: Baseline Configuration
+    findings: 1
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: IA-5
+    title: Authenticator Management
+    findings: 1
+    clean: 1
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-39
+    title: Process Isolation
+    findings: 1
+    clean: 9
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-5
+    title: Denial-of-service Protection
+    findings: 1
+    clean: 2
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-7
+    title: Boundary Protection
+    findings: 1
+    clean: 12
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-7(5)
+    title: Boundary Protection | Deny by Default — Allow by Exception
+    findings: 1
+    clean: 4
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-14
+    title: Permitted Actions Without Identification or Authentication
+    findings: 0
+    clean: 1
+    notEvaluated: 1
+    withheld: 0
+  - id: AC-3
+    title: Access Enforcement
+    findings: 0
+    clean: 3
+    notEvaluated: 2
+    withheld: 0
+  - id: AC-5
+    title: Separation of Duties
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: AC-6(5)
+    title: Least Privilege | Privileged Accounts
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: AU-12
+    title: Audit Record Generation
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: AU-2
+    title: Event Logging
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: CM-3(2)
+    title: Configuration Change Control | Testing, Validation, and Documentation of Changes
+    findings: 0
+    clean: 16
+    notEvaluated: 0
+    withheld: 0
+  - id: CP-10
+    title: System Recovery and Reconstitution
+    findings: 0
+    clean: 9
+    notEvaluated: 0
+    withheld: 0
+  - id: IA-5(7)
+    title: Authenticator Management | No Embedded Unencrypted Static Authenticators
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SA-22
+    title: Unsupported System Components
+    findings: 0
+    clean: 5
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-28
+    title: Protection of Information at Rest
+    findings: 0
+    clean: 3
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-28(1)
+    title: Protection of Information at Rest | Cryptographic Protection
+    findings: 0
+    clean: 0
+    notEvaluated: 1
+    withheld: 0
+  - id: SC-36
+    title: Distributed Processing and Storage
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-4
+    title: Information in Shared System Resources
+    findings: 0
+    clean: 1
+    notEvaluated: 0
+    withheld: 0
+  - id: SC-8
+    title: Transmission Confidentiality and Integrity
+    findings: 0
+    clean: 4
+    notEvaluated: 3
+    withheld: 0
+  - id: SC-8(1)
+    title: Transmission Confidentiality and Integrity | Cryptographic Protection
+    findings: 0
+    clean: 2
+    notEvaluated: 3
+    withheld: 0
+  - id: SI-10
+    title: Information Input Validation
+    findings: 0
+    clean: 3
+    notEvaluated: 0
+    withheld: 0
+  - id: SI-2
+    title: Flaw Remediation
+    findings: 0
+    clean: 11
+    notEvaluated: 0
+    withheld: 0
+  notEvaluatedRules:
+  - KN-S035
+  - KN-S036
+  - KN-S037
+  - KN-S038
+  - KN-S039
+  - KN-S040
+  - KN-S041
+  partlyEvaluatedRules: []
+  note: Findings are evidence about these controls; an assessment decides whether a control is met.
+assumptions:
+- 'KN-S038 was not evaluated in full, so it is not counted as clean: Pod/kube-system/kube-apiserver container ''kube-apiserver''
+  starts kube-apiserver from a shell script, whose flags are not read.'
+declined:
+  KN-S038:
+    entries:
+    - resource: Pod/kube-system/kube-apiserver
+      reason: Pod/kube-system/kube-apiserver container 'kube-apiserver' starts kube-apiserver from a shell script, whose flags
+        are not read
+    withheld: 0
+    decided: 0
+admission:
+  refusedInEnforceMode: 8
+  command: kube-noob policy generate --platform kubernetes --version 1.30 --mode enforce
+knownIssues: []
+vulnerabilities: null
+code: null
+notRun:
+- 'Containerfile audit: pass a build file with --containerfile (Dockerfile or Containerfile)'
+- 'vulnerability checks: pass the images'' scanner output with --scanner-report (Trivy or Grype JSON, a CycloneDX or SPDX
+  SBOM, or an RHACS image scan)'
+- 'code checks: pass your SAST tools'' SARIF with --sarif-report (Semgrep, Bandit, SpotBugs, ESLint, CodeQL)'
