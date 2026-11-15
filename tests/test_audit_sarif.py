@@ -92,7 +92,10 @@ def test_what_a_partial_audit_did_not_evaluate_is_in_the_document(
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "sarif", "--fail-on", "never")
     invocation = json.loads(out)["runs"][0]["invocations"][0]
     notes = [n["message"]["text"] for n in invocation["toolExecutionNotifications"]]
-    assert notes == assumptions
+    # The assumptions in order, then one line naming the rules that reached no verdict (G272).
+    assert notes[: len(assumptions)] == assumptions
+    assert notes[len(assumptions) :] == [n for n in notes[len(assumptions) :] if n.startswith("not evaluated: KN-")]
+    assert len(notes) == len(assumptions) + 1
     assert all(n["level"] == "warning" for n in invocation["toolExecutionNotifications"])
     assert invocation["executionSuccessful"] is True
 
