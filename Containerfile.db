@@ -24,6 +24,14 @@ LABEL name="kube-noob-db" \
       org.opencontainers.image.source="https://github.com/kube-noob/kube-noob" \
       org.opencontainers.image.licenses="CC-BY-4.0 AND Apache-2.0 AND MIT" \
       io.k8s.display-name="kube-noob-db"
+# The directory is created and made traversable in its own layer, BEFORE the files land in it. A multi-source
+# COPY into a trailing-slash destination makes the builder create that directory, and newer BuildKit applies
+# --chmod to the directory it creates as well as to the files. 0444 has no execute bit, so the directory could
+# not be entered: every non-root user got `cp: cannot stat '/kube-noob-db/kube-noob-db.tgz': Permission denied`
+# while root still passed through it on DAC_OVERRIDE. The chart's init container and this image both run as
+# 1001, so the archive became unreadable to the only users that read it. No commit caused it -- the runner's
+# builder changed under a Containerfile that had been building correctly for months.
+RUN mkdir -p /kube-noob-db && chmod 0755 /kube-noob-db
 COPY --chown=0:0 --chmod=0444 dist/kube-noob-db/kube-noob-db.tgz dist/kube-noob-db/ATTRIBUTION.md /kube-noob-db/
 COPY LICENSE NOTICE /licenses/
 USER 1001
