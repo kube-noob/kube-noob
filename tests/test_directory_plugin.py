@@ -783,7 +783,7 @@ def test_every_command_a_skill_runs_has_a_table_row_and_every_row_a_command() ->
 
 @pytest.mark.parametrize("row", _rows(), ids=lambda r: f"{r.where}:{r.command}")
 def test_each_table_row_matches_what_the_command_really_prints(
-    row: _Row, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    row: _Row, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every field the row names is in the output (unless marked `?`), every key in the output that says what was not
     read is named by the row, and an `always 0` row exits 0 on the fixture (G276)."""
@@ -800,8 +800,12 @@ def test_each_table_row_matches_what_the_command_really_prints(
         chart = tmp_path / "chart"
         chart.mkdir()
         (chart / "Chart.yaml").write_text("apiVersion: v2\nname: web\nversion: 0.1.0\n")
-        helm = tmp_path / "bin" / "helm"
-        helm.parent.mkdir()
+        # Outside the working directory on purpose. `helm_binary` looks only in absolute PATH entries OUTSIDE the
+        # tree under review, because `shutil.which` honoured a `bin` the checked-out repository supplies and ran a
+        # program from the tree being reviewed (G280). The conftest chdirs to `tmp_path`, so a stub under it is
+        # exactly what that rule refuses, and the command would exit 4 with no document -- the rule working, not
+        # a bug in it. A sibling directory is a stub on PATH that the rule allows.
+        helm = tmp_path_factory.mktemp("helmbin") / "helm"
         helm.write_text(f"#!/bin/sh\ncat '{ROOT / 'examples' / 'insecure-deployment.yaml'}'\n")
         helm.chmod(0o755)
         monkeypatch.setenv("PATH", f"{helm.parent}{os.pathsep}{os.environ['PATH']}")

@@ -457,8 +457,8 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
     # "Assumed" is an ALLOWLIST -- the assumed-version lines -- as in the gate's Markdown: everything else in
     # `assumptions` is something the audit did not read, and labelling a declined rule "Assumed" said it had been
     # (G272, seventh review).
+    from kube_noob.audit.caveats import caveat_lines
     from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
-    from kube_noob.cli import caveat_lines
 
     for note in report.get("assumptions") or []:
         if str(note).startswith(ASSUMED_VERSION_PREFIXES):
@@ -669,8 +669,8 @@ def _caveats(report: dict[str, Any]) -> list[str]:
             '<div class="caveat"><b>Nothing was audited.</b>This is the crosswalk itself, not a result: no '
             "manifests were read, so no row below carries a finding count. A zero would read as a pass.</div>"
         )
+    from kube_noob.audit.caveats import caveat_lines
     from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
-    from kube_noob.cli import caveat_lines
 
     for note in report.get("assumptions") or []:
         label = "Assumed" if str(note).startswith(ASSUMED_VERSION_PREFIXES) else "Not evaluated in full"
