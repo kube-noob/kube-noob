@@ -1024,7 +1024,7 @@ jobs:
             --set config.defaultPlatform=kubernetes --set networkPolicy.allowRouter=false \
             --set networkPolicy.egress.dnsNamespace=kube-system --set networkPolicy.egress.dnsPort=53 \
             --set "networkPolicy.egress.apiServerCIDRs={${EP}/32,${SVC}/32}" --wait --timeout 4m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
       - name: Helm test (in-cluster readiness through the Service)
         run: helm test kn -n kube-noob --timeout 3m --logs
       - name: Sealed private Jira seed, wrong key, sync on and off (requirements R1.4, R1.5)
@@ -1354,7 +1354,7 @@ jobs:
             --set networkPolicy.egress.dnsPort=53 --set admission.enabled=true --set admission.certificates=secret \
             --set admission.tls.secretName=kn-admission-tls --set "admission.tls.caBundle=$CA_BUNDLE" \
             --wait --timeout 5m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
           kubectl -n kube-noob rollout status deploy/kn-kube-noob-admission --timeout=180s
       - name: Warn mode - a privileged Deployment is admitted with KN-S001 as a kubectl warning
         run: |
