@@ -255,19 +255,12 @@ def test_no_real_address_is_published_in_the_repository() -> None:
     this test reads tracked file contents only.
     """
     import shutil
-    import subprocess
 
     if shutil.which("git") is None or not (ROOT / ".git").exists():
         pytest.skip("not a git checkout")
     # Every tracked file, not a hand-picked subset: the earlier version covered 452 of 968 and so missed
     # pyproject.toml (which ships to PyPI), the plugin manifest (which ships to the directory) and examples/.
-    tracked = subprocess.run(
-        ["git", "ls-files"],  # noqa: S607
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    tracked = _tracked_text_files()
     found: list[str] = []
     for rel in tracked:
         path = ROOT / rel
@@ -448,17 +441,10 @@ def test_nothing_promises_an_artefact_that_has_never_published() -> None:
         "tests/test_distribution.py",
     }
     import shutil
-    import subprocess
 
     if shutil.which("git") is None or not (ROOT / ".git").exists():
         pytest.skip("needs a git checkout to list tracked files")
-    tracked = subprocess.run(
-        ["git", "ls-files"],  # noqa: S607 - the repository's own checkout, as the sibling sweeps here do
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    tracked = _tracked_text_files()
     offenders = []
     for rel in tracked:
         if rel in records_the_history or rel.startswith("plugin/kube-noob/server/"):
@@ -558,18 +544,55 @@ _KEPT_OLD_OWNER: tuple[tuple[str, str, int, str], ...] = (
 
 
 def _tracked_text_files() -> list[str]:
+    """Every tracked path, once.
+
+    `git ls-files` prints an UNMERGED path once per stage -- three times, mid-merge, for every file with a
+    conflict. A sweep that reads each listed path then reads those files three times and counts every match three
+    times, so this guard reported a widened allowlist that did not exist and sent a reviewer looking for a second
+    occurrence of a string that appears once. It passes again the moment the merge is committed, which is the worst
+    shape for a guard: it is wrong only while someone is in the middle of something, and right by the time they
+    check. Deduplicating is enough, and is correct outside a merge too, where `ls-files` already lists each path
+    once.
+    """
     import shutil
     import subprocess
 
     if shutil.which("git") is None or not (ROOT / ".git").exists():
         pytest.skip("not a git checkout")
-    return subprocess.run(
+    listed = subprocess.run(
         ["git", "ls-files"],  # noqa: S607
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.split()
+    return list(dict.fromkeys(listed))
+
+
+def test_the_tracked_file_list_names_a_conflicted_path_once() -> None:
+    """Mid-merge, `git ls-files` prints an unmerged path once per stage; the sweeps must still see it once.
+
+    This is what made this guard lie: with a merge uncommitted it read the conflicted file three times and counted
+    an allowlisted fragment three times against an allowance of one. The three stage lines are what git really
+    prints -- stages 1, 2 and 3 of the same path, consecutively -- so they are what this feeds in.
+    """
+    import subprocess
+
+    staged = "docs/website-updates.md\ndocs/website-updates.md\ndocs/website-updates.md\nREADME.md\n"
+    real = subprocess.run
+
+    def fake(*a: object, **k: object) -> subprocess.CompletedProcess[str]:
+        if a and isinstance(a[0], list) and a[0][:2] == ["git", "ls-files"]:
+            return subprocess.CompletedProcess(a[0], 0, stdout=staged, stderr="")
+        return real(*a, **k)  # type: ignore[arg-type]
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(subprocess, "run", fake)
+        got = _tracked_text_files()
+    finally:
+        monkey.undo()
+    assert got == ["docs/website-updates.md", "README.md"], got
 
 
 def test_no_tracked_file_names_the_owner_the_project_moved_out_of() -> None:
