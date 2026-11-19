@@ -384,7 +384,7 @@ copies it; the image needs `cp` and must run as non-root):
 ```bash
 gh run download "$(gh run list --repo kube-noob/kube-noob --workflow corpus-refresh.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')" --repo kube-noob/kube-noob -n jira-main-copy-encrypted -D seed
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in seed/jira-snapshot.tgz.enc -out seed/jira-snapshot.tgz -pass env:CORPUS_PASSPHRASE
-printf 'FROM registry.access.redhat.com/ubi9/ubi-micro:latest\nCOPY --chmod=0444 jira-snapshot.tgz /seed/jira-snapshot.tgz\nUSER 1001\n' > seed/Containerfile
+printf 'FROM registry.access.redhat.com/ubi9/ubi-micro:latest\nRUN mkdir -p /seed && chmod 0755 /seed\nCOPY --chmod=0444 jira-snapshot.tgz /seed/jira-snapshot.tgz\nUSER 1001\n' > seed/Containerfile
 podman build -t registry.example.com/platform/kube-noob-jira-seed:2026-10-28 seed
 podman push registry.example.com/platform/kube-noob-jira-seed:2026-10-28
 helm upgrade --install kube-noob deploy/helm/kube-noob --reuse-values --set jira.seed.source=image --set jira.seed.image.repository=registry.example.com/platform/kube-noob-jira-seed --set jira.seed.image.tag=2026-10-28
