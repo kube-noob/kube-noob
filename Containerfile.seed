@@ -20,6 +20,13 @@ LABEL name="kube-noob-db-jira" \
       org.opencontainers.image.created="${BUILT_AT}" \
       io.k8s.display-name="kube-noob-db-jira"
 # Readable by the init container's non-root user; the snapshot was written owner-only (and sealed) on the build host.
+# /seed is created and made traversable in its own layer FIRST. A COPY whose destination directory does not exist
+# makes the builder create it, and a newer BuildKit applies --chmod to that directory as well as to the file. 0444
+# has no execute bit, so the init container (1001) could not enter /seed and died with
+# `cp: cannot stat '/seed/jira-snapshot.tgz.enc': Permission denied` -- a message about the file, caused by the
+# directory. Root was unaffected, which is why it survived every local build. Same defect as Containerfile.db's
+# (G319); this is its sibling, and it is what kept e2e-kind (OpenShift 4.22) red.
+RUN mkdir -p /seed && chmod 0755 /seed
 COPY --chown=0:0 --chmod=0444 dist/seed/${SEED} /seed/${SEED}
 USER 1001
 CMD ["ls", "-l", "/seed"]
