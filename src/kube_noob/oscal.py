@@ -47,6 +47,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kube_noob import __version__
+from kube_noob.audit.controls import grouped_reasons
 from kube_noob.errors import ConfigError
 
 # A fixed namespace for this project's v5 uuids, itself derived (a uuid5 of the project homepage in the DNS
@@ -337,6 +338,17 @@ def assessment_results(
             else "This report carried no coverage record, so these controls cannot be distinguished between "
             "checked and clean, and not checked at all. They are excluded rather than reported satisfied."
         )
+        # The record's own reasons, grouped: an assessor reading "excluded" needs "no Service in the input",
+        # not a list of possibilities (G281). Grouped by reason so a Deployment-only input is one line per
+        # absent kind rather than seventy repeats.
+        groups = grouped_reasons(summary)
+        if groups:
+            # The pod-spec reason spells out the kinds it stands for; once, after the groups, not in each.
+            parts = [f"{why.split(' (no ', 1)[0]}: {', '.join(ids)}" for why, ids in groups]
+            kinds = next((why.split(" (no ", 1)[1].rstrip(")") for why, _ in groups if " (no " in why), "")
+            selection["remarks"] += " Rules not evaluated: " + "; ".join(parts) + "."
+            if kinds:
+                selection["remarks"] += f" A pod spec is a {kinds}."
 
     result: dict[str, Any] = {
         "uuid": _uuid("result", scope),

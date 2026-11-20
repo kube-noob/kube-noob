@@ -87,15 +87,25 @@ def test_what_a_partial_audit_did_not_evaluate_is_in_the_document(
     pod = tmp_path / "pod.yaml"
     pod.write_text(POD, encoding="utf-8")
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "json", "--fail-on", "never")
-    assumptions = json.loads(out)["assumptions"]
+    report = json.loads(out)
+    assumptions = report["assumptions"]
     assert assumptions, "this input is expected to make the audit record an assumption"
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "sarif", "--fail-on", "never")
     invocation = json.loads(out)["runs"][0]["invocations"][0]
     notes = [n["message"]["text"] for n in invocation["toolExecutionNotifications"]]
-    # The assumptions in order, then one line naming the rules that reached no verdict (G272).
+    # The assumptions in order first (G272 and G281 both), then G272's one bounded line naming the rules that
+    # reached no verdict, then G281's one notification per reason group: the rules that never ran because their
+    # kind was not in the file are in the document, not only in the JSON. Both claims are kept, so the SARIF
+    # says WHICH rules did not run and WHY, which is what a consumer of the document alone needs.
+    from kube_noob.audit.controls import grouped_reasons
+
     assert notes[: len(assumptions)] == assumptions
-    assert notes[len(assumptions) :] == [n for n in notes[len(assumptions) :] if n.startswith("not evaluated: KN-")]
-    assert len(notes) == len(assumptions) + 1
+    rest = notes[len(assumptions) :]
+    assert [n for n in rest if n.startswith("not evaluated: KN-")], "G272's bounded one-line list is missing"
+    grouped = [f"not evaluated, {why}: {', '.join(ids)}" for why, ids in grouped_reasons(report["controlSummary"])]
+    assert grouped, "a one-Pod file leaves rules without a subject"
+    assert rest[-len(grouped) :] == grouped
+    assert any(n.startswith("not evaluated, no Service in the input: ") for n in notes)
     assert all(n["level"] == "warning" for n in invocation["toolExecutionNotifications"])
     assert invocation["executionSuccessful"] is True
 

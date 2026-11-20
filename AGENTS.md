@@ -110,7 +110,7 @@ A behaviour change updates, in the same commit:
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | findings at or above `--fail-on`, or a verdict that is undetermined |
+| 1 | findings at or above `--fail-on`, or a verdict that is undetermined (`audit`/`gate`/`ksi`/`posture diff|report`: an object the rules did not read and no `notAudited:` exception accepted, or a rule that declined on every object it had -- `summary.verdict`; the exceptions gate) -- never 0 for undetermined, whatever `--fail-on` says (G272, G281) |
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |

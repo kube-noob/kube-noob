@@ -22,7 +22,8 @@ from typing import Any
 import yaml
 
 from kube_noob import __version__, sanitize
-from kube_noob.audit.model import Severity
+from kube_noob.audit.controls import coverage_line, grouped_reasons
+from kube_noob.audit.model import Severity, open_not_audited
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
@@ -440,26 +441,49 @@ def run(
             )
         from kube_noob.audit.controls import summary as control_summary
 
+        if review is not None:
+            exc.accept_not_audited(review, report.not_audited)
+        # ONE call of the one predicate, and ONE failure line from it. The merge of G272 and G281 left this
+        # computed twice and appended twice, so a gate that reached no verdict listed the same fact as two
+        # failures (class 9).
+        undetermined = report.undetermined()
+        if undetermined:
+            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh
+            # review). Objects the rules did not read (an apiVersion that is not a string, not shaped like an
+            # API, or in a group the kind is not known under; a kind that is not a kind name; a pod spec in a
+            # kind with no reader) and no exception accepted are not findings and not absences: a typo in
+            # apiVersion turned a failing gate into a passing one whose every output said no workload was
+            # present (G281, review 4, R1). The reason carries the counts and the names; this line adds the
+            # per-object `why`, which the reason does not have.
+            open_rows = open_not_audited(report.not_audited)
+            named = "; ".join(f"{r['object']} ({r['why']})" for r in open_rows[:MAX_NOT_AUDITED_NAMED])
+            if len(open_rows) > MAX_NOT_AUDITED_NAMED:
+                named += f"; and {len(open_rows) - MAX_NOT_AUDITED_NAMED} more"
+            failures.append(f"the audit is undetermined: {undetermined}" + (f" -- {named}" if named else ""))
         coverage = {
             "kubernetesVersion": report.kubernetes_version,
             "resources": report.resources,
+            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
+            # API server the audit had declined, and said nothing anywhere (G272). The rows carry the file and
+            # line of the object they name, as the findings do (G281) -- the raw rows beside them would have
+            # overwritten exactly that.
+            "assumptions": list(report.assumptions),
+            "notAudited": [_located_row(r, sources, chart_path) for r in report.not_audited],
+            # ONE key for the reason: `verdict_word`, the Markdown headline, the HTML masthead and the SARIF
+            # invocation all read `incomplete`, which is this key being present.
+            **({"undetermined": undetermined} if undetermined else {}),
             "controlSummary": control_summary(
                 kept_rules,
                 excepted_rules or None,
                 report.evaluated_rules or None,
                 report.fired_rules or None,
+                not_evaluated=report.not_evaluated or None,
+                absent_subjects=report.absent_subjects or None,
+                partly_evaluated=report.partly_evaluated or None,
             ),
-            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
-            # API server the audit had declined, and said nothing anywhere (G272).
-            "assumptions": list(report.assumptions),
             **({"declined": report.declined} if report.declined else {}),
-            **({"notAudited": report.not_audited} if report.not_audited else {}),
             **({"notEvaluated": report.not_evaluated} if report.not_evaluated else {}),
         }
-        if (undetermined := report.undetermined()) is not None:
-            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh review).
-            coverage["undetermined"] = undetermined
-            failures.append(f"the audit is undetermined: {undetermined}")
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
     for uri, text in containerfiles:
@@ -807,6 +831,71 @@ def _fingerprint(r: dict[str, Any]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
+#: How many refused objects the gate's failure line names before it gives a count.
+MAX_NOT_AUDITED_NAMED = 5
+#: The SARIF rule id under which a refused object is reported: a `note`, not a finding, with no severity score.
+NOT_AUDITED_RULE = "KN-NOT-AUDITED"
+
+
+def _located_row(row: dict[str, Any], sources: list[Source], chart_path: str | None) -> dict[str, Any]:
+    """A `notAudited` row with the file and line of the object it names, as the findings carry theirs."""
+    line = row.get("line")
+    uri, local = _where(sources, line if isinstance(line, int) else None, chart_path)
+    out = {k: v for k, v in row.items() if k != "line"}
+    out["uri"] = uri
+    if local is not None:
+        out["line"] = local
+    return out
+
+
+def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One `note`-level result per object the rules refused to read, so a SARIF consumer sees the object that was
+    not audited beside the findings, and the run's invocation carries the list too (review 4, R1)."""
+    rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    rules[NOT_AUDITED_RULE] = {
+        "id": NOT_AUDITED_RULE,
+        "name": "ObjectNotAudited",
+        "shortDescription": {"text": "Object not audited"},
+        "fullDescription": {"text": "The rules refused to read this object, so the verdict is undetermined."},
+        "help": {
+            "text": (
+                "The rules did not read this object (its apiVersion or kind is not one they know, or its pods are "
+                "in a kind with no reader), so the verdict is undetermined. To accept it as reviewed, add a "
+                "notAudited entry to the ExceptionList (kind, apiGroup, namespace, name, with owner, reason and "
+                "expiry); the row stays listed with acceptedBy."
+            )
+        },
+        "helpUri": INFO_URI,
+        "defaultConfiguration": {"level": "note"},
+        "properties": {"tags": ["kubernetes", "coverage"]},
+    }
+    out = []
+    for r in rows:
+        accepted = f" (accepted by {r['acceptedBy']})" if r.get("acceptedBy") else ""
+        uri = str(r.get("uri") or "manifests")
+        artifact = {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
+        loc: dict[str, Any] = {"artifactLocation": artifact}
+        if isinstance(r.get("line"), int) and r["line"] >= 1:
+            loc["region"] = {"startLine": int(r["line"])}
+        key = "\x1f".join([NOT_AUDITED_RULE, uri, str(r.get("object") or ""), str(r.get("why") or "")])
+        out.append(
+            {
+                "ruleId": NOT_AUDITED_RULE,
+                "ruleIndex": list(rules).index(NOT_AUDITED_RULE),
+                "level": "note",
+                # SARIF's word for "a reviewer should look, it is not a defect"; with the object's location and a
+                # fingerprint, so code scanning lists it in the file view and tracks it (review 5, item 10).
+                "kind": "review",
+                "message": {"text": f"{r.get('object')}: not audited, {r.get('why')}{accepted}"},
+                "locations": [{"physicalLocation": loc}],
+                "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+            }
+        )
+    return out
+
+
 def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
     rules: dict[str, dict[str, Any]] = {}
     results = []
@@ -837,6 +926,12 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
                 "partialFingerprints": {"kubeNoob/v1": _fingerprint(r)},
             }
         )
+    results += _not_audited_results(report, rules)
+    if report.get("notAudited"):
+        invocation = {
+            **(invocation or {"executionSuccessful": True}),
+            "properties": {**((invocation or {}).get("properties") or {}), "notAudited": list(report["notAudited"])},
+        }
     return {
         "$schema": SARIF_SCHEMA,
         "version": "2.1.0",
@@ -913,12 +1008,23 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         for f in rep["findings"]
     ]
     notes = _caveat_notes(rep)
+    # The coverage record, one notification per reason: a consumer of the SARIF alone can see that the Service
+    # rules never ran rather than passed (G281). Grouped, so a Deployment-only file is a few lines, not seventy.
+    notes += [
+        {"level": "warning", "message": {"text": f"not evaluated, {why}: {', '.join(ids)}"}}
+        for why, ids in grouped_reasons(rep.get("controlSummary") or {})
+    ]
     notes += [
         {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
         for u in rep.get("unreadable") or []
     ]
     return sarif(
-        {"findings": findings, "tool": {"version": __version__}},
+        {
+            "findings": findings,
+            "tool": {"version": __version__},
+            # `_locate` put the file and line on each row as on each finding; `uri` is what the result reads.
+            "notAudited": [{**r, "uri": r.get("file") or "stdin"} for r in rep.get("notAudited") or []],
+        },
         invocation={"executionSuccessful": True, "toolExecutionNotifications": notes},
     )
 
@@ -1070,6 +1176,8 @@ def verdict_word(report: dict[str, Any]) -> str:
 
 
 def markdown(report: dict[str, Any], top: int = 25) -> str:
+    # Three words, one predicate, called and never re-derived: undetermined is neither passed nor failed, and
+    # the headline says which.
     verdict = verdict_word(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
@@ -1083,6 +1191,23 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         *[f"| {sev} | {n} |" for sev, n in report["counts"].items()],
         "",
     ]
+    if report.get("notAudited"):
+        open_rows = [r for r in report["notAudited"] if not r.get("acceptedBy")]
+        lines += [
+            f"### Not passed: {len(open_rows)} object(s) not audited"
+            if open_rows
+            else f"### {len(report['notAudited'])} object(s) not audited, accepted by the exception list",
+            "",
+            "The rules did not read these objects"
+            + (", so the verdict is undetermined, not a pass." if open_rows else "; every one is accepted."),
+            "",
+            *[
+                f"- {_cell(str(r.get('object')), 120)}: {_cell(str(r.get('why')), 200)}"
+                + (f" (accepted by {_cell(str(r['acceptedBy']), 64)})" if r.get("acceptedBy") else "")
+                for r in report["notAudited"]
+            ],
+            "",
+        ]
     if report["failures"]:
         why = "### Why it is incomplete" if verdict == "incomplete" else "### Why it failed"
         lines += [why, "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
@@ -1105,6 +1230,11 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     ]
     if report["excepted"]:
         lines += [f"{report['excepted']} finding(s) accepted by the exception list.", ""]
+    summary = report.get("controlSummary")
+    if isinstance(summary, dict) and (line := coverage_line(summary)):
+        # The gate's own coverage record, in the summary a reviewer reads: a clean gate over a Deployment-only
+        # change must not read as "every Service rule passed" (G281, G221).
+        lines += [line, ""]
     c = report.get("code")
     if c:
         shipped = "" if c["notShipped"] is None else f", {c['notShipped']} in files no image ships"

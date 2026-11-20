@@ -86,8 +86,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 122 findings over 21 rules, and the JSON goes from 159 459 to
-81 523 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 122 findings over 21 rules, and the JSON goes from 169 899 to
+91 963 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 

@@ -463,9 +463,19 @@ spec: {selector: {app: web}, ports: [{port: 80}]}
 )
 def test_a_partner_whose_pod_template_or_target_cannot_be_read_leaves_the_rule_undecided(rule: str, text: str) -> None:
     """The third-review rerun of the fuzz: findings that vanished from a sibling when the HPA's target or the
-    workload's pod template had the wrong type, with no word that anything was not read."""
+    workload's pod template had the wrong type, with no word that anything was not read.
+
+    The statement may be in either place the merged model keeps one: the per-rule `not_evaluated` record (G281),
+    which every surface reads, or an assumption line (G276). What it may never be is a claim of ABSENCE: the
+    object was in the input. G281's subject gate used to decide that first and say "no pod spec in the input"
+    for a Deployment whose `spec` was `.nan`, which is a refusal read as an absence one layer up (class 24).
+    """
     r = analyze(text, platform="kubernetes", version="1.33")
-    assert any(rule in a and "could not be read" in a for a in r.assumptions), (rule, r.assumptions)
+    assert rule not in r.evaluated_rules, (rule, "a rule that could not read its input is not evaluated-and-clean")
+    said = [a for a in r.assumptions if rule in a and "could not be read" in a]
+    recorded = r.not_evaluated.get(rule, "")
+    assert said or "not audited" in recorded or "could not be read" in recorded, (rule, r.assumptions, recorded)
+    assert "in the input" not in recorded, (rule, recorded, "the object was in the input; this claims it was not")
 
 
 def test_a_name_that_is_not_a_string_is_a_missing_name() -> None:

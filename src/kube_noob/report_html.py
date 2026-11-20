@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kube_noob import charts, sanitize
+from kube_noob.audit.controls import coverage_line, grouped_reasons
 
 #: Rows past this are summarised rather than listed: a 4,000-row table is not a report anybody reads, and the
 #: count says how many are missing rather than letting the table end silently.
@@ -323,8 +324,11 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
                 f"{'it' if not_run == 1 else 'they'} would have covered."
             )
         if report.get("incomplete"):
-            # Undetermined is neither: the audit under the gate reached no verdict on part of the input (G272).
-            lede += f" The gate is incomplete: {_esc(report.get('undetermined'))}."
+            # Undetermined is neither passed nor failed: the audit under the gate reached no verdict on part of
+            # the input (G272, G281). `incomplete` and `undetermined` are the gate report's own two keys for it,
+            # the ones `verdict_word` and the SARIF invocation read; a second `verdict`/`verdictReason` pair
+            # beside them was the same fact said twice (class 9).
+            lede += f" The gate is incomplete: {_esc(report.get('undetermined'))}, so the verdict is undetermined."
             return Masthead(tiles, "Gate incomplete.", lede)
         return Masthead(tiles, "The gate passed." if report.get("passed") else "The gate failed.", lede)
     rows = report.get("indicators")
@@ -507,6 +511,11 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
             items.append(("Skipped", _esc(entry), ""))
     for note in report.get("notes") or []:
         items.append(("Note", str(note), ""))
+    # The gate's coverage record: the rules that had nothing of their kind to read, so a clean gate over a
+    # Deployment-only change is not read as "every Service rule passed" (G281, G221).
+    summary = report.get("controlSummary")
+    if isinstance(summary, dict) and (line := coverage_line(summary)):
+        items.append(("Not evaluated", _esc(line), "Pass the kinds named and those rules are evaluated."))
     if not items:
         return []
     out = [
@@ -704,6 +713,27 @@ def _caveats(report: dict[str, Any]) -> list[str]:
 
 def _gate_sections(report: dict[str, Any], sec: Sections) -> list[str]:
     out: list[str] = []
+    rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
+    if rows:
+        # Never "passed" with an open one of these: the rules did not read the object, so the verdict is
+        # undetermined (review 4, R1). Said before the failures, where a reader looking for the verdict starts.
+        open_rows = [r for r in rows if not r.get("acceptedBy")]
+        title = (
+            f"Not passed: {len(open_rows)} object(s) not audited"
+            if open_rows
+            else f"{len(rows)} object(s) not audited, accepted by the exception list"
+        )
+        out.append(sec.head(title, "not-audited"))
+        out.append(
+            "<ul>"
+            + "".join(
+                f"<li>{_esc(str(r.get('object')))}: {_esc(str(r.get('why')))}"
+                + (f" (accepted by {_esc(str(r['acceptedBy']))})" if r.get("acceptedBy") else "")
+                + "</li>"
+                for r in rows
+            )
+            + "</ul>"
+        )
     if report.get("failures"):
         out.append(sec.head("Why the gate is incomplete" if report.get("incomplete") else "Why the gate failed", "why"))
         out.append("<ul>" + "".join(f"<li>{_esc(f)}</li>" for f in report["failures"]) + "</ul>")
@@ -870,6 +900,33 @@ def _standing_sections(report: dict[str, Any], sec: Sections) -> list[str]:
             "result or a rule that was not evaluated. The folded list is not hidden evidence: it opens itself "
             "when this page is printed, so the PDF carries every control.</p>"
         )
+    out += _not_evaluated_reasons(standing)
+    return out
+
+
+def _not_evaluated_reasons(standing: dict[str, Any]) -> list[str]:
+    """The `Not evaluated` column explained: every rule it counts, grouped by the record's reason (G281).
+
+    Without this the page said how many rules reached no verdict and the reader had to open the JSON to learn
+    that no Service was in the input. Reasons are the engine's own words (a kind name a rule asked for, a
+    guard's sentence), never text from the input; they are escaped like everything else on the page.
+    """
+    skipped = [r for r in (standing.get("rulesNotEvaluated") or []) if isinstance(r, dict) and r.get("ruleId")]
+    without = [r for r in (standing.get("rulesEvaluatedWithout") or []) if isinstance(r, dict) and r.get("ruleId")]
+    if not skipped and not without:
+        return []
+    out: list[str] = []
+    if skipped:
+        out.append(f"<h3>Why {len(skipped)} {_plural(len(skipped), 'rule')} reached no verdict</h3><ul>")
+        for why, ids in grouped_reasons(standing):
+            out.append(f'<li>{_esc(why)}: <span class="mono">{_esc(", ".join(ids))}</span></li>')
+        out.append("</ul>")
+    if without:
+        out.append("<ul>")
+        for row in without:
+            kinds = ", ".join(str(k) for k in row.get("absent") or [])
+            out.append(f'<li><span class="mono">{_esc(row["ruleId"])}</span> was evaluated without {_esc(kinds)}</li>')
+        out.append("</ul>")
     return out
 
 
@@ -949,7 +1006,7 @@ def _ksi_sections(report: dict[str, Any], sec: Sections) -> list[str]:
             if r.get("notEvaluatedRules"):
                 more = f" and {r['moreNotEvaluated']} more" if r.get("moreNotEvaluated") else ""
                 out.append(
-                    f'<p class="note">Declined to decide: <span class="mono">'
+                    f'<p class="note">Not evaluated: <span class="mono">'
                     f"{_esc(', '.join(r['notEvaluatedRules']))}</span>{_esc(more)}.</p>"
                 )
             if r.get("partlyEvaluatedRules"):
@@ -958,6 +1015,8 @@ def _ksi_sections(report: dict[str, Any], sec: Sections) -> list[str]:
                     f'<p class="note">Partly evaluated (found something and declined on other objects): '
                     f'<span class="mono">{_esc(", ".join(r["partlyEvaluatedRules"]))}</span>{_esc(more)}.</p>'
                 )
+    # The reasons behind every "Not evaluated" above, once, from the crosswalk's own record (G281).
+    out += _not_evaluated_reasons(report)
     return out
 
 
