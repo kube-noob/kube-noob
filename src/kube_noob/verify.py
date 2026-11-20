@@ -2806,7 +2806,15 @@ def evaluate(
     if report is not None:
         for s in report["skipped"]:
             not_evaluated.append({"what": show(s["file"]), "why": show(s["why"])})
-            if from_command:
+            if s.get("forbidsVerdict"):
+                # The gate declined to read this file, so there is no verdict to give about what it would create:
+                # `allow` on a privileged pod whose `apiVersion` key was mis-spelled is the defect G325 fixes.
+                # Same mechanism as the ~40 command shapes verify cannot model, and no new field.
+                undetermined.append(
+                    f"{frame(s['file'])} was not read as a manifest ({frame(s['why'])}), so what it would create "
+                    "is not known"
+                )
+            elif from_command:
                 # kubectl sends every .yaml it is pointed at; a file the audit skipped is one it would still send.
                 undetermined.append(
                     f"{frame(s['file'])} was not audited ({frame(s['why'])}), and kubectl would send it"

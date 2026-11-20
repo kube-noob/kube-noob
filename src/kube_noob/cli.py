@@ -838,6 +838,19 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     if report.get("unreadable") and not a.skip_unreadable:
         _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
         return 5
+    # Beside the `unreadable` branch, and with no flag that waves it through: a file the walk declined to read is
+    # not a policy violation (1) and not a clean result (0), and the fix for a key spelled wrong is to spell it
+    # right, not to pass a flag. `--skip-unreadable` answers a different question (G126, G325).
+    blocked = [x for x in report.get("skipped") or [] if x.get("forbidsVerdict")]
+    if blocked:
+        for entry in blocked:
+            print(f"error: {entry['file']}: {entry['why']}", file=sys.stderr)
+        print(
+            f"error: {len(blocked)} file(s) were not read as manifests, so this is not a clean result; correct the "
+            "key the message names and run the gate again",
+            file=sys.stderr,
+        )
+        return 5
     return 0 if report["passed"] else 1
 
 
