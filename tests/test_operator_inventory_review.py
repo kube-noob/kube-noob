@@ -9,7 +9,6 @@ import json
 import os
 import random
 import stat
-import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,13 @@ from kube_noob import operators as ops
 from kube_noob.cli import main
 from kube_noob.mustgather import ingest
 from kube_noob.mustgather import operators as mg_ops
+from tests import bounds
+
+#: Measured: `ops.inventory` over 4,000 Subscriptions and 4,000 InstallPlans in one namespace, indexed. The
+#: quadratic version -- the index rebuilt per Subscription -- took 4.9 s on a quiet machine, about twenty-five
+#: times, which is why `SMALL_MULTIPLE` is the shape.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_INVENTORY_4000 = 0.2
 
 G = "namespaces/%s/operators.coreos.com/%s"
 API = "operators.coreos.com/v1alpha1"
@@ -433,7 +439,7 @@ def test_order_and_conflicting_duplicates_do_not_change_the_answer() -> None:
 
 
 def test_subscriptions_times_install_plans_in_one_namespace_is_linear(monkeypatch: pytest.MonkeyPatch) -> None:
-    def run(n: int) -> float:
+    def documents(n: int) -> Any:
         subs = [
             {
                 "apiVersion": API,
@@ -454,10 +460,7 @@ def test_subscriptions_times_install_plans_in_one_namespace_is_linear(monkeypatc
             }
             for i in range(n)
         ]
-        c = ops.from_documents([*subs, *plans, csv("foo.v1.0.0", "a")])
-        t = time.perf_counter()
-        ops.inventory(c)
-        return time.perf_counter() - t
+        return ops.from_documents([*subs, *plans, csv("foo.v1.0.0", "a")])
 
     # Counted, not timed: a ratio of two wall-clock readings failed on a shared CI runner (0.05 s against 1.0 s for
     # four times the input) with the code linear. The index is built once per namespace, however many Subscriptions
@@ -471,9 +474,16 @@ def test_subscriptions_times_install_plans_in_one_namespace_is_linear(monkeypatc
         return real(plans)
 
     monkeypatch.setattr(ops, "_plan_index", counting)
-    large = run(4000)
+    cluster = documents(4000)
+    with bounds.bounded(
+        bounds.SMALL_MULTIPLE,
+        honest_seconds=HONEST_INVENTORY_4000,
+        guards="the plan index being rebuilt per Subscription instead of once per namespace",
+    ):
+        ops.inventory(cluster)
+    # The counted assertion is the exact one and carries the property; the ceiling is the broader guard, for a
+    # quadratic somewhere in `inventory` that building the index once would not show.
     assert builds == 1
-    assert large < 10.0  # a loose ceiling: 4,000 x 4,000 took 4.9 s quadratic on a quiet machine, 0.2 s indexed
 
 
 # -- 18 ----------------------------------------------------------------------------------------------------------------

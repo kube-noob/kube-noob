@@ -8,7 +8,6 @@ import io
 import json
 import sys
 import tarfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,11 @@ import pytest
 
 from kube_noob.cli import main
 from kube_noob.mustgather import analyse, ingest
+from tests import bounds
+
+#: Measured: 20,000 events and 400 pods through analyse.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_ANALYSE = 4.2
 
 FIX = Path(__file__).resolve().parent / "fixtures" / "must-gather"
 ROOT = "mg/img"
@@ -329,9 +333,8 @@ def test_large_lists_are_fast_and_capped(tmp_path: Path) -> None:
     pods = {f"namespaces/big/pods/p{i}/p{i}.yaml": _pod(f"p{i}", "big", message=f"m{i}") for i in range(400)}
     files: dict[str, str | bytes] = {"namespaces/big/core/events.yaml": json.dumps({"kind": "List", "items": items})}
     files.update(pods)
-    start = time.monotonic()
-    a = analyse.analyse(_bundle(tmp_path, files))
-    assert time.monotonic() - start < 30
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_ANALYSE, guards="20,000 events and 400 pods"):
+        a = analyse.analyse(_bundle(tmp_path, files))
     events = [f for f in a.findings if f.analyser == "events"]
     assert len(events) == analyse.MAX_EVENT_REASONS and events[0].count == 1000
     pod_findings = [f for f in a.findings if f.analyser == "pods"]

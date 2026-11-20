@@ -20,6 +20,26 @@ from kube_noob.debug.policy import explain
 from kube_noob.signals import Signal, alertmanager
 from kube_noob.signals.catalogue import entries
 
+#: Doubling the input must roughly double the work, so the property is a RATIO and not a number of seconds. This
+#: was `< 30` on the four full-sized pastes, and `tests/bounds.py` cannot improve on that: the block honestly
+#: costs 5.0 s, so the linear shape asks for a 104 s ceiling and `bounds.MAX_CEILING_SECONDS` caps it at the 30 s
+#: the test already had -- under six times the honest cost, which measured 32.5 s, 35.7 s and 37.1 s in three of
+#: twenty-five runs with five other pytest processes competing for two cores. A ratio has no such problem: both
+#: halves run back to back on the same machine, so a stall slows both and the verdict stays about the code
+#: (G263's fix for `test_a_padded_object_does_not_outrun_the_webhooks_timeout`, G326 for this one).
+#:
+#: Measured here across twelve runs of the four pastes: 1.40 to 1.73 times for twice the input, below the 2.0 a
+#: perfectly linear scan gives because each call pays a fixed cost. Quadratic in twice the input is about four
+#: times the work, so 3.0 sits above every measurement and below the regression. There is deliberately no clock
+#: beside it: the only ceiling available here is the 30 s cap, which is below what this block costs on a loaded
+#: machine, so it would generate false failures rather than catch a hang -- and a hang is now caught by the ratio
+#: taking forever to be reached and by the job's own timeout.
+LINEAR_RATIO_CEILING = 3.0
+#: Half and full of each paste. Halves are large enough that the measurement is well above timer noise (0.46 s to
+#: 1.51 s each, measured).
+HOSTILE_HALVES = ("leader changed " * 12_500, "a-" * 99_500, "{" * 199_500, "\x1b[2J" * 49_500)
+HOSTILE_PASTES = ("leader changed " * 25_000, "a-" * 199_000, "{" * 399_000, "\x1b[2J" * 99_000)
+
 FIXTURES = Path(__file__).parent / "fixtures"
 PAYLOAD = (FIXTURES / "alertmanager-etcd.json").read_text(encoding="utf-8")
 KYVERNO = """Error from server: error when creating "deploy.yaml": admission webhook "validate.kyverno.svc-fail" \
@@ -204,10 +224,20 @@ def test_diagnose_lists_its_signals_and_stays_fast_on_hostile_text(tmp_path: Pat
     assert alerts == ["etcdDatabaseQuotaLowSpace", "etcdHighNumberOfLeaderChanges"]
     assert out["signals"][0]["kind"] == "alert"
     assert "input" not in out
-    t = time.perf_counter()
-    for text in ("leader changed " * 25_000, "a-" * 199_000, "{" * 399_000, "\x1b[2J" * 99_000):
+
+    def took(text: str) -> float:
+        start = time.perf_counter()
         _kit(tmp_path).diagnose(tk.DiagnoseIn(text=text))
-    assert time.perf_counter() - t < 30  # linear work on 4 x 400 KB; CI runs it under coverage on slower CPUs
+        return time.perf_counter() - start
+
+    took("warm")  # the first call pays for imports and cold catalogues; it must not land in the small sample
+    for half, full in zip(HOSTILE_HALVES, HOSTILE_PASTES, strict=True):
+        small, large = took(half), took(full)
+        assert large < small * LINEAR_RATIO_CEILING, (
+            f"{large:.2f}s for {len(full)} characters against {small:.2f}s for {len(half)} -- growing faster than "
+            f"linear ({large / small:.1f}x for twice the input; quadratic is about 4x, linear about 2x) on "
+            f"{full[:24]!r}"
+        )
 
 
 def test_every_catalogued_playbook_exists_and_etcd_alerts_point_at_the_etcd_playbook() -> None:

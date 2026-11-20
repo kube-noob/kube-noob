@@ -56,6 +56,67 @@ class Source:
     lines: int = 0
 
 
+#: The keys every Kubernetes document must carry, spelled the way the API server spells them.
+REQUIRED_KEYS = ("apiVersion", "kind")
+#: What a reason for a key spelled differently from one of those starts with. One string, so the report, the exit
+#: code, the renderers and `verify` all read the same marker rather than keeping a second list of files (class 9).
+NEAR_MISS_PREFIX = "a Kubernetes manifest whose key "
+#: Every reason `_classify` gives for not auditing a YAML file found in a directory walk, and whether that reason
+#: forbids a verdict. A reason that forbids one makes the gate fail, report `incomplete`, and exit 5: the walk
+#: declined to read the file, which is neither a policy violation (1) nor a clean result (0). A reason that does
+#: not is a file that was read and understood and holds no Kubernetes object -- a workflow, a values file -- and
+#: saying so must stay silent, or every repository scanned with `gate -f .` turns red (G325).
+#: `tests/test_near_miss_manifest.py::test_every_skip_reason_decides_whether_it_forbids_a_verdict` fails when a
+#: reason reaches `_classify` without an entry here.
+SKIP_REASONS: tuple[tuple[str, bool], ...] = (
+    ("a Helm template:", False),
+    ("not a Kubernetes manifest", False),
+    (NEAR_MISS_PREFIX, True),
+    # Raised by the bounded loader, returned by `_classify`: the file was not read at all, so it cannot be the
+    # ground of a verdict either. It keeps `skipped`'s exit code rather than `unreadable`'s only because the two
+    # answers must stay distinct (`unreadable_reason`'s docstring); both are incomplete evidence.
+    ("YAML nested too deeply", True),
+)
+
+
+def forbids_verdict(why: str | None) -> bool:
+    """Whether a file skipped for this reason makes the gate incomplete rather than clean."""
+    if not why:
+        return False
+    return any(why.startswith(prefix) for prefix, forbids in SKIP_REASONS if forbids)
+
+
+def _fold(key: str) -> str:
+    """A key reduced to what a case-, whitespace- or separator-only typo leaves unchanged."""
+    return key.strip().replace("-", "").replace("_", "").lower()
+
+
+def _near_miss_reason(docs: list[Any]) -> str | None:
+    """A required key spelled differently from the way the API server spells it, or None.
+
+    Deliberately narrow, and narrower than "a required key is missing": the document must be a mapping that lacks
+    the key EXACTLY, carries a spelling that folds onto it, and carries both required keys when folded that way.
+    A kustomization, a Helm values file or a CRD fragment with a `kind` and no `apiVersion` at all is therefore
+    not a near miss -- it is a file that is no manifest, which is the answer it already gets.
+    """
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        keys = [k for k in d if isinstance(k, str)]
+        folded = {_fold(k): k for k in reversed(keys)}  # the first spelling wins, so the reason is deterministic
+        if not all(_fold(r) in folded for r in REQUIRED_KEYS):
+            continue
+        for required in REQUIRED_KEYS:
+            if required in d:
+                continue
+            written = folded[_fold(required)]
+            return (
+                f"{NEAR_MISS_PREFIX}`{written}` is spelled differently from `{required}`: Kubernetes keys are "
+                "case-sensitive, so the API server would reject this document too"
+            )
+    return None
+
+
 def _classify(path: Path | None, text: str) -> str | None:
     """Why a YAML file found in a directory is not a manifest to audit, or None when it is one.
 
@@ -70,7 +131,12 @@ def _classify(path: Path | None, text: str) -> str | None:
     except (yaml.YAMLError, RecursionError):
         return None  # audited, so the parse error is reported
     if not any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs):
-        return "not a Kubernetes manifest (no document with apiVersion and kind)"
+        # A key that differs from `apiVersion` or `kind` only in shape is a typo in a manifest, not a file that is
+        # no manifest: the two answers shared one sentence and one exit code, so `apiversion: v1` on a privileged
+        # pod read exactly like a CI workflow and the gate passed (G325). The document is NOT normalised and
+        # audited: the API server would reject it as it stands, so auditing it as valid would be the same false
+        # answer pointing the other way. The honest answer is that it was not read, which makes this incomplete.
+        return _near_miss_reason(docs) or "not a Kubernetes manifest (no document with apiVersion and kind)"
     return None
 
 
@@ -293,18 +359,37 @@ def run(
     containerfiles = containerfiles or []
     scanner_reports = scanner_reports or []
     sarif_reports = sarif_reports or []
-    skipped = [{"file": s.uri, "why": s.skip} for s in sources if s.skip]
+    # One list, one marker: `forbidsVerdict` on the entry rather than a second list of files that could disagree
+    # with this one (docs/review-classes.md class 9). Everything below derives from it.
+    skipped = [
+        {"file": s.uri, "why": s.skip, **({"forbidsVerdict": True} if forbids_verdict(s.skip) else {})}
+        for s in sources
+        if s.skip
+    ]
+    blocking = [s for s in skipped if s.get("forbidsVerdict")]
     unreadable = [{"file": s.uri, "why": s.unreadable} for s in sources if s.unreadable and not s.skip]
     sources = [s for s in sources if not s.skip and not s.unreadable]
     if not sources and not containerfiles and not scanner_reports and not sarif_reports:
         if unreadable:
             raise GateError("nothing could be read: " + "; ".join(f"{u['file']}: {u['why']}" for u in unreadable))
+        if blocking:
+            # Beside the `unreadable` refusal, for the same reason: there is nothing to report a verdict on, and
+            # an empty clean report would be the defect this fixes with the files removed.
+            raise GateError(
+                "nothing was read as a manifest: " + "; ".join(f"{s['file']}: {s['why']}" for s in blocking)
+            )
         raise GateError(
             "nothing to check: pass manifests with -f, Containerfiles with --containerfile, --scanner-report or "
             "--sarif-report"
         )
     findings: list[dict[str, Any]] = []
     failures: list[str] = []
+    if blocking:
+        shown_blocking = "; ".join(f"{s['file']}: {s['why']}" for s in blocking[:5])
+        failures.append(
+            f"{len(blocking)} file(s) were not read as manifests, so this gate reached no verdict: {shown_blocking}"
+            + (f"; and {len(blocking) - 5} more under `skipped`" if len(blocking) > 5 else "")
+        )
     combined = _combine(sources) if sources else ""
     if sources:
         # A path named with -f used to be audited even when it was a Helm values file, so `gate -f values.yaml`
@@ -478,7 +563,9 @@ def run(
         "passed": not failures,
         # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
         # false and the headline says "incomplete", not "failed" (G272).
-        "incomplete": "undetermined" in coverage,
+        # ... or a file the walk declined to read: that is evidence the gate does not have, exactly as an
+        # undetermined audit is, and it must not render as "failed" either (G325).
+        "incomplete": "undetermined" in coverage or bool(blocking),
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -1217,7 +1304,17 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
         {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
         for u in report.get("unreadable") or []
     ]
+    blocked = [s for s in report.get("skipped") or [] if s.get("forbidsVerdict")]
+    notes += [
+        {"level": "error", "message": {"text": f"not read as a manifest: {s['file']} ({s['why']})"}} for s in blocked
+    ]
     undetermined = report.get("undetermined")
+    if blocked:
+        # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
+        # invocation's properties sees the gap either way (G272, G325).
+        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
+        gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
+        undetermined = f"{undetermined}; {gap}" if undetermined else gap
     if not notes and not undetermined:
         return sarif(report)
     invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}

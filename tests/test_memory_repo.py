@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import threading
-import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,10 @@ from kube_noob.cli import main
 from kube_noob.config import load_settings
 from kube_noob.memory import dump_entry, load_entry, repo, verify
 from kube_noob.memory import match as mmatch
+from tests import bounds
+
+#: Measured: the memory demo end to end, offline. Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_MEMORY_DEMO = 0.05
 
 TODAY = date(2026, 10, 28)
 PAYLOAD = (Path(__file__).parent / "fixtures" / "alertmanager-etcd.json").read_text(encoding="utf-8")
@@ -477,13 +480,12 @@ def test_cli_add_outcome_stats_and_migrate(root: Path, capsys: pytest.CaptureFix
 
 def test_the_memory_demo_runs_offline_under_a_second(tmp_path: Path) -> None:
     lines: list[str] = []
-    start = time.monotonic()
-    demo.run("memory", load_settings(overrides={"dataDir": str(tmp_path)}), lines.append)
     # 1.0 s was a budget, not an invariant: it measured 1.32 s on a loaded machine while passing 3/3 when
     # idle, which makes the verdict depend on what else the runner is doing (G263). What matters is that the
     # demo finishes offline without reaching for anything, so the ceiling is loose enough that only a hang
-    # trips it, and the assertions below carry the real contract.
-    assert time.monotonic() - start < 30.0
+    # trips it, and the assertions below carry the real contract. G326 took the hand-set 30.0 into the shape.
+    with bounds.bounded(bounds.NO_HANG, honest_seconds=HONEST_MEMORY_DEMO, guards="the memory demo hanging"):
+        demo.run("memory", load_settings(overrides={"dataDir": str(tmp_path)}), lines.append)
     text = "\n".join(lines)
     assert "matched 3 times, resolved 2" in text and "tried, did not work" in text
     assert "ERROR MEM-3 verifier" in text and "exit 1" in text

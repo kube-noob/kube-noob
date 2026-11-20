@@ -92,6 +92,7 @@ other type, the other order) in the same commit. A review will try those first.
 | `tests/test_plugin.py::test_bundle_names_no_credential_variables` | a credential variable name (`*_TOKEN`, `*_API_KEY`) appearing anywhere in the plugin copy, **including in a comment** |
 | `tests/test_plugin.py::test_manifest_uses_only_fields_the_plugin_reference_defines` | a field the plugin manifest reference does not define |
 | `docs/guidance.md` row check | a row whose `file.py::test_name` citation does not resolve. Every behaviour claim in that table must name a test that exists |
+| `tests/test_timing_assertions.py::test_no_test_asserts_a_tight_wall_clock_budget` | a raw wall-clock comparison below 30 s in a test. A tight budget measures the runner, and when it loses it reports a false failure; state the shape of the regression and let `tests/bounds.py` derive the ceiling, or assert the bounded output instead and drop the clock (G326) |
 
 ## Documentation is part of the change, not a follow-up
 
@@ -113,7 +114,7 @@ A behaviour change updates, in the same commit:
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |
-| 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
+| 5 | the evidence was incomplete (`--require-complete`, unreadable files, a file the directory walk declined to read as a manifest) |
 | 141 | the output pipe closed |
 
 An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line

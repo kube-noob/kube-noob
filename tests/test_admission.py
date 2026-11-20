@@ -17,6 +17,11 @@ import yaml
 from kube_noob import admission as adm
 from kube_noob.audit.engine import analyze
 from kube_noob.cli import main
+from tests import bounds
+
+#: Measured: `adm.review` on a Deployment padded with 4,000 privileged containers, warm.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_PADDED_4000 = 1.5
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "tests" / "fixtures" / "rules"
@@ -380,14 +385,17 @@ def test_a_padded_object_does_not_outrun_the_webhooks_timeout() -> None:
     # code (G263). Both halves of a ratio run back to back on the same machine, so a slow runner slows both
     # and the verdict stays about the code.
     small, _ = took(1000)
-    elapsed, out = took(4000)
+    with bounds.bounded(
+        bounds.NO_HANG, honest_seconds=HONEST_PADDED_4000, guards="4,000 padded containers through review"
+    ):
+        elapsed, out = took(4000)
     assert elapsed < small * 8, (
         f"{elapsed:.2f}s for 4,000 against {small:.2f}s for 1,000 -- growing faster than linear "
         f"(quadratic would be about 16x, linear about 4x)"
     )
-    # A ceiling far enough above any plausible runner that only a catastrophe trips it. This is not a
-    # performance budget; the ratio above is.
-    assert elapsed < 60.0, f"{elapsed:.1f}s for 4,000 containers"
+    # The ceiling above is far enough past any plausible runner that only a catastrophe trips it. This is not a
+    # performance budget; the ratio here is. G326 took the hand-set 60.0 into the shape, which clamps at 30 s --
+    # twenty times the measured 1.5 s, and the ratio is what this test is named for.
     assert out["allowed"] is False, "and it still decides: the denial is the point of being fast enough"
     # The sibling memo must not change what a locator says: a shared name is still ambiguous, a unique one
     # still identifies its item.

@@ -19,6 +19,17 @@ import pytest
 
 from kube_noob.cli import build_parser
 from kube_noob.insight import CAPABILITY_ROUTES, MAX_ROUTES, capability_routes
+from tests import bounds
+
+#: The loop these two tests time. It was 5 and 20 calls, and they asserted a PER-CALL average of 15 ms against a
+#: measured honest cost of 1.2 to 4.2 ms -- under four times, the tightest margin in the suite. Dividing by the
+#: loop count divides out the loop, not a stall: fifty milliseconds of descheduling across five calls is ten
+#: milliseconds per call, which is most of the margin. 200 calls makes the honest time large enough that
+#: `tests/bounds.py` can set a ceiling above a stall and still below the regression.
+CALLS_TIMED = 200
+#: Measured: 200 calls on the worst of the crafted lines below (nested `from to`, 4.2 ms each).
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_200_ROUTE_CALLS = 0.85
 
 
 def test_every_routed_command_actually_parses() -> None:
@@ -313,25 +324,26 @@ def test_every_route_is_anchored_so_the_cost_stays_linear() -> None:
 def test_no_crafted_line_costs_more_than_a_few_milliseconds(text: str) -> None:
     """The anchoring made the table linear in the line; a nested unbounded gap made one route quadratic in it
     again, and `test_a_long_non_matching_line_is_cheap` only ever tried one input (G252)."""
-    import time
-
     capability_routes(text)  # compile
-    start = time.perf_counter()
-    for _ in range(5):
-        capability_routes(text)
-    per_call = (time.perf_counter() - start) / 5
-    assert per_call < 0.015, f"{per_call * 1000:.1f} ms on {text[:40]!r}"
+    with bounds.bounded(
+        bounds.SMALL_MULTIPLE,
+        honest_seconds=HONEST_200_ROUTE_CALLS,
+        guards=f"the route table going quadratic in {text[:40]!r}",
+    ):
+        for _ in range(CALLS_TIMED):
+            capability_routes(text)
 
 
 def test_a_long_non_matching_line_is_cheap() -> None:
-    import time
-
     worst = ("zzz " * 150)[:600]
-    started = time.perf_counter()
-    for _ in range(20):
-        capability_routes(worst)
-    each_ms = (time.perf_counter() - started) / 20 * 1000
-    assert each_ms < 15, f"{each_ms:.1f} ms per call on a 600-char non-matching line"
+    capability_routes(worst)  # compile
+    with bounds.bounded(
+        bounds.SMALL_MULTIPLE,
+        honest_seconds=HONEST_200_ROUTE_CALLS,
+        guards="the one input this test tried before G252 found that one input was not enough",
+    ):
+        for _ in range(CALLS_TIMED):
+            capability_routes(worst)
 
 
 @pytest.mark.parametrize(
