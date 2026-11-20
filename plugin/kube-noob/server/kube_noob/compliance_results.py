@@ -830,7 +830,9 @@ def _rule_rows(
         elif len({(r.outcome, r.reason) for r in rows_for}) > 1:
             outcome, reason = "not-evaluated", "results-disagree"
             detail = ", ".join(sorted({f"{r.name}: {r.status or 'no status'}" for r in rows_for})[:MAX_LIST])
-        elif all(r.outcome == "pass" for r in rows_for):
+        # `rows_for and` is not redundant with the `not rows_for` branch above: `all([])` is True, so if that
+        # branch ever moves, an empty result set would read as a pass. The guard lives in the expression.
+        elif rows_for and all(r.outcome == "pass" for r in rows_for):
             outcome = "pass"
         else:
             outcome = "not-evaluated"
