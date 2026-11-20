@@ -56,6 +56,21 @@ def _declined(report: Report, rid: str) -> bool:
     )
 
 
+def _partly(report: Report, rid: str) -> bool:
+    """It reported a finding on one object and declined on another, so it RAN and the decline is stated.
+
+    Such a rule is in `evaluated_rules`, which is why `_declined` is the wrong question for it: G281 records a
+    partly evaluated rule as having run (D4 -- a rule in both `firedRules` and `notEvaluated` was two records of
+    one run), and `partly_evaluated` plus the per-object `declined` map are where it is accounted for.
+    """
+    return (
+        rid in report.evaluated_rules
+        and rid in report.partly_evaluated
+        and rid not in report.not_evaluated
+        and any(a.startswith(f"{rid} was not evaluated") for a in report.assumptions)
+    )
+
+
 def _quiet(report: Report, rid: str) -> bool:
     return rid not in report.evaluated_rules and not any(a.startswith(rid) for a in report.assumptions)
 
@@ -409,10 +424,12 @@ def test_a_rule_with_a_finding_on_one_object_and_a_decline_on_another_says_both(
     """docs/use-cases.md: the finding is reported and counted under its controls, and the decline is stated; the
     rule is not in notEvaluatedRules because it did reach a verdict -- a finding."""
     report = _r(_pod(["kube-apiserver", AA], name="a") + "---\n" + _pod(["sh", "-c", "kube-apiserver"], name="b"))
-    assert _hits(report, "KN-S038") and _declined(report, "KN-S038")
+    assert _hits(report, "KN-S038") and _partly(report, "KN-S038")
     out = report.as_dict()
     assert "KN-S038" in out["declined"]
-    assert "KN-S038" not in out["controlSummary"]["notEvaluatedRules"]
+    named = {row["ruleId"] for row in out["controlSummary"]["rulesNotEvaluated"]}
+    assert "KN-S038" not in named
+    assert "KN-S038" in out["controlSummary"]["partlyEvaluatedRules"]
     ac3 = next(c for c in out["controlSummary"]["controls"] if c["id"] == "AC-3")
     assert ac3["findings"] >= 1
 

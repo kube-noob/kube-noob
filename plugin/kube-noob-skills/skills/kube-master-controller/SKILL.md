@@ -145,7 +145,7 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 |---|---|---|---|
 | `protocol` | 0 ready, 1 blocked (a HIGH or CRITICAL finding remains), 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
+| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
 | `redteam` | always 0 | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
 | `fix` | always 0 | `changes`, `manualFollowUps`, `after` | |
 | `generate` | 0, or 3 needs clarification | `audit`, `assumptions`, `prerequisites` | |

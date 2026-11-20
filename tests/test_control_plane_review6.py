@@ -65,9 +65,14 @@ def test_an_object_whose_kind_is_not_a_string_is_a_high_finding_and_never_scores
 
 
 def test_a_non_string_api_version_is_a_finding_too() -> None:
+    """Still a finding, and from KN-V002: that rule is the one that speaks for apiVersion, so the field gets
+    exactly one message. KN-V001 reports a non-string `kind`, which no other rule can catch because every rule
+    keys on the kind; judging apiVersion in both was two verdicts for one field (G281, review 5, item 9)."""
     text = "apiVersion: [v1]\nkind: Pod\nmetadata: {name: p}\nspec: {containers: [{name: c, image: x}]}\n"
-    v001 = _hits(_t(text), "KN-V001")
-    assert v001 and "apiVersion" in v001[0].message and "not a string" in v001[0].message
+    report = _t(text)
+    v002 = _hits(report, "KN-V002")
+    assert v002 and "apiVersion" in v002[0].message and "not a string" in v002[0].message
+    assert not [f for f in _hits(report, "KN-V001") if "apiVersion" in f.message]
 
 
 @pytest.mark.parametrize(
@@ -85,7 +90,7 @@ def test_the_score_is_withheld_and_the_control_plane_rules_decline_where_a_pod_s
     report = _r(fixture)
     out = report.as_dict()
     assert any("NOT audited" in a for a in report.assumptions)
-    assert out["summary"]["score"] is None and "not audited" in out["summary"]["scoreWithheld"]
+    assert out["summary"]["score"] is None and "not audited" in out["summary"]["verdictReason"]
     for rid in (KAS, ETCD):
         line = _declined(report, rid)
         assert "no reader" in line, (rid, report.assumptions)
@@ -105,10 +110,15 @@ spec:
 """
     out = _t(kserve).as_dict()
     assert any("take their image from an operator" in a for a in out["assumptions"])
-    assert out["summary"]["score"] is None and "not read" in out["summary"]["scoreWithheld"]
+    assert out["summary"]["score"] is None and "not read" in out["summary"]["verdictReason"]
     foreign = "apiVersion: other.io/v1\nkind: RayCluster\nmetadata: {name: r, namespace: ml}\nspec: {}\n"
     out = _t(foreign).as_dict()
-    assert any("not where kube-noob knows" in a for a in out["assumptions"])
+    # The line names the object, the apiVersion it declared, the fixed reason and the groups kube-noob does
+    # know the kind under -- G272's shorter "not where kube-noob knows this kind's pod specs to be" said less
+    # and came from a second, narrower loop over the same documents (G281).
+    assert any(
+        "does not know RayCluster under" in a and "knows RayCluster under ray.io" in a for a in out["assumptions"]
+    )
     assert out["summary"]["score"] is None
 
 
@@ -138,7 +148,7 @@ def test_fix_and_the_gate_carry_the_withheld_score(tmp_path: Path, capsys: pytes
     src = FX / "q1-32-podlist-item-kind-int.yaml"
     kit = Toolkit(load_settings(overrides={"offline": True}))
     after = kit.fix(FixIn(manifests=src.read_text(encoding="utf-8")))["after"]
-    assert after["score"] is None and "not audited" in after["scoreWithheld"]
+    assert after["score"] is None and "not audited" in after["verdictReason"]
     summary = tmp_path / "s.md"
     code, _, _ = _cli(["gate", "-f", str(src), "--summary", str(summary)], capsys)
     assert code == 1
@@ -452,4 +462,4 @@ def test_declines_are_not_hidden_by_the_filter_flags(capsys: pytest.CaptureFixtu
             from kube_noob.audit.compact import expand_report
 
             rep = expand_report(rep)
-        assert rep["summary"]["score"] is None and rep["summary"]["scoreWithheld"], flags
+        assert rep["summary"]["score"] is None and rep["summary"]["verdictReason"], flags

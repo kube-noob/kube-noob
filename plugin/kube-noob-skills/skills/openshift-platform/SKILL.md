@@ -139,7 +139,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
+| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `diagnose` | always 0, even with denials found | `diagnoses`, `knownIssues` | `notes` |
 | `policy generate` | always 0 | `generated`, `documents` | `skipped` |

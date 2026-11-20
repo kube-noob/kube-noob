@@ -10,9 +10,90 @@ Source: NIST SP 800-53 Rev. 5 (https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/fina
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 CATALOG = "NIST SP 800-53 Rev. 5"
+#: Rule ids named on a control row before the rest become a count (`moreNotEvaluated`), as the KSI view does.
+MAX_NAMED_RULES = 12
+#: The reason shown for a rule the record lists as not evaluated without saying why: a snapshot written before
+#: reasons were recorded. Never a blank, which would read as "nothing to say" rather than "not recorded".
+NO_REASON_RECORDED = "not evaluated; this record carries no reason"
+
+
+def rules_not_evaluated(reasons: Mapping[str, str], rule_ids: Sequence[str]) -> list[dict[str, str]]:
+    """The record's own list: every rule in ``rule_ids`` with its reason, sorted by id, one entry per rule."""
+    return [{"ruleId": rid, "why": reasons.get(rid) or NO_REASON_RECORDED} for rid in sorted(set(rule_ids))]
+
+
+def grouped_reasons(summary: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """``rulesNotEvaluated`` grouped by reason, largest group first then by reason text: for every renderer.
+
+    One place, so the text view, the Markdown, the HTML, the SARIF notification and the OSCAL remark print the
+    same groups in the same order. The pod-spec reason carries its list of kinds once per group, not once per
+    rule, which is why grouping is the shape every surface wants.
+    """
+    by_reason: dict[str, list[str]] = {}
+    for row in summary.get("rulesNotEvaluated") or []:
+        if isinstance(row, dict) and row.get("ruleId"):
+            by_reason.setdefault(str(row.get("why") or ""), []).append(str(row["ruleId"]))
+    return [(why, sorted(ids)) for why, ids in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+
+
+def coverage_line(summary: Mapping[str, Any], top: int = 3) -> str:
+    """One sentence for a summary: "52 rules evaluated, 41 not evaluated: no Service in the input (3); ...".
+
+    Empty when the summary carries no reasons, so a record without them adds no sentence rather than a wrong one.
+    """
+    groups = grouped_reasons(summary)
+    if not isinstance(summary.get("rulesNotEvaluated"), list):
+        return ""
+    total = sum(len(ids) for _, ids in groups)
+    head = f"{len(RULE_CONTROLS) - total} rules evaluated, {total} not evaluated"
+    if not groups:
+        return head + "."
+    shown = "; ".join(f"{why} ({len(ids)})" for why, ids in groups[:top])
+    rest = len(groups) - top
+    return f"{head}: {shown}" + (f"; and {rest} more reason(s)" if rest > 0 else "") + "."
+
+
+def control_headlines(summary: Mapping[str, Any]) -> list[str]:
+    """The one or two lines a reader scans: controls WITH findings, then controls with a rule not evaluated.
+
+    The first version printed every touched control under "controls with findings" with its count, so a control
+    whose only rule was not evaluated read as checked-and-zero (`AU-2 (0)`) in the headline while the JSON said
+    `notEvaluated: 1` (class 6/13). A control with findings is named on the first line; a control with a rule
+    not evaluated is named on the second with those rules, and with its clean count when it is partly both; a
+    control that is both is on both lines, honestly. Shared, so every text view prints the same lists.
+    """
+    controls = [c for c in summary.get("controls") or [] if isinstance(c, dict) and c.get("id")]
+    lines: list[str] = []
+    found = [c for c in controls if int(c.get("findings") or 0) > 0]
+    if found:
+        lines.append(
+            "NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in found)
+        )
+    skipped = [c for c in controls if int(c.get("notEvaluated") or 0) > 0]
+    if skipped:
+        parts = []
+        for c in sorted(skipped, key=lambda c: str(c["id"])):
+            names = [str(r) for r in c.get("notEvaluatedRules") or []]
+            more = int(c.get("moreNotEvaluated") or 0)
+            inner = ", ".join(names) if names else f"{c['notEvaluated']} rule(s)"
+            if more:
+                inner += f" and {more} more"
+            if int(c.get("clean") or 0):
+                inner += f"; {c['clean']} clean"
+            parts.append(f"{c['id']} ({inner})")
+        lines.append("controls not evaluated, in whole or in part: " + ", ".join(parts))
+    return lines
+
+
+def rules_evaluated_without(absent: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
+    """Rules that ran on part of what they read, with the kinds they asked for and did not get."""
+    return [{"ruleId": rid, "absent": sorted(absent[rid])} for rid in sorted(absent) if absent[rid]]
+
+
 CATALOG_URL = "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
 
 TITLES: dict[str, str] = {
@@ -174,6 +255,10 @@ def summary(
     excepted_rule_ids: list[str] | None = None,
     evaluated_rule_ids: list[str] | None = None,
     fired_rule_ids: list[str] | None = None,
+    *,
+    not_evaluated: Mapping[str, str] | None = None,
+    absent_subjects: Mapping[str, Sequence[str]] | None = None,
+    partly_evaluated: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Controls touched by a set of findings, most findings first: for an audit report.
 
@@ -194,6 +279,12 @@ def summary(
     findings, 6 clean" to "0 findings, 9 clean", and the record then said nine rules ran and found nothing when
     three of them had found something. Those rules are counted as ``withheld`` instead -- not a finding in this
     view, and emphatically not clean (G199).
+
+    ``not_evaluated`` is the reason per rule that did not run: with it, each control row names its unevaluated
+    rules (``notEvaluatedRules``) and the summary lists every one with its reason (``rulesNotEvaluated``), so a
+    `notEvaluated: 3` can be read as "no Service in the input" rather than guessed at. ``absent_subjects`` is
+    the kinds a rule that DID run asked for and did not get (``rulesEvaluatedWithout``). Both are left out when
+    the caller has none, so an older record keeps its older shape rather than gaining a column of blanks (G281).
     """
     counts: dict[str, int] = {}
     excepted: dict[str, int] = {}
@@ -205,6 +296,7 @@ def summary(
             excepted[c] = excepted.get(c, 0) + 1
     clean: dict[str, int] = {}
     unevaluated: dict[str, int] = {}
+    unevaluated_ids: dict[str, list[str]] = {}
     partly: dict[str, int] = {}
     withheld: dict[str, int] = {}
     not_evaluated_rules: list[str] = []
@@ -214,10 +306,12 @@ def summary(
         with_findings = set(rule_ids) | set(excepted_rule_ids or ())
         hidden = set(fired_rule_ids or ()) - with_findings
         for rid, cs in RULE_CONTROLS.items():
-            if (rid in with_findings or rid in hidden) and rid not in ran:
+            if rid in (partly_evaluated or {}):
                 # It found something AND declined somewhere: the finding counts as a finding, and the rule is
                 # named, because before G272's third review it was named nowhere -- neither clean nor in the
                 # not-evaluated list, so the declined objects read as covered.
+                # Taken from the caller's record, never inferred from "has findings and did not run": such a
+                # rule DID run (G281, D4), so that inference could never fire again.
                 partly_evaluated_rules.append(rid)
                 for c in cs:
                     partly[c] = partly.get(c, 0) + 1
@@ -231,6 +325,8 @@ def summary(
                     not_evaluated_rules.append(rid)
             for c in cs:
                 bucket[c] = bucket.get(c, 0) + 1
+                if bucket is unevaluated:
+                    unevaluated_ids.setdefault(c, []).append(rid)
     ordered = sorted(
         set(counts) | set(excepted) | set(clean) | set(unevaluated) | set(withheld),
         key=lambda c: (-counts.get(c, 0), -excepted.get(c, 0), c),
@@ -247,15 +343,28 @@ def summary(
                 entry["partlyEvaluated"] = partly[c]
             if fired_rule_ids is not None:
                 entry["withheld"] = withheld.get(c, 0)
+            if not_evaluated is not None and unevaluated_ids.get(c):
+                # Named, as the KSI rows name them: `notEvaluated: 3` beside nothing that says which three is a
+                # number a reader cannot act on. The count stays the whole count; the names are capped.
+                names = sorted(unevaluated_ids[c])
+                entry["notEvaluatedRules"] = names[:MAX_NAMED_RULES]
+                if len(names) > MAX_NAMED_RULES:
+                    entry["moreNotEvaluated"] = len(names) - MAX_NAMED_RULES
         controls.append(entry)
     out: dict[str, Any] = {"catalog": CATALOG, "controls": controls}
     if evaluated_rule_ids is not None:
         # The counts said HOW MANY rules of a control did not run; nothing said WHICH, outside the KSI view, so a
-        # rule that declined quietly was invisible in the text view and the SARIF (G272).
-        out["notEvaluatedRules"] = sorted(not_evaluated_rules)
+        # rule that declined quietly was invisible in the text view and the SARIF (G272). Named here WITH its
+        # reason (G281): a bare list of the same ids beside this one is a strict subset of it, which is the second
+        # source of truth class 9 is about, and `rules_not_evaluated` records NO_REASON_RECORDED rather than
+        # dropping a rule no reason was kept for. The list is built once, in the loop above, instead of being
+        # recomputed from RULE_CONTROLS here -- two computations of one list is the same defect one level down.
+        out["rulesNotEvaluated"] = rules_not_evaluated(not_evaluated or {}, not_evaluated_rules)
         # Rules that found something on some objects and declined on others (`declined` names those objects).
-        # Disjoint from notEvaluatedRules, so every rule that was not evaluated in full is in exactly one (G272).
+        # Disjoint from rulesNotEvaluated, so every rule not evaluated in full is in exactly one (G272).
         out["partlyEvaluatedRules"] = sorted(partly_evaluated_rules)
+    if evaluated_rule_ids is not None and absent_subjects:
+        out["rulesEvaluatedWithout"] = rules_evaluated_without(absent_subjects)
     note = "Findings are evidence about these controls; an assessment decides whether a control is met."
     if excepted:
         note += (
@@ -266,6 +375,11 @@ def summary(
         note += (
             " A control with `withheld` had findings from rules that ran and reported, which this view's"
             " severity filter removed: those rules are not clean."
+        )
+    if out.get("rulesNotEvaluated"):
+        note += (
+            " A rule under `notEvaluated` had nothing to decide on: `rulesNotEvaluated` says why for each, and a"
+            " kind that is not in the input is not a kind that is clean."
         )
     out["note"] = note
     return out

@@ -228,8 +228,15 @@ def test_cli_audit_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     f.write_text(BAD)
     assert main(["audit", "-f", str(f), "--platform", "openshift", "--version", "4.22"]) == 1
     assert "KN-V002" in capsys.readouterr().out
-    assert main(["audit", "-f", str(f), "--fail-on", "never", "--format", "json"]) == 0
-    assert json.loads(capsys.readouterr().out)["summary"]["maxSeverity"] == "critical"
+    # The fixture's `apps.openshift.io/v1 Route` is an object the rules refuse to read, so the verdict is
+    # undetermined and `--fail-on never` still exits 1 (G281, review 4): never 0 for undetermined.
+    assert main(["audit", "-f", str(f), "--fail-on", "never", "--format", "json"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["summary"]["maxSeverity"] == "critical"
+    assert [n["kind"] for n in out["notAudited"]] == ["Route"]
+    good = tmp_path / "good.yaml"
+    good.write_text(BAD.replace("apps.openshift.io/v1\nkind: Route", "route.openshift.io/v1\nkind: Route"))
+    assert main(["audit", "-f", str(good), "--fail-on", "never", "--format", "json"]) == 0
 
 
 def test_cli_generate_fix_diagnose_learn(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

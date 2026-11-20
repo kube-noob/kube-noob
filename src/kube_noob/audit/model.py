@@ -117,7 +117,7 @@ class RedTeamScenario:
         }
 
 
-#: How many declined rules the withheld-score reason names before it gives a count.
+#: How many declined rules, or unread objects, the undetermined reason names before it gives a count.
 MAX_WITHHELD_NAMED = 10
 
 
@@ -137,24 +137,37 @@ class Report:
     # finding this view withheld was counted clean, so `--min-severity high` could turn a bundle with a
     # privileged container into a clean compliance record (G199).
     fired_rules: list[str] = field(default_factory=list)
+    # Rule -> why it reached no verdict at all on this input, whatever the cause: the stage was not requested,
+    # the rule declined on every object it had (the summary of `declined`, which keeps the per-object detail),
+    # or none of the kinds it reads were in the input ("no Service in the input") -- a rule about a kind that is
+    # absent used to count as evaluated and clean (G281). A partly evaluated rule (a finding on one object, a
+    # decline on another) stays in `evaluated_rules` and is not here. Carried in `as_dict` as `notEvaluated`.
+    not_evaluated: dict[str, str] = field(default_factory=dict)
+    # Rules that ran on part of what they read: the kinds they asked for and did not get, per rule (G281).
+    absent_subjects: dict[str, list[str]] = field(default_factory=dict)
+    # Rule -> the note for a rule that reported a finding on one object and declined on another. It RAN, so it
+    # is in `evaluated_rules` and never in `not_evaluated` (G281, D4) -- which is exactly why this field has to
+    # exist: G272 inferred "partly evaluated" from a rule having findings and NOT being in the evaluated list,
+    # and once such a rule is correctly recorded as having run, that inference can never fire again and the
+    # list it fills was silently empty for every input. Carried into `controlSummary` as `partlyEvaluatedRules`.
+    partly_evaluated: dict[str, str] = field(default_factory=dict)
+    # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
+    # rule declined with a reason, so every result that had none stays byte-identical.
+    declined: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Every object, or part of one, that was NOT audited: an object of a kind the rules know that this reader
+    # REFUSED (an apiVersion that is not a string, not shaped like an API, or a group the kind is not known
+    # under -- G281), a pod spec in a kind with no reader, a container whose image an operator supplies, or an
+    # object in a group this reader refuses (G272). Each entry is {"object", "kind", "why"} with `why` a fixed
+    # phrase, never input text, plus `acceptedBy` once an exception accepted it. Not a finding and not an
+    # absence: `undetermined` reads it beside `declined`, and while one row no exception accepted is here the
+    # verdict is undetermined and `audit` and `gate` exit 1 whatever `--fail-on` says (R1; the sixth review
+    # found "containers were NOT audited" printed under `score 100.0`, G272). `as_dict` carries it as
+    # `notAudited`, always, so a reader never has to tell "nothing was unread" from "this view does not say".
+    not_audited: list[dict[str, Any]] = field(default_factory=list)
     # What the cluster's audit configuration can and cannot record, when the bundle carries the object that
     # says so (kube_noob.audit.detection). None when it does not: the absence of the singleton means it was
     # not collected, and a coverage statement is exactly the thing not to invent (R4, G244).
     detection_coverage: dict[str, Any] | None = None
-    # Rule -> the objects it declined and why, bounded, with how many entries were withheld (G272). Only when a
-    # rule declined with a reason, so every result that had none stays byte-identical.
-    declined: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Every object, or part of one, that was NOT audited without a rule declining on it: a pod spec in a kind
-    # with no reader, a container whose image an operator supplies, an object in a group this reader refuses.
-    # Each entry is {"object", "kind", "why"} with `why` a fixed phrase, never input text; `undetermined` reads
-    # it beside `declined`: the sixth review found "containers were NOT audited" printed under `score 100.0`
-    # (G272). Carried in `as_dict` as `notAudited`.
-    not_audited: list[dict[str, str]] = field(default_factory=list)
-    # Rule -> why it reached no verdict at all on this input: "stage not requested" when the caller asked for
-    # other stages, or the summary of `declined` ("declined on N objects"), which keeps the per-object detail.
-    # `partlyEvaluatedRules` (a finding on one object, a decline on another) stay in `evaluated_rules` and are
-    # not here. Carried in `as_dict` as `notEvaluated` (G272, seventh review).
-    not_evaluated: dict[str, str] = field(default_factory=dict)
 
     def max_severity(self) -> Severity | None:
         return max((f.severity for f in self.findings), default=None)
@@ -180,40 +193,36 @@ class Report:
         server started through a script it did not read, a partly evaluated rule) found nothing there BECAUSE it
         did not look. `score=100.0` printed above "KN-S038 was not evaluated in full" was a number beside an
         unread rule, the one thing the product rule forbids (G272). The same holds for every other record that
-        something was not read (`not_audited`). While this is not None: `score` is null with this text beside
-        it as `scoreWithheld`, `audit` and `gate` exit 1 whatever `--fail-on` says, the gate is `incomplete` and
-        not `passed`, and the eval grader marks every finding-derived check not evaluated (seventh review: an
-        undetermined audit exited 0 and the gate said passed). The quiet declines of a partial bundle (no
-        NetworkPolicy here to judge) and a stage the caller did not ask for are not an unread object, and keep
-        the number.
+        something was not read or not evaluated: an object this reader refused, and a rule whose subject kind
+        was absent from the input, which is not evaluated and never clean (`not_audited`, G281). While this is
+        not None: `score` is null with this text beside it as `verdictReason` under `verdict: undetermined`,
+        `audit` and `gate` exit 1 whatever `--fail-on` says, the gate is `incomplete` and not `passed`, and the
+        eval grader marks every finding-derived check not evaluated (seventh review: an undetermined audit
+        exited 0 and the gate said passed). The quiet declines of a partial bundle (no NetworkPolicy here to
+        judge) and a stage the caller did not ask for are not an unread object, and keep the number; neither is
+        a `not_audited` row an exception accepted, which stays listed and no longer withholds the score
+        (G281, review 5).
 
         The text before the first colon is the short form the text view prints.
         """
-        if not self.declined and not self.not_audited:
-            return None
         heads: list[str] = []
         details: list[str] = []
-        if self.declined:
-            ids = sorted(self.declined)
-            heads.append(f"{len(ids)} rule{'s' if len(ids) != 1 else ''} not evaluated in full")
-            details.append(
-                ", ".join(ids[:MAX_WITHHELD_NAMED])
-                + (f" and {len(ids) - MAX_WITHHELD_NAMED} more" if len(ids) > MAX_WITHHELD_NAMED else "")
-            )
-        if self.not_audited:
-            counts: dict[str, int] = {}
-            for entry in self.not_audited:
-                counts[entry["kind"]] = counts.get(entry["kind"], 0) + 1
-            heads.append(
-                " and ".join(f"{n} {what}{'s' if n != 1 else ''}" for what, n in sorted(counts.items()))
-                + " not audited"
-            )
-            names = list(dict.fromkeys(entry["object"] for entry in self.not_audited))
-            details.append(
-                "not read in full: "
-                + ", ".join(names[:MAX_WITHHELD_NAMED])
-                + (f" and {len(names) - MAX_WITHHELD_NAMED} more" if len(names) > MAX_WITHHELD_NAMED else "")
-            )
+        # A rule whose every decline names an object an exception ACCEPTED is covered by that same reviewed
+        # decision, and no longer withholds the score. Without this, G281's accept path died against G272's
+        # new channel: the owner accepted "this Knative Service is not audited", the row went quiet, and the
+        # two control-plane rules that declined BECAUSE of that very object still held the verdict open -- one
+        # object blocking the verdict twice, through two mechanisms, only one of which an exception can reach.
+        # A decline that names no object ("" for the bundle) is never covered: nobody signed off on that.
+        accepted = {str(row.get("object")) for row in self.not_audited if row.get("acceptedBy")}
+        open_declined = sorted(rid for rid, record in self.declined.items() if not _all_accepted(record, accepted))
+        if open_declined:
+            heads.append(f"{len(open_declined)} rule{'s' if len(open_declined) != 1 else ''} not evaluated in full")
+            details.append(_named(open_declined))
+        if (phrases := _not_audited_phrases(self.not_audited)) is not None:
+            heads.append(phrases[0])
+            details.append(phrases[1])
+        if not heads:
+            return None
         return f"{' and '.join(heads)}: {'; '.join(details)}"
 
     def as_dict(self) -> dict[str, Any]:
@@ -225,18 +234,24 @@ class Report:
             "summary": {
                 "counts": self.counts(),
                 "maxSeverity": top.name.lower() if (top := self.max_severity()) is not None else None,
-                # null, with the reason beside it, while a rule declined on an object; a report where none did
-                # stays byte-identical (G272).
-                "score": None if (withheld := self.undetermined()) else round(self.score(), 1),
-                **({"scoreWithheld": withheld} if withheld else {}),
+                # A number beside "undetermined" was two verdicts in one line: the score is withheld, and the
+                # verdict word is in the summary itself, not only in a note (G281, review 5, item 3). The
+                # reason is `verdictReason`, the name `alert_report` already gives the same thing (G272's
+                # `scoreWithheld` said it a second way).
+                "score": None if (why := self.undetermined()) else round(self.score(), 1),
+                **({"verdict": "undetermined", "verdictReason": why} if why else {}),
             },
             "assumptions": self.assumptions,
+            "notAudited": list(self.not_audited),
             "findings": [f.as_dict() for f in sorted(self.findings, key=_sort_key)],
             "controlSummary": control_summary(
                 [f.rule_id for f in self.findings],
                 None,
                 self.evaluated_rules or None,
                 self.fired_rules or None,
+                not_evaluated=self.not_evaluated or None,
+                absent_subjects=self.absent_subjects or None,
+                partly_evaluated=self.partly_evaluated or None,
             ),
             "redTeam": [s.as_dict() for s in self.scenarios],
             # Only when the target is past the minor the removal table was read at, so every result that was
@@ -246,9 +261,69 @@ class Report:
             # stays byte-identical (R4, G244).
             **({"detectionCoverage": self.detection_coverage} if self.detection_coverage else {}),
             **({"declined": self.declined} if self.declined else {}),
-            **({"notAudited": self.not_audited} if self.not_audited else {}),
             **({"notEvaluated": self.not_evaluated} if self.not_evaluated else {}),
         }
+
+
+def _all_accepted(record: dict[str, Any], accepted: set[str]) -> bool:
+    """Whether every object this rule declined on is one an exception accepted.
+
+    `record` is a `Report.declined` row: `{"entries": [{"resource", "reason"}], "withheld": n, "decided": n}`.
+    A row with entries it could not list (`withheld`) cannot be shown to be fully covered, and a decline that
+    names no object ("" for the bundle) is never covered, because nobody signed off on that.
+    """
+    entries = record.get("entries") if isinstance(record, dict) else None
+    if not isinstance(entries, list) or not entries or record.get("withheld"):
+        return False
+    return all(isinstance(e, dict) and str(e.get("resource") or "") in accepted and e.get("resource") for e in entries)
+
+
+def _named(items: list[str]) -> str:
+    """`MAX_WITHHELD_NAMED` of these names, then a count of the rest: the one bound both halves of the
+    undetermined reason are held to, so neither can grow without the other."""
+    return ", ".join(items[:MAX_WITHHELD_NAMED]) + (
+        f" and {len(items) - MAX_WITHHELD_NAMED} more" if len(items) > MAX_WITHHELD_NAMED else ""
+    )
+
+
+def open_not_audited(not_audited: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The `notAudited` rows no exception accepted: the ones that still stop the verdict being a pass.
+
+    An accepted row stays listed -- the object was still not audited -- and is not counted here
+    (`audit.exceptions.accept_not_audited` stamps `acceptedBy`, G281 review 5).
+    """
+    return [r for r in not_audited if isinstance(r, dict) and not r.get("acceptedBy")]
+
+
+def _not_audited_phrases(not_audited: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """The (head, detail) the unaccepted `notAudited` rows imply, or None when no row is left.
+
+    The ONE place that phrase is built, so `Report.undetermined` and `undetermined_reason` -- which a caller
+    holding only a serialised report reaches for -- cannot drift apart. A row whose `kind` is missing still
+    counts; it is named "object" rather than dropped, because an unrecognised shape is not an absence.
+    """
+    rows = open_not_audited(not_audited)
+    if not rows:
+        return None
+    counts: dict[str, int] = {}
+    for entry in rows:
+        what = str(entry.get("kind") or "object")
+        counts[what] = counts.get(what, 0) + 1
+    head = " and ".join(f"{n} {what}{'s' if n != 1 else ''}" for what, n in sorted(counts.items())) + " not audited"
+    names = list(dict.fromkeys(str(entry.get("object", "")) for entry in rows))
+    return head, "not read in full: " + _named(names)
+
+
+def undetermined_reason(not_audited: list[dict[str, Any]]) -> str | None:
+    """Why a list of `notAudited` rows on its own leaves the verdict undetermined, or None when it does not.
+
+    For a caller that holds a serialised report and no `Report` (the drift snapshot's `coverage.notAudited`).
+    It reads the same `_not_audited_phrases` as `Report.undetermined`, so the two cannot say different things
+    about the same rows.
+    """
+    if (phrases := _not_audited_phrases(not_audited)) is None:
+        return None
+    return f"{phrases[0]}: {phrases[1]}"
 
 
 def _sort_key(f: Finding) -> tuple[int, int, int, str]:

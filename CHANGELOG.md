@@ -2,6 +2,182 @@
 
 ## Unreleased
 
+- **Merging G272 into G281: one verdict predicate, one record of what was not evaluated, and five rules that
+  now declare their subjects.** Both branches had independently invented `Report.undetermined()` and
+  `not_audited`, and the merge kept G272's predicate as the only one: a rule that declined on an object withholds
+  the score, not just an object the reader refused. Where the two genuinely disagreed, the side that refuses to
+  call something clean won -- so a decline now withholds the verdict, and `KN-V002` (not `KN-V001`) owns a
+  non-string `apiVersion`, because one field judged by two rules was two verdicts for one field. A platform or
+  version guard, a partial bundle and an unconfigured policy are NOT unread objects: they are named in
+  `notEvaluated` with their reason and keep the score, which is what G272 means by a quiet decline. Three
+  integration defects that neither branch could see alone are fixed with it: a rule whose kind is simply absent
+  declined with no reason at all and so was in NEITHER `evaluatedRules` nor `notEvaluated`, leaving
+  `controlSummary`, the KSI page, the OSCAL document and the gate each with a rule they could not account for;
+  `partlyEvaluatedRules` was inferred from a rule having findings and not having run, which G281 makes impossible
+  by recording such a rule as having run, so that list would have been empty for every input on both the control
+  summary and the KSI page, and it is now read from the audit's own record; and an exception that accepted an
+  object no longer leaves the two control-plane rules that declined *because of that same object* holding the
+  verdict open. `KN-S037`..`KN-S041` declare their subjects like every other rule, and `APIService` and `OAuth`
+  are in `SUBJECT_GROUPS` so they can. `notEvaluated` keeps the rule's own words rather than a count of them, the
+  `notAudited` row keeps the `apiGroup` and `line` an exception matches on and the SARIF locates by, and
+  `verdictReason` is the one name for the withheld-verdict text (`alert_report` already used it; `scoreWithheld`
+  said it a second way). No exit code changes. Those five rules move to `kube_noob/audit/cprules.py`, unchanged,
+  because the merged `rules.py` put the generated plugin copy 30 KiB over the directory's 256 KiB per-file limit;
+  the walk that checks every rule declares the kinds it reads now covers both modules.
+
+- **A rule about a kind that was not in the input counted as evaluated and clean (G281).** The coverage record
+  -- `controlSummary` in `audit`, `audit_manifests` and the gate, `coverage` in a posture snapshot, the KSI
+  crosswalk's columns -- recorded a rule as evaluated when its check ran, whatever it ran over. `kube-noob audit
+  -f examples/kube-noob-exceptions.yaml` therefore recorded 87 of 93 rules as evaluated on a file holding one
+  ExceptionList (the other six had declined on the partial bundle): no Pod was "no privileged container", no Role
+  was "no wildcard grant", no Service was "no NodePort", and the OSCAL document built from a Deployment-only
+  directory reported 15 controls `satisfied` and excluded none. Five rules gated on the platform did the same: an
+  OpenShift-only rule read as checked-and-clean on every Kubernetes bundle. This is the absence-read-as-pass the
+  project exists to refuse, in the record that is supposed to be the refusal.
+
+  Every rule now declares what it is about (`subjects=` on `@rule`: a kind, alternatives such as `Role` or
+  `ClusterRole`, the pod-spec kinds, or every object for the per-document validations), and a rule whose subject
+  is not in the input does not run: it is `notEvaluated` with the reason `no Service in the input`, whatever
+  else it could have read. A kind counts only in the API group the rules know it in, so an ACM or Knative
+  `Subscription`, a Knative `Service` or somebody else's `MachineConfigPool` is not the subject
+  (`no operators.coreos.com Subscription in the input`), and `by_kind` and `workloads` apply the same rule. A
+  rule that needs two subjects (a Service and a pod spec; a NetworkPolicy and a pod spec; a PodDisruptionBudget
+  and a replicated workload) needs both; a rule that reads a kind beside its subject names it when absent under
+  `rulesEvaluatedWithout` (`KN-S014 without ServiceAccount`), and KN-N001 still fires on a whole namespace whose
+  workloads no NetworkPolicy selects. Every rule that declines carries its own reason (`part of a namespace was
+  passed, so the namespace's NetworkPolicies were not passed`; `does not apply on kubernetes: ...`), and a rule
+  that declined on one object and reported on another is evaluated, with the decline kept as a note rather than
+  listed as both fired and not evaluated. Subject labels are sorted, so the record is the same bytes under any
+  `PYTHONHASHSEED`.
+
+  The reasons are in every embedding: `controlSummary.rulesNotEvaluated` and per-control `notEvaluatedRules` in
+  the audit (JSON, YAML, and grouped by reason in the text view, with the count the JSON has), the MCP
+  `audit_manifests` and `fedramp_ksi` results, `audit --format sarif` (one `toolExecutionNotification` per
+  reason, beside the assumptions G269 put there), the gate's JSON, Markdown summary and HTML page (one coverage
+  line: `45 rules evaluated, 48 not evaluated: no Service in the input (6); ...`), the OSCAL selection remarks,
+  a posture snapshot's `coverage.notEvaluated` (with the resource named when the cluster refused it), the
+  posture report's `controlStanding` in JSON, Markdown and HTML, and the KSI page, which labelled every such
+  rule "Declined to decide" and now says "Not evaluated" with the reasons. An OSCAL deliverable now lists under
+  `exclude-controls` every control whose rules only read kinds the input lacks -- 10 of 31 on a directory holding
+  one Deployment -- and reports fewer controls `satisfied` (7, where 0.9.2 reported 16). A snapshot from 0.9.2
+  carries no reasons and keeps its older shape; a diff between one and a new snapshot reports nothing new, fixed
+  or regressed. The exit code is unchanged for an absent kind: it is not a finding and not unreadable evidence.
+
+  A third review found the group match drawn too tight, in three ways, each a kind of absence-read-as-pass in
+  the other direction (a real object refused, so the rules about it did not run). An object with NO `apiVersion`
+  was refused as "a kind of another group": the in-cluster backend's list items carry none, so a live posture
+  snapshot or scheduled drift job evaluated 3 rules on a cluster where 0.9.2 fired 19 (KN-S001, S015, N007
+  among them). No group is an unknown, not a contradiction, as `podspec.refused_group` already held; and
+  every live collector -- the posture snapshot's, the attack-path scan's and the operator inventory's, through
+  one helper -- now records the `apiVersion` the object was listed under, so the stored object says which API
+  it came from, as kubectl's output does, and KN-V001/V002 no longer report a live object as missing it. (The
+  one visible consequence, for users of the in-cluster backend only: a folder of posture snapshots taken before
+  this release has no `apiVersion` on its objects, so the first `posture diff` after upgrading reports that one
+  field changed on each of them, and those two rules fixed; nothing else, and the scan and the inventory keep
+  no history to diff.) Kubernetes' own retired groups -- `extensions/v1beta1` Deployment, DaemonSet,
+  ReplicaSet, Ingress and NetworkPolicy, `apps/v1beta1`, `apps/v1beta2` -- were refused the same way:
+  `audit -f <legacy dir> --version 1.15 --fail-on high` exited 0 where 0.9.2 exited 1, `tests/fixtures/legacy-bundle.yaml`
+  lost KN-C001/C002/C009/C010/C014/V010 and gained a false KN-V011 ("selects no pod template"), because the
+  Deployment was dropped while the Service beside it was read. `SUBJECT_GROUPS` now holds every group a kind has
+  ever been served under, derived from the removed-API history the version rules read (`REMOVED_APIS`), never
+  hand-listed; reasons still name the group the kind is served in today. OpenShift 3.x's ungrouped `v1` is
+  OpenShift's own history the same way: `oc get -o yaml` on 3.x wrote `apiVersion: v1` for DeploymentConfig,
+  Route, BuildConfig, Build, ImageStream, ImageStreamTag, Template, Project, SecurityContextConstraints,
+  ClusterResourceQuota and the authorization kinds, so those are read as the kinds they are (KN-V002 still
+  says the API is gone), from `LEGACY_OPENSHIFT_V1`, kind to the group it moved to, cited to openshift/api
+  release-3.11 `<group>/v1/legacy.go`; `v1` is accepted for exactly those kinds, so a core `v1 Deployment` is
+  still not a Deployment. The neighbour of that shape -- a
+  `Deployment` in `example.com/v1` beside a real one and a Service -- is refused rightly and now SAID: the
+  report's assumptions name the object as not audited, and KN-V011 and KN-N012 decline for that namespace
+  instead of concluding "selects nothing" from pods they did not read. Four declarations were wider or narrower
+  than their rule: KN-V010 judges only Deployment, StatefulSet, DaemonSet and ReplicaSet and KN-N001 fires only
+  for long-running workloads and Pods, so each was "evaluated and clean" on a CronJob-only or Pod-only input
+  and now names those kinds instead; KN-ST001 reads StorageClass and declares it as context; and the pod-spec
+  kinds are spelled out inside an alternative label too ("no networking.k8s.io Ingress or pod spec in the input
+  (no Pod, Deployment, ...)"). A test now walks every rule body for `by_kind(...)` and fails when the kind is
+  declared as neither subject nor context. And the text view's one line a reader scans, `NIST SP 800-53
+  controls with findings: CM-7 (5), ... AU-2 (0)`, listed every touched control with its count, so a control
+  whose only rule was not evaluated read as checked-and-zero while the JSON beside it said `notEvaluated: 1`:
+  that line now names only controls with findings, and a second line, `controls not evaluated, in whole or in
+  part: AU-2 (KN-S035), CM-7 (KN-N009, ...; 8 clean), ...`, names every control with a rule not evaluated, with
+  the rules and its clean count when it is partly both; the JSON's set and the text's are the same set.
+
+  A fourth review found that a refused object made the GATE pass. A `Deployment` under `apiVersion: v1/`,
+  `APPS/v1`, ` apps/v1` or `example.com/v1` was named in `audit`'s assumptions and nowhere else: `gate` exited
+  0, its Markdown and HTML said "gate passed", its SARIF had no word of it, and the coverage line in all four
+  formats said "no pod spec in the input" of a file holding a Deployment with a privileged container -- a typo
+  in apiVersion turned a failing gate into a passing one. Now a refused object is never a pass: the report
+  carries `notAudited` (object, kind, and a fixed reason: `apiVersion is not a string`, `apiVersion is not
+  well-formed (<group>/<version> or <version>)`, `apiVersion names a group kube-noob does not know Deployment
+  under`), the text view prints it, the gate's JSON carries the list and its `failures` name it, the Markdown
+  and HTML say "Not passed: N object(s) not audited" and never "passed", the SARIF carries the list as an
+  invocation property and one `note`-level result per object, the posture snapshot's coverage carries it, and
+  the verdict is undetermined: `audit` and `gate` exit 1, never 0, whatever `--fail-on` says. The subject reason
+  for a refused kind is `1 Deployment not audited (...)`, never "no pod spec in the input"; a pod spec in a kind
+  with no reader (an Argo Rollout) is `1 object not audited (pods are in a kind kube-noob has no reader for)`.
+  This also means a bundle holding a same-named kind of another API -- a Knative `Service`, an ACM
+  `Subscription`, a Volcano `Job` -- now exits 1 as undetermined where it exited 0 before, because the rules
+  know that kind name and did not read the object; the note names it. `apiVersion: null` is a missing
+  apiVersion (read, with KN-V001), not a refusal, and a non-string one is refused as "not a string" -- Python's
+  `None` and `7` no longer reach a note or KN-V002's message; a slash-less or malformed apiVersion on a core
+  kind (`7`, `/v1` on a Pod) is refused the same way instead of being read as core v1. No input text reaches a
+  reason: the reason a declining rule gives for a refused or unread workload is built from the kind the rules
+  know and fixed phrases (a bidi override in a group name reached `rulesNotEvaluated[].why` in JSON and text),
+  and the cleaned, quoted value appears in the assumption line only. KN-V011 and KN-N012 decline for a
+  namespace holding pods in a kind kube-noob has no reader for (an Argo Rollout, a Knative Service) exactly as
+  for a refused Deployment, through one helper. OpenShift 3.x bindings are read as binding whom they bind:
+  `userNames`/`groupNames` (the deprecated fields openshift/api authorization/v1 types.go keeps "when supporting
+  legacy clients and servers") and the `SystemUser`/`SystemGroup` subject kinds go through the one conversion
+  the attack-path scan already had (`kube_noob.audit.rbac_legacy`, moved there so there is one), so KN-S016
+  names who gets cluster-admin instead of "[]" and KN-S028 reports `system:authenticated` bound through
+  `groupNames`. The declaration walk fails loudly on a traversal it cannot classify (a `ctx.docs` comprehension,
+  a `filter`, a `.data.get("kind")`, a helper from another module given the context) instead of returning an
+  empty set, for every rule that does not declare "any object". The OpenShift refusal note says "the legacy
+  ungrouped API (v1)", not "core"; a live snapshot's reasons say "read from the cluster" and "never requested
+  from a cluster (not on the read-only allowlist)", never "in the input"; KN-V014 tells duplicates apart by API
+  group as well as kind, namespace and name. The apiVersion stamp wins over an empty, null or non-string value
+  in every live collector. One intended fixture drift: `tests/fixtures/bad-bundle.yaml` holds an
+  `apps.openshift.io/v1 Route`, which 0.9.2 read as a Route and reported under KN-N002; it is now refused and
+  named, KN-V002 still fires on it, and the fixture's verdict is undetermined. `apps/` (a group with an empty
+  version) is refused as not well-formed where 0.9.2 read it as `apps` and reported KN-V002.
+
+  A fifth review found the nearest neighbour still passing: a pod spec in a kind with no reader (an Argo
+  Rollout with a privileged container), or a `kind` typo on a real one (`deployment`, `"Deployment "`, `7`
+  under `apps/v1`), was exit 0 and score 100.0 while the same JSON said "1 object not audited". The three
+  kinds of not-read object now come from ONE helper (`AuditContext.not_audited`): a refused apiVersion, a
+  `kind` that is not a kind name (`kind is not well-formed (an UpperCamelCase name)`, `kind is not a string`),
+  and a pod spec in a kind with no reader (`pods are in a kind kube-noob has no reader for`); the engine's
+  `notAudited`, every subject reason and the verdict are built from it, so a reason that says "not audited" is
+  never beside an empty list. An unknown kind in an unknown group (`example.com/v1 Widget`) is neither: nothing
+  claims to read it, it is not listed, and the verdict stays determined. The verdict word is now on the
+  record, from one predicate (`Report.undetermined()`): `summary.score` is `null` and `summary.verdict` is
+  `undetermined` (with `verdictReason`), the text headline says `score=not determined (1 object(s) not
+  audited)`, the gate's Markdown headline is `## kube-noob gate incomplete` and its HTML masthead "The gate is
+  incomplete", `fix.after` carries the same summary, `ksi` exits 1 and the `fedramp_ksi` result carries
+  `verdict` and `notAudited`, and `posture diff`/`report` read `coverage.notAudited` into the report (JSON,
+  Markdown and HTML) and exit 1. An accept path exists: an ExceptionList entry `notAudited: {namespace, kind,
+  name, apiGroup}` with owner, reason and expiry (never a `rule:` entry) accepts one object; the row stays
+  listed with `acceptedBy`, the verdict is determined again, and the SARIF help text points at it. The
+  `notAudited[].object` and the note are cleaned once, where the row is built (`sanitize.one_line`, 120
+  characters), and `resources` and the "No bundled schema" note the same way: a newline in a name forged a
+  second note row in the text view and reached the gate JSON and SARIF raw. KN-V014 keys duplicates on the
+  kind's identity: one object across every group the kind was served under (`extensions/v1beta1` and `apps/v1`
+  Deployment `web`; the two RoleBinding groups OpenShift serves as proxies), the group as well otherwise.
+  `userNames`/`groupNames` entries that are not strings are refused by shape (`userNames[1] is not a string`),
+  never printed as a Python repr; `userNames: []` beside `subjects` says why nobody is bound (the list is set,
+  so subjects are ignored, per openshift/api authorization/v1); `posture scan` reads OpenShift 3.x `v1` RBAC
+  through the same conversion as the audit. A non-string apiVersion (`[]`, `{}`, `0`, `true`, `1.5`) gets
+  exactly one message, "apiVersion is not a string" -- KN-V001's "missing" is for absent, null and "" only.
+  The `KN-NOT-AUDITED` SARIF result is `kind: review` with the object's file and line and a partial
+  fingerprint, so code scanning lists and tracks it.
+
+  Measured with the command named, `kube-noob audit -f examples/<file>` (one file, so the partial-bundle guards
+  also apply; the count is the `rules:` line of the text view), rules evaluated before and after:
+  `exercise-answer.yaml` and `insecure-deployment.yaml` 87 to 49; `netpol-shop.yaml` 87 to 46;
+  `netpol-admin-tiers.yaml` 86 to 46; `kube-noob-exceptions.yaml` 87 to 9, with all 84 others naming the kind
+  they waited for. (`blueprint.yaml` and `problems.yaml` are not manifests and the command refuses them.)
+  G210's boundary "a bundle with no admin policy is evaluated and clean" is reversed: nothing to decide is not a
+  failure to decide, and it is not a pass either.
 - **Thirty-six wall-clock assertions stood in thirty-four tests, and the tight ones measured the CI runner rather than the code (G326).** G263 made this exact fix for two of them and left the rest; two of the rest have since blocked merges. `test_hostile_and_oversized_input_is_bounded_and_fast` asserted `time.perf_counter() - start < 1.0` beside an exact `len(ceph.json_checks(many)) == ceph.MAX_CHECKS`, and measured 1.0239 s and 1.0607 s on PR #77's `test (3.11)` job after the identical sha had gone 19 of 19 green on a `workflow_dispatch` run of it. The work it timed takes 0.001 s, so the budget had a thousandfold headroom and lost anyway: it measured a second of descheduling. `test_a_post_that_cannot_get_a_slot_is_refused_with_503_within_the_wait` asserted `waited < 3` with the server's own `SLOT_WAIT_SECONDS` monkeypatched to 0.3 s -- ten times the deadline it was about, so it could not tell an honoured deadline from an ignored one -- and failed at 3.1 s.
 
   The fix is one helper rather than thirty-six adjusted numbers. In `tests/bounds.py` a call site states the SHAPE of the regression it guards against -- linear work, cubic risk, catastrophic backtracking, a small multiple, fixed work, no hang -- together with the honest time it measured, and the shape names the smallest regression it must catch as a multiple of that. The ceiling is the geometric mean of the two, so the assertion sits as far above the noise as it does below the regression: a linear scan turning quadratic is about `n` times the work and these inputs are in the tens of thousands, so a tenfold ceiling catches it while a 1.05-fold ceiling catches only noise. The environment enters twice, because the two things that go wrong on a shared runner differ in kind -- multiplicatively for a coverage tracer, measured here at 1.0x on the regex-dominated ceph scan and 1.51x on the Python-object-heavy SARIF merge, and additively for a stall, which no multiplier models and which is what the ceph failure was. Both terms are frozen at import from the environment, not calibrated per session, so no fixture and no test order can change a later ceiling. Every failure now prints the elapsed time, the ceiling, how the ceiling was derived and the regression the assertion is for, because `assert 1.06 < 1.0` is why these were dismissed as flakes rather than read. A ceiling that could not catch the regression its shape names raises `VacuousBound` instead of passing -- which is what it did for the ceph site, whose honest cost of one millisecond leaves no room above a stall and below a 25-fold cap removal, so that clock is deleted and the exact cap assertion it sat beside carries the contract alone.

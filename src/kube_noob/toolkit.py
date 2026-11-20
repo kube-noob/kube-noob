@@ -1200,8 +1200,16 @@ class Toolkit:
         rule_ids: list[str] = []
         evaluated: list[str] | None = None
         fired: list[str] | None = None
+        reasons: dict[str, str] | None = None
+        absent: dict[str, list[str]] | None = None
+        # Defaulted beside its siblings, not inside the audit branch: with no manifests this name was never bound
+        # and the command raised UnboundLocalError, so `ksi` with nothing to audit -- the crosswalk-only call the
+        # dataset exists to answer -- exited 4 instead of printing every indicator as not evaluated (G281).
+        partly: dict[str, str] | None = None
         assumptions: list[str] = []
         ceiling: dict[str, str] | None = None
+        not_audited: list[dict[str, Any]] = []
+        verdict: str | None = None
         excepted: list[dict[str, Any]] = []
         excepted_ids: list[str] = []
         exceptions_block: dict[str, Any] | None = None
@@ -1230,10 +1238,17 @@ class Toolkit:
             if review is not None:
                 kept, excepted, used = self._split_excepted(review, r.findings)
                 r.findings = kept
+                used |= exc_mod.accept_not_audited(review, r.not_audited)
                 excepted_ids = [str(e["ruleId"]) for e in excepted if "ruleId" in e]
+                # `self._unused`, not a bare list comprehension over `review.active`: it is the one place that
+                # decides what "unused" means, and it reads the evaluated rules too (G272).
                 exceptions_block = {**review.summary(), **self._unused(review, used, r.evaluated_rules)}
+            not_audited = [dict(row) for row in r.not_audited]
+            verdict = r.undetermined()
             rule_ids = [f.rule_id for f in r.findings]
             evaluated, fired = sorted(r.evaluated_rules), sorted(r.fired_rules)
+            reasons, absent = dict(r.not_evaluated), dict(r.absent_subjects)
+            partly = dict(r.partly_evaluated)
             assumptions = list(r.assumptions)
             ceiling = not_checked_beyond(r.kubernetes_version)
         out = fedramp.summary(
@@ -1246,12 +1261,22 @@ class Toolkit:
             evaluated_rule_ids=evaluated,
             fired_rule_ids=fired,
             not_checked_beyond=ceiling,
+            not_evaluated=reasons,
+            absent_subjects=absent,
+            partly_evaluated=partly,
         )
         if exceptions_block is not None:
             out["exceptions"] = exceptions_block
             out["excepted"] = excepted
         if assumptions:
             out["assumptions"] = assumptions
+        if not_audited:
+            # The objects the audit did not read, and the verdict word: a KSI page built on an audit whose verdict
+            # is undetermined said `audited: true` and nothing else (review 5, item 3).
+            out["notAudited"] = not_audited
+        if verdict:
+            out["verdict"] = "undetermined"
+            out["verdictReason"] = verdict
         rows = out["indicators"]
         total = len(rows)
         hidden: dict[str, Any] = {}
@@ -1349,6 +1374,9 @@ class Toolkit:
         if review is not None:
             kept, excepted, used = self._split_excepted(review, r.findings)
             r.findings = kept
+            # A `notAudited:` entry accepts an object the rules did not read: the row stays listed, marked, and
+            # no longer makes the verdict undetermined (review 5, item 4). Before `as_dict`, which reads it.
+            used |= exc.accept_not_audited(review, r.not_audited)
         out = r.as_dict()
         if review is not None:
             out["excepted"] = excepted
@@ -1367,6 +1395,9 @@ class Toolkit:
                 # And the fired set, or a withheld finding would become clean again on any report that
                 # applies an exception list (G199).
                 r.fired_rules or None,
+                # And the reasons, or the rebuild would lose why a rule was not evaluated (G281).
+                not_evaluated=r.not_evaluated or None,
+                absent_subjects=r.absent_subjects or None,
             )
         self._observe(
             [f"platform:{out.get('platform')}"]

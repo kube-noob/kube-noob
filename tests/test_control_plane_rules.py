@@ -543,6 +543,9 @@ def test_a_declined_rule_is_not_evaluated_in_the_control_summary_and_the_oscal_e
         "findings": 0,
         "clean": 0,
         "notEvaluated": 1,
+        # Named, not just counted: `notEvaluated: 1` beside nothing that says which one is a number a reader
+        # cannot act on (G281).
+        "notEvaluatedRules": ["KN-S040"],
     }
     document = oscal.assessment_results(report.as_dict())
     selection = document["assessment-results"]["results"][0]["reviewed-controls"]["control-selections"][0]

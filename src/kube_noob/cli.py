@@ -126,7 +126,7 @@ def _locate(report: dict[str, Any], sources: Sequence[tuple[str, int]]) -> None:
     """
     if not sources:
         return
-    for key in ("findings", "excepted"):
+    for key in ("findings", "excepted", "notAudited"):
         for f in report.get(key) or []:
             if not isinstance(f, dict):
                 continue
@@ -456,6 +456,14 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         out["applicability"],
         "",
     ]
+    if out.get("verdict") == "undetermined":
+        rows = out.get("notAudited") or []
+        lines += [
+            f"verdict: undetermined ({out.get('verdictReason')}); the audit this page projects did not read: "
+            + "; ".join(f"{r.get('object')} ({r.get('why')})" for r in rows[:5])
+            + (f"; and {len(rows) - 5} more" if len(rows) > 5 else ""),
+            "",
+        ]
     if out.get("unmappedControls"):
         lines += [
             "Controls kube-noob maps that no indicator cites, so no finding reaches an indicator through them: "
@@ -476,6 +484,9 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         lines += [f"{miss['findings']} finding(s) from {miss['ruleId']} reach no indicator: {miss['why']}"]
     if out.get("findingsNotMapped"):
         lines.append("")
+    # The reasons behind every `not evaluated` column below, once, before the rows that count them (G281).
+    if coverage := _coverage_lines(out):
+        lines += [*coverage, ""]
     f = out.get("filtered")
     if f:
         lines += [
@@ -608,6 +619,52 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+def not_audited_lines(rep: dict[str, Any]) -> list[str]:
+    """The text view of `notAudited`: one line per refused object, and the verdict word (review 4, R1)."""
+    rows = [r for r in rep.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    from kube_noob import sanitize
+
+    open_rows = [r for r in rows if not r.get("acceptedBy")]
+    head = (
+        f"not audited: {len(open_rows)} object(s) the rules did not read; the verdict is undetermined (exit 1)"
+        if open_rows
+        else f"not audited: {len(rows)} object(s) the rules did not read, every one accepted by the exception list"
+    )
+    lines = [head]
+    for r in rows:
+        tail = f" (accepted by {sanitize.visible(str(r['acceptedBy']))[:64]})" if r.get("acceptedBy") else ""
+        obj, why = sanitize.visible(str(r.get("object")))[:120], sanitize.visible(str(r.get("why")))[:200]
+        lines.append(f"  {obj}: {why}{tail}")
+    return lines
+
+
+def _coverage_lines(summary: dict[str, Any]) -> list[str]:
+    """The text view of the coverage record: what ran, what did not and why, grouped by reason (G281).
+
+    The JSON carries `rulesNotEvaluated` with one reason per rule; printed one per line, a Deployment-only
+    file would show seventy lines of "no Service in the input". Grouped, the reader sees the kinds that were
+    not there and the rules that waited for them. The count on the first line is the JSON's count, so the two
+    views cannot say different numbers.
+    """
+    skipped = summary.get("rulesNotEvaluated")
+    if not isinstance(skipped, list):
+        return []
+    from kube_noob.audit.controls import RULE_CONTROLS, grouped_reasons
+
+    groups = grouped_reasons(summary)
+    total = sum(len(ids) for _, ids in groups)
+    # Rules that ran, whether clean, withheld or fired: every rule the record does not list as not evaluated.
+    lines = [f"rules: {len(RULE_CONTROLS) - total} evaluated, {total} not evaluated"]
+    for why, ids in groups:
+        lines.append(f"  not evaluated, {why}: {', '.join(ids)}")
+    for row in summary.get("rulesEvaluatedWithout") or []:
+        if isinstance(row, dict) and row.get("ruleId"):
+            lines.append(f"  evaluated without {', '.join(str(k) for k in row.get('absent') or [])}: {row['ruleId']}")
+    return lines
+
+
 #: How long one line of the audit's text view may be. A manifest-derived string (a container name, a flag value)
 #: is the user's text, and a newline in it forged a line of the report; a 100,000-character one flooded it (G272).
 MAX_TEXT_LINE = 2000
@@ -623,10 +680,15 @@ def _one_line(value: object) -> str:
 
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
-    # "not determined", not a number, while a rule declined on an object (`scoreWithheld` says which): a number
-    # printed above "was not evaluated in full" read as a verdict on what was not read (G272).
-    withheld = s.get("scoreWithheld")
-    score = f"not determined ({_one_line(withheld).partition(':')[0]})" if withheld else str(s["score"])
+    # The verdict word on the headline, in the score's place: a number beside "undetermined" further down was
+    # two verdicts in one report (G281, review 5, item 3), and a number printed above "was not evaluated in
+    # full" read as a verdict on what was not read (G272). The SHORT form of the reason -- the text before the
+    # first colon -- because the rest of it is a list of objects and this is one line.
+    score = (
+        f"not determined ({_one_line(s.get('verdictReason')).partition(':')[0]})"
+        if s.get("verdict") == "undetermined"
+        else str(s["score"])
+    )
     print(
         f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={score} | "
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
@@ -655,11 +717,18 @@ def _print_report(rep: dict[str, Any]) -> None:
         print(f"           fix: {_one_line(f['remediation'])}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
-    # Only controls that HAVE findings: the list also holds clean and not-evaluated controls, and printing those
-    # as "(0)" made a control no rule looked at read exactly like a clean one (G272).
-    touched = [c for c in (rep.get("controlSummary") or {}).get("controls") or [] if c.get("findings")]
-    if touched:
-        print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
+    # `control_headlines` names only controls that HAVE findings on its first line, and the controls with a rule
+    # not evaluated on its second: printing a clean or unevaluated control as "(0)" made a control no rule looked
+    # at read exactly like a clean one (G272), which is the shared helper's whole reason for existing (G281,
+    # review 3, N8). One helper, so every text view prints the same lists.
+    from kube_noob.audit.controls import control_headlines
+
+    for line in control_headlines(rep.get("controlSummary") or {}):
+        print(line)
+    for line in not_audited_lines(rep):
+        print(line)
+    for line in _coverage_lines(rep.get("controlSummary") or {}):
+        print(line)
     if cov := rep.get("detectionCoverage"):
         from kube_noob.audit.detection import render_text
 
@@ -3070,9 +3139,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 _emit(rep, fmt)
             if rep.get("exceptions") and not rep["exceptions"]["gate"]:
                 return 1
-            if rep["summary"].get("scoreWithheld"):
-                # Undetermined is exit 1 whatever --fail-on says: a rule that declined on the only API server, or
-                # a pod spec nothing read, is never a pass (G272, seventh review; the owner's decision, as G281).
+            if rep["summary"].get("verdict") == "undetermined":
+                # An object the rules did not read and no exception accepted, or a rule that declined on the
+                # only API server, is not a pass and not a finding: the verdict is undetermined, and
+                # undetermined is exit 1, never 0 -- whatever --fail-on says (G281 R1; G272, seventh review).
                 return 1
             if a.fail_on == "never":
                 return 0
@@ -3323,6 +3393,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         # The exception gate decides the exit code here as it does for `audit`: the page already printed
         # "gate: failed" for an expired or refused entry, and saying so while exiting 0 is two answers (G249).
         gate = (out.get("exceptions") or {}).get("gate")
+        if out.get("verdict") == "undetermined":
+            return 1  # the audit this page projects is undetermined: never 0 (review 5, item 3)
         return 0 if gate is not False else 1
 
     if a.cmd == "upgrade-risks":
@@ -4161,7 +4233,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
-            return 0
+            return 1 if rep.get("verdict") == "undetermined" else 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
@@ -4182,7 +4254,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint(f"\nwrote {paths['report']} and {paths['markdown']}")
         else:
             _emit({**rep, "files": {k: str(v) for k, v in paths.items()}}, fmt)
-        return 0
+        return 1 if rep.get("verdict") == "undetermined" else 0
     except (drift.DriftError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
 

@@ -66,6 +66,21 @@ def _declined(report: Report, rid: str) -> bool:
     )
 
 
+def _partly(report: Report, rid: str) -> bool:
+    """It reported a finding on one object and declined on another, so it RAN and the decline is stated.
+
+    Such a rule is in `evaluated_rules`, which is why `_declined` is the wrong question for it: G281 records a
+    partly evaluated rule as having run (D4 -- a rule in both `firedRules` and `notEvaluated` was two records of
+    one run), and `partly_evaluated` plus the per-object `declined` map are where it is accounted for.
+    """
+    return (
+        rid in report.evaluated_rules
+        and rid in report.partly_evaluated
+        and rid not in report.not_evaluated
+        and any(a.startswith(f"{rid} was not evaluated") for a in report.assumptions)
+    )
+
+
 def _quiet(report: Report, rid: str) -> bool:
     """Not evaluated, and no sentence about it (nothing of its kind was in the input)."""
     return rid not in report.evaluated_rules and not any(a.startswith(rid) for a in report.assumptions)
@@ -262,7 +277,8 @@ def test_an_application_bundle_does_not_make_the_control_plane_rules_clean() -> 
     for rid in ("KN-S037", "KN-S038", "KN-S039"):
         assert _quiet(report, rid), rid
     summary = {c["id"]: c for c in report.as_dict()["controlSummary"]["controls"]}
-    assert "KN-S038" in report.as_dict()["controlSummary"]["notEvaluatedRules"]
+    named = {row["ruleId"] for row in report.as_dict()["controlSummary"]["rulesNotEvaluated"]}
+    assert "KN-S038" in named
     assert summary["AC-14"]["notEvaluated"] >= 1
 
 
@@ -297,8 +313,11 @@ def test_a_quiet_decline_is_named_in_the_text_view_and_the_sarif(
     path.write_text(APP, encoding="utf-8")
     main(["audit", "-f", str(path), "--platform", "openshift", "--version", "4.20", "--fail-on", "never"])
     out = capsys.readouterr().out
-    line = next(ln for ln in out.splitlines() if ln.strip().startswith("not evaluated:"))
-    assert "KN-S040" in line and "KN-S041" in line and len(line) < 400
+    lines = [ln for ln in out.splitlines() if ln.strip().startswith("not evaluated")]
+    assert lines, out
+    assert all(len(ln) < 400 for ln in lines), max(lines, key=len)
+    named = " ".join(lines)
+    assert "KN-S040" in named and "KN-S041" in named, named
     main(
         [
             "audit",
@@ -389,7 +408,7 @@ def test_a_version_or_help_invocation_is_not_a_server(argv: list[str]) -> None:
 def test_a_decided_plaintext_listener_is_kept_beside_an_undecidable_one() -> None:
     report = _r(_pod(["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--listen-peer-urls=ftp://x"]))
     assert [f.severity for f in _hits(report, "KN-S039")] == [Severity.CRITICAL]
-    assert _declined(report, "KN-S039")
+    assert _partly(report, "KN-S039")
 
 
 def test_the_initial_advertise_peer_urls_are_read() -> None:
