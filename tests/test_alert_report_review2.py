@@ -18,7 +18,6 @@ import random
 import re
 import sys
 import threading
-import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
@@ -37,6 +36,17 @@ from kube_noob.server import metrics
 from kube_noob.server.http import http_app
 from kube_noob.signals import alertmanager
 from kube_noob.toolkit import AlertReportIn, DiagnoseIn, Toolkit
+from tests import bounds
+
+#: What these two tests patch `alert_report.SLOT_WAIT_SECONDS` down to. The shipped value is 5.0 s; the tests want
+#: the refusal quickly, and the thing they assert is that the wait is bounded BY THIS VALUE -- so the ceiling is
+#: derived from it (`tests/bounds.py:within_deadline`) and not from a number of its own. The old assertions were
+#: `waited < 3` and `< 5`, ten and twenty-five times the deadline they were about; the first failed at 3.1 s.
+PATCHED_SLOT_WAIT = 0.3
+PATCHED_SLOT_WAIT_THREADS = 0.2
+#: The shipped deadline, read at import -- before any test patches it. A wait that ignored the patch would take
+#: this long, which is what makes the derived ceilings above able to fail rather than merely pass.
+SHIPPED_SLOT_WAIT = alert_report.SLOT_WAIT_SECONDS
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = (ROOT / "examples" / "alertmanager-etcd.json").read_text(encoding="utf-8")
@@ -149,17 +159,25 @@ def test_a_post_that_cannot_get_a_slot_is_refused_with_503_within_the_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("KUBE_NOOB_HTTP_TOKEN", TOKEN)
-    monkeypatch.setattr(alert_report, "SLOT_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(alert_report, "SLOT_WAIT_SECONDS", PATCHED_SLOT_WAIT)
     monkeypatch.setattr(alert_report.Slots, "try_acquire", lambda self: False)
-    started = time.monotonic()
-    ex = _call(http_app(_server(tmp_path)), "/v1/alert-reports", SAMPLE.encode())
-    waited = time.monotonic() - started
+    # Third review: the body is read first (bounded by size, a read deadline and the large-body tickets), because a
+    # slot taken before the body let a sender that trickled hold it (test_alert_report_review3.py).
+    # The app is built OUTSIDE the block: a ceiling derived from a deadline only measures that deadline if the
+    # block holds nothing else, and building a server loads the settings and the signal catalogue. Under seven
+    # parallel pytest processes on two cores that construction took up to 4.5 s, which would have failed a 1.1 s
+    # ceiling about a 0.3 s wait -- the same defect as the `waited < 3` it replaced, in the new mechanism.
+    app = http_app(_server(tmp_path))
+    with bounds.within_deadline(
+        deadline_seconds=PATCHED_SLOT_WAIT,
+        source="alert_report.SLOT_WAIT_SECONDS, patched above",
+        ignored_would_take=SHIPPED_SLOT_WAIT,
+        guards="the receiver waiting for a report slot no longer than its configured deadline",
+    ):
+        ex = _call(app, "/v1/alert-reports", SAMPLE.encode())
     assert ex.status == 503
     assert int(ex.headers["retry-after"]) >= 1
     assert "busy" in json.loads(ex.body)["error"]
-    # Third review: the body is read first (bounded by size, a read deadline and the large-body tickets), because a
-    # slot taken before the body let a sender that trickled hold it (test_alert_report_review3.py).
-    assert waited < 3, f"the wait for a slot is bounded; it took {waited:.1f}s"
     assert _stored(tmp_path) == []
 
 
@@ -781,7 +799,7 @@ def test_operations_states_the_measured_answer_time() -> None:
 
 
 def test_a_thread_waiting_for_a_slot_gives_up_after_the_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(alert_report, "SLOT_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(alert_report, "SLOT_WAIT_SECONDS", PATCHED_SLOT_WAIT_THREADS)
     kit = _kit(tmp_path)
     for _ in range(alert_report.MAX_CONCURRENT_REPORTS):
         kit.report_slots.try_acquire()
@@ -794,12 +812,17 @@ def test_a_thread_waiting_for_a_slot_gives_up_after_the_bound(tmp_path: Path, mo
             errors.append(exc)
 
     workers = [threading.Thread(target=call) for _ in range(6)]
-    started = time.monotonic()
-    for w in workers:
-        w.start()
-    for w in workers:
-        w.join(10)
-    assert time.monotonic() - started < 5
+    # Six threads wait on one semaphore concurrently, so the bound is one deadline, not six.
+    with bounds.within_deadline(
+        deadline_seconds=PATCHED_SLOT_WAIT_THREADS,
+        source="alert_report.SLOT_WAIT_SECONDS, patched above",
+        ignored_would_take=SHIPPED_SLOT_WAIT,
+        guards="six threads each giving up on a report slot at the configured deadline",
+    ):
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(10)
     assert len(errors) == 6 and all(isinstance(e, ServerBusy) for e in errors)
 
 

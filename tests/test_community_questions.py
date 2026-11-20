@@ -9,7 +9,6 @@ import csv
 import importlib.util
 import json
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,11 @@ from kube_noob import toolkit as tk
 from kube_noob.config import load_settings
 from kube_noob.debug.diagnose import diagnose
 from kube_noob.insight import recognise
+from tests import bounds
+
+#: Measured: three 400 KB inputs through openshift_context.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_CONTEXT_SCAN = 0.22
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -94,10 +98,11 @@ def test_a_forum_post_that_asks_is_a_question() -> None:
 
 
 def test_context_detection_is_linear_on_hostile_text() -> None:
-    start = time.perf_counter()
-    for text in ("a-" * 199_000, "a." * 199_000, "x" * 400_000):
-        ki.openshift_context(text)
-    assert time.perf_counter() - start < 3
+    with bounds.bounded(
+        bounds.LINEAR, honest_seconds=HONEST_CONTEXT_SCAN, guards="context detection over three 400 KB inputs"
+    ):
+        for text in ("a-" * 199_000, "a." * 199_000, "x" * 400_000):
+            ki.openshift_context(text)
 
 
 def test_the_eval_script_runs_on_a_small_csv(tmp_path: Path) -> None:

@@ -144,7 +144,16 @@ def test_a_trickling_alert_post_is_dropped_with_408_and_holds_no_report_slot(
     started = time.monotonic()
     _together(*(r for r, _ in slow), real[0])
     assert real[1].status == 200, real[1].body[:200]
-    assert real[1].done_at is not None and real[1].done_at - started < 0.9, "the real post waited for the slow ones"
+    # Was `done_at - started < 0.9`, a latency budget against a 1.0 s read deadline -- a tenth of a second of room
+    # on a shared runner. The claim is an ORDER, and an order is immune to a stall because a stall moves both
+    # sides: the real post answers while the slow ones are still being waited on, so it finishes FIRST. If it had
+    # queued behind them it could only finish after they were given up on at READ_SECONDS.
+    stalled_done = [ex.done_at for _, ex in slow]
+    assert real[1].done_at is not None and all(d is not None for d in stalled_done)
+    assert real[1].done_at < min(d for d in stalled_done if d is not None), (
+        f"the real post finished at {real[1].done_at - started:.2f}s, after the stalled ones at "
+        f"{[round((d or 0) - started, 2) for d in stalled_done]}s, so it waited behind them"
+    )
     for _, ex in slow:
         assert ex.status == 408 and "did not arrive" in ex.json()["error"]
 
@@ -319,20 +328,30 @@ def test_mcp_reports_waiting_for_a_slot_do_not_starve_other_tools(
     }
     with TestClient(http_app(_server(tmp_path)), base_url="http://testserver") as c:
         answers: list[Any] = []
-        workers = [
-            threading.Thread(target=lambda: answers.append(c.post("/mcp", json=call, headers=headers)))
-            for _ in range(50)
-        ]
+        gave_up: list[float] = []
+
+        def waiting_report() -> None:
+            answers.append(c.post("/mcp", json=call, headers=headers))
+            gave_up.append(time.monotonic())
+
+        workers = [threading.Thread(target=waiting_report) for _ in range(50)]
         for w in workers:
             w.start()
         time.sleep(0.5)
-        started = time.monotonic()
         small = c.post("/v1/diagnose", json={"text": "CrashLoopBackOff"}, headers=headers)
-        took = time.monotonic() - started
+        small_done = time.monotonic()
         for w in workers:
             w.join(30)
-    assert small.status_code == 200 and took < 1.5, f"a small diagnose waited {took:.1f}s behind report waits"
+    assert small.status_code == 200
     assert len(answers) == 50 and all("busy" in a.text for a in answers)
+    # Was `took < 1.5`, a latency budget 0.5 s inside the 3.0 s the report calls wait. The claim is an ORDER and is
+    # asserted as one, which no stall can move: a diagnose served off the worker threads answers while all fifty
+    # reports are still waiting, so it finishes before the first of them gives up. Starved, it could only answer
+    # after a worker thread came free, which is after the first gave up at SLOT_WAIT_SECONDS.
+    assert len(gave_up) == 50 and small_done < min(gave_up), (
+        f"the diagnose answered {small_done - min(gave_up):.2f}s AFTER the first report call gave up, so it "
+        f"waited for a worker thread the report waits were holding"
+    )
 
 
 # --- the documented answers ------------------------------------------------------------------------------------------

@@ -9,7 +9,6 @@ import io
 import json
 import sys
 import tarfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,10 @@ from kube_noob.build import containerfile as cf
 from kube_noob.build import image, logs, oci, secrets
 from kube_noob.cli import main
 from kube_noob.config import load_settings
+from tests import bounds
+
+#: Measured: the worst of five hostile build logs. Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_LOG_DIAGNOSE = 1.0
 
 LOGS = Path(__file__).parent / "fixtures" / "build_logs"
 CF = Path(__file__).parent / "fixtures" / "containerfile"
@@ -133,9 +136,8 @@ def test_hostile_logs_are_bounded() -> None:
         "STEP 1/2: " + "RUN " * 50_000,
     ]
     for text in cases:
-        start = time.monotonic()
-        logs.as_dict(logs.diagnose(text))
-        assert time.monotonic() - start < 15, text[:40]
+        with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_LOG_DIAGNOSE, guards=f"hostile log {text[:40]!r}"):
+            logs.as_dict(logs.diagnose(text))
     d = logs.diagnose("\n".join(["line"] * (logs.MAX_LINES + 10)))
     assert any("last" in n for n in d.notes)
 

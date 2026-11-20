@@ -22,6 +22,11 @@ from kube_noob.errors import WebDisabledError
 from kube_noob.knowledge.store import get_store
 from kube_noob.learn.memory import SCHEMA_VERSION, LearningStore
 from kube_noob.net import Purpose, http_client
+from tests import bounds
+
+#: Measured: one grade of a 41-character completion against a pattern-shaped `mustMention`.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_GRADE = 0.16
 
 NOTE = {"symptom": "pods rejected by restricted-v2", "cause": "fixed runAsUser in the chart", "fix": "drop runAsUser"}
 
@@ -395,16 +400,19 @@ def test_requests_without_the_token_are_rejected_before_the_body_is_read(monkeyp
 
 
 def test_inline_grade_patterns_are_literal_text(tmp_path: Path) -> None:
-    import time
 
     from kube_noob import toolkit as tk
 
     kit = tk.Toolkit(_round2_settings(tmp_path))
-    started = time.monotonic()
-    res = kit.grade(
-        tk.GradeIn(completion="a" * 40 + "!", task={"type": "qa", "mustMention": ["(a+)+$"], "minWords": 0})
-    )
-    assert time.monotonic() - started < 2 and res["components"]["task"] == 0.0
+    # LINEAR rather than BACKTRACKING: the honest cost is 0.16 s, so BACKTRACKING's slack would clamp the ceiling
+    # to 30 s for work that takes a sixth of a second. `(a+)+$` against 40 a's and a `!` does not take thirty
+    # seconds if it is treated as a pattern, it takes until the heat death, so the tighter ceiling catches it just
+    # as surely and catches a quadratic regression in the grader as well.
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_GRADE, guards="`(a+)+$` as a mustMention"):
+        res = kit.grade(
+            tk.GradeIn(completion="a" * 40 + "!", task={"type": "qa", "mustMention": ["(a+)+$"], "minWords": 0})
+        )
+    assert res["components"]["task"] == 0.0
     hit = kit.grade(tk.GradeIn(completion="use a+b here", task={"type": "qa", "mustMention": ["a+b"], "minWords": 0}))
     assert hit["components"]["task"] == 1.0
 

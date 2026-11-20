@@ -4,7 +4,6 @@ the result walker, hostile input, and the MCP server applying it to every tool r
 from __future__ import annotations
 
 import ast
-import time
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,11 @@ from mcp import Client
 from kube_noob import sanitize
 from kube_noob.config import load_settings
 from kube_noob.server.mcp_app import build_server
+from tests import bounds
+
+#: Measured: the worst of the eight hostile pastes below through `sanitize.clean`.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_CLEAN = 2.6
 
 ROOT = Path(__file__).resolve().parents[1]
 EVAL = yaml.safe_load((Path(__file__).parent / "fixtures" / "injection.yaml").read_text("utf-8"))
@@ -140,9 +144,9 @@ def test_signals_are_capped_and_depth_is_bounded() -> None:
     ],
 )
 def test_hostile_input_is_bounded(text: str) -> None:
-    started = time.monotonic()
-    out, _ = sanitize.clean(text)
-    assert time.monotonic() - started < 10 and len(out) <= len(text) + 60 * (len(text) // 7 + 1)
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_CLEAN, guards=f"the hostile paste {text[:24]!r}"):
+        out, _ = sanitize.clean(text)
+    assert len(out) <= len(text) + 60 * (len(text) // 7 + 1)
 
 
 def test_every_mcp_result_is_cleaned(tmp_path: Path) -> None:
