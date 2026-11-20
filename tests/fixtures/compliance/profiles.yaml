@@ -1,0 +1,43 @@
+# The rule set the scan claimed to run, and the TailoredProfile that quietly removed two of its rules.
+# Shapes verified against ComplianceAsCode/compliance-operator pkg/apis/compliance/v1alpha1
+# (profile_types.go: Profile carries `rules` inline, not under spec; tailoredprofile_types.go).
+apiVersion: compliance.openshift.io/v1alpha1
+kind: Profile
+metadata:
+  name: ocp4-cis
+  namespace: openshift-compliance
+  annotations:
+    compliance.openshift.io/product-type: Platform
+id: xccdf_org.ssgproject.content_profile_cis
+title: CIS Benchmark for OpenShift
+description: CIS Red Hat OpenShift Container Platform Benchmark
+version: 1.5.0
+rules:
+  - ocp4-api-server-encryption-provider-cipher
+  - ocp4-scc-limit-privileged-containers
+  - ocp4-audit-log-forwarding-enabled
+  - ocp4-kubelet-enable-protect-kernel-defaults
+  - ocp4-api-server-anonymous-auth
+  - ocp4-api-server-tls-cipher-suites
+---
+apiVersion: compliance.openshift.io/v1alpha1
+kind: TailoredProfile
+metadata:
+  name: cis-tailored
+  namespace: openshift-compliance
+spec:
+  title: CIS Benchmark for OpenShift, tailored
+  description: CIS with the privileged-container check removed for the build namespace
+  extends: ocp4-cis
+  disableRules:
+    - name: ocp4-scc-limit-privileged-containers
+      rationale: accepted risk for the build namespace
+  manualRules:
+    - name: ocp4-audit-log-forwarding-enabled
+      rationale: reviewed by hand each quarter
+status:
+  id: xccdf_compliance.openshift.io_profile_cis-tailored
+  state: READY
+  outputRef:
+    name: cis-tailored-tp
+    namespace: openshift-compliance

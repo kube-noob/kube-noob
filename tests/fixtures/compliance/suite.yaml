@@ -1,0 +1,26 @@
+# The suite says COMPLIANT. One of its scans never reached DONE, and two of its rules were tailored out.
+# ComplianceSuite.status uses `errorMessage`; ComplianceScan.status uses `errormsg` (compliancescan_types.go).
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ComplianceSuite
+metadata:
+  name: cis-suite
+  namespace: openshift-compliance
+spec:
+  scans:
+    - name: ocp4-cis
+      profile: xccdf_compliance.openshift.io_profile_cis-tailored
+      scanType: Platform
+    - name: ocp4-cis-node-worker
+      profile: xccdf_compliance.openshift.io_profile_cis-tailored
+      scanType: Node
+status:
+  phase: DONE
+  result: COMPLIANT
+  scanStatuses:
+    - name: ocp4-cis
+      phase: DONE
+      result: COMPLIANT
+    - name: ocp4-cis-node-worker
+      phase: RUNNING
+      result: NOT-AVAILABLE
+      errormsg: timed out waiting for the scan pod on node worker-2
