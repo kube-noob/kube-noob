@@ -103,10 +103,9 @@ KIND_TO_RESOURCE = {
     "ProfileBundle": "profilebundles",
 }
 RESOURCE_TO_KIND = {r: k for k, r in KIND_TO_RESOURCE.items()}
-#: What an answer needs: the results themselves, and a profile or tailored profile to say which rules were expected.
-#: Without the results nothing was read; without a profile the silent case -- a rule that produced no result at all --
-#: cannot be seen, which is the one thing this reader exists to say.
-NEEDED = ("compliancecheckresults",)
+#: What an answer needs. Without the results nothing was read; without a Profile or TailoredProfile the silent case
+#: -- a rule that produced no result at all -- cannot be seen, which is the one thing this reader exists to say.
+RESULTS = "compliancecheckresults"
 PROFILE_KINDS = ("profiles", "tailoredprofiles")
 
 #: compliancecheckresult_types.go. The empty string is upstream's own CheckResultNoResult. The two statuses that
@@ -133,6 +132,9 @@ MOST_COMMON_ANNOTATION = f"{GROUP}/most-common-status"
 INCONSISTENT_SOURCE_ANNOTATION = f"{GROUP}/inconsistent-source"
 SCAN_LABEL = f"{GROUP}/scan-name"
 SUITE_LABEL = f"{GROUP}/suite"
+#: Upstream copies the status into this label for easy selection. It is deliberately NOT read: it is a second copy
+#: of the inline ``status`` field and the two can disagree, so reading it would be a second source of truth about
+#: what a check said (review class 9). It is named here so the omission is a decision rather than an oversight.
 STATUS_LABEL = f"{GROUP}/check-status"
 CONTROL_PREFIX = "control.compliance.openshift.io/"
 NIST = "NIST-800-53"
@@ -180,7 +182,6 @@ REASONS: dict[str, str] = {
     "scan-errored": "its ComplianceScan reported an error, so a pass from it is not a pass",
     "scan-not-read": "the ComplianceScan that produced it was not read, so whether that scan completed is not known",
     "results-disagree": "two ComplianceCheckResults for this rule disagree, and neither is taken as the answer",
-    "profile-not-read": "the profile this rule was expected from was not read, so what should have run is not known",
 }
 
 
@@ -939,7 +940,17 @@ def _control_rows(rules: list[RuleRow]) -> list[ControlRow]:
                 note=note,
             )
         )
-    return out[:MAX_CONTROLS]
+    if len(out) > MAX_CONTROLS:
+        out = out[:MAX_CONTROLS]
+        out.append(
+            ControlRow(
+                control="<more>",
+                evidence="neither",
+                status="not-evaluated",
+                note=f"more than {MAX_CONTROLS} controls were named; the rest are not in this answer",
+            )
+        )
+    return out
 
 
 def _suite_rows(suites: list[Obj], scans: dict[str, ScanRow], rules: list[RuleRow]) -> list[SuiteRow]:
@@ -1023,7 +1034,7 @@ def _undetermined(
     field it wrote, so the text view, the JSON, the YAML, the MCP result and ``--require-complete`` cannot disagree
     about whether the evidence was complete (review classes 13 and 25)."""
     out: list[str] = []
-    results = c.reads["compliancecheckresults"]
+    results = c.reads[RESULTS]
     if results.state == "not-read":
         out.append(f"no ComplianceCheckResult was read: {results.reason}")
     elif results.state == "partial":
