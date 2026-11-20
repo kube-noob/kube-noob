@@ -18,7 +18,6 @@ import re
 
 from kube_noob.audit.caveats import caveat_lines, not_evaluated_line
 from kube_noob.audit.engine import analyze
-
 from tests.test_absent_kinds import CONFIGMAP, DEPLOYMENT
 
 
@@ -28,7 +27,7 @@ def _summary() -> dict:
 
 def _count_in(line: str) -> int:
     """How many rules a caveat line states, named ones plus the "and N more" it ends with."""
-    head = line.split(" -- ")[0]
+    head = line.split(" -- ", maxsplit=1)[0]
     body = head.split(": ", 1)[1]
     more = re.search(r" and (\d+) more$", body)
     if more:
