@@ -1,4 +1,4 @@
-"""A manifest key spelled with the wrong case is a typo, not a file that is no manifest (G323).
+"""A manifest key spelled with the wrong case is a typo, not a file that is no manifest (G325).
 
 ``apiversion: v1`` beside ``kind: Pod`` was classified exactly as a GitHub Actions workflow is: "not a Kubernetes
 manifest (no document with apiVersion and kind)", listed under ``skipped``, and then ``passed: true``,
@@ -310,7 +310,7 @@ def test_every_skip_reason_decides_whether_it_forbids_a_verdict() -> None:
     """A new skip reason must be added to ``gate.SKIP_REASONS`` with a decision beside it.
 
     Without this, the next reason added to ``_classify`` silently inherits "this is fine, pass the gate" -- which
-    is exactly how a case-variant ``apiVersion`` came to read as a GitHub Actions workflow (G323).
+    is exactly how a case-variant ``apiVersion`` came to read as a GitHub Actions workflow (G325).
     """
     decided = [prefix for prefix, _ in gate.SKIP_REASONS]
     assert len(decided) == len(set(decided)), "a prefix is listed twice in SKIP_REASONS"

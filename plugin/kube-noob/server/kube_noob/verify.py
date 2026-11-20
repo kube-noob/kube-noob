@@ -2808,7 +2808,7 @@ def evaluate(
             not_evaluated.append({"what": show(s["file"]), "why": show(s["why"])})
             if s.get("forbidsVerdict"):
                 # The gate declined to read this file, so there is no verdict to give about what it would create:
-                # `allow` on a privileged pod whose `apiVersion` key was mis-spelled is the defect G323 fixes.
+                # `allow` on a privileged pod whose `apiVersion` key was mis-spelled is the defect G325 fixes.
                 # Same mechanism as the ~40 command shapes verify cannot model, and no new field.
                 undetermined.append(
                     f"{frame(s['file'])} was not read as a manifest ({frame(s['why'])}), so what it would create "

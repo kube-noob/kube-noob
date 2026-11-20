@@ -64,7 +64,7 @@ NEAR_MISS_PREFIX = "a Kubernetes manifest whose key "
 #: forbids a verdict. A reason that forbids one makes the gate fail, report `incomplete`, and exit 5: the walk
 #: declined to read the file, which is neither a policy violation (1) nor a clean result (0). A reason that does
 #: not is a file that was read and understood and holds no Kubernetes object -- a workflow, a values file -- and
-#: saying so must stay silent, or every repository scanned with `gate -f .` turns red (G323).
+#: saying so must stay silent, or every repository scanned with `gate -f .` turns red (G325).
 #: `tests/test_near_miss_manifest.py::test_every_skip_reason_decides_whether_it_forbids_a_verdict` fails when a
 #: reason reaches `_classify` without an entry here.
 SKIP_REASONS: tuple[tuple[str, bool], ...] = (
@@ -132,7 +132,7 @@ def _classify(path: Path | None, text: str) -> str | None:
     if not any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs):
         # A key that differs from `apiVersion` or `kind` only in shape is a typo in a manifest, not a file that is
         # no manifest: the two answers shared one sentence and one exit code, so `apiversion: v1` on a privileged
-        # pod read exactly like a CI workflow and the gate passed (G323). The document is NOT normalised and
+        # pod read exactly like a CI workflow and the gate passed (G325). The document is NOT normalised and
         # audited: the API server would reject it as it stands, so auditing it as valid would be the same false
         # answer pointing the other way. The honest answer is that it was not read, which makes this incomplete.
         return _near_miss_reason(docs) or "not a Kubernetes manifest (no document with apiVersion and kind)"
@@ -540,7 +540,7 @@ def run(
         # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
         # false and the headline says "incomplete", not "failed" (G272).
         # ... or a file the walk declined to read: that is evidence the gate does not have, exactly as an
-        # undetermined audit is, and it must not render as "failed" either (G323).
+        # undetermined audit is, and it must not render as "failed" either (G325).
         "incomplete": "undetermined" in coverage or bool(blocking),
         "failures": failures,
         "files": [s.uri for s in sources],
@@ -1181,7 +1181,7 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     undetermined = report.get("undetermined")
     if blocked:
         # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
-        # invocation's properties sees the gap either way (G272, G323).
+        # invocation's properties sees the gap either way (G272, G325).
         named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
         gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
         undetermined = f"{undetermined}; {gap}" if undetermined else gap

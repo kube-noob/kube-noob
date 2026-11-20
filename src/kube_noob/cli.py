@@ -840,7 +840,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         return 5
     # Beside the `unreadable` branch, and with no flag that waves it through: a file the walk declined to read is
     # not a policy violation (1) and not a clean result (0), and the fix for a key spelled wrong is to spell it
-    # right, not to pass a flag. `--skip-unreadable` answers a different question (G126, G323).
+    # right, not to pass a flag. `--skip-unreadable` answers a different question (G126, G325).
     blocked = [x for x in report.get("skipped") or [] if x.get("forbidsVerdict")]
     if blocked:
         for entry in blocked:
