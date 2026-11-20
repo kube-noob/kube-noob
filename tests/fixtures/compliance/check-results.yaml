@@ -1,0 +1,54 @@
+# ComplianceCheckResult carries id, status and severity inline (compliancecheckresult_types.go), the rule it
+# came from in the compliance.openshift.io/rule annotation, and its scan in the
+# compliance.openshift.io/scan-name label.
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ComplianceCheckResultList
+items:
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: ComplianceCheckResult
+    metadata:
+      name: cis-tailored-api-server-encryption-provider-cipher
+      namespace: openshift-compliance
+      annotations:
+        compliance.openshift.io/rule: ocp4-api-server-encryption-provider-cipher
+      labels:
+        compliance.openshift.io/scan-name: ocp4-cis
+        compliance.openshift.io/suite: cis-suite
+        compliance.openshift.io/check-status: PASS
+        compliance.openshift.io/check-severity: medium
+    id: xccdf_org.ssgproject.content_rule_api_server_encryption_provider_cipher
+    status: PASS
+    severity: medium
+    description: Configure the Encryption Provider Cipher
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: ComplianceCheckResult
+    metadata:
+      name: cis-tailored-api-server-anonymous-auth
+      namespace: openshift-compliance
+      annotations:
+        compliance.openshift.io/rule: ocp4-api-server-anonymous-auth
+      labels:
+        compliance.openshift.io/scan-name: ocp4-cis
+        compliance.openshift.io/suite: cis-suite
+        compliance.openshift.io/check-status: NOT-APPLICABLE
+        compliance.openshift.io/check-severity: medium
+    id: xccdf_org.ssgproject.content_rule_api_server_anonymous_auth
+    status: NOT-APPLICABLE
+    severity: medium
+    description: Ensure that anonymous requests to the API Server are authorized
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: ComplianceCheckResult
+    metadata:
+      name: ocp4-cis-node-worker-kubelet-enable-protect-kernel-defaults
+      namespace: openshift-compliance
+      annotations:
+        compliance.openshift.io/rule: ocp4-kubelet-enable-protect-kernel-defaults
+      labels:
+        compliance.openshift.io/scan-name: ocp4-cis-node-worker
+        compliance.openshift.io/suite: cis-suite
+        compliance.openshift.io/check-status: PASS
+        compliance.openshift.io/check-severity: medium
+    id: xccdf_org.ssgproject.content_rule_kubelet_enable_protect_kernel_defaults
+    status: PASS
+    severity: medium
+    description: Ensure protectKernelDefaults is set in the kubelet configuration

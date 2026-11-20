@@ -792,6 +792,20 @@ class ClusterOperatorKnownIssuesIn(_In):
     _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
 
 
+class ComplianceResultsIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="Compliance Operator objects as YAML: ComplianceCheckResults, ComplianceScans, "
+        "ComplianceSuites, Rules, Profiles and TailoredProfiles (a List, or `oc get "
+        "compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles "
+        "-n openshift-compliance -o yaml` output, works). Include the Profile or TailoredProfile: without one, a rule "
+        "that produced no result at all cannot be seen. Other kinds are ignored; Secret objects are dropped unread.",
+    )
+    top: int = Field(500, ge=1, le=5000, description="How many rules to return.")
+
+
 class BuildDiagnoseIn(_In):
     log: str = Field(
         ...,
@@ -1967,6 +1981,15 @@ class Toolkit:
             data_dir=self.settings.data_dir,
         )
 
+    def compliance_results(self, p: ComplianceResultsIn) -> dict[str, Any]:
+        """What the Compliance Operator's own results do and do not prove: which rules it evaluated, and which it
+        never did."""
+        from kube_noob import compliance_results
+
+        out = compliance_results.assess(compliance_results.from_manifests(p.manifests), top=p.top)
+        self._observe([f"compliance-results:{out['verdict']}"])
+        return out
+
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
         memory for the error lines."""
@@ -2789,6 +2812,22 @@ class Toolkit:
                 "determined. Secret objects are dropped unread.",
                 OperatorKnownIssuesIn,
                 self.operator_known_issues,
+            ),
+            ToolSpec(
+                "compliance_results",
+                "What the OpenShift Compliance Operator's results do and do not prove",
+                "Read ComplianceCheckResults, ComplianceScans, ComplianceSuites, Rules, Profiles and "
+                "TailoredProfiles and answer with the rules the profile said would be evaluated, each passing, "
+                "failing or NOT evaluated with the object that proves it: a rule a TailoredProfile disabled (naming "
+                "the profile and its rationale), a rule it marked manual, a NOT-APPLICABLE, INFO, MANUAL, ERROR or "
+                "INCONSISTENT check, a rule the profile lists that no result names, and a pass from a "
+                "ComplianceScan that never reached DONE or reported an error. A suite reporting COMPLIANT over any "
+                "of those is undetermined, not compliant, and the pass rate is withheld with the reason beside it. "
+                "Rule CRs' NIST 800-53 annotations are joined to kube-noob's own controls, so a control is "
+                "evidenced by the operator, by a kube-noob rule, by both, or by neither -- never 'satisfied'. "
+                "Offline: no cluster, no credential, nothing written; Secret objects are dropped unread.",
+                ComplianceResultsIn,
+                self.compliance_results,
             ),
             ToolSpec(
                 "build_diagnose",

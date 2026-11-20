@@ -553,6 +553,55 @@ most five issues per package; its hints point at `kube-noob operators issues --m
 step that would make this an answer about the operators rather than the release notes is a join through the local
 Red Hat Jira copy, which keeps each ticket's components and fix versions (roadmap R5).
 
+### Is that compliance report compliant, or was the failing check tailored out?
+
+`compliance results` reads the OpenShift Compliance Operator's own objects -- `ComplianceCheckResult`,
+`ComplianceScan`, `ComplianceSuite`, `Rule`, `Profile`, `TailoredProfile` -- and answers with the rules the profile
+**said** would be evaluated, each passing, failing or **not evaluated**. That is the whole point: an operator report
+is easiest to misread when it is green, because four different absences all look like a pass.
+
+- a rule a `TailoredProfile` **disabled** -- the answer names the tailored profile and the rationale it gave
+- a rule it marked **manual** -- no automated check evaluated it
+- a check reporting `NOT-APPLICABLE`, `INFO`, `MANUAL`, `ERROR` or `INCONSISTENT`, each named with its own reason
+- a rule the profile lists that **no result names at all** -- the silent one, and the most valuable thing here
+- a `PASS` from a `ComplianceScan` that never reached `DONE` or reported an error, which is not a pass
+
+A `ComplianceSuite` reporting `COMPLIANT` over any of those is reported as **undetermined, not compliant**, with the
+suite's own claim printed beside the reason it does not hold, and the pass rate withheld rather than computed over
+rules nothing evaluated. A `FAIL` is never softened: an incomplete scan does not withdraw a failure the operator did
+report. Nothing here reaches a cluster: it reads files and must-gathers, needs no credential, and an input with no
+Compliance Operator objects is undetermined, never "the operator is not installed".
+
+Where a `Rule` carries `control.compliance.openshift.io/NIST-800-53`, those ids are joined to kube-noob's own
+control map, so each control comes out evidenced by the Compliance Operator, by a kube-noob rule, by **both**, or by
+**neither** -- the last being a control the operator names only on a rule it did not evaluate and that kube-noob has
+no rule for. There is no "satisfied": the operator's reference is to 800-53 Rev 4 and kube-noob's catalogue is Rev 5,
+and a mapping is evidence about a control, not an assessment of it.
+
+```bash
+kube-noob compliance results --must-gather must-gather.tar.gz
+oc get compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles -n openshift-compliance -o yaml > compliance.yaml
+kube-noob compliance results -f compliance.yaml --format json
+kube-noob compliance results -f compliance.yaml --require-complete
+```
+
+```text
+compliance results (manifests): undetermined -- 6 rule(s) the profile expected: 1 evaluated and passing, 0 failing, 5 not evaluated (2 tailored out, 1 with no result at all, 1 NOT-APPLICABLE, 1 from a scan that did not complete); undetermined, not compliant: 3 reason(s) below. A suite that is green because checks were tailored out or never ran is not a compliant one.
+pass rate withheld: 5 of 6 rule(s) were not evaluated
+  suite cis-suite  phase DONE  reports COMPLIANT  DOES NOT HOLD
+      5 rule(s) in its profile were never evaluated; its scan(s) ocp4-cis-node-worker did not complete
+  ocp4-scc-limit-privileged-containers  NOT-EVALUATED [disabled-by-tailoring]  severity high  Platform
+      a TailoredProfile disabled this rule, so the suite never evaluated it
+      TailoredProfile cis-tailored: accepted risk for the build namespace
+  control IA-2 (no title)  evidence neither  not-evaluated  operator 0 passing / 0 failing / 1 not evaluated  kube-noob rules none
+      the Compliance Operator names this control on a rule it did not evaluate, and kube-noob has no rule mapped to it: nothing in this answer is evidence about it
+```
+
+`--require-complete` exits 5 on anything but a complete answer, so a pipeline cannot read a tailored-out suite as a
+passing one. From an MCP client, `kubenoob_compliance_results` takes the objects as YAML. What it cannot do is
+re-check a rule, decide whether a `NOT-APPLICABLE` check should have applied, or see a rule no profile in the input
+names -- so pass the `Profile` or `TailoredProfile` along with the results.
+
 ### Why was this denied?
 
 `policy explain` reads a denial and explains it policy by policy: Kyverno, OPA Gatekeeper, ValidatingAdmissionPolicy,
