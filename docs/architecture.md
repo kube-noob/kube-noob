@@ -204,6 +204,25 @@ predicate, so a gap can neither hide in a format nor read as a pass (G272, seven
   no ClusterServiceVersions read is "not determined"; only a 404 in the backends' exact words on both reads is "not
   an OLM cluster". The must-gather reader's rule that files named like Secrets are never read does not apply to
   files in the OLM layout, whose names are operators' and namespaces'.
+- The Compliance Operator results reader (`kube_noob.compliance_results`; `compliance results`, tool
+  `compliance_results`) reads `compliance.openshift.io/v1alpha1` ComplianceCheckResults, ComplianceScans,
+  ComplianceSuites, Rules, Profiles, TailoredProfiles and ProfileBundles and changes nothing: manifests through
+  `yamlio`, one file at a time (Secret objects dropped unread), or a must-gather through the analysers' loader
+  (`kube_noob.mustgather.compliance`, not in the Claude plugin). There is **no live read**: nothing here asks a
+  cluster for anything, so the feature adds no allowlist entry, no RBAC and no credential, and the MCP tool reads no
+  file -- the caller passes the objects' text. Only named fields are read, and only objects of the
+  `compliance.openshift.io` group. Trust boundary: the input is untrusted, including the operator's own strings;
+  shown strings are made printable by Unicode category (`sanitize.visible`) and redacted, and a rule name that is not
+  a valid name is flattened and marked rather than joined, so a name carrying invisible Unicode can neither pose as a
+  rule nor stand in for one. The output is bounded (5,000 rules, 500 controls) and sorted, and evidence names objects
+  and files rather than positions, so order never changes the bytes. What was not evaluated is the answer: a rule a
+  TailoredProfile disabled or marked manual, a NOT-APPLICABLE, INFO, MANUAL, ERROR or INCONSISTENT check, a rule a
+  profile lists that no result names, and a PASS from a scan that is not DONE or that errored are each `not-evaluated`
+  with the object that proves it, one predicate (`undeterminedBecause`) decides the headline for every renderer, the
+  pass rate is withheld while it is non-empty, and a suite reporting COMPLIANT over any of them is `undetermined`. The
+  must-gather reader does **not** relax `ingest.secret_like` the way the OLM layout does: a compliance object is named
+  after a scan, a profile or a ComplianceAsCode rule, so no exemption is needed, and a compliance file the rule does
+  refuse is reported as skipped and makes the answer undetermined.
 - The operator known-issue lookup (`kube_noob.operator_issues`; `operators issues`, tools `operator_known_issues` and
   `cluster_operator_known_issues`, and `operatorKnownIssues` in `must-gather analyze` and `analyze_must_gather`)
   reads the operators through the inventory's own collection, and the cluster's version from the ClusterVersion

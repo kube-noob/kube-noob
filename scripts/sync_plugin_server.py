@@ -81,6 +81,9 @@ GUARDED_IMPORTS = frozenset(
         # The operator inventory's must-gather reader, for the same reason; the inventory itself
         # (kube_noob.operators: manifests handed to it, and the live read when cluster access is on) ships.
         "kube_noob.mustgather.operators",
+        # The Compliance Operator results reader's must-gather half, for the same reason; the reader itself
+        # (kube_noob.compliance_results: objects handed to it as YAML, never read from a path) ships.
+        "kube_noob.mustgather.compliance",
     }
 )
 # LLM SDKs never ship in the plugin, even if one returns to the core dependencies; the plugin runs the MCP server only.
