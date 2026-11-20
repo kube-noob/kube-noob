@@ -594,7 +594,12 @@ def _scan_rows(scans: list[Obj]) -> dict[str, ScanRow]:
                 ),
             )
         elif phase != DONE:
-            usable, why = False, f"it is in phase {phase}, not {DONE}"
+            # Both facts, when there are both: the reason a check carries is "scan-errored" whenever an error is
+            # set, so a `why` naming only the phase disagreed with the reason beside it (review class 13).
+            usable, why = (
+                False,
+                f"it is in phase {phase}, not {DONE}" + (f", and reported an error: {error}" if error else ""),
+            )
         elif error:
             usable, why = False, f"it reported an error: {error}"
         rows[o.name] = ScanRow(

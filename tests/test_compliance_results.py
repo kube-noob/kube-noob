@@ -249,6 +249,19 @@ def test_a_scan_with_an_error_message_makes_its_passes_not_passes() -> None:
     assert out["counts"]["passing"] == 0
 
 
+def test_a_scan_both_unfinished_and_errored_gives_a_detail_that_agrees_with_its_reason() -> None:
+    """The reason is scan-errored whenever an error is set, so the detail beside it must name the error too."""
+    out = _assess(
+        _profile("p1", ["r1"]),
+        _scan(phase="RUNNING", result="NOT-AVAILABLE", error="timed out waiting for the scan pod"),
+        _check("c1", rule="r1"),
+    )
+    row = _rule(out, "r1")
+    assert row["reason"] == "scan-errored"
+    assert "reported an error" in row["detail"] and "timed out waiting for the scan pod" in row["detail"]
+    assert "phase RUNNING" in row["detail"]
+
+
 def test_a_failing_check_is_still_reported_when_its_scan_did_not_complete() -> None:
     """An absence never turns a pass into a pass; it also never withdraws a failure the operator did report."""
     out = _assess(_profile("p1", ["r1"]), _scan(phase="RUNNING"), _check("c1", rule="r1", status="FAIL"))
