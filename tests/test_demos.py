@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import socket
-import time
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,10 @@ import pytest
 from kube_noob import demo
 from kube_noob.cli import main
 from kube_noob.config import load_settings
+from tests import bounds
+
+#: Measured: the slowest demo scenario. Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_DEMO = 0.45
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,9 +40,8 @@ def test_demo_list(capsys: pytest.CaptureFixture[str]) -> None:
 def test_each_demo_runs_offline_fast_and_isolated(name: str, no_network: None) -> None:
     s = load_settings(overrides={"webEnabled": True, "cluster": {"enabled": True}})
     lines: list[str] = []
-    start = time.monotonic()
-    demo.run(name, s, lines.append)
-    assert time.monotonic() - start < 10
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_DEMO, guards=f"the {name} demo reaching for something"):
+        demo.run(name, s, lines.append)
     text = "\n".join(lines)
     assert "$ kube-noob" in text and "Traceback" not in text
     assert not (s.data_dir / "learning.json").exists() and not (s.data_dir / "progress").exists()

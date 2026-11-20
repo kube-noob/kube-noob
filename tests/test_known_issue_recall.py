@@ -16,6 +16,11 @@ import yaml
 
 from kube_noob import known_issues as ki
 from kube_noob.cli import main
+from tests import bounds
+
+#: Measured: twenty corpus matches, corpus already loaded.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_MATCH_20 = 0.05
 
 MIN_RECALL = 0.8
 
@@ -95,13 +100,10 @@ def test_stems_meet_corpus_words_and_never_invent_them() -> None:
 
 
 def test_matching_is_fast_and_deterministic() -> None:
-    import time
-
     text = "etcd leader changed frequently, apiserver timeouts after upgrade"
-    ki.match(text, "openshift", "4.21.0")
-    t = time.perf_counter()
-    first = [ki.match(text, "openshift", "4.21.0") for _ in range(20)]
-    assert time.perf_counter() - t < 5.0
+    ki.match(text, "openshift", "4.21.0")  # the first call loads the corpus; the timer measures the matching
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_MATCH_20, guards="twenty matches against the corpus"):
+        first = [ki.match(text, "openshift", "4.21.0") for _ in range(20)]
     assert all(json.dumps(r, sort_keys=True) == json.dumps(first[0], sort_keys=True) for r in first)
 
 
