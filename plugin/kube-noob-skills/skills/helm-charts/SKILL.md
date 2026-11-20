@@ -26,8 +26,9 @@ kube-noob --version
 ```
 
 If that prints `kube-noob` and a version, that is the engine. These skills need **kube-noob 0.9.3 or later**: older
-releases do not clean their output for a model, can exit 1 on a crash, and lack fields the tables below name. If the
-version it printed is lower than 0.9.3, or a result's first key is not `forModel`, do not read its output as an answer.
+releases do not clean their output for a model, can exit 1 on a crash, and lack fields the tables below name. If a result's first key is not `forModel`, the engine is older than these skills need: do not read its
+output as an answer. Judge it by that key, never by comparing the version number yourself -- 0.10.0 is NEWER
+than 0.9.3 and sorts below it as text, so a version comparison would reject an engine that is perfectly good.
 Say exactly this: **this kube-noob is older than these skills need, so nothing has been audited**, and give the one
 command that upgrades it:
 
@@ -137,8 +138,8 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `helm-chart` | always 0 | `files`, `assumptions`, `prerequisites` | |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `helm-audit` | 1 = a HIGH or CRITICAL finding; 4 when `helm` is not installed | `summary`, `findings`, `chartLint` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
+| `helm-audit` | 1 = a HIGH or CRITICAL finding; 4 when `helm` is not installed, or is only on a PATH entry inside the tree under review (never run from there) | `summary`, `findings`, `chartLint` | `assumptions`, `controlSummary` |
 | `diagnose` | always 0 | `diagnoses`, `knownIssues` | `notes` |
 
 Create a chart from a blueprint you write to `$KN/blueprint.yaml` (name, namespace, image, platform, storage,

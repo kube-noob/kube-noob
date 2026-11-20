@@ -2722,6 +2722,12 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         set(inv.not_read) | set(inv.duplicate_notes()) | {line for _, line in dangling(inv)} | set(scope_notes)
     )
     refused = refused_lines(inv)
+    counts = f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}"
+    # A list the cluster REFUSED (a 403, a timeout, an answer that is not a list) means the count is a lower
+    # bound and "no path" is not a verdict: the headline says so before the counts (G293). An absence -- a
+    # type this cluster does not serve -- does not, which is why this reads `refused` and not `not_read`.
+    shown = "; ".join(_clip_words(n, 120) for n in refused[:3]) + ("; ..." if len(refused) > 3 else "")
+    summary = f"not determined: {len(refused)} resource list(s) not read ({shown}); {counts}" if refused else counts
     return {
         "paths": out_paths,
         "total": len(paths),
@@ -2729,7 +2735,7 @@ def scan(inv: Inventory, *, top: int = DEFAULT_TOP) -> dict[str, Any]:
         # Workload objects scored, not pod specs: one RayCluster with three worker groups is one workload here
         # and four pod specs in the paths (G229).
         "workloads": len({id(site.obj) for site in sites}),
-        "summary": f"{len(paths)} attack paths from {len(entries)} exposures; top: {head}",
+        "summary": summary,
         "notRead": not_read[:NOT_READ_LISTED],
         # The list is capped; how many it leaves out is part of the answer (G276).
         **({"notReadWithheld": len(not_read) - NOT_READ_LISTED} if len(not_read) > NOT_READ_LISTED else {}),

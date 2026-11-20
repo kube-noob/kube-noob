@@ -322,8 +322,13 @@ def run(
     # The gate already runs `analyze`, so it HAS the coverage record; it just never published it, and a
     # compliance document built from the gate could therefore only ever say not-satisfied (G201).
     coverage: dict[str, Any] = {}
+    assumptions: list[str] = []
     if sources:
         report = analyze(combined, platform, version, cni=cni)
+        # What the audit declined or could not read inside the files it was given (a pod spec in a kind with no
+        # reader, a group it does not know, an assumed version). The gate dropped these, so a gate that passed on a
+        # privileged container nobody read said nothing about it; `kube-noob verify` reads its verdict from here.
+        assumptions = list(report.assumptions)
         kept_rules: list[str] = []
         excepted_rules: list[str] = []
         kinds = set(_KIND.findall(combined))
@@ -492,6 +497,7 @@ def run(
             + " --mode enforce",
         },
         "knownIssues": known,
+        "assumptions": assumptions,
         **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         "vulnerabilities": vulns["summary"],
         "code": code["summary"],
@@ -533,6 +539,11 @@ def run(
                 if ki_coverage and ki_coverage["status"] == "not-determined"
                 else []
             ),
+            # A file the walk found and did not audit -- a Helm template that was never rendered, a YAML file that
+            # is not a manifest -- is a gap in the answer, not a footnote: pod.yaml beside an unrendered chart passed
+            # as `complete` while `skipped` carried the template (G291, review). Listed here so every consumer of
+            # the report (the CI wrappers read `notRun`) sees it, after the four standing entries.
+            *(f"{s['file']}: {s['why']} (skipped, not audited)" for s in skipped),
         ],
     }
 
@@ -877,7 +888,7 @@ def _rule_properties(r: dict[str, Any]) -> dict[str, Any]:
 
 def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
     """The audit's assumptions and the rules that reached no verdict, as SARIF warnings (G269, G272)."""
-    from kube_noob.cli import caveat_lines
+    from kube_noob.audit.caveats import caveat_lines
 
     notes = [{"level": "warning", "message": {"text": str(a)}} for a in rep.get("assumptions") or []]
     notes += [{"level": "warning", "message": {"text": ln}} for ln in caveat_lines(rep.get("controlSummary") or {})]
@@ -1168,13 +1179,15 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         lines.append("")
     if report.get("skipped"):
         lines += ["### Skipped", "", *[f"- {_cell(x['file'])}: {_cell(x['why'])}" for x in report["skipped"][:50]], ""]
+    if report.get("assumptions"):
+        lines += ["### Assumed, or not evaluated", "", *[f"- {_cell(a, 600)}" for a in report["assumptions"]], ""]
     lines += ["### Not run", "", *[f"- {_cell(n)}" for n in report["notRun"]], ""]
     # Two sections, not one: "assumed 1.35" is how the audit read the input, and everything else is something it
     # did not read. "Assumptions" is an ALLOWLIST -- the assumed-version lines -- because a split by "is this a
     # declined rule" put a RayCluster's unaudited pods and a kind with no bundled schema under "Assumptions", as if
     # they had been read (G272).
+    from kube_noob.audit.caveats import caveat_lines
     from kube_noob.audit.engine import ASSUMED_VERSION_PREFIXES
-    from kube_noob.cli import caveat_lines
 
     caveats = [str(a) for a in report.get("assumptions") or []]
     assumed = [a for a in caveats if a.startswith(ASSUMED_VERSION_PREFIXES)]

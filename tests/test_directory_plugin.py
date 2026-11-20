@@ -536,8 +536,12 @@ def test_an_older_engine_is_named_as_older_and_not_read(tmp_path: Path) -> None:
     stated = re.search(r"need \*\*kube-noob (\d+\.\d+\.\d+) or later\*\*", block)
     assert stated and stated.group(1) == MIN_ENGINE
     assert Version(printed.split()[1]) < Version(stated.group(1))
-    assert "If the\nversion it printed is lower than 0.9.3" in block or "lower than 0.9.3" in block
+    # The skills must NOT tell the model to compare the version itself. They used to, and the comparison is wrong
+    # on the very next release: "0.10.0" sorts below "0.9.3" as text, so a correct newer engine would be rejected
+    # with "nothing has been audited". The `forModel` key observes the capability instead of parsing a number.
+    assert "lower than" not in block, "the skills must not ask the model to compare version numbers"
     assert "first key is not `forModel`" in block
+    assert "never by comparing the version number yourself" in block
 
 
 def test_no_skill_runs_a_command_as_it_loads() -> None:
@@ -783,7 +787,7 @@ def test_every_command_a_skill_runs_has_a_table_row_and_every_row_a_command() ->
 
 @pytest.mark.parametrize("row", _rows(), ids=lambda r: f"{r.where}:{r.command}")
 def test_each_table_row_matches_what_the_command_really_prints(
-    row: _Row, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    row: _Row, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every field the row names is in the output (unless marked `?`), every key in the output that says what was not
     read is named by the row, and an `always 0` row exits 0 on the fixture (G276)."""
@@ -800,8 +804,12 @@ def test_each_table_row_matches_what_the_command_really_prints(
         chart = tmp_path / "chart"
         chart.mkdir()
         (chart / "Chart.yaml").write_text("apiVersion: v2\nname: web\nversion: 0.1.0\n")
-        helm = tmp_path / "bin" / "helm"
-        helm.parent.mkdir()
+        # Outside the working directory on purpose. `helm_binary` looks only in absolute PATH entries OUTSIDE the
+        # tree under review, because `shutil.which` honoured a `bin` the checked-out repository supplies and ran a
+        # program from the tree being reviewed (G280). The conftest chdirs to `tmp_path`, so a stub under it is
+        # exactly what that rule refuses, and the command would exit 4 with no document -- the rule working, not
+        # a bug in it. A sibling directory is a stub on PATH that the rule allows.
+        helm = tmp_path_factory.mktemp("helmbin") / "helm"
         helm.write_text(f"#!/bin/sh\ncat '{ROOT / 'examples' / 'insecure-deployment.yaml'}'\n")
         helm.chmod(0o755)
         monkeypatch.setenv("PATH", f"{helm.parent}{os.pathsep}{os.environ['PATH']}")

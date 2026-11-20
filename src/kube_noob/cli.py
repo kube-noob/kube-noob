@@ -19,6 +19,12 @@ from typing import Any
 import yaml
 
 from kube_noob import __version__, completion, sanitize
+
+# Re-exported: they lived here, `gate.py` and `report_html.py` imported them FROM here, and following that
+# import put the whole CLI -- the Jira client included -- in the plugin's hook closure (see audit/caveats.py).
+from kube_noob.audit.caveats import (
+    caveat_lines,
+)
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
 from kube_noob.yamlio import json_document
@@ -659,10 +665,6 @@ def _coverage_lines(summary: dict[str, Any]) -> list[str]:
     return lines
 
 
-#: How many rule ids the text view and the SARIF name on the "not evaluated" line before giving a count.
-MAX_NOT_EVALUATED_NAMED = 20
-
-
 #: How long one line of the audit's text view may be. A manifest-derived string (a container name, a flag value)
 #: is the user's text, and a newline in it forged a line of the report; a 100,000-character one flooded it (G272).
 MAX_TEXT_LINE = 2000
@@ -674,40 +676,6 @@ def _one_line(value: object) -> str:
 
     text = " ".join(visible(str(value)).split())
     return text if len(text) <= MAX_TEXT_LINE else f"{text[:MAX_TEXT_LINE]}... ({len(text) - MAX_TEXT_LINE} more)"
-
-
-def partly_evaluated_line(summary: dict[str, Any]) -> str:
-    """One bounded line naming the rules that found something and declined on some object, or ""."""
-    ids = [str(r) for r in summary.get("partlyEvaluatedRules") or []]
-    if not ids:
-        return ""
-    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
-    return (
-        f"partly evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules found something and "
-        "declined on other objects; their findings are counted, and the declined objects are not clean"
-    )
-
-
-def caveat_lines(summary: dict[str, Any]) -> list[str]:
-    """The not-evaluated and partly-evaluated lines, in that order, leaving out an empty one."""
-    return [ln for ln in (not_evaluated_line(summary), partly_evaluated_line(summary)) if ln]
-
-
-def not_evaluated_line(summary: dict[str, Any]) -> str:
-    """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did.
-
-    The ids come from `rulesNotEvaluated`, the one list of them, which carries each rule's reason beside it;
-    G272 read a bare `notEvaluatedRules` list of the same ids, which was a strict subset of this one (class 9).
-    """
-    rows = [r for r in summary.get("rulesNotEvaluated") or [] if isinstance(r, dict) and r.get("ruleId")]
-    ids = [str(r["ruleId"]) for r in rows]
-    if not ids:
-        return ""
-    more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""
-    return (
-        f"not evaluated: {', '.join(ids[:MAX_NOT_EVALUATED_NAMED])}{more} -- these rules reached no verdict on "
-        "this input, so they are neither clean nor findings"
-    )
 
 
 def _print_report(rep: dict[str, Any]) -> None:
@@ -827,6 +795,17 @@ def _exceptions_cmd(a: argparse.Namespace, fmt: str) -> int:
     return 0 if out["gate"] else 1
 
 
+def _check_cni(raw: str | None) -> None:
+    """--cni is NAME or NAME:VERSION; anything else is a configuration error (exit 2) for gate and verify alike."""
+    if raw:
+        from kube_noob.debug.cni import parse_cni
+
+        try:
+            parse_cni(raw)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+
+
 # Commands whose --version is the cluster's OpenShift version: read by kube_noob.versions here, once, so a value is
 # taken or refused the same way on every one of them and by every tool (G277).
 _OCP_VERSION_COMMANDS = frozenset({"known-issues", "diagnose", "insight", "ticket", "gate"})
@@ -851,6 +830,7 @@ def _version_flag(value: str, flag: str = "--version") -> str:
 
 
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    _check_cni(getattr(a, "cni", None))
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
     from kube_noob.code import builds as cb
@@ -928,6 +908,77 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
         return 5
     return 0 if report["passed"] else 1
+
+
+def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import gate, verify
+    from kube_noob.audit.exceptions import ExceptionsError
+    from kube_noob.hook import tolerant_streams
+
+    tolerant_streams()
+    if bool(a.file) == (a.change_command is not None):
+        raise ConfigError("pass the change as manifests (-f) or as a command line (--command), one of the two")
+    platform = a.platform or s.default_platform
+    common: dict[str, Any] = {
+        "platform": platform,
+        "version": a.pversion,
+        "fail_on": a.fail_on,
+        "exceptions": _read(a.exceptions) if a.exceptions else None,
+        "cni": a.cni,
+    }
+    _check_cni(a.cni)
+    try:
+        # /dev/null is the empty baseline: every finding of the change is new.
+        named = [p for p in a.against if p != os.devnull]
+        against = verify.collect(named, _read) if named else ([] if a.against else None)
+        if a.change_command is not None:
+            plan = verify.plan(a.change_command, cwd=Path.cwd(), platform=platform, version=a.pversion)
+            result = verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
+        else:
+            result = verify.evaluate(verify.collect(a.file, _read), against=against, **common)
+    except (gate.GateError, verify.VerifyError, ExceptionsError) as exc:
+        raise ConfigError(str(exc)) from exc
+    if a.format == "text":
+        _tprint(verify.text(result))
+    else:
+        _emit(result, fmt)
+    return verify.exit_code(result, a.allow_undetermined)
+
+
+def _hook_install(a: argparse.Namespace, fmt: str) -> int:
+    from kube_noob import hook
+
+    scope = a.scope or "project"
+    path = hook.settings_path(scope, Path.cwd(), Path.home())
+    options = hook.Options(
+        platform=a.platform, version=a.pversion, fail_on=a.fail_on, executable=hook.current_executable()
+    )
+    try:
+        flags = options.args()
+    except hook.InstallError as exc:
+        raise ConfigError(str(exc)) from exc
+    if not a.write:
+        out = {
+            "file": str(path),
+            "merge": hook.settings_snippet(options),
+            "write": f"kube-noob hook install --claude-code --{scope}{flags} --write",
+        }
+        if a.format == "text":
+            _tprint(f"Merge this into {path} (keep any hooks already there), or let kube-noob merge it:")
+            _tprint(f"  {out['write']}")
+            sys.stdout.flush()
+            _emit(out["merge"], "json")  # a document: past the text boundary, so it pastes into settings as it is
+            _tprint("Needs Claude Code v2.1.295 or later for onFailure; the hook itself blocks with exit 2 on error.")
+        else:
+            _emit(out, fmt)
+        return 0
+    try:
+        changed = hook.write_settings(path, options)
+    except hook.InstallError as exc:
+        raise ConfigError(str(exc)) from exc
+    msg = f"added the kube-noob PreToolUse hook to {path}" if changed else f"{path} already has the hook; unchanged"
+    _tprint(msg) if a.format == "text" else _emit({"file": str(path), "changed": changed}, fmt)
+    return 0
 
 
 def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
@@ -1611,6 +1662,78 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="honour a CycloneDX report's own analysis (not_affected, resolved, false_positive); off by default: "
         "whoever wrote the report could otherwise clear its findings",
+    )
+
+    vf = sub.add_parser(
+        "verify",
+        help="Check a change BEFORE it is applied: manifests (-f) or a command (--command); allow, deny or "
+        "not-determined",
+        description="One verdict for a change: allow, deny (it adds findings at or above --fail-on, or a command "
+        "grants cluster-admin, the privileged SCC or wildcard RBAC) or not-determined (what it does cannot be read "
+        "from its text and the local files: a URL, exec, a delete, a strategic-merge patch, a program or wrapper "
+        "verify does not model that is given a kube command). In --command, kubectl apply -f - with nothing on stdin "
+        "is not determined; verify -f - with nothing on stdin is a usage error (exit 2). A command is never run: its "
+        "files are read inside the working directory, no link followed, no network. Uses the gate's own audit, so "
+        "`verify -f X` and `gate -f X` agree on every finding. --against /dev/null is an empty baseline. Exit codes: "
+        "0 allow, 1 deny, 2 a usage or configuration error (a missing file, a bad --cni), 4 an internal error or "
+        "refused input, 5 not determined (0 with --allow-undetermined; a deny stays 1). Example: kube-noob verify "
+        "--command 'kubectl apply -f k8s/ -n shop'",
+    )
+    vf.add_argument("-f", "--file", action="append", default=[], help="proposed manifests: a file, a directory or -")
+    vf.add_argument(
+        "--command",
+        dest="change_command",
+        default=None,
+        help="the command line to check (kubectl, oc, helm, kustomize; through sh -c, env, sudo, xargs and the "
+        "rest). Its files are read relative to the current directory",
+    )
+    vf.add_argument(
+        "--against",
+        action="append",
+        default=[],
+        help="the current state of the same objects (a file or directory); only findings the change ADDS count",
+    )
+    vf.add_argument("--platform", choices=PLATFORMS)
+    vf.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
+    vf.add_argument("--fail-on", default="high", choices=["info", "low", "medium", "high", "critical", "never"])
+    vf.add_argument("--exceptions", default=None, help="exception list (kube-noob.io/v1 ExceptionList)")
+    vf.add_argument("--cni", default=None, help="the cluster's CNI as NAME or NAME:VERSION, as for `gate`")
+    vf.add_argument(
+        "--allow-undetermined",
+        action="store_true",
+        help="exit 0 instead of 5 when the verdict is not-determined (the reasons are still printed). Off by "
+        "default: a check before an action fails closed",
+    )
+    hk = sub.add_parser(
+        "hook",
+        help="Make a coding agent pass `kube-noob verify` before a command that changes a cluster",
+        description="`hook claude-code` is a Claude Code PreToolUse hook: it reads the hook JSON on stdin, passes "
+        "commands that start no cluster change, and blocks (exit 2) a kubectl, oc or helm change that verify does "
+        "not allow -- including not-determined, and its own errors. `hook install --claude-code` prints the "
+        "settings to add; with --write it merges them into the settings file. A client-side hook can be bypassed "
+        "by an agent with shell access; the admission webhook is the server-side control (SECURITY.md).",
+    )
+    hk_sub = hk.add_subparsers(dest="hook_cmd", required=True)
+    _patch(hk_sub, common)
+    hc = hk_sub.add_parser("claude-code", help="Answer one Claude Code PreToolUse call (hook JSON on stdin)")
+    hi = hk_sub.add_parser("install", help="Print (or with --write, merge) the settings that enable the hook")
+    for p_ in (hc, hi):
+        p_.add_argument("--platform", choices=PLATFORMS, default="kubernetes")
+        p_.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
+        p_.add_argument("--fail-on", default="high", choices=["info", "low", "medium", "high", "critical", "never"])
+    hi.add_argument("--claude-code", action="store_true", required=True, help="the harness: Claude Code")
+    scope = hi.add_mutually_exclusive_group()
+    scope.add_argument("--user", dest="scope", action="store_const", const="user", help="~/.claude/settings.json")
+    scope.add_argument(
+        "--project", dest="scope", action="store_const", const="project", help=".claude/settings.json (default)"
+    )
+    scope.add_argument(
+        "--local", dest="scope", action="store_const", const="local", help=".claude/settings.local.json (not committed)"
+    )
+    hi.add_argument(
+        "--write",
+        action="store_true",
+        help="merge the hook into that file (existing hooks kept, atomic, never through a symbolic link)",
     )
 
     bd = sub.add_parser(
@@ -2790,6 +2913,18 @@ def _unexpected(exc: BaseException) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     a = parser.parse_args(argv)  # before the boundary: help and usage are kube-noob's own text, colour and all
+    if a.cmd == "hook" and getattr(a, "hook_cmd", None) == "claude-code":
+        # Before the configuration is read and outside the error handling below: the hook answers in Claude Code's
+        # protocol, where 2 blocks and every other non-zero code lets the command through. A configuration error
+        # mapped to 4 here would have been a pass.
+        try:
+            from kube_noob import hook
+
+            return hook.main(options=hook.Options(platform=a.platform, version=a.pversion, fail_on=a.fail_on))
+        except BaseException:  # noqa: BLE001 - any failure here is a blocked command, never exit 1 (a pass)
+            with contextlib.suppress(OSError, ValueError):
+                sys.stderr.write("kube-noob hook failed; the command is blocked.\n")
+            return 2
     if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
         try:
             return _main(a)
@@ -3576,6 +3711,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         else:
             _emit(rep, fmt)
         return 0 if not rep["failures"] else 1
+    if a.cmd == "verify":
+        return _verify_cmd(a, s, fmt)
+    if a.cmd == "hook":
+        return _hook_install(a, fmt)
     if a.cmd == "demo":
         from kube_noob import demo
 

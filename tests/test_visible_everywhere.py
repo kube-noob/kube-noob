@@ -308,6 +308,12 @@ def test_the_mustgather_report_markdown(tmp_path: Path) -> None:
 #: (file, the exact source of the expression) -> why it may stay outside sanitize.py. One entry per pattern, not
 #: per file, so a second list added to an allowed file is still caught.
 ALLOWED_PRIVATE: dict[tuple[str, str], str] = {
+    ("src/kube_noob/hook.py", "path.isprintable"): (
+        "refuses a kube-noob path with a non-printing character for the settings entry; it cleans and shows nothing"
+    ),
+    ("src/kube_noob/hook.py", "o.executable.isprintable"): (
+        "refuses a settings entry whose executable path is not printable; it cleans and shows nothing"
+    ),
     ("src/kube_noob/tiers.py", 'r"^[^\\x00-\\x1f\\x7f]+\\Z"'): (
         "validates a configured tier name and refuses it; it cleans nothing and shows nothing"
     ),
@@ -603,6 +609,7 @@ DRIVEN: dict[str, list[list[str]]] = {
     "operators issues": [["-f", "M"]],
     "ksi": [["-f", "M"]],
     "build diagnose": [["-f", "EV"]],
+    "verify": [["-f", "M"], ["--format", "yaml", "-f", "M"]],
 }
 #: Commands not driven here, each with the reason. All of them still write through the same boundary, which
 #: `test_every_command_writes_through_the_boundary` holds for every command the parser has.
@@ -611,6 +618,12 @@ NOT_DRIVEN: dict[str, str] = {
         ["admission serve", "serve", "mcp", "watch"], "a long-running server or loop; its output is the same streams"
     ),
     **dict.fromkeys(["debug", "bundle"], "needs a live cluster; the live text is covered in test_absent_vs_unread*"),
+    "hook claude-code": (
+        "answers in Claude Code's hook protocol from JSON on stdin, before the boundary is in place: an `ask` as JSON "
+        "(ASCII-escaped) and a deny on stderr built by verify.show, which calls sanitize.visible; held in "
+        "tests/test_verify_hook.py"
+    ),
+    "hook install": "prints or writes a settings JSON built from closed-set options; it echoes no manifest text",
     **dict.fromkeys(
         [
             "corpus advisories",
