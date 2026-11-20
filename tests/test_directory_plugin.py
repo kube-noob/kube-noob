@@ -536,8 +536,12 @@ def test_an_older_engine_is_named_as_older_and_not_read(tmp_path: Path) -> None:
     stated = re.search(r"need \*\*kube-noob (\d+\.\d+\.\d+) or later\*\*", block)
     assert stated and stated.group(1) == MIN_ENGINE
     assert Version(printed.split()[1]) < Version(stated.group(1))
-    assert "If the\nversion it printed is lower than 0.9.3" in block or "lower than 0.9.3" in block
+    # The skills must NOT tell the model to compare the version itself. They used to, and the comparison is wrong
+    # on the very next release: "0.10.0" sorts below "0.9.3" as text, so a correct newer engine would be rejected
+    # with "nothing has been audited". The `forModel` key observes the capability instead of parsing a number.
+    assert "lower than" not in block, "the skills must not ask the model to compare version numbers"
     assert "first key is not `forModel`" in block
+    assert "never by comparing the version number yourself" in block
 
 
 def test_no_skill_runs_a_command_as_it_loads() -> None:
