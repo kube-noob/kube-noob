@@ -841,9 +841,13 @@ def test_a_workload_of_a_group_the_rules_do_not_know_is_named_and_decides_nothin
         "a Deployment was not audited (apiVersion names a group kube-noob does not know Deployment under), so whether "
         "its pods are the ones selected cannot be decided"
     )
-    assert any("example.com" in a and "Deployment/prod/web" in a and "not audited" in a for a in rep.assumptions), (
-        rep.assumptions
-    )
+    # The whole line, not three substrings of it: a bare `"example.com" in a` passes on any assumption that
+    # happens to quote the group, including one about a different object, and reads as a host check to a scanner.
+    assert (
+        'Deployment/prod/web declares apiVersion "example.com/v1": apiVersion names a group kube-noob does not know '
+        "Deployment under (kube-noob knows Deployment under apps, extensions); it was not audited, so this verdict "
+        "is undetermined."
+    ) in rep.assumptions, rep.assumptions
     assert [(r["object"], r["kind"], r["why"]) for r in rep.not_audited] == [
         ("Deployment/prod/web", "Deployment", "apiVersion names a group kube-noob does not know Deployment under")
     ]
