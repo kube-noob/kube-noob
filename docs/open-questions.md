@@ -66,7 +66,7 @@ schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it
 |---|---|---|
 | **R2** | Certificate expiry from TLS Secrets and Routes in a bundle | Nothing reads a `notAfter`. Needs `cryptography` as a **new runtime dependency** |
 | **N13** | Caller identity in audit records, and reading as the caller | Authorization is one shared bearer token; the server keeps no per-request audit record |
-| **N1** | Compliance Operator results reader | `compliancecheckresults` and `rules.compliance.openshift.io` are namespaced, non-secret, get/list; their `Rule` CRs carry NIST, CIS, SRG and PCI annotations |
+| **N1** | Compliance Operator results reader | **Shipped** as `kube-noob compliance results` (G323), and without the live read this row assumed: it reads files and must-gathers only, so it needs no credential. See [roadmap.md](roadmap.md) |
 | **N2** | Must-gather node configuration | A standard must-gather carries every rendered `MachineConfig`: `kubelet.conf`, kernel arguments, `fips`, CRI-O config, signature policy |
 | **N8** | API-server configuration from a must-gather | TLS profile, audit policy, effective arguments. Field stability across 4.x needs a real bundle first |
 | **N10** | DRA: a `deviceClassName` naming no known class | Four rules already cover what a manifest proves |

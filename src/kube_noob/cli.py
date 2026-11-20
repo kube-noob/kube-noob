@@ -2374,6 +2374,35 @@ def build_parser() -> argparse.ArgumentParser:
         "in the JSON, not an exit code",
     )
 
+    cmp_ = sub.add_parser(
+        "compliance",
+        help="OpenShift Compliance Operator results, read as evidence rather than repeated as a score (offline)",
+        description="results reads the Compliance Operator's own objects -- ComplianceCheckResults, ComplianceScans, "
+        "ComplianceSuites, Rules, Profiles and TailoredProfiles -- from manifests (-f) or a must-gather "
+        "(--must-gather), never from a cluster and never with a credential, and answers with the rules the profile "
+        "said would be evaluated, each passing, failing or NOT evaluated. A rule a TailoredProfile disabled, a "
+        "NOT-APPLICABLE check, a rule the profile lists that no result names, and a pass from a scan that never "
+        "reached DONE are each not evaluated, named with the object that proves it. A suite reporting COMPLIANT over "
+        "any of them comes out undetermined, not compliant. Example: kube-noob compliance results --must-gather "
+        "must-gather.tar.gz",
+    )
+    cmpsub = cmp_.add_subparsers(dest="compliance_cmd", required=True)
+    _patch(cmpsub, common)
+    cmr = cmpsub.add_parser(
+        "results",
+        help="Read Compliance Operator results in manifests (-f) or a must-gather (--must-gather) and say what was "
+        "never evaluated",
+    )
+    cmr.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    cmr.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
+    cmr.add_argument("--top", type=int, default=500, help="rules to show (1-5000, default 500)")
+    cmr.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless every rule the profile expected was evaluated and every object the answer needs was "
+        "read, so a gate never reads a tailored-out or half-finished suite as a compliant one",
+    )
+
     def snap_source(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
         sp.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
@@ -3361,6 +3390,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         return _posture(a, s, fmt)
     if a.cmd == "operators":
         return _operators_cmd(a, s, fmt)
+    if a.cmd == "compliance":
+        return _compliance_cmd(a, fmt)
     if a.cmd == "exceptions":
         return _exceptions_cmd(a, fmt)
     if a.cmd == "rhacs":
@@ -4410,6 +4441,43 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(out, fmt)
     if a.require_complete and not out["complete"]:
         print(f"refusing a complete verdict: the inventory is {out['verdict']} ({out['summary']})", file=sys.stderr)
+        return 5
+    return 0
+
+
+def _compliance_cmd(a: argparse.Namespace, fmt: str) -> int:
+    """Compliance Operator results from files or a must-gather. There is no ``--live``: nothing here asks a cluster
+    for anything, so the command needs no credential and no allowlist entry."""
+    from kube_noob import compliance_results
+
+    if not 1 <= a.top <= compliance_results.MAX_RULES:
+        raise ConfigError(f"--top must be 1-{compliance_results.MAX_RULES}")
+    given = [name for name, on in (("-f", bool(a.file)), ("--must-gather", bool(a.must_gather))) if on]
+    if len(given) != 1:
+        raise ConfigError("pass exactly one of -f manifests or --must-gather PATH")
+    if a.must_gather:
+        from kube_noob.mustgather import compliance as mg_compliance
+        from kube_noob.mustgather import ingest
+
+        try:
+            bundle = ingest.open_bundle(Path(a.must_gather))
+        except ingest.MustGatherError as exc:
+            raise ConfigError(str(exc)) from exc
+        collected = mg_compliance.collect(bundle)
+    else:
+        sources, unreadable, refused = _operator_files(a.file)
+        collected = compliance_results.from_sources(sources, unreadable, refused)
+    out = compliance_results.assess(collected, top=a.top)
+    if a.format == "text":
+        _tprint(compliance_results.render_text(out))
+    else:
+        _emit(out, fmt)
+    if a.require_complete and not out["complete"]:
+        print(
+            f"refusing a complete verdict: the answer is {out['verdict']}, incomplete because "
+            f"{'; '.join(out['undeterminedBecause'][:5])}",
+            file=sys.stderr,
+        )
         return 5
     return 0
 
