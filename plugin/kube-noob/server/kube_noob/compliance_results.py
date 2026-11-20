@@ -749,8 +749,17 @@ def _check_rows(checks: list[Obj], scans: dict[str, ScanRow]) -> list[CheckRow]:
         else:
             outcome, reason = "not-evaluated", "unrecognised-status"
             detail = f"status {_text(str(raw), 60)!r}"
-        warnings = [_text(w, 160) for w in _l(o.doc.get("warnings"))[:MAX_LIST] if isinstance(w, str)]
-        notes += [f"warning: {w}" for w in warnings if w]
+        raw_warnings = o.doc.get("warnings")
+        if raw_warnings not in (None, "") and not isinstance(raw_warnings, list):
+            # Upstream's warnings is a nullable list of strings. Anything else is a warning this did not read, and
+            # a warning nobody read is not the absence of one.
+            notes.append(f"its warnings field is not a list ({type(raw_warnings).__name__}), so it was not read")
+        kept = [_text(w, 160) for w in _l(raw_warnings)[:MAX_LIST] if isinstance(w, str)]
+        if isinstance(raw_warnings, list) and len(kept) < len(raw_warnings[:MAX_LIST]):
+            notes.append(
+                f"{len(raw_warnings[:MAX_LIST]) - len(kept)} of its warnings are not strings and were not read"
+            )
+        notes += [f"warning: {w}" for w in kept if w]
         rows.append(
             CheckRow(
                 name=_shown(o.name),

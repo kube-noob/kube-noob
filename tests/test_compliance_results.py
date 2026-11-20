@@ -434,6 +434,15 @@ def test_a_compliance_kind_with_no_api_version_is_still_read() -> None:
     assert _rule(out, "r1")["outcome"] == "pass"
 
 
+@pytest.mark.parametrize("warnings", ["boom", 7, {"a": 1}, [1, "real"], [None]])
+def test_a_warning_that_could_not_be_read_is_named_rather_than_treated_as_no_warning(warnings: Any) -> None:
+    check = _check("c1", rule="r1")
+    check["warnings"] = warnings
+    out = cr.assess(cr.from_documents([_profile("p1", ["r1"]), _scan(), check]))
+    notes = _rule(out, "r1")["notes"]
+    assert any("warnings" in n and "not read" in n for n in notes), notes
+
+
 # -- review classes 1 and 23: the wrapper's own defects ------------------------------------------------------------
 
 
