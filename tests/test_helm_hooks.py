@@ -82,7 +82,10 @@ def helm(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout=seen["stdout"], stderr="")
 
-    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda: "helm")
+    # `helm_binary` takes the project tree it must not find a `helm` inside; the stub has to accept it, as
+    # the one in tests/test_gate.py already does. Patching it with a no-argument lambda made every test
+    # through this fixture raise TypeError at the call, which CI caught and no local run of this file did.
+    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda *_: "helm")
     monkeypatch.setattr("kube_noob.generate.helm_render.subprocess.run", fake_run)
     return seen
 

@@ -59,11 +59,18 @@ seed=(
   --set jira.seed.path=/seed/jira-snapshot.tgz.enc
 )
 logs() { kubectl -n "$ns" logs "deploy/$1-kube-noob" -c kube-noob; }
-fail() { echo "::error title=jira seed in kind::$*"; kubectl -n "$ns" get pods -o wide; exit 1; }
+fail() {
+  echo "::error title=jira seed in kind::$*"
+  # Pods and events say a container is backing off; only its log says why. This script is the one that actually
+  # fails in e2e-kind, and it printed neither -- so three branches and main carried an undiagnosable red job.
+  bash scripts/ci_pod_failure.sh "$ns" "jira seed in kind"
+  exit 1
+}
 
 # 1. the right key: the copy is imported on start and answers with no egress at all (offline lock)
 helm install good deploy/helm/kube-noob -n "$ns" "${common[@]}" "${seed[@]}" --set config.offline=true \
-  --set jira.seed.keySecret.name=kn-seed-key --wait --timeout 4m
+  --set jira.seed.keySecret.name=kn-seed-key --wait --timeout 4m \
+  || fail "helm install good did not become ready"
 logs good | tee "$work/good.log"
 grep -q "jira seed imported from /var/lib/kube-noob/seed/jira-snapshot.tgz.enc: jira-ocpbugs" "$work/good.log" \
   || fail "the sealed seed was not imported with the right key"
@@ -84,7 +91,8 @@ fi
 
 # 2. the wrong key: nothing is imported, the reason is logged, the pod still serves
 helm install bad deploy/helm/kube-noob -n "$ns" "${common[@]}" "${seed[@]}" --set config.offline=true \
-  --set jira.seed.keySecret.name=kn-wrong-key --wait --timeout 4m
+  --set jira.seed.keySecret.name=kn-wrong-key --wait --timeout 4m \
+  || fail "helm install bad did not become ready"
 logs bad | tee "$work/bad.log"
 grep -q "jira seed not imported: the key does not open jira-snapshot.tgz.enc (a wrong key or a damaged file); nothing was imported" \
   "$work/bad.log" || fail "a wrong key must fail closed with a clear message"

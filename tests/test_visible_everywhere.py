@@ -308,6 +308,12 @@ def test_the_mustgather_report_markdown(tmp_path: Path) -> None:
 #: (file, the exact source of the expression) -> why it may stay outside sanitize.py. One entry per pattern, not
 #: per file, so a second list added to an allowed file is still caught.
 ALLOWED_PRIVATE: dict[tuple[str, str], str] = {
+    ("src/kube_noob/hook.py", "path.isprintable"): (
+        "refuses a kube-noob path with a non-printing character for the settings entry; it cleans and shows nothing"
+    ),
+    ("src/kube_noob/hook.py", "o.executable.isprintable"): (
+        "refuses a settings entry whose executable path is not printable; it cleans and shows nothing"
+    ),
     ("src/kube_noob/tiers.py", 'r"^[^\\x00-\\x1f\\x7f]+\\Z"'): (
         "validates a configured tier name and refuses it; it cleans nothing and shows nothing"
     ),
@@ -548,6 +554,33 @@ def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
         f'roleRef: {{apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: "admin{poison}"}}\n',
         encoding="utf-8",
     )
+    compliance = tmp_path / "co.yaml"
+    compliance.write_text(
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: Profile\nmetadata:\n"
+        f'  name: "p{poison}"\n  namespace: openshift-compliance\n'
+        f'rules: ["r{poison}", "gone{poison}", "ok"]\n---\n'
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: TailoredProfile\nmetadata:\n"
+        f'  name: "tp{poison}"\n  namespace: openshift-compliance\n'
+        f'spec:\n  title: "t{poison}"\n  description: "d{poison}"\n  extends: "p{poison}"\n'
+        f'  disableRules: [{{name: "r{poison}", rationale: "why{poison}"}}]\n---\n'
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: ComplianceScan\nmetadata:\n"
+        "  name: s1\n  namespace: openshift-compliance\n"
+        f'status:\n  phase: RUNNING\n  result: ERROR\n  errormsg: "boom{poison}"\n---\n'
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: ComplianceSuite\nmetadata:\n"
+        "  name: su1\n  namespace: openshift-compliance\n"
+        f'status:\n  phase: DONE\n  result: COMPLIANT\n  errorMessage: "sb{poison}"\n'
+        "  scanStatuses: [{name: s1, phase: RUNNING}]\n---\n"
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: ComplianceCheckResult\nmetadata:\n"
+        f'  name: "c{poison}"\n  namespace: openshift-compliance\n'
+        f'  annotations: {{"compliance.openshift.io/rule": "ok", "compliance.openshift.io/error-msg": "e{poison}"}}\n'
+        '  labels: {"compliance.openshift.io/scan-name": s1}\n'
+        f'status: ERROR\nseverity: high\ndescription: "desc{poison}"\nwarnings: ["w{poison}"]\n---\n'
+        "apiVersion: compliance.openshift.io/v1alpha1\nkind: Rule\nmetadata:\n"
+        f"  name: ok\n  namespace: openshift-compliance\n"
+        f'  annotations: {{"control.compliance.openshift.io/NIST-800-53": "CM-6;bad{poison}"}}\n'
+        f'id: x\ntitle: "ti{poison}"\nseverity: high\ncheckType: Platform\n',
+        encoding="utf-8",
+    )
     plain = HOSTILE + "\x1b]52;c;ZWNobyBwd25k\x07"
     events = tmp_path / "ev.txt"
     events.write_text(
@@ -564,6 +597,7 @@ def _hostile_inputs(tmp_path: Path) -> dict[str, str]:
     return {
         "M": str(manifest),
         "A": str(anchored),
+        "CO": str(compliance),
         "EV": str(events),
         "DEN": str(denial),
         "OUT": str(tmp_path / "out.json"),
@@ -600,9 +634,14 @@ DRIVEN: dict[str, list[list[str]]] = {
         ["--format", "mermaid", "deployment/web", "-n", "shop", "-f", "A"],
     ],
     "operators inventory": [["-f", "M"]],
+    # Driven on compliance objects, not on M: every string this command shows -- a rule name, a tailoring
+    # rationale, a scan's errormsg, a suite's errorMessage, a check's description and warnings, a control id --
+    # comes from the input, and M holds none of them.
+    "compliance results": [["-f", "CO"], ["--format", "yaml", "-f", "CO"], ["--format", "json", "-f", "CO"]],
     "operators issues": [["-f", "M"]],
     "ksi": [["-f", "M"]],
     "build diagnose": [["-f", "EV"]],
+    "verify": [["-f", "M"], ["--format", "yaml", "-f", "M"]],
 }
 #: Commands not driven here, each with the reason. All of them still write through the same boundary, which
 #: `test_every_command_writes_through_the_boundary` holds for every command the parser has.
@@ -611,6 +650,12 @@ NOT_DRIVEN: dict[str, str] = {
         ["admission serve", "serve", "mcp", "watch"], "a long-running server or loop; its output is the same streams"
     ),
     **dict.fromkeys(["debug", "bundle"], "needs a live cluster; the live text is covered in test_absent_vs_unread*"),
+    "hook claude-code": (
+        "answers in Claude Code's hook protocol from JSON on stdin, before the boundary is in place: an `ask` as JSON "
+        "(ASCII-escaped) and a deny on stderr built by verify.show, which calls sanitize.visible; held in "
+        "tests/test_verify_hook.py"
+    ),
+    "hook install": "prints or writes a settings JSON built from closed-set options; it echoes no manifest text",
     **dict.fromkeys(
         [
             "corpus advisories",

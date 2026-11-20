@@ -637,7 +637,13 @@ class BackendReadError(ClusterAccessError):
 #   fmt.Errorf("the server doesn't have a resource type %q", groupResource.Resource)
 # (the resource is the plural alone, quoted; kubectl's checkErr prefixes "error: "). Matched as a WHOLE LINE of
 # kubectl's own stderr, never inside other text: a server error body that happens to quote these words is not it.
-_NOT_SERVED_LINE = '^(?:error: )?the server (?:doesn\'t|does not) have a resource type "{resource}(?:\\.{group})?"\\Z'
+# kubectl v1.37 names the group after the resource: `... a resource type "clusterversions" in group
+# "config.openshift.io"` (its own stderr on a kind cluster, CI run 43451396337, job e2e-kind Kubernetes 1.37). The
+# group must be this resource's own: another group's absence says nothing about this one.
+_NOT_SERVED_LINE = (
+    '^(?:error: )?the server (?:doesn\'t|does not) have a resource type "{resource}(?:\\.{group})?"'
+    '(?: in group "{group}")?\\Z'
+)
 # kubectl for a named object: apimachinery v1.35.0 pkg/api/errors/errors.go NewNotFound,
 #   fmt.Sprintf("%s %q not found", qualifiedResource.String(), name)
 # printed by kubectl/pkg/cmd/util/helpers.go StandardErrorMessage as "Error from server (%s): %s".

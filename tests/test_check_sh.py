@@ -23,11 +23,16 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 
 # The jobs that test the code itself on a plain runner. The rest stand up a cluster (gate-ci, admission-kind,
 # policy-kind, e2e-kind, db-image) or need a recording toolchain (videos), and are out of a local gate's reach.
-CODE_JOBS = ("lint", "test", "plugin", "publishable")
+CODE_JOBS = ("lint", "test", "plugin", "publishable", "airgap")
 
 # A step CI runs that check.sh does not, each with the reason it cannot. Anything else must be in check.sh.
 NOT_LOCAL = {
     "scripts/check_publishable.sh --python-version": "CI plumbing: writes the matrix python to $GITHUB_OUTPUT",
+    # The air-gap transcript (G294): CI mirrors the dependency wheels (network) and installs from that directory
+    # with --no-index inside the namespace. check.sh runs the same checks, through the script's `checks`
+    # subcommand, on the wheel it has just installed with network; the --no-index install itself is CI's.
+    "scripts/airgap_check.sh prepare": "needs network to mirror the dependency wheels",
+    "scripts/airgap_check.sh verify": "the --no-index install from the mirror; check.sh runs `airgap_check.sh checks`",
 }
 
 

@@ -213,7 +213,9 @@ def test_poll_opens_explains_and_stores_nothing_sensitive(tmp_path: Path) -> Non
     cluster = FakeCluster()
     watcher = Watcher(_settings(tmp_path), cluster, ["shop"])
     result = watcher.poll(NOW)
-    assert len(result["changes"]["opened"]) == 5 and result["errors"] == []
+    assert len(result["changes"]["opened"]) == 5
+    # FakeCluster refuses ClusterVersion: that read is named, never swallowed into a silent platform None (G293)
+    assert len(result["errors"]) == 1 and result["errors"][0].startswith("clusterversions: not read (")
     led = IncidentLedger(tmp_path)
     by_signal = {i["signal"]: i for i in led.all()}
     oom = led.get(by_signal["OOMKilled"]["id"])
@@ -273,7 +275,7 @@ def test_failed_reads_never_resolve_and_old_incidents_age_out(tmp_path: Path) ->
     settings = _settings(tmp_path, resolveAfterPolls=1, retentionDays=1)
     Watcher(settings, FakeCluster(), ["shop"]).poll(NOW)
     broken = Watcher(settings, FakeCluster(fail=True), ["shop"]).poll(NOW + timedelta(minutes=5))
-    assert broken["namespaces"] == [] and len(broken["errors"]) == 4
+    assert broken["namespaces"] == [] and len(broken["errors"]) == 5  # the four lists and ClusterVersion
     assert broken["changes"]["resolved"] == [] and len(broken["open"]) == 5
     empty = FakeCluster({"pods": [], "events": [], "deployments": [], "replicasets": []})
     Watcher(settings, empty, ["shop"]).poll(NOW + timedelta(minutes=6))

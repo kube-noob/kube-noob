@@ -41,6 +41,7 @@ python scripts/sync_plugin_server.py
 python scripts/safety_contract.py --check
 python scripts/compliance_doc.py --check
 python scripts/doc_numbers.py --check
+python scripts/permissions_doc.py --check
 ```
 
 `src/` is the only source of truth. `plugin/kube-noob/server/kube_noob/` is a **generated copy** — never edit it, and
@@ -58,6 +59,11 @@ rewrites only those three regions and leaves the prose alone, and it REFUSES rat
 whose shape has changed. A control the document evidences through posture rather than through a rule (`SC-13`,
 via `kube-noob doctor`) lives in `POSTURE_CONTROLS` in that script, because generating from `RULE_CONTROLS` alone
 would delete it.
+
+`scripts/permissions_doc.py` regenerates `docs/permissions.md`: which API resources each live capability reads,
+recorded by running it against a fixture cluster, and what the chart's read-only Role and ClusterRole grant. After a
+change to a live reader or to `ALLOWED_RESOURCES`, regenerate it; `tests/test_permissions_doc.py` holds the chart to
+the allowlist in both directions (G293).
 
 `scripts/doc_numbers.py` does the same for the measured numbers in `docs/limits.md` (how many rules generate an
 admission policy per platform) and `docs/use-cases.md` (the compaction measurement). Both are measured by running
@@ -158,6 +164,25 @@ the same evidence.
 A command whose own answer is a decision rather than a score reads the same rule the other way round: when it
 cannot decide whether to allow something, no verdict was reached, so that is a 5 and not a 1. That is the same
 sentence, not an exception to it.
+
+How two commands fit the table (G280):
+
+- `kube-noob verify` answers with 0 (allow), 1 (deny) and 5 (not determined), and like every command exits 2 on a
+  usage or configuration error (`-f` and `--command` together or neither, a file that is not there, `verify -f -`
+  with nothing on stdin, a `--cni` that is not NAME or NAME:VERSION) and 4 on an internal error or refused input;
+  `--help` lists the same five. 1 is "findings at or above `--fail-on`": the audit's findings, a grant in
+  the command that the memory verifier counts as one (cluster-admin, the privileged SCC, wildcard RBAC), or a
+  literal credential in `set env` (KN-S013's finding, before there is a manifest). 5 is "the evidence was
+  incomplete": what the change does could not be read from its text and the local files -- a URL, a delete whose
+  target is cluster state, an `exec`. That is the rule above and not an exception to it: no verdict was reached.
+  A deny with something unread is still 1, because a verdict WAS reached and more evidence cannot turn a deny into
+  an allow -- where `gate`, whose answer is a score over a set it promises to have read, exits 1 for its own
+  undetermined verdict instead. Both are listed in the output.
+- `kube-noob hook claude-code` does not use this table. It answers in Claude Code's hook protocol, where the caller
+  reads exit codes: 0 lets the call proceed (with a JSON `ask` on stdout when the user must decide), 2 blocks it,
+  and every other code would let it through -- so once it is running the hook exits with nothing but 0 or 2, a
+  configuration error or a crash included. A hook that cannot start at all is what `"onFailure": "block"` in the
+  settings it installs is for.
 
 ## Versions
 

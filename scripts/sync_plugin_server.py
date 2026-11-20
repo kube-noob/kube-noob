@@ -40,6 +40,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = Path("plugin/kube-noob")
 VENDORED = PLUGIN / "server" / "kube_noob"
 ENTRY = "kube_noob.server.stdio"
+# The plugin's PreToolUse hook (hooks/hooks.json runs hooks/kube_noob_hook.py) imports kube_noob.hook, which reaches
+# kube_noob.verify and the gate's audit. Followed like the server, under the same guards: it renders no chart (helm
+# is guarded out) and reads nothing outside the working tree the hook input names.
+ENTRIES = (ENTRY, "kube_noob.hook")
 # Reached only through kube_noob.debug.cluster.get_backend after it checks that cluster access is enabled; the RHACS
 # Central reader (the only code that reads its API token), imported only by the rhacs_compare_live tool; and the
 # Containerfile and image audit, whose detectors spell out download-and-execute and credential patterns that a plugin
@@ -59,6 +63,8 @@ GUARDED_IMPORTS = frozenset(
         "kube_noob.code.builds",
         # Rendering a chart runs the `helm` binary: the CLI's helm-audit and the gate do; the plugin never does.
         "kube_noob.generate.helm_render",
+        # The hook's no-fork path starts a fresh interpreter; the plugin starts no program (it falls back to a thread).
+        "kube_noob.hook_spawn",
         # The plugin makes no network calls of its own: no web_fetch, so no HTTP client module; and it serves stdio
         # only, so no REST routes.
         "kube_noob.net",
@@ -75,6 +81,9 @@ GUARDED_IMPORTS = frozenset(
         # The operator inventory's must-gather reader, for the same reason; the inventory itself
         # (kube_noob.operators: manifests handed to it, and the live read when cluster access is on) ships.
         "kube_noob.mustgather.operators",
+        # The Compliance Operator results reader's must-gather half, for the same reason; the reader itself
+        # (kube_noob.compliance_results: objects handed to it as YAML, never read from a path) ships.
+        "kube_noob.mustgather.compliance",
     }
 )
 # LLM SDKs never ship in the plugin, even if one returns to the core dependencies; the plugin runs the MCP server only.
@@ -167,10 +176,10 @@ def _imports(module: str, path: Path) -> set[str]:
 
 
 def plugin_modules(root: Path = ROOT) -> set[str]:
-    """Every kube_noob module the stdio MCP server can import, minus the guarded cluster backends."""
+    """Every kube_noob module the stdio MCP server or the plugin's hook can import, minus the guarded ones."""
     files = _module_files(root / "src" / "kube_noob")
     seen: set[str] = set()
-    stack = [ENTRY]
+    stack = list(ENTRIES)
     while stack:
         mod = stack.pop()
         if mod in seen or mod in GUARDED_IMPORTS:

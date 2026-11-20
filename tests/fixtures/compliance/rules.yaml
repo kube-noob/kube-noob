@@ -1,0 +1,74 @@
+# Rule CRs carry their payload inline (rule_types.go) and the control crosswalk in
+# control.compliance.openshift.io/<standard> annotations, values separated by ';'
+# (pkg/profileparser/profileparser.go: controlAnnotationBase, profileOperatorFormatter).
+apiVersion: compliance.openshift.io/v1alpha1
+kind: RuleList
+items:
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-api-server-encryption-provider-cipher
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: SC-28;SC-28(1)
+        control.compliance.openshift.io/CIS-OCP: 1.2.31
+    id: xccdf_org.ssgproject.content_rule_api_server_encryption_provider_cipher
+    title: Configure the Encryption Provider Cipher
+    severity: medium
+    checkType: Platform
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-scc-limit-privileged-containers
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: AC-6;CM-7
+        control.compliance.openshift.io/CIS-OCP: 5.2.1
+    id: xccdf_org.ssgproject.content_rule_scc_limit_privileged_containers
+    title: Limit containers able to run as privileged
+    severity: high
+    checkType: Platform
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-audit-log-forwarding-enabled
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: AU-2;AU-12
+    id: xccdf_org.ssgproject.content_rule_audit_log_forwarding_enabled
+    title: Ensure that audit log forwarding is enabled
+    severity: medium
+    checkType: Platform
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-kubelet-enable-protect-kernel-defaults
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: CM-6
+    id: xccdf_org.ssgproject.content_rule_kubelet_enable_protect_kernel_defaults
+    title: Ensure protectKernelDefaults is set in the kubelet configuration
+    severity: medium
+    checkType: Node
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-api-server-anonymous-auth
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: AC-14;IA-2
+    id: xccdf_org.ssgproject.content_rule_api_server_anonymous_auth
+    title: Ensure that anonymous requests are authorized
+    severity: medium
+    checkType: Platform
+  - apiVersion: compliance.openshift.io/v1alpha1
+    kind: Rule
+    metadata:
+      name: ocp4-api-server-tls-cipher-suites
+      namespace: openshift-compliance
+      annotations:
+        control.compliance.openshift.io/NIST-800-53: SC-8;SC-8(1)
+    id: xccdf_org.ssgproject.content_rule_api_server_tls_cipher_suites
+    title: Configure the API server TLS cipher suites
+    severity: medium
+    checkType: Platform

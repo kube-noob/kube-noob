@@ -29,6 +29,10 @@ jobs:
       - run: mypy
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.lock --require-hashes --disable-pip --strict
+      - name: Generated release documents are current
+        run: |
+          python scripts/sbom.py --check
+          python scripts/krew_manifest.py --check
 
   test:
     runs-on: ubuntu-latest
@@ -176,6 +180,10 @@ jobs:
       - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
       - name: Plugin server copy matches src
         run: python scripts/sync_plugin_server.py --check
+      - name: Tekton Task and GitLab template carry scripts/ci/gate.sh verbatim
+        run: python scripts/ci_wrappers.py --check
+      - name: Permission matrix matches what the live capabilities read and what the chart grants
+        run: python scripts/permissions_doc.py --check
       - name: Safety contract matches the code and its invariants hold
         run: python scripts/safety_contract.py --check
       - name: Agent Skill is valid and its tool reference matches the code
@@ -234,6 +242,35 @@ jobs:
           python-version: ${{ steps.action.outputs.python }}
       - run: python -m pip install --upgrade pip build && python -m build
       - run: scripts/check_publishable.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel
+          path: dist/kube_noob-*.whl
+          if-no-files-found: error
+
+  airgap:
+    # G294: the air-gap claim as a transcript. The wheel the publishable job built is installed from a local
+    # directory only (--no-index, hashes from requirements.lock) inside `unshare -rn`, where no DNS lookup or
+    # connect can succeed, and doctor, an audit, a must-gather analysis and one MCP request over stdio run with
+    # their exit codes asserted. `prepare` is the one step with network: it mirrors the dependency wheels, which
+    # at an air-gapped site is the operator's step.
+    runs-on: ubuntu-latest
+    needs: [publishable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel
+          path: dist
+      - name: Mirror the dependency wheels (the one step with network)
+        run: scripts/airgap_check.sh prepare /tmp/kn-wheels
+      - name: Install from the local directory inside a network namespace and run the checks
+        run: scripts/airgap_check.sh verify /tmp/kn-wheels
 
   helm-and-dogfood:
     runs-on: ubuntu-latest
@@ -867,6 +904,8 @@ jobs:
           docker build -f Containerfile.db -t kube-noob-db:ci .
           docker build -f Containerfile -t kube-noob:ci .
           [ "$(docker image inspect kube-noob-db:ci --format '{{.Config.User}}')" = "1001" ]
+          docker run --rm --user 1001:0 kube-noob-db:ci cat /kube-noob-db/ATTRIBUTION.md > /dev/null \
+            || { echo "::error title=db::the image's own user (1001) cannot read /kube-noob-db. Check the directory's mode: a COPY --chmod into a directory the builder creates can leave it without its execute bit, and then nothing non-root can enter it"; exit 1; }
       - name: The init container copies the archive and the server imports it on start
         run: |
           set -euo pipefail
@@ -989,7 +1028,7 @@ jobs:
             --set config.defaultPlatform=kubernetes --set networkPolicy.allowRouter=false \
             --set networkPolicy.egress.dnsNamespace=kube-system --set networkPolicy.egress.dnsPort=53 \
             --set "networkPolicy.egress.apiServerCIDRs={${EP}/32,${SVC}/32}" --wait --timeout 4m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
       - name: Helm test (in-cluster readiness through the Service)
         run: helm test kn -n kube-noob --timeout 3m --logs
       - name: Sealed private Jira seed, wrong key, sync on and off (requirements R1.4, R1.5)
@@ -1140,10 +1179,19 @@ jobs:
           BAD: ${{ steps.bad.outputs.result }}
           VULN: ${{ steps.vuln.outputs.result }}
           CODE: ${{ steps.code.outputs.result }}
+          GOOD_EXIT: ${{ steps.good.outputs.exit-code }}
+          BAD_EXIT: ${{ steps.bad.outputs.exit-code }}
+          GOOD_EVIDENCE: ${{ steps.good.outputs.evidence }}
+          GOOD_BECAUSE: ${{ steps.good.outputs.because }}
         run: |
           set -euo pipefail
           test "$GOOD" = passed || { echo "::error title=gate action::our chart: $GOOD"; exit 1; }
           test "$BAD" = failed || { echo "::error title=gate action::bad fixtures: $BAD"; exit 1; }
+          # G291: every exit is named, and a pass with checks not run (no scanner report, no SARIF here) is
+          # merge-allowed but evidence-incomplete, with the reason beside it.
+          test "$GOOD_EXIT" = 0 && test "$BAD_EXIT" = 1 || { echo "::error title=gate action::exit-code outputs: $GOOD_EXIT $BAD_EXIT"; exit 1; }
+          test "$GOOD_EVIDENCE" = incomplete || { echo "::error title=gate action::evidence on our chart: $GOOD_EVIDENCE"; exit 1; }
+          case "$GOOD_BECAUSE" in *"vulnerability checks"*"code checks"*) ;; *) echo "::error title=gate action::because: $GOOD_BECAUSE"; exit 1 ;; esac
           test "$VULN" = failed || { echo "::error title=gate action::scanner report: $VULN"; exit 1; }
           test "$CODE" = failed || { echo "::error title=gate action::SARIF input: $CODE"; exit 1; }
           python -m pip install --quiet check-jsonschema==0.38.2
@@ -1225,8 +1273,10 @@ jobs:
           good=$(kubectl get taskrun/gate-good -o jsonpath='{.status.results[?(@.name=="result")].value}')
           bad=$(kubectl get taskrun/gate-bad -o jsonpath='{.status.results[?(@.name=="result")].value}')
           counts=$(kubectl get taskrun/gate-bad -o jsonpath='{.status.results[?(@.name=="counts")].value}')
-          echo "::notice title=Tekton gate::good=${good} bad=${bad} counts=${counts}"
-          test "$good" = passed && test "$bad" = failed \
+          badexit=$(kubectl get taskrun/gate-bad -o jsonpath='{.status.results[?(@.name=="exit-code")].value}')
+          evidence=$(kubectl get taskrun/gate-good -o jsonpath='{.status.results[?(@.name=="evidence")].value}')
+          echo "::notice title=Tekton gate::good=${good} (evidence ${evidence}) bad=${bad} exit=${badexit} counts=${counts}"
+          test "$good" = passed && test "$bad" = failed && test "$badexit" = 1 && test "$evidence" = incomplete \
             || { kubectl get taskrun -o yaml | tail -80 | sed 's/^/::warning title=taskrun::/'; exit 1; }
       - name: GitLab CI template under gitlab-ci-local (must pass on the chart, fail on the fixtures)
         run: |
@@ -1308,7 +1358,7 @@ jobs:
             --set networkPolicy.egress.dnsPort=53 --set admission.enabled=true --set admission.certificates=secret \
             --set admission.tls.secretName=kn-admission-tls --set "admission.tls.caBundle=$CA_BUNDLE" \
             --wait --timeout 5m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
           kubectl -n kube-noob rollout status deploy/kn-kube-noob-admission --timeout=180s
       - name: Warn mode - a privileged Deployment is admitted with KN-S001 as a kubectl warning
         run: |

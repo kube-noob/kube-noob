@@ -112,6 +112,53 @@ class ManifestsIn(_In):
     version: str | None = Field(None, max_length=16, description="Platform version, e.g. '4.22' (OCP) or '1.35'.")
 
 
+class VerifyIn(_In):
+    """A change to check before it is applied: manifests, or the command line that would apply them."""
+
+    manifests: str | None = Field(
+        None, max_length=MAX_MANIFEST_CHARS, description="The proposed manifests (YAML), when the change is files."
+    )
+    command: str | None = Field(
+        None,
+        max_length=20_000,
+        description="The command line about to run (kubectl, oc, helm, kustomize; through sh -c, env, sudo, xargs "
+        "and the rest). Never run. The files it names are read only from `files`, never from disk.",
+    )
+    files: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=200,
+        description="The text of each file the command names, keyed by the path as the command writes it "
+        "(`k8s/deploy.yaml`). A named file missing here makes the verdict not-determined.",
+    )
+    stdin: str | None = Field(
+        None, max_length=MAX_MANIFEST_CHARS, description="What the command reads with -f - (if anything)."
+    )
+    against: str | None = Field(
+        None,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The current state of the same objects (YAML): only findings the change ADDS count.",
+    )
+    platform: PlatformT = Field("kubernetes", description="Target platform.")
+    version: str | None = Field(None, max_length=16, description="Platform version, e.g. '4.22' (OCP) or '1.35'.")
+    fail_on: Literal["info", "low", "medium", "high", "critical", "never"] = Field(
+        "high", description="Deny at this severity or above."
+    )
+    exceptions: str | None = Field(None, max_length=1_000_000, description="An exception list, as for audit.")
+
+    @field_validator("files")
+    @classmethod
+    def _files_bounded(cls, v: dict[str, str]) -> dict[str, str]:
+        if sum(len(k) + len(t) for k, t in v.items()) > MAX_MANIFEST_CHARS:
+            raise ValueError(f"files: more than {MAX_MANIFEST_CHARS:,} characters in all")
+        return v
+
+    @model_validator(mode="after")
+    def _one_change(self) -> VerifyIn:
+        if (self.manifests is None) == (self.command is None):
+            raise ValueError("pass the change as manifests or as a command, one of the two")
+        return self
+
+
 class KsiIn(_In):
     """The FedRAMP 20x KSI view. ``manifests`` is optional: without it this is the crosswalk itself."""
 
@@ -745,6 +792,20 @@ class ClusterOperatorKnownIssuesIn(_In):
     _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
 
 
+class ComplianceResultsIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="Compliance Operator objects as YAML: ComplianceCheckResults, ComplianceScans, "
+        "ComplianceSuites, Rules, Profiles and TailoredProfiles (a List, or `oc get "
+        "compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles "
+        "-n openshift-compliance -o yaml` output, works). Include the Profile or TailoredProfile: without one, a rule "
+        "that produced no result at all cannot be seen. Other kinds are ignored; Secret objects are dropped unread.",
+    )
+    top: int = Field(500, ge=1, le=5000, description="How many rules to return.")
+
+
 class BuildDiagnoseIn(_In):
     log: str = Field(
         ...,
@@ -1328,6 +1389,35 @@ class Toolkit:
             "scenarios": [s.as_dict() for s in r.scenarios],
         }
 
+    def verify_change(self, p: VerifyIn) -> dict[str, Any]:
+        """``kube-noob verify`` for a caller that hands the files over: nothing is read from disk, nothing runs."""
+        from pathlib import Path as _Path
+
+        from kube_noob import verify
+        from kube_noob.gate import Source
+
+        common: dict[str, Any] = {
+            "platform": p.platform,
+            "version": p.version,
+            "fail_on": p.fail_on,
+            "exceptions": p.exceptions,
+        }
+        against = [verify._source("against", p.against)] if p.against else None
+        if p.command is not None:
+            plan = verify.plan(
+                p.command,
+                cwd=_Path("/nonexistent/kube-noob-verify"),  # nothing is resolved on disk: files come from `files`
+                stdin=p.stdin,
+                platform=p.platform,
+                version=p.version,
+                inline_files=dict(p.files),
+            )
+            return verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
+        try:
+            return verify.evaluate([Source("manifests", p.manifests or "")], against=against, **common)
+        except verify.VerifyError as exc:
+            raise ValueError(str(exc)) from exc
+
     def fix(self, p: FixIn) -> dict[str, Any]:
         k8s = k8s_version_for(p.platform, p.version)
         res = fix_manifests(p.manifests, platform=p.platform, k8s_version=k8s, harden=p.harden)
@@ -1859,6 +1949,15 @@ class Toolkit:
             issues_per_package=p.issues_per_package,
             data_dir=self.settings.data_dir,
         )
+
+    def compliance_results(self, p: ComplianceResultsIn) -> dict[str, Any]:
+        """What the Compliance Operator's own results do and do not prove: which rules it evaluated, and which it
+        never did."""
+        from kube_noob import compliance_results
+
+        out = compliance_results.assess(compliance_results.from_manifests(p.manifests), top=p.top)
+        self._observe([f"compliance-results:{out['verdict']}"])
+        return out
 
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
@@ -2404,6 +2503,20 @@ class Toolkit:
                 self.audit,
             ),
             ToolSpec(
+                "verify_change",
+                "Verify a change before it is applied",
+                "Call this before running kubectl apply, oc apply, helm install/upgrade or kubectl patch. One "
+                "verdict: allow (everything it sends was read and adds nothing at or above fail_on), deny (it adds "
+                "such findings, or the command grants cluster-admin, the privileged SCC or wildcard RBAC), or "
+                "not-determined (a URL, -f - with no stdin, exec, a delete, a strategic-merge patch, a wrapper or "
+                "flag it does not model): treat not-determined as no, and ask the user. Give the command and the "
+                "text of every file it names in `files`; nothing is read from disk and nothing runs. Returns the "
+                "findings the change adds with file, line, rule and fix, the command's class, what was not "
+                "evaluated, and the `kube-noob fix` command when the mechanical fixer clears a failing rule.",
+                VerifyIn,
+                self.verify_change,
+            ),
+            ToolSpec(
                 "fedramp_ksi",
                 "FedRAMP 20x KSI evidence",
                 "Which FedRAMP 20x Key Security Indicators an audit's findings are evidence for, by inverting the "
@@ -2668,6 +2781,22 @@ class Toolkit:
                 "determined. Secret objects are dropped unread.",
                 OperatorKnownIssuesIn,
                 self.operator_known_issues,
+            ),
+            ToolSpec(
+                "compliance_results",
+                "What the OpenShift Compliance Operator's results do and do not prove",
+                "Read ComplianceCheckResults, ComplianceScans, ComplianceSuites, Rules, Profiles and "
+                "TailoredProfiles and answer with the rules the profile said would be evaluated, each passing, "
+                "failing or NOT evaluated with the object that proves it: a rule a TailoredProfile disabled (naming "
+                "the profile and its rationale), a rule it marked manual, a NOT-APPLICABLE, INFO, MANUAL, ERROR or "
+                "INCONSISTENT check, a rule the profile lists that no result names, and a pass from a "
+                "ComplianceScan that never reached DONE or reported an error. A suite reporting COMPLIANT over any "
+                "of those is undetermined, not compliant, and the pass rate is withheld with the reason beside it. "
+                "Rule CRs' NIST 800-53 annotations are joined to kube-noob's own controls, so a control is "
+                "evidenced by the operator, by a kube-noob rule, by both, or by neither -- never 'satisfied'. "
+                "Offline: no cluster, no credential, nothing written; Secret objects are dropped unread.",
+                ComplianceResultsIn,
+                self.compliance_results,
             ),
             ToolSpec(
                 "build_diagnose",

@@ -199,14 +199,15 @@ def test_tekton_task_and_gitlab_template() -> None:
     step = task["spec"]["steps"][0]
     assert "$(params." not in step["script"], "params reach the script only through env (no injection)"
     assert step["securityContext"]["runAsNonRoot"] and step["securityContext"]["capabilities"] == {"drop": ["ALL"]}
-    assert {r["name"] for r in task["spec"]["results"]} == {"result", "counts"}
+    assert {r["name"] for r in task["spec"]["results"]} == {"result", "exit-code", "evidence", "because", "counts"}
     image = next(p for p in task["spec"]["params"] if p["name"] == "image")["default"]
     assert image.endswith(f":{__version__}")
     gl = yaml.safe_load((ROOT / "deploy" / "gitlab" / "kube-noob-gate.gitlab-ci.yml").read_text())
     job = gl[".kube-noob-gate"]
     assert job["image"]["name"].endswith(f":{__version__}") and job["image"]["entrypoint"] == [""]
     assert job["artifacts"]["reports"]["codequality"] == "gl-code-quality-report.json"
-    assert "--codequality gl-code-quality-report.json" in job["script"][0]
+    assert "KN_CODEQUALITY=gl-code-quality-report.json" in job["script"][0]
+    assert '--codequality "$KN_CODEQUALITY"' in job["script"][0]
     assert "args+=" not in job["script"][0] and "${" not in job["script"][0], "POSIX sh: no bash arrays"
 
 
@@ -246,7 +247,7 @@ def test_helm_render_passes_the_callers_kubernetes_version(monkeypatch: pytest.M
         seen["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout="apiVersion: v1\nkind: ConfigMap\n", stderr="")
 
-    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda: "helm")
+    monkeypatch.setattr("kube_noob.generate.helm_render.helm_binary", lambda *_: "helm")
     monkeypatch.setattr("kube_noob.generate.helm_render.subprocess.run", fake_run)
     render_chart(chart, kube_version=None)
     assert "--kube-version" not in seen["args"]
