@@ -113,7 +113,7 @@ A behaviour change updates, in the same commit:
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |
-| 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
+| 5 | the evidence was incomplete (`--require-complete`, unreadable files, a file the directory walk declined to read as a manifest) |
 | 141 | the output pipe closed |
 
 An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line
