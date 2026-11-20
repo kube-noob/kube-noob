@@ -1,0 +1,28 @@
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ComplianceScan
+metadata:
+  name: ocp4-cis
+  namespace: openshift-compliance
+  labels:
+    compliance.openshift.io/suite: cis-suite
+spec:
+  profile: xccdf_compliance.openshift.io_profile_cis-tailored
+  scanType: Platform
+status:
+  phase: DONE
+  result: COMPLIANT
+---
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ComplianceScan
+metadata:
+  name: ocp4-cis-node-worker
+  namespace: openshift-compliance
+  labels:
+    compliance.openshift.io/suite: cis-suite
+spec:
+  profile: xccdf_compliance.openshift.io_profile_cis-tailored
+  scanType: Node
+status:
+  phase: RUNNING
+  result: NOT-AVAILABLE
+  errormsg: timed out waiting for the scan pod on node worker-2
