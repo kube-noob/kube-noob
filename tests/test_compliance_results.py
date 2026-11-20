@@ -333,6 +333,32 @@ def test_an_enabled_rule_outside_the_base_profile_is_part_of_the_expected_set() 
     assert any("enableRules" in s for s in row["expectedFrom"])
 
 
+def test_a_result_that_was_present_but_could_not_be_joined_is_never_only_an_absence() -> None:
+    """Review class 24: a refusal one layer down must not read as "there was nothing here" one layer up. The rule
+    is missing-from-results AND the result that was in the input is named, in the same answer."""
+    out = _assess(_profile("p1", ["r1"]), _scan(), _check("c1", rule=None, status="FAIL"))
+    row = _rule(out, "r1")
+    assert row["reason"] == "missing-from-results"
+    assert out["counts"]["checksWithoutARule"] == 1
+    named = out["checksWithoutARule"][0]
+    assert named["name"] == "c1" and named["status"] == "FAIL"
+    assert any("name no rule this could join" in r and "c1" in r for r in out["undeterminedBecause"])
+    text = cr.render_text(out)
+    assert "NOT JOINED TO A RULE" in text and "c1" in text
+
+
+def test_a_newline_in_an_object_name_cannot_forge_a_row_in_the_text_view() -> None:
+    """Review class 7: every input-derived string goes through the one output boundary."""
+    forged = "evil\n  ocp4-forged  PASS"
+    out = cr.assess(
+        cr.from_documents([_profile("p1", ["r1"]), _scan(), _check(forged, rule="r1", status="NOT-APPLICABLE")])
+    )
+    text = cr.render_text(out)
+    assert "\n  ocp4-forged  PASS" not in text
+    assert not any(line.strip().startswith("ocp4-forged") for line in text.splitlines())
+    assert "<evil" in text and _rule(out, "r1")["outcome"] == "not-evaluated"
+
+
 # -- review class 4: an unrecognised value is never the benign default ----------------------------------------------
 
 
