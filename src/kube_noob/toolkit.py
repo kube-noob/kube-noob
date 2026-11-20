@@ -1141,6 +1141,10 @@ class Toolkit:
         fired: list[str] | None = None
         reasons: dict[str, str] | None = None
         absent: dict[str, list[str]] | None = None
+        # Defaulted beside its siblings, not inside the audit branch: with no manifests this name was never bound
+        # and the command raised UnboundLocalError, so `ksi` with nothing to audit -- the crosswalk-only call the
+        # dataset exists to answer -- exited 4 instead of printing every indicator as not evaluated (G281).
+        partly: dict[str, str] | None = None
         assumptions: list[str] = []
         ceiling: dict[str, str] | None = None
         not_audited: list[dict[str, Any]] = []
