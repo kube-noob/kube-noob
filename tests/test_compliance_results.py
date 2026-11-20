@@ -557,6 +557,58 @@ def test_a_secret_in_the_input_is_dropped_unread() -> None:
     assert "aGVsbG8" not in json.dumps(out)
 
 
+def _every_reason() -> dict[str, Any]:
+    """One input that provokes every reason the reader can give, so the parity checks are exhaustive rather than
+    representative. Keep it in step with ``cr.REASONS``: the test below fails if a reason cannot be provoked here."""
+    return cr.assess(
+        cr.from_documents(
+            [
+                _profile(
+                    "p1",
+                    [
+                        "na", "info", "man", "err", "inc", "empty", "odd", "gone",
+                        "dis", "manual", "unfinished", "errored", "noscan", "disagree",
+                    ],
+                ),
+                _tailored(
+                    disable=[{"name": "dis", "rationale": "accepted for the build namespace"}],
+                    manual=[{"name": "manual", "rationale": "reviewed by hand"}],
+                ),
+                _scan(),
+                _scan("s2", phase="RUNNING"),
+                _scan("s3", error="the scan pod never started"),
+                _suite(),
+                _check("c-na", rule="na", status="NOT-APPLICABLE"),
+                _check("c-info", rule="info", status="INFO"),
+                _check("c-man", rule="man", status="MANUAL"),
+                _check("c-err", rule="err", status="ERROR"),
+                _check("c-inc", rule="inc", status="INCONSISTENT"),
+                _check("c-empty", rule="empty", status=""),
+                _check("c-odd", rule="odd", status="pass"),
+                _check("c-unfin", rule="unfinished", scan="s2"),
+                _check("c-errd", rule="errored", scan="s3"),
+                _check("c-nos", rule="noscan", scan="s-absent"),
+                _check("c-d1", rule="disagree", status="PASS"),
+                _check("c-d2", rule="disagree", status="INFO"),
+            ]
+        )
+    )  # fmt: skip
+
+
+def test_every_reason_the_reader_can_give_is_reachable_and_reaches_the_text_view() -> None:
+    """The exhaustive form of review class 6: not "a caveat reaches the text" but every one of them, and no entry
+    in the reason table that nothing can produce (review class 8)."""
+    out = _every_reason()
+    provoked = {r["reason"] for r in out["notEvaluated"]}
+    assert provoked == set(cr.REASONS), sorted(set(cr.REASONS) ^ provoked)
+    text = cr.render_text(out)
+    for reason, sentence in cr.REASONS.items():
+        assert reason in text, reason
+        assert sentence in text, reason
+    assert out["verdict"] == "undetermined" and out["passRate"] is None
+    assert out["counts"]["passing"] == 0
+
+
 # -- review classes 13 and 25: one predicate decides the headline ---------------------------------------------------
 
 
