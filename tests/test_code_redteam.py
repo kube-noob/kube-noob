@@ -6,7 +6,6 @@ Containerfile path, no gate context, RUN --mount=type=bind, a BOM, a tab), so ``
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,12 @@ import pytest
 from kube_noob.cli import main
 from kube_noob.code import deps, sarif, ship
 from kube_noob.code.sarif import CodeFinding, Location
+from tests import bounds
+
+#: Measured; re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_STAGES = 0.006  #: fifty build stages through `where` and `source_of`
+HONEST_MERGE = 0.45  #: 40,000 then 20,000 findings through `sarif.merge`
+HONEST_LONG_LINE = 0.001  #: one 40,000-space requirements line through `deps.find`
 
 
 def _sarif(
@@ -181,10 +186,13 @@ def test_rt7_many_stages_are_linear() -> None:
         lines += [f"COPY --from=s{j} /app /app" for j in range(k)]
     text = "\n".join(lines) + "\n"
     b = ship.parse_build(ship.Build("Containerfile", text, "img"))
-    start = time.monotonic()
-    assert ship.where([b], "app/views.py")
-    assert ship.source_of(b, "/app/views.py") == [("app/views.py", 2)]
-    assert time.monotonic() - start < 2.0
+    # CUBIC_RISK, not LINEAR: fifty stages is 1,225 `COPY --from` lines, and `where`/`source_of` walking them per
+    # stage is quadratic in that, which is a thousandfold rather than a hundredfold. With LINEAR the ceiling this
+    # helper derives under coverage on a shared runner (2.06 s) exceeds its own detection threshold (0.6 s), so
+    # `VacuousBound` fires in CI -- the helper refusing a shape that could not catch what it names.
+    with bounds.bounded(bounds.CUBIC_RISK, honest_seconds=HONEST_STAGES, guards="fifty build stages"):
+        assert ship.where([b], "app/views.py")
+        assert ship.source_of(b, "/app/views.py") == [("app/views.py", 2)]
 
 
 def _finding(rule: str, cwe: tuple[int, ...] = ()) -> CodeFinding:
@@ -194,12 +202,11 @@ def _finding(rule: str, cwe: tuple[int, ...] = ()) -> CodeFinding:
 
 def test_rt8_merge_is_linear() -> None:
     many = [_finding(f"rule-{i}") for i in range(40_000)]
-    start = time.monotonic()
-    assert len(sarif.merge(many)) == 40_000
     shared = [_finding(f"rule-{i}", (78,)) for i in range(20_000)]
-    (one,) = sarif.merge(shared)
-    assert len(one.sources) == 20_000
-    assert time.monotonic() - start < 10.0
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_MERGE, guards="60,000 findings through merge"):
+        assert len(sarif.merge(many)) == 40_000
+        (one,) = sarif.merge(shared)
+        assert len(one.sources) == 20_000
     a, b, c = _finding("r1", (89,)), _finding("r2", (79,)), _finding("r3", (89, 79))
     merged = sarif.merge([a, b, c])
     assert len(merged) == 2 and merged[0].cwe == (79, 89)  # c joins the first finding it shares a CWE with
@@ -281,10 +288,9 @@ def test_rt11_dockerfile_specific_ignore(tmp_path: Path) -> None:
 
 def test_rt12_no_backtracking_on_long_lines() -> None:
     line = "requests" + " " * 40_000 + "x"
-    start = time.monotonic()
-    assert deps.find({"requirements.txt": line}, "pypi", "requests") == []
-    assert deps.find({"pyproject.toml": f'"{line}"'}, "pypi", "requests") == []
-    assert time.monotonic() - start < 1.0
+    with bounds.bounded(bounds.BACKTRACKING, honest_seconds=HONEST_LONG_LINE, guards="a 40,000-space dependency line"):
+        assert deps.find({"requirements.txt": line}, "pypi", "requests") == []
+        assert deps.find({"pyproject.toml": f'"{line}"'}, "pypi", "requests") == []
     assert deps.find({"requirements.txt": "requests [security] ==2.0\n"}, "pypi", "requests")[0].line == 1
 
 

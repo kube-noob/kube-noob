@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import random
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +29,11 @@ from kube_noob.debug.diagnose import diagnose
 from kube_noob.debug.steps import classify_step
 from kube_noob.signals import catalogue, ceph, extract, for_text
 from kube_noob.signals import core as ex
+from tests import bounds
+
+#: Measured: the five hostile inputs through the text scan and the health-output sniffer, catalogue already
+#: loaded. Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_CEPH_TEXT_SCAN = 0.35
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -519,17 +523,23 @@ def test_hostile_and_oversized_input_is_bounded_and_fast() -> None:
     words = "ceph\n" + ("PG_DEGRADED_ " * 300 + "OSD_DOWN\n") * 2_000
     splits = "HEALTH_WARN " + "; " * 1_000_000
     ceph.catalogue()  # loaded once per process; the timer measures the scan
-    start = time.perf_counter()
-    for text in (flood, blank, long_line, words, splits):
-        ceph.text_signals(text)
-        ceph.looks_like_health_output(text)
-    assert time.perf_counter() - start < 2.0
+    with bounds.bounded(
+        bounds.LINEAR, honest_seconds=HONEST_CEPH_TEXT_SCAN, guards="five hostile inputs through the text scan"
+    ):
+        for text in (flood, blank, long_line, words, splits):
+            ceph.text_signals(text)
+            ceph.looks_like_health_output(text)
     assert [s.name for s in extract(flood) if s.kind == "ceph_health"] == ["OSD_DOWN"]
     assert [s.name for s in extract(words) if s.kind == "ceph_health"] == ["OSD_DOWN"]
     many = {"status": "HEALTH_WARN", "checks": {f"CODE_{i}": {"severity": "HEALTH_WARN"} for i in range(5_000)}}
-    start = time.perf_counter()
+    # No clock on this one. It had `< 1.0` beside the cap assertion and failed at 1.0239 s and 1.0607 s on PR #77's
+    # `test (3.11)` job, after the identical sha had gone 19 of 19 green on a workflow_dispatch run. The work is
+    # 0.001 s measured here, so the budget had a thousandfold headroom and still lost: it measured a second of
+    # descheduling. The cap it was beside is exact and is the whole contract -- `json_checks` reads MAX_CHECKS of
+    # 5,000 entries and `extract` stops at MAX_SIGNALS -- and `tests/bounds.py` refuses a ceiling for work this
+    # cheap: `SMALL_MULTIPLE` is a 25x regression, and no ceiling that survives a stall is below 25x of one
+    # millisecond. The helper raises `VacuousBound` rather than letting a meaningless ceiling pass.
     assert len(ceph.json_checks(many) or []) == ceph.MAX_CHECKS and len(extract(many)) <= ex.MAX_SIGNALS
-    assert time.perf_counter() - start < 1.0
     weird = {"checks": {"osd_down; rm -rf /": {"severity": "HEALTH_WARN"}, "OSD_DOWN": "not a dict", "X": {}}}
     assert _codes(weird) == {}
     deep = '{"health": ' * 3_000 + '{"checks": {"OSD_DOWN": {"severity": "HEALTH_WARN"}}}' + "}" * 3_000

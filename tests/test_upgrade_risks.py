@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import random
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +33,11 @@ from kube_noob.cli import main as cli_main
 from kube_noob.config import load_settings
 from kube_noob.debug.steps import classify_step, split_comment
 from kube_noob.knowledge_status import line, status
+from tests import bounds
+
+#: Measured: one backtracking bomb against the linear engine.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_BOMB = 0.001
 
 DATA = Path(ur.__file__).parent / "data" / "upgrade_risks"
 COMMIT = "7572174a551561c30e07e9b5ca6f156ef5cd513c"
@@ -306,9 +310,8 @@ def test_backtracking_bombs_are_linear() -> None:
     """Patterns that take exponential time in a backtracking engine run in time linear in the input here."""
     for pattern in (r"^(([0-9]|[0-9.])+)+x$", r"^(4|4.|4.2|4.20|[0-9.]+)*z", r"(.*.*.*.*.*.*.*.*.*.*)*q"):
         rx = ur.compile_from(pattern)
-        start = time.perf_counter()
-        assert rx.search("4.20.3000000+ppc64le") is False
-        assert time.perf_counter() - start < 0.5, pattern
+        with bounds.bounded(bounds.BACKTRACKING, honest_seconds=HONEST_BOMB, guards=f"the bomb {pattern}"):
+            assert rx.search("4.20.3000000+ppc64le") is False
 
 
 def test_oversized_and_malformed_versions_are_refused() -> None:

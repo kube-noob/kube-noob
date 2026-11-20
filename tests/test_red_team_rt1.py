@@ -12,7 +12,6 @@ to fix the code, so they are regression sets here, not measures; RT2 brings a fr
 from __future__ import annotations
 
 import json
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,14 @@ from kube_noob import toolkit as tk
 from kube_noob.cli import main
 from kube_noob.config import load_settings
 from kube_noob.server.mcp_app import build_server
+from tests import bounds
+
+#: Measured: the red team's blank paste through the insight tool.
+HONEST_INSIGHT = 0.45
+
+#: Measured: two megabytes of blank lines through recognise.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_RECOGNISE = 0.75
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 
@@ -43,15 +50,13 @@ def kit(tmp_path: Path) -> tk.Toolkit:
 @pytest.mark.parametrize("filler", [" \n", "\n", "\t\n", "\r\n"])
 def test_recognising_two_megabytes_of_blank_lines_is_linear(filler: str) -> None:
     text = "pods crash\n" + filler * (ins.MAX_TEXT // len(filler))
-    started = time.monotonic()
-    ins.recognise(text)
-    assert time.monotonic() - started < 3.0
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_RECOGNISE, guards=f"two megabytes of {filler!r}"):
+        ins.recognise(text)
 
 
 def test_insight_on_the_red_team_blank_paste_answers_quickly(kit: tk.Toolkit) -> None:
-    started = time.monotonic()
-    kit.insight(tk.InsightIn(text="pods crash\n" + "\n" * 30_000))
-    assert time.monotonic() - started < 5.0
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_INSIGHT, guards="the red team's blank paste"):
+        kit.insight(tk.InsightIn(text="pods crash\n" + "\n" * 30_000))
 
 
 def test_held_out_recall_regression() -> None:

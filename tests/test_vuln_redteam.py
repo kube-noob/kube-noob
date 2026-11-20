@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,11 @@ from kube_noob import gate
 from kube_noob.cli import main
 from kube_noob.vuln import assess, reports, threat, vex
 from kube_noob.vuln.reports import gating_severity
+from tests import bounds
+
+#: Measured: `workload_reach` and `scan` over 16,000 objects. The cubic form took minutes at this size.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_REACH_16000 = 1.2
 
 R9 = ("red_hat_enterprise_linux_9", "Red Hat Enterprise Linux 9", "cpe:/o:redhat:enterprise_linux:9")
 R8 = ("red_hat_enterprise_linux_8", "Red Hat Enterprise Linux 8", "cpe:/o:redhat:enterprise_linux:8")
@@ -360,11 +364,10 @@ def test_reach_looks_up_the_inventory_a_fixed_number_of_times() -> None:
 
 def test_reach_and_scan_of_16000_objects_take_seconds_not_hours() -> None:
     inv = ap.Inventory.from_documents(_many(4000))
-    start = time.perf_counter()
-    reach = ap.workload_reach(inv)
-    out = ap.scan(inv)
+    with bounds.bounded(bounds.CUBIC_RISK, honest_seconds=HONEST_REACH_16000, guards="16,000 objects"):
+        reach = ap.workload_reach(inv)
+        out = ap.scan(inv)
     assert len(reach) == 4000 and "paths" in out
-    assert time.perf_counter() - start < 20, "the cubic scan took minutes at this size"
 
 
 def test_selector_matching_is_unchanged() -> None:

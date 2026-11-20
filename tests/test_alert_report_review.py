@@ -28,6 +28,18 @@ from kube_noob.config import AlertReportSettings, Settings, load_settings
 from kube_noob.debug.cluster import redact_text
 from kube_noob.server.http import http_app
 from kube_noob.toolkit import AlertReportIn, DiagnoseIn, Toolkit
+from tests import bounds
+
+#: How long the post's JSON check is made to take. This is a CONTRAST test: its signal is the gap between
+#: "/healthz answered straight away" and "/healthz answered after the post's check finished", so the number that
+#: has to be big is this one, not the ceiling. `tests/bounds.py` refuses the call site if the gap is not at least
+#: twice what the environment needs, which is why 1.5 s -- the original -- is no longer enough: on a shared runner
+#: a 1.2 s gap is inside the stall that `test_hostile_and_oversized_input_is_bounded_and_fast` lost a merge to.
+#: An ordering assertion was considered instead and rejected: when the loop IS blocked, /healthz is served the
+#: moment the blocking call returns, so it can still complete before the post's own response is rendered.
+BLOCKING_SECONDS = 6.0
+#: Long enough for the post to have reached the JSON check before /healthz is asked for.
+SETTLE_SECONDS = 0.3
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "deploy" / "helm" / "kube-noob"
@@ -92,12 +104,18 @@ def _worst_case() -> str:
 # --- 1. cost, a time budget, and the event loop -----------------------------------------------------------------
 
 
-#: Stated ceilings, absolute rather than relative. Measured on the 2-core build machine: before the fix one
-#: 2,000-dash string took 19.7 ms to redact and the worst-case payload 40.4 s; after, 0.2 ms and the figure in
-#: docs/operations.md. Each ceiling leaves about a tenfold margin for a slow CI runner.
-REDACT_CEILING_SECONDS = 5.0  # 1,500 strings: the three annotations of 500 alerts
+#: Measured on the 2-core build machine: before the fix one 2,000-dash string took 19.7 ms to redact and the
+#: worst-case payload 40.4 s; after, 0.2 ms and the figure in docs/operations.md. The redaction ceiling was a
+#: stated 5.0 s and is now derived from this measurement by `tests/bounds.py`, which scales it for a coverage
+#: tracer and a stall rather than leaving one number to cover both.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_REDACT_1500 = 0.35  # 1,500 strings: the three annotations of 500 alerts, at 0.2 ms each
 #: The worst case took 4.8 s on an idle build machine and 15 s with three other test suites on its two cores; the
-#: ceiling is the north-star minute, with the time budget raised past it so the budget cannot hide a slow build.
+#: ceiling is the north-star minute from docs/operations.md, with the time budget raised past it so the budget
+#: cannot hide a slow build. This one stays a stated number rather than a derived ceiling: it is a claim about the
+#: product, not a complexity shape, and 60 s against a measured 15 s under load is not a reading of the runner --
+#: deriving it would have clamped it to `bounds.MAX_CEILING_SECONDS`, tightening a documented claim to 30 s with
+#: only twice the measured margin. It is above the structural guard's floor, so the guard allows it.
 WORST_CASE_CEILING_SECONDS = 60.0
 
 
@@ -156,10 +174,9 @@ def test_the_linear_flag_rewrite_rewrites_exactly_what_the_plain_substitution_di
 
 
 def test_redacting_a_long_run_of_dashes_stays_within_its_ceiling() -> None:
-    started = time.perf_counter()
-    for _ in range(1500):
-        redact_text(DASHES)
-    assert time.perf_counter() - started < REDACT_CEILING_SECONDS
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_REDACT_1500, guards="1,500 2,000-dash redactions"):
+        for _ in range(1500):
+            redact_text(DASHES)
 
 
 def test_the_redactor_still_catches_every_flag_shape_after_the_pattern_change() -> None:
@@ -219,19 +236,21 @@ def test_reading_the_body_does_not_block_the_event_loop(tmp_path: Path, monkeypa
     real = sanitize.json_nesting_ok
 
     def slow(text: Any, limit: int = sanitize.MAX_JSON_DEPTH) -> bool:
-        time.sleep(1.5)
+        time.sleep(BLOCKING_SECONDS)
         return real(text, limit)
 
     monkeypatch.setattr(sanitize, "json_nesting_ok", slow)
     with TestClient(http_app(_server(tmp_path)), base_url="http://testserver") as c:
         worker = threading.Thread(target=lambda: _post(c))
         worker.start()
-        time.sleep(0.3)
-        started = time.perf_counter()
-        assert c.get("/healthz").status_code == 200
-        waited = time.perf_counter() - started
+        time.sleep(SETTLE_SECONDS)
+        with bounds.not_blocked_by(
+            blocked_seconds=BLOCKING_SECONDS - SETTLE_SECONDS,
+            source="the `slow` json_nesting_ok this test installs",
+            guards="/healthz being answered off the event loop while a large post is checked on it",
+        ):
+            assert c.get("/healthz").status_code == 200
         worker.join()
-    assert waited < 0.8, f"/healthz waited {waited:.2f}s behind a post"
 
 
 def test_reports_are_built_a_bounded_number_at_a_time() -> None:
