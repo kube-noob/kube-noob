@@ -1244,9 +1244,34 @@ def _one_input_uri(rep: dict[str, Any]) -> str:
     return next(iter(uris)) if len(uris) == 1 else "manifests"
 
 
+def _cq_issue(rule: str, text: str, uri: str) -> dict[str, Any]:
+    """One CodeClimate issue for something the run did not evaluate or did not read.
+
+    `info` is GitLab's lowest severity and is the right one: this is not a defect in the code, it is a statement
+    that part of the input reached no verdict. The fingerprint is over the text, so the same gap is one issue
+    across pipelines and a changed gap is a new one.
+    """
+    return {
+        "description": f"{rule}: {text}"[:2000],
+        "check_name": rule,
+        "fingerprint": _fingerprint({"ruleId": rule, "uri": uri, "message": text}),
+        "severity": "info",
+        "location": {"path": uri, "lines": {"begin": 1}},
+    }
+
+
 def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitLab's code quality report (a list of CodeClimate issues)."""
-    return [
+    """GitLab's code quality report (a list of CodeClimate issues).
+
+    The findings, and then what the run did not evaluate or could not read. An empty list is how GitLab's Code
+    Quality widget spells "no issues", so an undetermined gate wrote `[]` and the widget said the change was
+    clean -- the same empty-list-reads-as-clean failure G328 and G331 removed from the two SARIF renderers, in the
+    third renderer of the same report (review class 21 again).
+
+    These carry `severity: info` and never a blocker: the gate's exit code is what stops a pipeline, and a
+    coverage gap raised as a defect would be dismissed as a false positive. Saying it at all is the point.
+    """
+    out = [
         {
             "description": f"{r['ruleId']} {r['resource']}: {r['message']}"[:2000],
             "check_name": r["ruleId"],
@@ -1256,6 +1281,37 @@ def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for r in report["findings"]
     ]
+    files = [str(f) for f in report.get("files") or [] if f]
+    uri = files[0] if len(files) == 1 else "manifests"
+
+    undetermined = str(report.get("undetermined") or "")
+    if undetermined:
+        out.append(_cq_issue(NOT_AUDITED_RULE, undetermined, uri))
+
+    summary = report.get("controlSummary") or {}
+    unevaluated = [r for r in summary.get("rulesNotEvaluated") or [] if isinstance(r, dict) and r.get("ruleId")]
+    if unevaluated:
+        named = ", ".join(str(r["ruleId"]) for r in unevaluated)
+        out.append(
+            _cq_issue(
+                NOT_EVALUATED_RULE,
+                f"{len(unevaluated)} rules reached no verdict on this input, so they are not reported as clean: "
+                f"{named}",
+                uri,
+            )
+        )
+
+    for row in report.get("unreadable") or []:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("file") or row.get("path") or "")
+        if path:
+            out.append(_cq_issue(NOT_READ_RULE, f"not read, so nothing in it was audited: {row.get('why')}", path))
+
+    for row in report.get("skipped") or []:
+        if isinstance(row, dict) and row.get("forbidsVerdict") and row.get("file"):
+            out.append(_cq_issue(NOT_READ_RULE, f"not audited: {row.get('why')}", str(row["file"])))
+    return out
 
 
 _MD_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"} | {c: "\\" + c for c in "\\`*_[]!#~"}
@@ -1530,6 +1586,26 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
         named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
         gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
         undetermined = f"{undetermined}; {gap}" if undetermined else gap
+    # The coverage record G328 gave `audit --format sarif`, built here too. This is the file `scripts/ci/gate.sh`
+    # uploads to code scanning, so it is the one that decides what a reviewer sees: without this it carried
+    # fourteen findings and nothing else for a report whose own `controlSummary` said fifty-two rules reached no
+    # verdict, and nothing at all for an input made only of kinds no rule reads. G328 fixed the audit's SARIF and
+    # left its neighbour, which is review class 21 in the same function that records the lesson.
+    #
+    # Two keys differ from the audit's report and are normalised rather than read twice: `unreadable` rows carry
+    # `file` here and `path` there, and the input uri comes from `files` because a gate finding has no `file`.
+    # A file the walk declined to read as a manifest (`forbidsVerdict`, G325) is a file nothing in which was
+    # audited, so it is the same absence and gets the same result.
+    cov_unreadable = [
+        {"path": str(u.get("file") or ""), "why": str(u.get("why") or "")} for u in report.get("unreadable") or []
+    ] + [{"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked]
+    files = [str(f) for f in report.get("files") or [] if f]
+    coverage = {
+        "controlSummary": report.get("controlSummary") or {},
+        "unreadable": cov_unreadable,
+        "uri": files[0] if len(files) == 1 else "manifests",
+    }
+    report = {**report, "coverage": coverage}
     if not notes and not undetermined:
         return sarif(report)
     invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
