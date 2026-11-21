@@ -1,294 +1,826 @@
-"""A file nothing could be read from, and an object no rule read, are evidence the run does not have.
+"""What kube-noob could not read is never a pass, and what it did read is not called unread (G276, third review).
 
-Three defects, one sentence: something was in the input, was not read, and an output said "fine" anyway.
-
-G340. `gate` exits 5 for a file it could not read, and its REPORT said `passed: true`. `incomplete` was
-`"undetermined" in coverage or bool(blocking)`; `blocking` is the files the walk declined to open (G325), and a file
-it could not parse was in neither. So the Markdown summary read "## kube-noob gate passed" without naming the
-file and nothing was annotated on the pull request. The exit code being right is why nobody read the report.
-
-G341. Two renderers that DID mention the file lost its name: they read `u["path"]` and a gate report's rows carry
-`file`. The page printed "File not read." beside an empty name (and its `<span>` as text); the OSCAL remark said
-"could not be read and were skipped: ?.".
-
-G342. `red_team` answered `mitigated` on `evidence: []` for a privileged Deployment the audit had refused for its
-apiVersion, and dropped three scenarios that are `exposed` for the same object under `apps/v1`.
-
-Each control comes first in its section, because each of these fixes has a muted-alert twin: a gate that is
-incomplete on every repository, or a red team that can never say `mitigated`, is turned off by its readers.
+Each test names the review item it pins. The rule throughout: an object or a read that was refused (a field of the
+wrong shape, a 403, a timeout) makes the answer incomplete and says so; an absence that is normal (a CRD a cluster
+does not serve, a built-in role a bundle does not carry) is reported but does not fail a gate on its own.
 """
 
 from __future__ import annotations
 
+import io
 import json
+import random
+import re
+import threading
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
-from kube_noob import gate, oscal, report_html
-from kube_noob import toolkit as tk
+from kube_noob import attack_paths as ap
+from kube_noob import cli
+from kube_noob.audit import redteam
 from kube_noob.audit.engine import analyze
-from kube_noob.cli import main
-from kube_noob.gate import NOT_READ_RULE
-from kube_noob.toolkit import Toolkit
+from kube_noob.errors import ClusterAccessError
 
-BROKEN = "broken.yaml"
-#: Bytes YAML will not parse: the file was never opened as a manifest, so nothing in it was audited.
-UNPARSEABLE = "apiVersion: v1\nkind: Pod\nmetadata: {name: [unclosed\n"
 
-PRIVILEGED = """\
+def _run(argv: list[str]) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        rc = cli.main(argv)
+    return rc, out.getvalue(), err.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KUBE_NOOB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KUBE_NOOB_LEARNING_ENABLED", "false")
+    monkeypatch.delenv("KUBE_NOOB_CONFIG", raising=False)
+    monkeypatch.delenv("KUBE_NOOB_DEBUG", raising=False)
+
+
+# --- D1: the posture gate fails on a refusal, not on a normal absence ---------------------------------------------
+
+_AGG_API = """
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: metrics-server, namespace: kube-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: metrics-server:system:auth-delegator}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: system:auth-delegator}
+subjects: [{kind: ServiceAccount, name: metrics-server, namespace: kube-system}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: metrics-server-auth-reader, namespace: kube-system}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: extension-apiserver-authentication-reader}
+subjects: [{kind: ServiceAccount, name: metrics-server, namespace: kube-system}]
+---
 apiVersion: apps/v1
 kind: Deployment
-metadata: {name: web, namespace: prod}
+metadata: {name: metrics-server, namespace: kube-system}
 spec:
-  replicas: 1
+  selector: {matchLabels: {k8s-app: metrics-server}}
+  template:
+    metadata: {labels: {k8s-app: metrics-server}}
+    spec:
+      serviceAccountName: metrics-server
+      containers: [{name: metrics-server, image: registry.k8s.io/metrics-server/metrics-server:v0.7.2}]
+"""
+
+
+def test_the_roles_every_aggregated_api_server_binds_are_known(tmp_path: Path) -> None:
+    """metrics-server and kube-prometheus bind these two; they exist on every cluster, so they are not unread."""
+    f = tmp_path / "ms.yaml"
+    f.write_text(_AGG_API)
+    rc, out, _ = _run(["posture", "scan", "-f", str(f), "--fail-above", "30", "--format", "json"])
+    assert rc == 0 and json.loads(out)["notRead"] == []
+
+
+def test_a_role_not_in_the_input_is_reported_but_gates_only_with_require_complete(tmp_path: Path) -> None:
+    f = tmp_path / "rb.yaml"
+    f.write_text(_AGG_API.replace("extension-apiserver-authentication-reader", "team-reader"))
+    rc, out, err = _run(["posture", "scan", "-f", str(f), "--fail-above", "30", "--format", "json"])
+    doc = json.loads(out)
+    assert rc == 0 and any("team-reader" in n for n in doc["notRead"]) and doc["refused"] == []
+    rc, _, err = _run(["posture", "scan", "-f", str(f), "--fail-above", "30", "--require-complete", "--format", "json"])
+    assert rc == 5 and "incomplete" in err
+
+
+def test_an_object_refused_on_shape_gates_without_require_complete(tmp_path: Path) -> None:
+    f = tmp_path / "s.yaml"
+    f.write_text("apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: d, namespace: shop}\nspec: 7\n")
+    rc, out, err = _run(["posture", "scan", "-f", str(f), "--fail-above", "30", "--format", "json"])
+    assert rc == 5 and json.loads(out)["refused"] and "incomplete" in err
+
+
+class _Backend:
+    name = "fake"
+
+    def __init__(self, failures: dict[str, str]) -> None:
+        self.failures = failures
+
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **_: Any) -> dict[str, Any]:
+        if resource in self.failures:
+            raise ClusterAccessError(self.failures[resource])
+        return {"kind": "List", "items": []}  # a complete, empty list, as the API server writes one (G279)
+
+
+@pytest.mark.parametrize(
+    "resource,message,gates",
+    [
+        # The backend's own words for THIS resource type: an absence (no KServe, no Ray), listed, not gated.
+        ("inferenceservices", 'error: the server doesn\'t have a resource type "inferenceservices"', False),
+        ("rayclusters", "Not found: GET /apis/ray.io/v1/rayclusters", False),
+        # An aggregated group (OpenShift's Routes on plain Kubernetes, where kind runs the e2e gate): the verdict
+        # keeps it not determined (G279), and the gate does not fail on it, because the cluster answered.
+        ("routes", 'error: the server doesn\'t have a resource type "routes"', False),
+        # Not the words for this resource: a 404 with no resource named, or naming another, is a read that failed
+        # (G279), and a gate fails on it.
+        ("inferenceservices", "the server could not find the requested resource (inferenceservices)", True),
+        ("inferenceservices", 'error: the server doesn\'t have a resource type "routes"', True),
+        ("deployments", "Forbidden by RBAC: GET /api/v1/pods. Grant the sidecar's ServiceAccount read access", True),
+        ("deployments", "kubectl timed out after 30s", True),
+        ("deployments", "API error 500 for GET /apis/apps/v1/deployments: boom", True),
+    ],
+)
+def test_a_live_read_gates_when_the_cluster_refused_it_not_when_it_does_not_serve_it(
+    resource: str, message: str, gates: bool
+) -> None:
+    out = ap.scan(ap.collect_live(_Backend({resource: message}), []))
+    assert any(n.startswith(resource) for n in out["notRead"])
+    assert bool(out["refused"]) is gates, out["refused"]
+
+
+def test_a_live_answer_that_is_not_a_list_is_a_refused_read() -> None:
+    """G279's structural check: a response with no kind, items that are not objects, or one page of several is a
+    failed read; under G276 it is a refusal, because the cluster did not answer the list that was asked for."""
+    for body in (
+        {"items": []},
+        {"kind": "List", "items": [7]},
+        {"kind": "List", "items": [], "metadata": {"continue": "x"}},
+    ):
+
+        class Odd(_Backend):
+            def get(self, resource: str, name: str | None = None, namespace: str | None = None, **_: Any) -> Any:
+                return body if resource == "pods" else {"kind": "List", "items": []}  # noqa: B023
+
+        out = ap.scan(ap.collect_live(Odd({}), []))
+        assert any(n.startswith("pods") for n in out["refused"]), (body, out["notRead"])
+
+
+def test_a_live_answer_that_is_not_json_is_a_refused_read() -> None:
+    class NotJson(_Backend):
+        def get(self, resource: str, name: str | None = None, namespace: str | None = None, **_: Any) -> Any:
+            if resource == "pods":
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            return {"kind": "List", "items": []}
+
+    out = ap.scan(ap.collect_live(NotJson({}), []))
+    assert any(n.startswith("pods") for n in out["refused"])
+
+
+def test_exit_5_is_documented_where_the_gate_is_used() -> None:
+    root = Path(__file__).resolve().parents[1]
+    helptext = io.StringIO()
+    with redirect_stdout(helptext), pytest.raises(SystemExit):
+        cli.main(["posture", "scan", "--help"])
+    assert "exit 5" in helptext.getvalue() and "--require-complete" in helptext.getvalue()
+    uc = (root / "docs" / "use-cases.md").read_text()
+    gate = uc[uc.index("posture scan") :]
+    assert "exit 5" in uc and "--require-complete" in gate
+    skill = (root / "plugin" / "kube-noob-skills" / "skills" / "openshift-platform" / "SKILL.md").read_text()
+    row = next(line for line in skill.splitlines() if line.startswith("| `posture scan`"))
+    assert "5" in row and "refused" in row, row
+
+
+# --- D8: the withheld part of a long notRead list is stated in text and on the exit-5 line -------------------------
+
+
+def test_the_text_view_and_the_exit_5_line_count_what_the_list_withholds(tmp_path: Path) -> None:
+    f = tmp_path / "many.yaml"
+    f.write_text(
+        "".join(
+            f"---\napiVersion: apps/v1\nkind: Deployment\nmetadata: {{name: d{i:02}, namespace: shop}}\nspec: 7\n"
+            for i in range(60)
+        )
+    )
+    rc, out, err = _run(["posture", "scan", "-f", str(f), "--fail-above", "30"])
+    assert rc == 5
+    assert "60 object(s) not read" in out and "and 50 more" in out, out
+    assert "60 object(s)" in err and "10 not listed" in err, err
+
+
+# --- D10: a kind that carries a pod spec is not dropped when its spec has the wrong shape ----------------------------
+
+
+def test_a_rollout_whose_spec_is_not_a_mapping_is_refused_not_dropped(tmp_path: Path) -> None:
+    f = tmp_path / "r.yaml"
+    f.write_text("apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: r, namespace: shop}\nspec: 7\n")
+    rc, out, _ = _run(["posture", "scan", "-f", str(f), "--fail-above", "30", "--format", "json"])
+    doc = json.loads(out)
+    assert rc == 5 and any("Rollout/shop/r" in n for n in doc["refused"]), doc
+
+
+# --- D2: the rules a scenario read are recorded per run, not in a list threads share ------------------------------
+
+_PDB_BUNDLE = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 3
   selector: {matchLabels: {app: web}}
   template:
     metadata: {labels: {app: web}}
-    spec:
-      containers:
-      - name: web
-        image: registry.example.com/web:1
-        securityContext: {privileged: true}
+    spec: {containers: [{name: web, image: nginx}]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: shop}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: web}}}
 """
-#: The same object under a group the API server never serves `Deployment` under: no rule reads it.
-REFUSED = PRIVILEGED.replace("apps/v1", "apps.k8s.io/v1")
 
-HARDENED_POD = """\
+
+def test_threads_running_red_team_at_once_do_not_mix_up_what_each_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The MCP server runs tools in threads. With one module-level list, a clean run cleared the list a bad run was
+    filling, and the bad PDB's scenario came back `mitigated` three runs in four under contention."""
+    import time
+
+    orig = redteam._ids
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        out = orig(*args, **kwargs)
+        time.sleep(0.0005)  # where a thread pool switches threads in practice
+        return out
+
+    monkeypatch.setattr(redteam, "_ids", slow)
+    bad = _PDB_BUNDLE.replace("selector: {matchLabels: {app: web}}}", "selector: 7}")
+    verdicts: dict[str, set[str]] = {"bad": set(), "clean": set()}
+    lock = threading.Lock()
+
+    def work(text: str, tag: str) -> None:
+        for _ in range(15):
+            r = analyze(text, platform="kubernetes", version="1.33")
+            v = {s.scenario_id: s.verdict for s in r.scenarios}["RT-UPGRADE-BLOCK"]
+            with lock:
+                verdicts[tag].add(v)
+
+    threads = [threading.Thread(target=work, args=(bad, "bad")) for _ in range(3)]
+    threads += [threading.Thread(target=work, args=(_PDB_BUNDLE, "clean")) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert verdicts == {"bad": {"undecided"}, "clean": {"mitigated"}}, verdicts
+
+
+# --- D3: the "evaluated without" note is bounded and does not depend on input order -------------------------------
+
+
+def _roles(n: int) -> list[str]:
+    return [
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\n"
+        f"metadata: {{name: broken-{i:03}, namespace: shop}}\n"
+        "rules: [{apiGroups: [''], resources: 1, verbs: [get]}]\n"
+        for i in range(n)
+    ] + [
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata: {name: wild, namespace: shop}\n"
+        "rules: [{apiGroups: ['*'], resources: ['*'], verbs: ['*']}]\n"
+    ]
+
+
+def test_the_evaluated_without_note_is_short_and_the_same_in_any_order() -> None:
+    docs = _roles(40)
+    notes = set()
+    for seed in range(4):
+        random.Random(seed).shuffle(docs)
+        r = analyze("---\n".join(docs), platform="kubernetes", version="1.33")
+        [note] = [a for a in r.assumptions if "evaluated without" in a]
+        notes.add(note)
+    [note] = notes
+    assert len(note) < 1200 and "and 30 more" in note, note
+    assert "Role/shop/broken-000" in note and "Role/shop/broken-039" not in note
+
+
+# --- D4: an unreadable PodDisruptionBudget is never read as "no PDB" ------------------------------------------------
+
+_PDB_SHAPES: list[Any] = [7, "x", None, [1], {"a": 1}, True, 1.5, float("nan"), float("inf"), "", []]
+
+
+def _pdb_mutations() -> list[tuple[str, str]]:
+    docs = list(yaml.safe_load_all(_PDB_BUNDLE))
+    out = []
+    for path in (
+        ("spec",),
+        ("spec", "maxUnavailable"),
+        ("spec", "selector"),
+        ("spec", "selector", "matchLabels"),
+        ("spec", "selector", "matchLabels", "app"),
+    ):
+        for w in _PDB_SHAPES:
+            m = yaml.safe_load(yaml.safe_dump(docs[1]))
+            t = m
+            for k in path[:-1]:
+                t = t[k]
+            t[path[-1]] = w
+            out.append((f"{'.'.join(path)}={w!r}", yaml.safe_dump_all([docs[0], m])))
+    return out
+
+
+@pytest.mark.parametrize("label,text", _pdb_mutations(), ids=[x[0] for x in _pdb_mutations()])
+def test_a_schema_invalid_pdb_never_leaves_the_upgrade_scenario_mitigated_without_a_caveat(
+    label: str, text: str
+) -> None:
+    r = analyze(text, platform="kubernetes", version="1.33")
+    invalid = any(f.rule_id == "KN-V007" and "PodDisruptionBudget" in f.resource for f in r.findings)
+    s = {s.scenario_id: s for s in r.scenarios}["RT-UPGRADE-BLOCK"]
+    caveat = s.verdict != "mitigated" or any("not evaluated" in e for e in s.evidence)
+    assert caveat or not invalid, (label, s.verdict, s.evidence)
+
+
+_HPA = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec: {containers: [{name: web, image: nginx}]}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: web, namespace: shop}
+spec: {scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}, minReplicas: 2, maxReplicas: 5}
+"""
+
+
+_HPA_META = "metadata: {name: web, namespace: shop}\nspec: {scaleTargetRef"
+
+
+@pytest.mark.parametrize(
+    "hpa",
+    [
+        "metadata: 7\nspec: {scaleTargetRef",
+        "metadata: {name: [web], namespace: shop}\nspec: {scaleTargetRef",
+        "metadata: {name: web, namespace: shop}\nspec: 7\nx: {scaleTargetRef",
+    ],
+    ids=["metadata-7", "name-list", "spec-7"],
+)
+def test_a_cross_object_rule_whose_partner_cannot_be_read_is_not_evaluated_and_says_so(hpa: str) -> None:
+    """KN-C014 needs the HPA to know the Deployment is scaled; an HPA it cannot read is not "no HPA"."""
+    r = analyze(_HPA.replace(_HPA_META, hpa), platform="kubernetes", version="1.33")
+    assert any("KN-C014" in a and "could not be read" in a for a in r.assumptions), r.assumptions
+
+
+def test_a_readable_bundle_keeps_the_cross_object_rule_evaluated() -> None:
+    r = analyze(_HPA, platform="kubernetes", version="1.33")
+    assert any(f.rule_id == "KN-C014" for f in r.findings)
+    assert not any("could not be read" in a for a in r.assumptions)
+
+
+# --- D5: fix refuses a securityContext of the wrong shape instead of overwriting it ---------------------------------
+
+
+@pytest.mark.parametrize("where", ["container", "pod"])
+def test_fix_leaves_a_security_context_of_the_wrong_shape_alone(where: str, tmp_path: Path) -> None:
+    sc_c = "securityContext: 7, " if where == "container" else ""
+    sc_p = "      securityContext: 7\n" if where == "pod" else ""
+    src = (
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: web, namespace: shop}\nspec:\n  replicas: 2\n"
+        "  selector: {matchLabels: {app: web}}\n  template:\n    metadata: {labels: {app: web}}\n    spec:\n"
+        f"{sc_p}      containers: [{{name: web, {sc_c}image: nginx}}]\n"
+    )
+    f, o = tmp_path / "in.yaml", tmp_path / "out.yaml"
+    f.write_text(src)
+    _, out, _ = _run(["fix", "-f", str(f), "-o", str(o), "--format", "json"])
+    doc = json.loads(out)
+    fixed = yaml.safe_load(o.read_text())
+    pod = fixed["spec"]["template"]["spec"]
+    held = pod["containers"][0].get("securityContext") if where == "container" else pod.get("securityContext")
+    assert held == 7, held
+    assert any("securityContext" in m for m in doc["manualFollowUps"]), doc["manualFollowUps"]
+    assert not any(c.get("before") is None and "securityContext" in str(c.get("path")) for c in doc.get("changes", []))
+
+
+# --- D6 / D9: a document is named as not audited exactly when no rule could read it --------------------------------
+
+
+def test_a_non_string_api_version_is_said_separately_and_the_object_is_still_audited() -> None:
+    r = analyze(
+        "apiVersion: [v1]\nkind: Pod\nmetadata: {name: p, namespace: shop}\n"
+        "spec: {containers: [{name: c, image: nginx, securityContext: {privileged: true}}]}\n",
+        platform="kubernetes",
+        version="1.33",
+    )
+    assert not any("NOT audited" in a for a in r.assumptions), r.assumptions
+    assert any("apiVersion" in a and "not a string" in a for a in r.assumptions)
+    assert any(f.resource == "Pod/shop/p" for f in r.findings if f.rule_id != "KN-V001")
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "7",
+        "[1, 2]",
+        "metadata: {name: p}",
+        "kind: ~\nmetadata: {name: p}",
+        "kind: ''\nmetadata: {name: p}",
+        "kind: pod\nmetadata: {name: p}",
+        "kind: ' Pod'\nmetadata: {name: p}",
+        "kind: [Pod]\nmetadata: {name: p}",
+    ],
+    ids=["int", "list", "no-kind", "kind-null", "kind-empty", "kind-lowercase", "kind-padded", "kind-list"],
+)
+def test_a_document_no_rule_can_read_is_named_as_not_audited(doc: str) -> None:
+    r = analyze("apiVersion: v1\n" + doc if doc[0].isalpha() else doc, platform="kubernetes", version="1.33")
+    assert any("NOT audited" in a and "document 1" in a for a in r.assumptions), r.assumptions
+
+
+_SVC = """
+---
 apiVersion: v1
-kind: Pod
-metadata: {name: ok, namespace: prod, labels: {app: ok}}
-spec:
-  automountServiceAccountToken: false
-  serviceAccountName: ok
-  securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
-  containers:
-  - name: c
-    image: registry.example.com/c@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {memory: 32Mi, cpu: 100m}}
-    securityContext:
-      privileged: false
-      runAsNonRoot: true
-      runAsUser: 1001
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities: {drop: [ALL]}
-      seccompProfile: {type: RuntimeDefault}
-    livenessProbe: {httpGet: {path: /healthz, port: 8080}}
-    readinessProbe: {httpGet: {path: /ready, port: 8080}}
+kind: Service
+metadata: {name: web, namespace: shop}
+spec: {selector: {app: web}, ports: [{port: 80}]}
 """
-DNS_POLICY = """\
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata: {name: default-deny, namespace: prod}
+
+
+@pytest.mark.parametrize(
+    "rule,text",
+    [
+        (
+            "KN-C014",
+            _HPA.replace("scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}", "scaleTargetRef: x"),
+        ),
+        ("KN-C014", _HPA.replace("kind: Deployment, name: web}", "kind: Deployment, name: .inf}")),
+        (
+            "KN-C014",
+            _HPA.replace(
+                "scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}", "scaleTargetRef: [null]"
+            ),
+        ),
+        ("KN-C009", _PDB_BUNDLE.replace("metadata: {labels: {app: web}}", "metadata: {labels: {app: .inf}}")),
+        ("KN-C009", _PDB_BUNDLE.replace("spec: {containers: [{name: web, image: nginx}]}", "spec: [[1]]")),
+        ("KN-V012", _PDB_BUNDLE.replace("spec: {containers: [{name: web, image: nginx}]}", "spec: .nan") + _SVC),
+        ("KN-V023", _PDB_BUNDLE.replace("containers: [{name: web, image: nginx}]", "containers: x") + _SVC),
+    ],
+    ids=[
+        "hpa-target-string",
+        "hpa-target-name-inf",
+        "hpa-target-list",
+        "template-label-inf",
+        "pod-spec-list",
+        "pod-spec-nan",
+        "containers-string",
+    ],
+)
+def test_a_partner_whose_pod_template_or_target_cannot_be_read_leaves_the_rule_undecided(rule: str, text: str) -> None:
+    """The third-review rerun of the fuzz: findings that vanished from a sibling when the HPA's target or the
+    workload's pod template had the wrong type, with no word that anything was not read.
+
+    The statement may be in either place the merged model keeps one: the per-rule `not_evaluated` record (G281),
+    which every surface reads, or an assumption line (G276). What it may never be is a claim of ABSENCE: the
+    object was in the input. G281's subject gate used to decide that first and say "no pod spec in the input"
+    for a Deployment whose `spec` was `.nan`, which is a refusal read as an absence one layer up (class 24).
+    """
+    r = analyze(text, platform="kubernetes", version="1.33")
+    assert rule not in r.evaluated_rules, (rule, "a rule that could not read its input is not evaluated-and-clean")
+    said = [a for a in r.assumptions if rule in a and "could not be read" in a]
+    recorded = r.not_evaluated.get(rule, "")
+    assert said or "not audited" in recorded or "could not be read" in recorded, (rule, r.assumptions, recorded)
+    assert "in the input" not in recorded, (rule, recorded, "the object was in the input; this claims it was not")
+
+
+def test_a_name_that_is_not_a_string_is_a_missing_name() -> None:
+    r = analyze("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: 7}\n", platform="kubernetes", version="1.33")
+    assert any(f.rule_id == "KN-V001" and "string" in f.message for f in r.findings)
+
+
+# --- the one rule: which notRead entries a gate fails on, over every site that writes one ------------------------
+
+_WEB = """
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
 spec:
-  podSelector: {}
-  policyTypes: [Ingress, Egress]
-  egress:
-  - ports:
-    - {protocol: UDP, port: 53}
-    - {protocol: TCP, port: 53}
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec: {serviceAccountName: sa, containers: [{name: web, image: nginx}]}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: sa, namespace: shop}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: shop}
+spec: {type: LoadBalancer, selector: {app: web}, ports: [{port: 80}]}
 """
-#: What `gate -f .` meets in every repository: YAML that is read, understood, and is no Kubernetes object.
-WORKFLOW = "name: ci\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n    - run: make test\n"
+_RBAC = "apiVersion: rbac.authorization.k8s.io/v1"
+_SUBJECTS = "subjects: [{kind: ServiceAccount, name: sa, namespace: shop}]"
+_ROLE_REF = "roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: r}"
+_INGRESS = (
+    "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata: {name: i, namespace: shop}\n"
+    "spec: {rules: [{host: a, http: {paths: [{path: /, backend: {service: {name: gone, port: {number: 80}}}}]}}]}\n"
+)
 
 
-def _dir(root: Path, **files: str) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
-    for name, text in files.items():
-        (root / name.replace("_yaml", ".yaml")).write_text(text, encoding="utf-8")
-    return root
+def _bound(role: str, rules: str = "rules: [{apiGroups: [''], resources: [secrets], verbs: [get]}]") -> str:
+    return (
+        f"{_WEB}---\n{_RBAC}\nkind: RoleBinding\nmetadata: {{name: rb, namespace: shop}}\n"
+        f"{_ROLE_REF.replace('name: r', f'name: {role}')}\n{_SUBJECTS}\n"
+        f"---\n{_RBAC}\nkind: Role\nmetadata: {{name: r, namespace: shop}}\n{rules}\n"
+    )
 
 
-def _report(root: Path) -> dict[str, Any]:
-    """The report as `gate -f DIR` builds it: `collect` over a real directory, so the rows are the product's."""
-    return gate.run(gate.collect([str(root)], read=lambda _: ""), fail_on="never")
+_RB_TO_R = _bound("r")
 
 
-@pytest.fixture
-def clean(tmp_path: Path) -> Path:
-    return _dir(tmp_path / "clean", pod_yaml=HARDENED_POD, netpol_yaml=DNS_POLICY, ci_yaml=WORKFLOW)
+def _docs(text: str) -> list[Any]:
+    return list(yaml.safe_load_all(text))
 
 
-@pytest.fixture
-def unread(tmp_path: Path) -> Path:
-    """Nothing to report AND a file missing: every finding list is empty, so a renderer that derives its output
-    from findings alone emits the one output its reader takes for a clean run."""
-    return _dir(tmp_path / "unread", pod_yaml=HARDENED_POD, netpol_yaml=DNS_POLICY, broken_yaml=UNPARSEABLE)
+def _inv(text: str) -> ap.Inventory:
+    return ap.Inventory.from_documents(_docs(text))
 
 
-# -- G340: the gate's own predicate ----------------------------------------------------------------------------
+def _scanned(text: str) -> ap.Inventory:
+    inv = _inv(text)
+    ap.scan(inv)  # RBAC is read as the accounts come up, so the inventory is complete only after a scan
+    return inv
 
 
-def test_a_directory_every_file_of_which_was_read_still_passes(clean: Path) -> None:
-    """The control, first. A workflow file beside the manifests is read and understood and is no manifest: it is
-    `skipped`, not `unreadable`, and a gate that called that incomplete would be red on every repository."""
-    report = _report(clean)
-    assert [s["file"].rsplit("/", 1)[-1] for s in report["skipped"]] == ["ci.yaml"]
-    assert report["unreadable"] == []
-    assert report["passed"] is True
-    assert report["incomplete"] is False
-    assert report["failures"] == []
-    assert gate.verdict_word(report) == "passed"
-    assert gate.incomplete_reason(report) == ""
-    assert gate.markdown(report).startswith("## kube-noob gate passed")
-    assert gate.github_annotations(report) == []
-    assert "properties" not in gate.sarif_of_gate(report)["runs"][0]["invocations"][0]
-    assert "The gate passed." in report_html.render(report)
+class _Live(_Backend):
+    def __init__(self, failures: dict[str, Any]) -> None:
+        super().__init__({})
+        self.fail = failures
+
+    def get(self, resource: str, name: str | None = None, namespace: str | None = None, **_: Any) -> Any:
+        if resource in self.fail:
+            f = self.fail[resource]
+            if isinstance(f, BaseException):
+                raise f
+            return f
+        return {"kind": "List", "items": []}
 
 
-def test_a_gate_that_could_not_read_a_file_is_incomplete_and_not_passed(unread: Path) -> None:
-    """The regression: `passed: true`, `incomplete: false`, on a run the command itself exits 5 for."""
-    report = _report(unread)
-    assert [u["file"].rsplit("/", 1)[-1] for u in report["unreadable"]] == [BROKEN]
-    assert report["findings"] == [], "the fixture has findings, so it proves less than it claims"
-    assert report["incomplete"] is True
-    assert report["passed"] is False
-    assert gate.verdict_word(report) == "incomplete"
-    assert len(report["failures"]) == 1 and BROKEN in report["failures"][0]
+def _live(resource: str, failure: Any) -> ap.Inventory:
+    return ap.collect_live(_Live({resource: failure}), [])
 
 
-def test_the_summary_a_reviewer_reads_says_incomplete_and_names_the_file(unread: Path) -> None:
-    """`## kube-noob gate passed` over an all-zero table was the whole summary."""
-    text = gate.markdown(_report(unread))
-    assert text.startswith("## kube-noob gate incomplete")
-    assert "### Why it is incomplete" in text
-    assert "broken.yaml" in text.replace("\\", "")
+#: One row per site in attack_paths.py that records something as not read: (label, how the input is built, the words
+#: the entry carries, the cause the site names). The rule is written once, in `Inventory.unread`: a `refused` cause
+#: -- a field of the wrong shape, a read the cluster forbade or did not answer, a response that is not a list -- is
+#: what `posture scan --fail-above` fails on; absent, unmodelled, unplaced and ambiguous are reported and fail a gate
+#: only with --require-complete (G276 on G273 and G279). The source check below holds that every site names one of
+#: these causes and that every cause named has a row here.
+NOT_READ_SITES: list[tuple[str, Any, str, str]] = [
+    # Inventory.add
+    (
+        "unmodelled routing object (Contour HTTPProxy)",
+        lambda: _inv(
+            _WEB + "---\napiVersion: projectcontour.io/v1\nkind: HTTPProxy\nmetadata: {name: p, namespace: shop}\n"
+        ),
+        "a routing object this scan does not read",
+        "unmodelled",
+    ),
+    (
+        "workload CRD whose spec is not a mapping (Rollout)",
+        lambda: _inv(
+            "apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: r, namespace: shop}\nspec: 7\n"
+        ),
+        "spec is not a mapping",
+        "refused",
+    ),
+    (
+        "workload CRD this scan has no reader for (Rollout with pods)",
+        lambda: _inv(
+            "apiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata: {name: r, namespace: shop}\n"
+            "spec: {template: {spec: {containers: [{name: c, image: nginx}]}}}\n"
+        ),
+        "carries a pod spec kube-noob has no reader for",
+        "unmodelled",
+    ),
+    (
+        "a Route of another group (Knative)",
+        lambda: _inv(
+            _WEB + "---\napiVersion: serving.knative.dev/v1\nkind: Route\nmetadata: {name: k, namespace: shop}\n"
+        ),
+        "apiVersion serving.knative.dev/v1 is not route.openshift.io",
+        "unmodelled",
+    ),
+    (
+        "legacy OpenShift binding the server would refuse (roleRef without a name)",
+        lambda: _inv(
+            _WEB + "---\napiVersion: authorization.openshift.io/v1\nkind: RoleBinding\n"
+            "metadata: {name: legacy, namespace: shop}\nroleRef: {}\nsubjects: []\n"
+        ),
+        "roleRef does not name a role",
+        "refused",
+    ),
+    (
+        "a CRD called Role in another group",
+        lambda: _inv(
+            _WEB + "---\napiVersion: example.com/v1\nkind: Role\nmetadata: {name: r, namespace: shop}\nrules: 7\n"
+        ),
+        "apiVersion example.com/v1 is not rbac.authorization.k8s.io",
+        "unmodelled",
+    ),
+    (
+        "a Service whose spec is not a mapping",
+        lambda: _inv("apiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\nspec: 7\n"),
+        "spec is not a mapping",
+        "refused",
+    ),
+    (
+        "a Deployment whose metadata is not a mapping",
+        lambda: _inv(
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata: 7\n"
+            "spec: {template: {spec: {containers: [{name: c, image: nginx}]}}}\n"
+        ),
+        "metadata is not a mapping",
+        "refused",
+    ),
+    # Inventory.from_documents
+    (
+        "a List whose items is not a list",
+        lambda: ap.Inventory.from_documents([{"apiVersion": "v1", "kind": "RoleBindingList", "items": 7}]),
+        "items is not a list",
+        "refused",
+    ),
+    (
+        "an RBAC List holding an item that is not an object",
+        lambda: ap.Inventory.from_documents([{"apiVersion": "v1", "kind": "RoleList", "items": [7]}]),
+        "not an object",
+        "refused",
+    ),
+    # _grants, through scan()
+    (
+        "a binding whose subjects is not a list",
+        lambda: _scanned(_RB_TO_R.replace(_SUBJECTS, "subjects: 7")),
+        "subjects is not a list",
+        "refused",
+    ),
+    (
+        "a binding with a subject this scan cannot read",
+        lambda: _scanned(_RB_TO_R.replace(_SUBJECTS, "subjects: [sa]")),
+        "not a subject this scan can read",
+        "refused",
+    ),
+    (
+        "a binding whose roleRef does not name a role",
+        lambda: _scanned(_RB_TO_R.replace(_ROLE_REF, "roleRef: {}")),
+        "roleRef does not name a role",
+        "refused",
+    ),
+    (
+        "a bound rule whose verbs is not a list",
+        lambda: _scanned(_bound("r", "rules: [{apiGroups: [''], resources: [secrets], verbs: '*'}]")),
+        "verbs is not a list",
+        "refused",
+    ),
+    (
+        "a bound Role whose rules is not a list",
+        lambda: _scanned(_bound("r", "rules: 7")),
+        "rules is a int, not a list",
+        "refused",
+    ),
+    (
+        "a bound name two different Roles carry",
+        lambda: _scanned(
+            _RB_TO_R + f"---\n{_RBAC}\nkind: Role\nmetadata: {{name: r, namespace: shop}}\n"
+            "rules: [{apiGroups: [''], resources: [pods], verbs: [get]}]\n"
+        ),
+        "2 different objects named Role/shop/r",
+        "refused",
+    ),
+    (
+        "a bound Role with no namespace (pass -n)",
+        lambda: _scanned(_RB_TO_R.replace("metadata: {name: r, namespace: shop}", "metadata: {name: r}")),
+        "has no namespace",
+        "unplaced",
+    ),
+    (
+        "a bound Role not in the input",
+        lambda: _scanned(_bound("other")),
+        "Role/shop/other (bound by RoleBinding/shop/rb) is not in the input",
+        "absent",
+    ),
+    (
+        "a bound aggregated ClusterRole no ClusterRole in the input feeds",
+        lambda: _scanned(
+            _WEB + f"---\n{_RBAC}\nkind: ClusterRoleBinding\nmetadata: {{name: crb}}\n"
+            f"{_ROLE_REF.replace('kind: Role, name: r', 'kind: ClusterRole, name: agg')}\n{_SUBJECTS}\n"
+            f"---\n{_RBAC}\nkind: ClusterRole\nmetadata: {{name: agg}}\n"
+            "aggregationRule: {clusterRoleSelectors: [{matchLabels: {x: y}}]}\nrules: []\n"
+        ),
+        "aggregates ClusterRoles by label and none in the input matches",
+        "ambiguous",
+    ),
+    # scan(): what dangling() and duplicate_notes() add -- not through `unread`, so classified where they are built
+    (
+        "an Ingress to a Service the files do not carry",
+        lambda: _scanned(_INGRESS),
+        "routes to Service shop/gone, which is not in the input",
+        "absent",
+    ),
+    (
+        "an exposure field that is not the shape the API requires",
+        lambda: _scanned(_WEB.replace("selector: {app: web}", "selector: web")),
+        "spec.selector is not a mapping",
+        "refused",
+    ),
+    (
+        "a name two different Services carry",
+        lambda: _scanned(
+            _WEB
+            + "---\napiVersion: v1\nkind: Service\nmetadata: {name: web, namespace: shop}\nspec: {selector: {app: x}}\n"
+        ),
+        "2 different objects named Service/shop/web",
+        "ambiguous",
+    ),
+    # collect_live
+    (
+        "a live list the cluster says it does not serve",
+        lambda: _live(
+            "rayclusters", ClusterAccessError('error: the server doesn\'t have a resource type "rayclusters"')
+        ),
+        "rayclusters: ",
+        "absent",
+    ),
+    (
+        "a live list the cluster forbade",
+        lambda: _live("pods", ClusterAccessError("Forbidden by RBAC: GET /api/v1/pods")),
+        "pods: Forbidden",
+        "refused",
+    ),
+    (
+        "a live list that is not a list of what was asked (no kind)",
+        lambda: _live("pods", {"items": []}),
+        "pods: the response has no kind",
+        "refused",
+    ),
+    (
+        "a live answer that is not JSON",
+        lambda: _live("pods", ValueError("Expecting value")),
+        "pods: the answer was not JSON",
+        "refused",
+    ),
+]
 
 
-def test_the_pull_request_is_annotated_with_the_file_that_was_not_read(unread: Path) -> None:
-    """With no finding and no failure it annotated nothing at all, so the pull request said nothing."""
-    lines = gate.github_annotations(_report(unread))
-    assert len(lines) == 1
-    assert lines[0].startswith("::error title=kube-noob gate::") and BROKEN in lines[0]
+@pytest.mark.parametrize(("label", "build", "words", "cause"), NOT_READ_SITES, ids=[r[0] for r in NOT_READ_SITES])
+def test_each_not_read_site_gates_exactly_when_the_rule_says(label: str, build: Any, words: str, cause: str) -> None:
+    from kube_noob import blast_radius as br
+
+    gates = cause in ap.GATED_CAUSES
+    inv = build()
+    out = ap.scan(inv)
+    assert [n for n in out["notRead"] if words in n], (label, out["notRead"])
+    assert bool([n for n in out["refused"] if words in n]) is gates, (label, out["refused"], out["notRead"])
+    # The same two lists reach the blast radius document: what the scan refuses, reach refuses (G276).
+    workloads = inv.of(*ap.WORKLOAD_KINDS)
+    if workloads:
+        first = workloads[0]
+        anchor = f"{first.get('kind')}/{ap.object_name(first)}"
+        try:
+            g = br.reach(inv, anchor, ap.object_namespace(first), live=inv.live)
+        except br.ReachError:
+            return
+        assert bool([n for n in g["refused"] if words in n]) is gates, (label, g["refused"])
+        assert [n for n in g["notRead"] if words in n], (label, g["notRead"])
 
 
-def test_the_page_and_the_uploaded_file_state_the_reason_and_not_an_empty_one(unread: Path) -> None:
-    """Two readers of the reason. The masthead read `undetermined`, which a file-level gap does not set, and
-    the SARIF invocation set `properties.incomplete` for an unread object and not for an unread file."""
-    report = _report(unread)
-    page = report_html.render(report)
-    assert "Gate incomplete." in page
-    assert "The gate is incomplete: 1 file(s) could not be read" in page
-    assert "incomplete: None" not in page and "incomplete: ," not in page
-    run = gate.sarif_of_gate(report)["runs"][0]
-    props = run["invocations"][0]["properties"]
-    assert props["incomplete"] is True and BROKEN in props["undetermined"]
-    assert {r["ruleId"] for r in run["results"]} >= {NOT_READ_RULE, "kube-noob/undetermined"}
-    assert NOT_READ_RULE in [i["check_name"] for i in gate.codequality(report)]
+def _unread_calls(src: str) -> list[str]:
+    """The last argument of every `.unread(` call in `src`, as written."""
+    out = []
+    for m in re.finditer(r"\.unread\(", src):
+        depth, i = 1, m.end()
+        while depth:
+            depth += {"(": 1, ")": -1}.get(src[i], 0)
+            i += 1
+        call = src[m.end() : i - 1]
+        depth, args, start = 0, [], 0
+        for j, ch in enumerate(call):
+            depth += {"(": 1, "[": 1, "{": 1, ")": -1, "]": -1, "}": -1}.get(ch, 0)
+            if ch == "," and depth == 0:
+                args.append(call[start:j].strip())
+                start = j + 1
+        args.append(call[start:].strip())
+        out.append([a for a in args if a][-1])  # a multi-line call ends with a trailing comma
+    return out
 
 
-def test_the_exit_code_is_five_and_the_report_beside_it_agrees(
-    unread: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """At the command, where the report and the exit code are written by the same run and disagreed."""
-    assert main(["gate", "-f", str(unread), "--fail-on", "never", "--format", "json"]) == 5
-    out = json.loads(capsys.readouterr().out)
-    assert (out["passed"], out["incomplete"]) == (False, True)
-
-
-def test_skip_unreadable_keeps_its_exit_code_and_does_not_buy_the_word_passed(
-    unread: Path, clean: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """`--skip-unreadable` is documented to gate the files that were read (G126), and still does: 0 here, and 1
-    when one of them has a finding at `--fail-on`. What it decides is the exit code. The report is written for a
-    reviewer who did not pass the flag, so it still says incomplete and still names the file."""
-    assert main(["gate", "-f", str(unread), "--skip-unreadable", "--format", "json"]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert (out["passed"], out["incomplete"]) == (False, True)
-    assert BROKEN in out["failures"][0]
-    with_finding = _dir(tmp_path / "bad", deployment_yaml=PRIVILEGED, broken_yaml=UNPARSEABLE)
-    assert main(["gate", "-f", str(with_finding), "--skip-unreadable", "--fail-on", "high", "--format", "json"]) == 1
-    capsys.readouterr()
-    # ... and the flag changes nothing where every file was read.
-    assert main(["gate", "-f", str(clean), "--skip-unreadable", "--format", "json"]) == 0
-    assert json.loads(capsys.readouterr().out)["passed"] is True
-
-
-# -- G341: the file's name ---------------------------------------------------------------------------------------
-
-
-def test_one_reader_takes_the_name_from_either_command_s_rows() -> None:
-    """A gate report's rows carry `file`, an audit report's carry `path`. Both first, because the fix for one
-    must not be the regression for the other: `audit --oscal` and `audit --html` hand over `path` rows."""
-    assert gate.unread_rows({"unreadable": [{"file": "a.yaml", "why": "x"}]}) == [{"path": "a.yaml", "why": "x"}]
-    assert gate.unread_rows({"unreadable": [{"path": "b.yaml", "why": "y"}]}) == [{"path": "b.yaml", "why": "y"}]
-    assert gate.unread_rows({}) == []
-    audit_shaped = {"findings": [], "unreadable": [{"path": "dir/b.yaml", "why": "y"}]}
-    assert "dir/b.yaml" in report_html.render(audit_shaped)
-    remarks = oscal.assessment_results(audit_shaped)["assessment-results"]["results"][0]["remarks"]
-    assert "skipped: dir/b.yaml." in remarks
-
-
-def test_the_page_names_the_file_it_says_was_not_read(unread: Path) -> None:
-    """`File not read. <span class="mono"></span>: ...` -- no name, and the span on the page as text, because
-    the limit's text is escaped by the loop that renders it."""
-    page = report_html.render(_report(unread))
-    limit = next(line for line in page.splitlines() if '<span class="kind">File not read.</span>' in line)
-    assert f"{BROKEN}</code>: while parsing" in limit
-    assert "&lt;span" not in limit
-
-
-def test_the_assessment_results_name_the_file_they_say_was_skipped(unread: Path) -> None:
-    """`gate --oscal` hands this a gate report: "1 input file(s) could not be read and were skipped: ?."."""
-    remarks = oscal.assessment_results(_report(unread))["assessment-results"]["results"][0]["remarks"]
-    assert "skipped: ?" not in remarks
-    assert f"{BROKEN}. This assessment covers only the files that were read." in remarks
-
-
-# -- G342: red team ----------------------------------------------------------------------------------------------
-
-
-def _verdicts(text: str) -> dict[str, str]:
-    return {s.scenario_id: s.verdict for s in analyze(text, "kubernetes", None).scenarios}
-
-
-def test_a_scenario_whose_rules_all_ran_can_still_be_called_mitigated() -> None:
-    """The control, first. On the same Deployment under `apps/v1` two rules of RT-NODE-CRASH and RT-ZONE-OUTAGE
-    did not run because no PersistentVolumeClaim and no StorageClass is in the input. That is this input's scope:
-    nothing was there to read. Counting it would leave no bundle on which red team can say `mitigated`."""
-    report = analyze(PRIVILEGED, "kubernetes", None)
-    assert "no PersistentVolumeClaim in the input" in report.not_evaluated["KN-ST002"]
-    verdicts = {s.scenario_id: s.verdict for s in report.scenarios}
-    assert verdicts["RT-ZONE-OUTAGE"] == "mitigated"
-    assert verdicts["RT-SUPPLY-CHAIN"] == "mitigated"
-    assert list(verdicts.values()).count("exposed") == 4
-
-
-def test_an_input_with_no_pod_spec_still_has_no_scenario_about_pods() -> None:
-    """The other control: a Service alone holds no pod spec, read or unread, so the scenarios about pods do not
-    apply and are not shown as `undecided` either."""
-    service = "apiVersion: v1\nkind: Service\nmetadata: {name: s, namespace: prod}\nspec: {ports: [{port: 80}]}\n"
-    assert not {"RT-RESOURCE-STARVATION", "RT-SUPPLY-CHAIN", "RT-NODE-CRASH"} & set(_verdicts(service))
-
-
-def test_no_scenario_is_mitigated_on_an_object_the_audit_refused() -> None:
-    """The regression: RT-NODE-CRASH and RT-ZONE-OUTAGE answered `mitigated` with `evidence: []`."""
-    report = analyze(REFUSED, "kubernetes", None)
-    assert [r["object"] for r in report.not_audited] == ["Deployment/prod/web"]
-    for s in report.scenarios:
-        assert s.verdict == "undecided", f"{s.scenario_id} answers {s.verdict} for an object no rule read"
-        assert s.evidence and "1 Deployment not audited" in s.evidence[-1], s.scenario_id
-
-
-def test_refusing_an_object_does_not_remove_the_scenarios_it_was_exposed_to() -> None:
-    """Six scenarios under `apps/v1`, three under `apps.k8s.io/v1`: the three that vanished are `exposed` or
-    answered for the readable object, and were dropped because "no workload the rules could read" was read as
-    "no workload"."""
-    assert set(_verdicts(REFUSED)) == set(_verdicts(PRIVILEGED))
-
-
-def test_the_tool_and_the_command_carry_the_same_answer(
-    settings: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The two hops a caller reaches this through: `Toolkit.red_team`, which is the `red_team` MCP tool, and
-    `kube-noob redteam`."""
-    out = Toolkit(settings).red_team(tk.ManifestsIn(manifests=REFUSED))
-    assert "mitigated" not in [s["verdict"] for s in out["scenarios"]]
-    assert len(out["scenarios"]) == 6
-    path = tmp_path / "refused.yaml"
-    path.write_text(REFUSED, encoding="utf-8")
-    assert main(["redteam", "-f", str(path), "--format", "json"]) == 0
-    printed = json.loads(capsys.readouterr().out)
-    assert [s["verdict"] for s in printed["scenarios"]] == ["undecided"] * 6
+def test_every_not_read_site_goes_through_the_rule() -> None:
+    """`not_read` and `refused` are appended in exactly one place, and every caller names its cause from the closed
+    list, as a literal: a site that wrote to a list directly, or passed a cause computed elsewhere, could drift from
+    the table above without a test noticing."""
+    src = Path(ap.__file__).read_text(encoding="utf-8")
+    helper = src.index("    def unread(self, entry: str, cause: UnreadCause) -> None:")
+    helper_end = src.index("    def refuse(self, entry: str) -> None:")
+    body = src[helper:helper_end]
+    assert src.count("not_read.append(") == 1 and "self.not_read.append(entry)" in body
+    assert src.count("refused.append(") == 1 and "self.refused.append(entry)" in body
+    literal = re.compile(r'"([a-z]+)"\Z')
+    conditional = re.compile(r'"absent" if says_not_served\(resource, exc\) else "refused"\Z')
+    named: set[str] = set()
+    for arg in _unread_calls(src):
+        if arg == "cause":  # `refuse` handing its fixed cause on
+            continue
+        if conditional.match(arg):
+            named |= {"absent", "refused"}
+            continue
+        m = literal.match(arg)
+        assert m and m.group(1) in ap.UNREAD_CAUSES, arg
+        named.add(m.group(1))
+    assert frozenset({"refused"}) == ap.GATED_CAUSES
+    assert named == set(ap.UNREAD_CAUSES), named
+    assert {cause for _, _, _, cause in NOT_READ_SITES} == set(ap.UNREAD_CAUSES)

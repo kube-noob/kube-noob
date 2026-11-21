@@ -23,7 +23,14 @@ import yaml
 
 from kube_noob import __version__, sanitize
 from kube_noob.audit.controls import coverage_line, grouped_reasons
-from kube_noob.audit.model import Severity, open_not_audited
+from kube_noob.audit.model import (
+    SKIP_UNREADABLE,
+    Severity,
+    incomplete_reason,
+    open_not_audited,
+    open_unread,
+    unread_rows,
+)
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
@@ -160,50 +167,12 @@ def unreadable_reason(text: str) -> str | None:
     return None
 
 
-def unread_rows(report: dict[str, Any]) -> list[dict[str, str]]:
-    """The files a report could not read, as `{"path", "why"}` rows, whichever command wrote the report.
-
-    A GATE report's `unreadable` rows carry `file` and an AUDIT report's carry `path` -- the gate names a file the
-    way `files` and `skipped` do, the audit the way `cli._dir_yaml` does. `sarif_of_gate` normalised the two
-    inline (G331) and two renderers further along did not: the HTML page printed "File not read." beside an
-    empty name and the OSCAL remark said "could not be read and were skipped: ?." for every gate report (G341).
-    One reader, so the next renderer of these rows cannot pick the wrong key (review classes 9 and 21).
-    """
-    return [
-        {"path": str(u.get("file") or u.get("path") or ""), "why": str(u.get("why") or "")}
-        for u in report.get("unreadable") or []
-        if isinstance(u, dict)
-    ]
-
-
-def unreadable_failure(unreadable: list[dict[str, Any]]) -> str:
-    """The one line `failures` carries for files that could not be read. A function, because `gate
-    --skip-unreadable` has to recognise this line to keep its documented exit code (G126) without a second copy of
-    the sentence (class 9)."""
-    shown = "; ".join(f"{u['file']}: {u['why']}" for u in unreadable[:5])
-    return f"{len(unreadable)} file(s) could not be read, so this gate reached no verdict on them: {shown}" + (
-        f"; and {len(unreadable) - 5} more under `unreadable`" if len(unreadable) > 5 else ""
+def _unreadable_failure(unread: list[dict[str, str]]) -> str:
+    """The one line `failures` carries for files that could not be read and that nobody accepted."""
+    shown = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
+    return f"{len(unread)} file(s) were not read, so this gate reached no verdict on them: {shown}" + (
+        f"; and {len(unread) - 5} more under `unreadable`" if len(unread) > 5 else ""
     )
-
-
-def incomplete_reason(report: dict[str, Any]) -> str:
-    """Why this gate report is incomplete, as one line, or an empty string when it is not.
-
-    Three reasons make a gate incomplete and only the first has a key of its own (`undetermined`, the audit's).
-    The SARIF invocation assembled the second inline (G325) and the HTML masthead read the first alone, so a
-    report incomplete for a file printed "The gate is incomplete: None". Every renderer that states the reason
-    reads this.
-    """
-    parts = [str(report["undetermined"])] if report.get("undetermined") else []
-    blocked = [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
-    if blocked:
-        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
-        parts.append(f"{len(blocked)} file(s) were not read as manifests: {named}")
-    unread = unread_rows(report)
-    if unread:
-        named = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
-        parts.append(f"{len(unread)} file(s) could not be read: {named}")
-    return "; ".join(parts)
 
 
 def _in_chart_templates(path: Path, parent: Path) -> bool:
@@ -393,8 +362,13 @@ def run(
     repo: Path | None = None,
     cni: str | None = None,
     default_namespace: str | None = None,
+    skip_unreadable: bool = False,
 ) -> dict[str, Any]:
-    """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
+    """``skip_unreadable``: the caller passed `--skip-unreadable`, so a file that could not be read is accepted
+    and listed rather than withholding the verdict. Off unless asked for: every other caller of this function
+    gets a report that is incomplete while a file is unread (G340).
+
+    ``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
     (shipping is then unknown, which fails like shipped code). ``repo``: the checkout, to tell a SARIF path that is
     no file of the repository (scanned elsewhere) from one no image ships."""
@@ -413,7 +387,9 @@ def run(
         if s.skip
     ]
     blocking = [s for s in skipped if s.get("forbidsVerdict")]
-    unreadable = [{"file": s.uri, "why": s.unreadable} for s in sources if s.unreadable and not s.skip]
+    waived = {"acceptedBy": SKIP_UNREADABLE} if skip_unreadable else {}
+    unreadable = [{"file": s.uri, "why": s.unreadable, **waived} for s in sources if s.unreadable and not s.skip]
+    unread_open = open_unread({"unreadable": unreadable})
     sources = [s for s in sources if not s.skip and not s.unreadable]
     if not sources and not containerfiles and not scanner_reports and not sarif_reports:
         if unreadable:
@@ -436,13 +412,14 @@ def run(
             f"{len(blocking)} file(s) were not read as manifests, so this gate reached no verdict: {shown_blocking}"
             + (f"; and {len(blocking) - 5} more under `skipped`" if len(blocking) > 5 else "")
         )
-    if unreadable:
+    if unread_open:
         # G325 taught this report about a file the walk declined to OPEN and never about one it could not READ,
         # though `SKIP_REASONS` says of the two that "both are incomplete evidence". The command exits 5 for
         # this, which is why nobody read the report: it said `passed: true`, the Markdown said "gate passed"
         # without naming the file, and nothing was annotated on the pull request (G340). One line in `failures`,
         # because that is the list the Markdown, the HTML page and the annotations already render.
-        failures.append(unreadable_failure(unreadable))
+        # `unread_open`, not `unreadable`: a row `--skip-unreadable` accepted is listed and withholds nothing.
+        failures.append(_unreadable_failure(unread_open))
     combined = _combine(sources) if sources else ""
     if sources:
         # A path named with -f used to be audited even when it was a Helm values file, so `gate -f values.yaml`
@@ -621,7 +598,7 @@ def run(
         # ... or a file that could not be read at all, which is the same missing evidence (G340). Decided HERE and
         # not in a renderer: `verdict_word`, the Markdown headline, the HTML masthead and the annotations all read
         # this key, and seven renderers taught one at a time is how the eighth was missed.
-        "incomplete": "undetermined" in coverage or bool(blocking) or bool(unreadable),
+        "incomplete": "undetermined" in coverage or bool(blocking) or bool(unread_open),
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -1371,7 +1348,10 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     """
     rows = [f for f in report.get("findings") or () if isinstance(f, dict)]
     reasons = [str(x) for x in report.get("failures") or () if str(x).strip()]
-    if not rows and not reasons:
+    # A file `--skip-unreadable` accepted is in no failure line, because the gate did not fail on it. It is still
+    # a file nothing was audited from, so the pull request says so once, as a warning (G340).
+    waived = [u for u in unread_rows(report) if u.get("acceptedBy")]
+    if not rows and not reasons and not waived:
         return []
 
     def rank(f: dict[str, Any]) -> tuple[int, str, str]:
@@ -1396,6 +1376,15 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
         out[-1] = (
             f"::error title=kube-noob gate::{len(reasons) - MAX_ANNOTATIONS_PER_TYPE + 1} more reason(s) this "
             "gate failed are not annotated; the job summary has all of them."
+        )
+    if waived:
+        named = ", ".join(u["path"] for u in waived[:5]) + (f" and {len(waived) - 5} more" if len(waived) > 5 else "")
+        out.append(
+            "::warning title=kube-noob gate::"
+            + _annotation_data(
+                f"{len(waived)} file(s) were not read and {waived[0]['acceptedBy']} accepted that, so "
+                f"nothing in them was audited: {named}"
+            )
         )
     for level in ("error", "warning"):
         found = buckets[level]
@@ -1452,6 +1441,31 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
                 f"- {_cell(str(r.get('object')), 120)}: {_cell(str(r.get('why')), 200)}"
                 + (f" (accepted by {_cell(str(r['acceptedBy']), 64)})" if r.get("acceptedBy") else "")
                 for r in report["notAudited"]
+            ],
+            "",
+        ]
+    unread = unread_rows(report)
+    if unread:
+        # Named here whether or not the flag accepted them, as `notAudited` rows are above: under
+        # `--skip-unreadable` the headline is the verdict on the files that were read, and this summary did not
+        # mention the others at all (G340). A waiver must never make the gap disappear.
+        still_open = [u for u in unread if not u.get("acceptedBy")]
+        lines += [
+            f"### Not passed: {len(still_open)} file(s) not read"
+            if still_open
+            else f"### {len(unread)} file(s) not read, accepted by `{SKIP_UNREADABLE}`",
+            "",
+            "Nothing in these files was audited"
+            + (
+                ", so the verdict is incomplete, not a pass."
+                if still_open
+                else ", so the verdict above is about the files that were read and says nothing about these."
+            ),
+            "",
+            *[
+                f"- {_cell(u['path'], 200)}: {_cell(u['why'], 200)}"
+                + (f" (accepted by {_cell(u['acceptedBy'], 64)})" if u.get("acceptedBy") else "")
+                for u in unread
             ],
             "",
         ]

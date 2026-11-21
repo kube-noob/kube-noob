@@ -881,6 +881,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
             default_namespace=_dns_label(a.namespace),
+            skip_unreadable=a.skip_unreadable,
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -921,16 +922,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             file=sys.stderr,
         )
         return 5
-    if report["passed"]:
-        return 0
-    # `--skip-unreadable` keeps the exit code it documents (G126): the files that were read decide between 0 and
-    # 1. What it no longer buys is a report that says "passed" -- the report is incomplete and names the file
-    # whatever the flag (G340), which is "merge: allowed, evidence: incomplete" as `scripts/ci/gate.sh` already
-    # words it (G291). Any other reason in `failures` is still a failure.
-    unread = report.get("unreadable") or []
-    if unread and a.skip_unreadable and report["failures"] == [gate.unreadable_failure(unread)]:
-        return 0
-    return 1
+    return 0 if report["passed"] else 1
 
 
 def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
@@ -3120,7 +3112,12 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 )
             except ExceptionsError as exc:
                 raise ConfigError(f"{a.exceptions}: {exc}") from exc
-            rep["unreadable"] = unreadable
+            # Reaching here with a file unread means `--skip-unreadable` was passed (the refusal above returned 5
+            # otherwise), and the row says so, as the gate's does: a reader of the report -- the OSCAL emitter
+            # among them -- can then tell a file the caller accepted from one nobody decided about (G343).
+            from kube_noob.audit.model import SKIP_UNREADABLE
+
+            rep["unreadable"] = [{**u, "acceptedBy": SKIP_UNREADABLE} for u in unreadable]
             # Before anything is printed or emitted, and before OSCAL and the compact form are built from it:
             # they all carry the line numbers (G251).
             _locate(rep, sources)

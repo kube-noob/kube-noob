@@ -331,7 +331,7 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
             # The reason is the gate's own sentence for whichever of its three reasons applies. Reading
             # `undetermined` alone printed "The gate is incomplete: None" for a gate incomplete because of a
             # file, which has no `undetermined` key (G340).
-            from kube_noob.gate import incomplete_reason
+            from kube_noob.audit.model import incomplete_reason
 
             lede += f" The gate is incomplete: {_esc(incomplete_reason(report))}, so the verdict is undetermined."
             return Masthead(tiles, "Gate incomplete.", lede)
@@ -487,7 +487,7 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
     # `unread_rows`, not `u["path"]`: a gate report's rows carry `file`, so this printed "File not read." beside
     # an empty name for every gate report. And backticks, not a `<span>`: the loop below passes `what` through
     # `_rich`, which escapes first, so the markup arrived on the page as the text `&lt;span class=...` (G341).
-    from kube_noob.gate import unread_rows
+    from kube_noob.audit.model import unread_rows
 
     for u in unread_rows(report):
         items.append(
@@ -699,7 +699,7 @@ def _caveats(report: dict[str, Any]) -> list[str]:
     limit = report.get("notCheckedBeyond")
     if limit:
         out.append(f'<div class="caveat"><b>Not checked that far</b>{_rich(limit.get("why"))}</div>')
-    from kube_noob.gate import unread_rows
+    from kube_noob.audit.model import unread_rows
 
     unreadable = unread_rows(report)
     if unreadable:
