@@ -128,6 +128,20 @@ def _near_miss_reason(docs: list[Any]) -> str | None:
     return None
 
 
+def _identity(path: Path) -> tuple[int, int] | None:
+    """`(st_dev, st_ino)` for a file, following symlinks: what makes two names the same file.
+
+    Used so the walk cannot report a file it already read under a different name. A ConfigMap volume mount is the
+    case that matters -- `key` is a symlink to `..data/key`, and `..data` is itself a symlink to a timestamped
+    directory -- and the walk reads the first while the dot-directory rule declines the second.
+    """
+    try:
+        st = path.stat()
+    except OSError:  # pragma: no cover - a dangling symlink is not a file this walk read
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def _holds_a_manifest(path: Path) -> bool:
     """Whether a file the walk declined to open demonstrably holds a Kubernetes manifest.
 
@@ -233,9 +247,22 @@ def collect(paths: list[str], read: Any) -> list[Source]:
             p = Path(raw)
             if p.is_dir():
                 items = []
-                for f in sorted(p.rglob("*")):
-                    if not f.is_file():
-                        continue
+                # Every file the walk actually opens, by identity rather than by name. A ConfigMap volume mount
+                # exposes each key TWICE -- as `key`, a symlink, and as `..data/key`, the real file behind it --
+                # so reporting the second as an unopened manifest counted the same bytes as a gap and took the
+                # Tekton Task from `passed` to `evidence-incomplete`, exit 5. `..data` is the case the walk's own
+                # comment names as the reason it skips dot-directories (G332).
+                # Two passes, because `sorted` puts `..data/` and `..2026_.../` BEFORE `gate.yaml`: the dot
+                # copy is reached first, and a set filled as we go would still be empty for it.
+                every = [f for f in sorted(p.rglob("*")) if f.is_file()]
+                opened: set[tuple[int, int]] = {
+                    ident
+                    for f in every
+                    if f.suffix in {".yaml", ".yml"}
+                    and not any(part.startswith(".") for part in f.relative_to(p).parts)
+                    and (ident := _identity(f)) is not None
+                }
+                for f in every:
                     hidden = any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
                     if f.suffix in {".yaml", ".yml"} and not hidden:
                         text = f.read_text(encoding="utf-8", errors="replace")
@@ -250,6 +277,8 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                     # does not audit it and does not change which files are audited (G332).
                     if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
                         continue
+                    if _identity(f) in opened:
+                        continue  # the same file under another name: already audited, so not a gap
                     rel = f.relative_to(p)
                     if f.name.startswith("."):
                         where = "a dot-file, which the walk does not read"

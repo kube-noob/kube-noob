@@ -174,3 +174,37 @@ def test_a_json_file_that_is_not_a_manifest_is_passed_over(tmp_path: Path) -> No
     the file is not a manifest, which is why the decision is made by opening it."""
     rep = gate.run(gate.collect([str(_tree(tmp_path))], lambda p: Path(p).read_text()), fail_on="never")
     assert "values.json" not in {Path(s["file"]).name for s in rep["skipped"]}
+
+
+def test_a_configmap_volume_mount_is_not_two_files(tmp_path: Path) -> None:
+    """The false positive G332 shipped to CI, and the reason this is decided by identity rather than by name.
+
+    A ConfigMap volume mount exposes each key TWICE: `key` is a symlink to `..data/key`, and `..data` is itself a
+    symlink to a timestamped directory. The walk reads `key` and the dot-directory rule declines `..data/key` --
+    the same bytes, reported as an unopened manifest. That took the Tekton Task in `gate-ci` from `passed` to
+    `evidence-incomplete`, exit 5, and `..data` is the exact case the walk's own comment names as the reason it
+    skips dot-directories. Anyone passing manifests into a Pod the standard way would have hit it.
+    """
+    mnt = tmp_path / "mnt"
+    real = mnt / "..2026_11_21_16_00_00.123"
+    real.mkdir(parents=True)
+    (real / "gate.yaml").write_text(PRIVILEGED_YAML, encoding="utf-8")
+    (mnt / "..data").symlink_to("..2026_11_21_16_00_00.123")
+    (mnt / "gate.yaml").symlink_to("..data/gate.yaml")
+
+    rep = gate.run(gate.collect([str(mnt)], lambda q: Path(q).read_text()), fail_on="never")
+    assert [s for s in rep["skipped"] if s.get("forbidsVerdict")] == [], rep["skipped"]
+    assert rep["passed"] is True
+    assert rep["findings"], "the manifest behind the symlink was not audited at all"
+
+
+def test_a_dot_directory_copy_that_is_a_DIFFERENT_file_is_still_a_gap(tmp_path: Path) -> None:
+    """The limit of that de-duplication: it is identity, not a rule about dot-directories. A distinct manifest
+    that happens to live in one is still a manifest nobody opened."""
+    d = tmp_path / "k8s"
+    (d / ".hidden").mkdir(parents=True)
+    (d / "ok.yaml").write_text(BENIGN_YAML, encoding="utf-8")
+    (d / ".hidden" / "other.yaml").write_text(PRIVILEGED_YAML, encoding="utf-8")
+    rep = gate.run(gate.collect([str(d)], lambda q: Path(q).read_text()), fail_on="never")
+    blocked = {Path(s["file"]).name for s in rep["skipped"] if s.get("forbidsVerdict")}
+    assert blocked == {"other.yaml"}
