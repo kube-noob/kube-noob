@@ -108,6 +108,41 @@ been crossed?
 suggests the lists are not the constraint. If you were to kill one shipped feature to fund one unbuilt thing,
 which pair, and why?
 
+## Answered from outside, 2026-11-21
+
+**Question 4 got an answer, and it was the same answer twice.** Two external reviews were run independently on the
+same summary of this product. Both located the same gap, and both located it where the code was, not where the
+prose was.
+
+- One argued that three-valued verdicts cannot survive contact with the tooling that consumes them: "every
+  commercial platform and most open-source aggregators collapse results to pass/fail/severity. An 'undetermined'
+  state has no column. It is either dropped or mapped to 'pass' or 'info.' The honest signal is destroyed at the
+  first hop."
+- The other, reviewing the repository, wrote a release blocker in the same words from the other direction: "No
+  evidence laundering: SARIF, OSCAL, HTML, MCP, and agent summaries cannot upgrade an incomplete result into a
+  pass."
+
+Checked against the code rather than argued with, and they were right about `audit --format sarif`: the
+unevaluated rules reached `toolExecutionNotifications` and never `runs[].results`, so a code-scanning upload read
+`12 alerts` and nothing about fifty-five rules that had no verdict (G328, fixed). So the answer to question 4 is
+not "is three-valued output noise" -- it is that **the line is not at the verdict, it is at every hop the verdict
+takes**, and each hop has to be checked by running it rather than by reading the renderer. The remaining hops that
+have not been checked this way: OSCAL, the HTML report, the Markdown job summary, the GitHub Action's own outputs,
+and what an MCP client's model does with `undetermined` in its final answer to the user.
+
+The market claims in both reviews (which scanners dominate, how large the air-gapped segment is, what a given
+acquisition proved) are unverified here and are not treated as findings.
+
+**Two `kind` conventions now live in `gate.py`, and one of them should probably change.** The gate's undetermined
+result omits `kind`, which SARIF defaults to `fail`, so an incomplete gate reads as a failure result; `notAudited`
+and the two coverage rules added in G328 use `kind: "review"`. The second is the more correct reading of the
+format, but changing the first would lower the severity an existing consumer sees for an incomplete gate, which is
+a deliberate decision and not a tidy-up. Related and unresolved: SARIF's prose on whether `level` must be `none`
+whenever `kind` is not `fail` was not read (the spec page was not fetched), and the vendored schema does not
+encode the constraint, so `kind: "review"` with `level: "note"` validates. If the prose does require it, every
+`kind: review` result in this file is non-conforming and a strict validator in someone's pipeline would reject the
+document -- which would be the same class of first-hop failure all over again.
+
 ## Reading list for a reviewer
 
 - [roadmap.md](roadmap.md) -- the program, the moat backlog reconciliation, the riskiest assumptions
