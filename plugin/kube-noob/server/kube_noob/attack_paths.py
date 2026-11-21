@@ -593,6 +593,22 @@ class Inventory:
                 self.unread(note, "unmodelled")
                 self.rbac_unread.append(note)
                 return
+        # The audit's own refusal, asked once, here, where an object is about to be ranked as the kind it names.
+        # The branches above are this scan's local knowledge of two families -- routing kinds under the wrong group
+        # and RBAC kinds under a legacy one -- and a workload kind fell past all of them: `apps.k8s.io/v1
+        # Deployment`, which the API server would never serve and the audit refuses outright, was ranked as a real
+        # `apps/v1` Deployment. So `posture_scan` reported "1 workload, 0 attack paths, notRead: []" for a
+        # privileged container no rule had read, and a model answering from it told the user the workload was fine
+        # (G330, classes 1 and 9). `refusal` is the audit's one detector, not a copy: it returns `None` for an
+        # absent or empty apiVersion, which is what the in-cluster backend's list items carry.
+        if k in KINDS:
+            from kube_noob.audit.rules import refusal
+            from kube_noob.yamlio import Document
+
+            why = refusal(Document(index=0, data=obj))
+            if why is not None:
+                self.unread(f"{_ref(obj)}: {why}, so it was not ranked", "refused")
+                return
         if not isinstance(obj.get("spec") or {}, dict):
             self.unread(f"{_ref(obj)}: spec is not a mapping, so it was not read", "refused")
             return
