@@ -3232,7 +3232,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             print("\n".join(out["validationCommands"]))
         else:
             _emit(out, fmt)
-        return {"ready": 0, "blocked": 1, "needs-clarification": 3}.get(out["status"], 0)
+        # `undetermined` is evidence incomplete (5), not a pass: the default here was 0, so the one status that
+        # withholds the verdict exited the way `ready` does. A status this table does not know is an internal
+        # error (4) for the same reason -- an unrecognised word must not read as a pass (G339).
+        return {"ready": 0, "blocked": 1, "needs-clarification": 3, "undetermined": 5}.get(out["status"], 4)
 
     if a.cmd in {"generate", "helm-chart"}:
         from kube_noob.generate.blueprint import Blueprint
