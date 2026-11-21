@@ -188,12 +188,18 @@ def run_protocol(
     blockers = [f.as_dict() for f in final.findings if f.severity >= Severity.HIGH]
     steps["redTeam"] = {"scenarios": [s.as_dict() for s in final.scenarios], "remainingBlockers": blockers}
 
-    # "ready" from an absence of HIGH findings is only honest if something was actually audited. With no
-    # documents no rule ran, so there were no blockers and the run reported ready -- a far stronger claim than a
-    # control summary. Until the coverage record lands, the minimum is to refuse the word when nothing was read.
+    # "ready" from an absence of HIGH findings is only honest if the audit read everything it was given. With no
+    # documents no rule ran, so there were no blockers and the run reported ready. The same holds for an object
+    # the rules did not read: `Report.undetermined()` is the one predicate every renderer of this report reads,
+    # and this one did not, so the privileged container that is `blocked` in a Deployment was `ready` in an Argo
+    # Rollout, with `remainingBlockers: []` and `kubectl apply` printed beneath it (G339). A blocker stays a
+    # blocker -- a finding is a finding -- and the reason is carried either way, because "this has problems" and
+    # "part of it was never read" are independent.
+    undetermined = final.undetermined() if docs else "no document was given, so no rule ran"
+    undecided = [s.as_dict() for s in final.scenarios if s.verdict == "undecided"]
     if blockers:
         status = "blocked"
-    elif not docs:
+    elif undetermined is not None:
         status = "undetermined"
     else:
         status = "ready"
@@ -209,10 +215,14 @@ def run_protocol(
     }
     return {
         "status": status,
+        # Beside the status and ahead of the long fields: a client that truncates a tool result keeps the first
+        # bytes, and the reason a verdict was withheld is the part that must survive that (G330).
+        **({"statusReason": undetermined} if undetermined is not None else {}),
         "auditValidationBrief": brief,
         "productionManifest": final_yaml,
         "redTeamFindingsAndSafeguards": {
             "exposedScenarios": exposed,
+            "undecidedScenarios": undecided,
             "remainingBlockers": blockers,
             "manualFollowUps": manual,
             "prerequisites": generated_notes,
