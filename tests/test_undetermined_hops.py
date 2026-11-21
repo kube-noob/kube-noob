@@ -192,3 +192,79 @@ def test_the_real_gate_and_the_wrapper_agree_on_an_undetermined_audit(tmp_path: 
     assert report["incomplete"] is True
     assert out["evidence"] == "incomplete"
     assert out["because"].startswith("the audit is undetermined: 1 Deployment not audited"), out["because"]
+
+
+ACCEPTED_CRD = """
+apiVersion: fleet.acme.io/v1
+kind: WidgetFleet
+metadata: {name: web, namespace: shop}
+spec:
+  template:
+    spec:
+      containers: [{name: c, image: nginx:1.27}]
+"""
+
+
+def _accepts_it() -> str:
+    """An exception list accepting the CRD above. The expiry is computed: `exceptions.MAX_DAYS` refuses an entry
+    more than 400 days out, so a literal date would turn this test green today and silently inert later."""
+    import datetime as dt
+
+    expires = (dt.datetime.now(dt.UTC).date() + dt.timedelta(days=300)).isoformat()
+    return (
+        "apiVersion: kube-noob.io/v1\n"
+        "kind: ExceptionList\n"
+        "exceptions:\n"
+        "- id: EX-1\n"
+        "  notAudited: {kind: WidgetFleet, apiGroup: fleet.acme.io, namespace: shop, name: web}\n"
+        "  owner: st\n"
+        "  reason: this CRD is audited by its own operator test suite\n"
+        f'  expires: "{expires}"\n'
+    )
+
+
+def test_an_exception_the_gate_accepts_is_accepted_by_verify_too(tmp_path: Path) -> None:
+    """Class 9 at the hop that runs before an action. `accept_not_audited` clears the gate's verdict, so the
+    documented remedy -- an ExceptionList entry with an owner, a reason and an expiry -- has to work here as well.
+    It did not: `_unread_pods` re-derived its own answer, never saw the exception, and verify refused anyway.
+
+    An accepted exception is the only reason an object can be unaudited and the verdict still determined. If verify
+    cannot honour it there is no way to use the feature the tool tells people to use.
+    """
+    from kube_noob import gate, verify
+
+    manifest = tmp_path / "crd.yaml"
+    manifest.write_text(ACCEPTED_CRD, encoding="utf-8")
+    excl = _accepts_it()
+
+    srcs = verify.collect([str(manifest)], lambda p: Path(p).read_text(encoding="utf-8"))
+    rep = gate.run(srcs, fail_on="never", exceptions=excl)
+    assert rep.get("notAudited") and rep["notAudited"][0].get("acceptedBy") == "EX-1"
+    assert not rep.get("undetermined"), "the gate did not accept the exception, so this test proves nothing"
+
+    result = verify.evaluate(srcs, exceptions=excl)
+    assert result["verdict"] == "allow", "the gate accepted the exception and verify refused it anyway"
+    assert verify.exit_code(result) == 0
+    assert result.get("notDetermined") in (None, [], ()), result.get("notDetermined")
+
+
+def test_an_open_row_keeps_the_detail_the_gate_line_does_not_carry(tmp_path: Path) -> None:
+    """The limit of the change above. Only an ACCEPTED row is passed over.
+
+    The gate's own line withholds the verdict and names the object; `_unread_pods` names the file and says what is
+    in it that no rule read. Skipping open rows too dropped the second -- the verdict stayed `not-determined`, so
+    nothing failed except that a reader no longer learned there was an unread pod spec, or where. That is review
+    class 6 arriving as a fix: the information still existed, somewhere less useful.
+    """
+    from kube_noob import gate, verify
+
+    manifest = tmp_path / "crd.yaml"
+    manifest.write_text(ACCEPTED_CRD, encoding="utf-8")
+    srcs = verify.collect([str(manifest)], lambda p: Path(p).read_text(encoding="utf-8"))
+    rep = gate.run(srcs, fail_on="never")
+    assert rep["notAudited"] and not rep["notAudited"][0].get("acceptedBy"), "the row is accepted, not open"
+
+    reasons = verify.evaluate(srcs, fail_on="never")["notDetermined"]
+    joined = " ".join(reasons)
+    assert "pod spec" in joined, reasons
+    assert "crd.yaml" in joined, reasons
