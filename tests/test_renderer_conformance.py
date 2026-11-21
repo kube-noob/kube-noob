@@ -884,7 +884,23 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     "mcp.compliance_results": "reads a must-gather's ComplianceCheckResults, not this audit",
     "mcp.operator_inventory": "lists the operators in the input",
     "mcp.operator_known_issues": "matches that inventory against the known-issue index",
-    "mcp.fix_manifests": "returns changed manifests and the changes it made, not a verdict",
+    # `fix_manifests` is excluded from the two verdict predicates because it states no verdict -- but that is not
+    # the same as owing nothing, and reading it that way cost a real defect. G344: the fixer rewrote any
+    # `apiVersion` whose `kind` it recognised, so `projectcalico.org/v3 NetworkPolicy`,
+    # `serving.knative.dev/v1 Service`, `batch.volcano.sh/v1alpha1 Job` and the Kubernetes documentation's own
+    # `stable.example.com/v1 CronJob` came back as built-ins -- four valid manifests turned into broken ones,
+    # and through `protocol` (where `apply_fixes` is the default) the broken core Service carried a new HIGH
+    # finding of its own. The audit refuses every one of those objects. So the one writer in this matrix
+    # contradicted the audit's verdict while sitting outside the matrix that exists to catch exactly that, and
+    # an exclusion reason that stops at "not a verdict" is review class 6 one level out: the limit recorded
+    # where no reader of this table sees it.
+    # The invariant it DOES owe, held by tests/test_fixer_foreign_group.py: it must not edit an object the audit
+    # refuses. Any future exclusion here states what the surface still owes, not only what it does not.
+    "mcp.fix_manifests": (
+        "states no verdict over the input, so neither predicate applies -- but it is the one surface here that "
+        "WRITES, and a writer must not edit an object the audit refuses (G344); that invariant is held by "
+        "tests/test_fixer_foreign_group.py, not by this matrix"
+    ),
     "mcp.run_protocol": "composes validate, audit and red_team; each of those is adapted on its own",
 }
 
