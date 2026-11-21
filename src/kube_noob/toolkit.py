@@ -2514,7 +2514,9 @@ class Toolkit:
                 "Run the 7-step engineering protocol",
                 "Clarify -> Validate -> Research -> Audit -> Calibrate -> Generate -> Red Team for a request with "
                 "existing manifests or a generator blueprint. Returns the Audit & Validation Brief, the production "
-                "manifest, and Red Team findings with safeguards. Use this first for any design/review request.",
+                "manifest, and Red Team findings with safeguards. Use this first for any design/review request. "
+                "`status` is ready, blocked (a finding at high or above remains), undetermined (part of the input was "
+                "not read or not evaluated: `statusReason` says what, and it is not a pass) or needs-clarification.",
                 ProtocolIn,
                 self.run_protocol,
             ),
