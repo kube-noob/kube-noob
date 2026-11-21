@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **A ruff release could turn every open pull request red with no change to this repository.** `pyproject.toml` asked for `ruff>=0.8` in both the `dev` extra and the lint tooling, so the `lint` job installed whatever was newest at the moment it ran. A ruff release that adds a lint rule then fails a tree that passed an hour earlier, on every branch at once, and the failure names a style rule rather than the change under review -- which is the most expensive kind of red build, because nothing in the diff explains it. It also meant a contributor and CI were running different linters: `ruff check` passed locally on 0.16.9 and failed in CI on 0.17.6 with `PLC0207` and an import-order rule that 0.16.9 does not carry. Pinned to `ruff==0.17.6`, the version CI was already resolving to, so the linter changes when someone decides it changes. `mypy>=1.13` and `pytest>=8.3` have the same shape and are not touched here: this is the one that has actually gone off.
+
 - **Merging G272 into G281: one verdict predicate, one record of what was not evaluated, and five rules that
   now declare their subjects.** Both branches had independently invented `Report.undetermined()` and
   `not_audited`, and the merge kept G272's predicate as the only one: a rule that declined on an object withholds
