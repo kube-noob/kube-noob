@@ -78,8 +78,12 @@ schema-held graph whose undetermined legs are nodes, `--format mermaid` draws it
 
 Release-pipeline hardening, found by an adversarial pass over `release.yml`, none blocking but each makes the
 next failure worse: `demos` sits in `github-release.needs`, so a recording flake after PyPI has published leaves
-no release page; `image` pushes before it attests, the opposite order from PyPI; `publish-pypi` lacks
-`skip-existing: true`, so a rerun after a partial upload fails; `homebrew` checks out `main` rather than the tag.
+no release page -- and from 0.10.0 that release page is also where krew's archive lives, so the krew-index manifest
+points at nothing; `image` pushes before it attests, the opposite order from PyPI; `homebrew` checks out `main`
+rather than the tag, which is what that job needs (it commits the formula onto `main`) and which also means it runs
+`scripts/brew_formula.py` from `main` rather than from the tag. `publish-pypi` lacking `skip-existing: true` is
+fixed: it is set, so a rerun after a partial upload is a no-op rather than the failure that skips every job behind
+it.
 
 ## The five questions
 

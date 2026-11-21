@@ -113,7 +113,13 @@ jobs:
         with:
           name: dist
           path: dist/
+      # skip-existing so a rerun after a partial upload is a no-op instead of a failure. PyPI versions are
+      # immutable, so without it the second attempt dies on the file already there and every job behind this one
+      # -- publish-mcp-registry, homebrew, brew and github-release -- is skipped, leaving the tag with no release
+      # page and no krew archive while PyPI already holds the wheel (docs/operations.md records that shape).
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true
 
   image:
     needs: build-dist
