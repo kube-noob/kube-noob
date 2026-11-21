@@ -2824,6 +2824,18 @@ def evaluate(
             undetermined.append(f"{frame(u['file'])} could not be read ({frame(u['why'])})")
         for a in report.get("assumptions") or []:
             not_evaluated.append({"what": "audit", "why": show(a, 600)})
+        if report.get("undetermined"):
+            # The gate's ONE predicate (`Report.undetermined`), read rather than re-derived. verify kept its own
+            # list of what makes an audit undetermined -- `_unread_pods` below, which knows a pod spec in a kind
+            # with no reader and nothing else -- so every reason the gate learned after it was written (an
+            # apiVersion or a kind the rules refuse, a rule that declined on an object) came back as `allow`,
+            # exit 0, printed above the audit's own sentence saying the verdict was undetermined (G329, class 9).
+            # An object an exception accepted under `notAudited` no longer makes the gate undetermined, so it is
+            # not named here either: that is the gate's answer, and this is the gate's audit.
+            undetermined.append(
+                f"the audit of these manifests is undetermined ({frame(report['undetermined'], 300)}), so what "
+                "they would create was not read in full"
+            )
         undetermined.extend(_unread_pods(sources))
         base_keys: Counter[tuple[str, str, str]] = Counter()
         baseline = list(against or []) + list(cmd.baseline)

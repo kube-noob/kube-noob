@@ -274,6 +274,14 @@ spec:
                         gaps.append("reported issues: not-determined")
                 if "requiredEvaluated" in rep and rep["requiredEvaluated"] is not True:
                     gaps.append("required checks: not all evaluated")
+                # The gate says of itself that it reached no verdict (`incomplete`, with `undetermined` as the reason:
+                # an object the rules did not read, a rule that declined). That is not in notRun, so every optional
+                # check supplied left "evidence: complete" beside a report whose own incomplete was true (G329). First,
+                # ahead of the standing entries, so the cut below cannot remove the one reason that is about this input.
+                if rep.get("undetermined") is not None:
+                    gaps.insert(0, "the audit is undetermined: " + clean(rep["undetermined"]))
+                elif "incomplete" in rep and rep["incomplete"] is not False and not gaps:
+                    gaps.append("the gate reported itself incomplete")
                 evidence = "incomplete" if gaps else "complete"
                 because = "; ".join(gaps)
                 counts = rep.get("counts") if isinstance(rep.get("counts"), dict) else {}

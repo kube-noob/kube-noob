@@ -1725,6 +1725,20 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
             ran.remove("audit")
             skipped.append({"kind": "manifests", "why": f"not audited: {rep}"})
             rep = None
+        verdict = (rep or {}).get("summary") or {}
+        if verdict.get("verdict") == "undetermined":
+            # `ran: audit` beside no findings reads as audited and clean, and this answer carries the audit's
+            # findings and nothing else of its report -- so an object the rules refused to read came back as an
+            # empty list (G329). The audit's own reason, in the list this answer already has for what it did not
+            # analyse; the report itself is one command away and says which object.
+            skipped.append(
+                {
+                    "kind": "manifests",
+                    "why": f"the audit is undetermined, so no findings here is not a clean result: "
+                    f"{str(verdict.get('verdictReason') or 'the audit gave no reason')[:400]}. "
+                    "kube-noob audit -f <file> names every object and rule that was not read",
+                }
+            )
         ordered = sorted((rep or {}).get("findings", []), key=lambda f: -_SEVERITY.get(str(f.get("severity")), 0))
         for f in ordered[:10]:
             findings.append(
