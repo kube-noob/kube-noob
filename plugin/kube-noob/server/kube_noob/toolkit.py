@@ -1304,6 +1304,13 @@ class Toolkit:
                     + (", with evidenced_only" if p.evidenced_only else "")
                 )
             out["filtered"] = hidden
+        if verdict:
+            # First, not last. `indicators` is the bulk of this payload -- fifty-odd kilobytes of it -- and a dict
+            # serialises in insertion order, so the verdict set above sat at byte 54,945 of 55,269. An MCP client
+            # that truncates a long tool result dropped exactly the word that says the audit under this page
+            # reached no verdict, and the model then read a full KSI crosswalk with every indicator and no caveat.
+            # The caveat has to survive the truncation, so it goes at the front (G330, review class 6).
+            out = {"verdict": "undetermined", "verdictReason": verdict, **out}
         return out
 
     def _allowed_registries(self) -> tuple[str, ...]:
