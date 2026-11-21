@@ -27,6 +27,7 @@ from kube_noob.audit.caveats import (
 )
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.server import tool_profiles
 from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
@@ -2699,7 +2700,17 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="Optional: ask a model you configure, which calls these tools")
     ask.add_argument("question")
 
-    sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mc = sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mc.add_argument(
+        "--tools",
+        metavar="PROFILE[,PROFILE]",
+        help=(
+            "offer one named subset of the tools instead of all of them: "
+            + ", ".join(tool_profiles.NAMES)
+            + ". A profile changes only which tools are listed, never what one answers, and every tool it "
+            "withholds is named in the server's instructions with the flag that offers it"
+        ),
+    )
     sv = sub.add_parser("serve", help="Run the MCP server over streamable HTTP (sidecar/service)")
     sv.add_argument("--host")
     sv.add_argument("--port", type=int)
@@ -3642,7 +3653,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "mcp":
         from kube_noob.server.mcp_app import build_server
 
-        build_server(s).run("stdio")
+        # An unknown profile is a usage error (exit 2), never a quiet fall back to all or to none: a server that
+        # offered some other set of tools than the one asked for would say so nowhere in the session.
+        try:
+            profiles = tool_profiles.parse(a.tools)
+        except tool_profiles.UnknownProfile as exc:
+            raise ConfigError(str(exc)) from exc
+        build_server(s, profiles=profiles).run("stdio")
         return 0
 
     if a.cmd == "serve":
