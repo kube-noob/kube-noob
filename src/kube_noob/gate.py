@@ -835,6 +835,8 @@ def _fingerprint(r: dict[str, Any]) -> str:
 MAX_NOT_AUDITED_NAMED = 5
 #: The SARIF rule id under which a refused object is reported: a `note`, not a finding, with no severity score.
 NOT_AUDITED_RULE = "KN-NOT-AUDITED"
+NOT_EVALUATED_RULE = "KN-NOT-EVALUATED"
+NOT_READ_RULE = "KN-NOT-READ"
 
 
 def _located_row(row: dict[str, Any], sources: list[Source], chart_path: str | None) -> dict[str, Any]:
@@ -846,6 +848,12 @@ def _located_row(row: dict[str, Any], sources: list[Source], chart_path: str | N
     if local is not None:
         out["line"] = local
     return out
+
+
+def _artifact(uri: str) -> dict[str, Any]:
+    """A SARIF artifactLocation. An absolute path becomes a file URI; anything else is relative to the checkout,
+    which is what a code-scanning upload needs to anchor the result to a file in the repository."""
+    return {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
 
 
 def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -875,7 +883,7 @@ def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]
     for r in rows:
         accepted = f" (accepted by {r['acceptedBy']})" if r.get("acceptedBy") else ""
         uri = str(r.get("uri") or "manifests")
-        artifact = {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
+        artifact = _artifact(uri)
         loc: dict[str, Any] = {"artifactLocation": artifact}
         if isinstance(r.get("line"), int) and r["line"] >= 1:
             loc["region"] = {"startLine": int(r["line"])}
@@ -912,7 +920,7 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
                 "properties": _rule_properties(r),
             }
         uri = str(r["uri"])
-        artifact = {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
+        artifact = _artifact(uri)
         loc: dict[str, Any] = {"artifactLocation": artifact}
         if r.get("line"):
             loc["region"] = {"startLine": int(r["line"])}
@@ -927,6 +935,10 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
             }
         )
     results += _not_audited_results(report, rules)
+    # `coverage`: what this run did not evaluate and did not read, as results rather than only as notifications.
+    # Absent (the gate's own report) means this builder adds none, so that path is unchanged.
+    cov = report.get("coverage") or {}
+    results += _coverage_results(cov, rules, str(cov.get("uri") or "manifests"))
     if report.get("notAudited"):
         invocation = {
             **(invocation or {"executionSuccessful": True}),
@@ -982,6 +994,107 @@ def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
     return notes
 
 
+def _coverage_results(rep: dict[str, Any], rules: dict[str, dict[str, Any]], uri: str) -> list[dict[str, Any]]:
+    """The rules that reached no verdict, and the files that were not read, as SARIF **results**.
+
+    They were already on the run's invocation as ``toolExecutionNotifications``, which is where the SARIF spec puts
+    what the tool wants to say about its own run. The trouble is that a notification is not a result, and the
+    consumers this file is written for read ``runs[].results``: GitHub code scanning shows alerts, DefectDojo and
+    the scanner operators import findings. A file carrying twelve findings and "forty-one rules were not evaluated"
+    only in a notification arrives at the other end as twelve findings and nothing else -- the honest part of the
+    answer destroyed at the first hop, which is the defect this product exists to refuse, one layer out from the
+    verdict.
+
+    So each one is also a result, exactly as ``notAudited`` already is (``_not_audited_results``): ``kind:
+    "review"``, SARIF's word for "a reviewer should look, this is not a defect in the input". The notifications
+    stay, because a reader of the invocation should still see them and because removing them would be a second
+    change; a consumer that reads both sees the same statement twice, which is the right failure of the two.
+
+    Grouped by reason, not one per rule, for the reason ``grouped_reasons`` exists: a Deployment-only input leaves
+    about forty rules unevaluated for six reasons, and forty near-identical alerts would be noise a reviewer mutes,
+    which is how an honest signal gets switched off.
+    """
+    from kube_noob.audit.controls import grouped_reasons
+
+    groups = grouped_reasons(rep.get("controlSummary") or {})
+    unreadable = [u for u in rep.get("unreadable") or [] if isinstance(u, dict)]
+    if not groups and not unreadable:
+        return []
+    out: list[dict[str, Any]] = []
+    if groups:
+        rules[NOT_EVALUATED_RULE] = {
+            "id": NOT_EVALUATED_RULE,
+            "name": "RulesNotEvaluated",
+            "shortDescription": {"text": "Rules not evaluated"},
+            "fullDescription": {
+                "text": "These rules reached no verdict on this input: neither clean nor findings. Their controls "
+                "are not evidenced by this run."
+            },
+            "help": {
+                "text": "A rule that was not evaluated has not passed. Give the audit the objects the reason names "
+                "(a whole namespace rather than one file, the Service beside the Deployment) and run it again, or "
+                "accept the gap deliberately with an ExceptionList entry that records who accepted it and why. "
+                "Counting these as clean is what makes a compliance score higher than the evidence supports."
+            },
+            "helpUri": INFO_URI,
+            "defaultConfiguration": {"level": "note"},
+            "properties": {"tags": ["kubernetes", "coverage"]},
+        }
+        # ONE result, not one per reason. A Deployment-only input leaves about forty rules unevaluated under
+        # thirty-odd reasons, and thirty-three near-identical alerts are what gets a rule muted in code scanning --
+        # which would switch off the honest signal more thoroughly than the notification did. The claim is about
+        # this run as a whole ("it did not evaluate these"), not about thirty-three places in the file, so it is
+        # one alert carrying every reason, and its fingerprint covers the whole set: the alert changes when
+        # coverage changes and closes when nothing is left unevaluated.
+        total = sum(len(ids) for _, ids in groups)
+        detail = "; ".join(f"{why}: {', '.join(ids)}" for why, ids in groups)
+        key = "\x1f".join([NOT_EVALUATED_RULE, detail])
+        out.append(
+            {
+                "ruleId": NOT_EVALUATED_RULE,
+                "ruleIndex": list(rules).index(NOT_EVALUATED_RULE),
+                "level": "note",
+                "kind": "review",
+                "message": {
+                    "text": f"{total} rules reached no verdict on this input, so their controls are not "
+                    f"evidenced by this run -- {detail}"
+                },
+                "locations": [{"physicalLocation": {"artifactLocation": _artifact(uri)}}],
+                "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+            }
+        )
+    if unreadable:
+        rules[NOT_READ_RULE] = {
+            "id": NOT_READ_RULE,
+            "name": "FileNotRead",
+            "shortDescription": {"text": "File not read"},
+            "fullDescription": {"text": "This file was not read, so nothing in it was audited."},
+            "help": {
+                "text": "The file could not be parsed or decoded. Nothing in it was audited, so a clean run over "
+                "the rest of the input says nothing about it: fix the file or remove it from the input, and do not "
+                "read the absence of findings for it as a pass."
+            },
+            "helpUri": INFO_URI,
+            "defaultConfiguration": {"level": "warning"},
+            "properties": {"tags": ["kubernetes", "coverage"]},
+        }
+        for u in unreadable:
+            path = str(u.get("path") or uri)
+            key = "\x1f".join([NOT_READ_RULE, path, str(u.get("why") or "")])
+            out.append(
+                {
+                    "ruleId": NOT_READ_RULE,
+                    "ruleIndex": list(rules).index(NOT_READ_RULE),
+                    "level": "warning",
+                    "kind": "review",
+                    "message": {"text": f"not read: {path} ({u.get('why')})"},
+                    "locations": [{"physicalLocation": {"artifactLocation": _artifact(path)}}],
+                    "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+                }
+            )
+    return out
+
+
 def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
     """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
 
@@ -1024,9 +1137,31 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
             "tool": {"version": __version__},
             # `_locate` put the file and line on each row as on each finding; `uri` is what the result reads.
             "notAudited": [{**r, "uri": r.get("file") or "stdin"} for r in rep.get("notAudited") or []],
+            # The same two absences the notifications above carry, so they also reach `results`, which is the
+            # array every SARIF consumer reads. Anchored to the audited file when there is exactly one, because a
+            # code-scanning alert with no location is shown against the repository root or not at all.
+            "coverage": {
+                "controlSummary": rep.get("controlSummary") or {},
+                "unreadable": rep.get("unreadable") or [],
+                "uri": _one_input_uri(rep),
+            },
         },
         invocation={"executionSuccessful": True, "toolExecutionNotifications": notes},
     )
+
+
+def _one_input_uri(rep: dict[str, Any]) -> str:
+    """The file to anchor a coverage result to: the single file this audit read, or ``manifests``.
+
+    A rule that was not evaluated is about the input as a whole and not about a place in it, so there is no honest
+    line number. With one file there is still an honest FILE, which is what a reviewer needs to find it; with
+    several, naming one of them would say the gap belongs to that one.
+    """
+    uris = {str(f.get("file") or "") for f in rep.get("findings") or []} | {
+        str(r.get("file") or "") for r in rep.get("notAudited") or []
+    }
+    uris.discard("")
+    return next(iter(uris)) if len(uris) == 1 else "manifests"
 
 
 def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:

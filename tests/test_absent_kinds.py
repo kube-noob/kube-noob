@@ -1337,9 +1337,15 @@ def test_a_refused_object_is_undetermined_in_every_format_never_a_pass(
     assert code == 1 and "no pod spec in the input" not in sarif_text
     run = json.loads(sarif_text)["runs"][0]
     assert [r["object"] for r in run["invocations"][0]["properties"]["notAudited"]] == ["Deployment/shop/web"]
-    assert [r["message"]["text"] for r in run["results"] if r["level"] == "note"] == [
+    # By rule id, as the KN-NOT-AUDITED assertions further down this file already do: selecting every note-level
+    # result and demanding the list be exactly one message also forbade any OTHER coverage result, and G328 adds
+    # one (the rules that reached no verdict, which this input leaves 86 of). The claim here is that the object is
+    # named and that "no pod spec in the input" is said nowhere -- both still checked, the second just above.
+    assert [r["message"]["text"] for r in run["results"] if r["ruleId"] == gate.NOT_AUDITED_RULE] == [
         f"Deployment/shop/web: not audited, {rep['notAudited'][0]['why']}"
     ]
+    coverage = [r for r in run["results"] if r.get("kind") == "review"]
+    assert {r["ruleId"] for r in coverage} == {gate.NOT_AUDITED_RULE, gate.NOT_EVALUATED_RULE}
 
     src = gate.Source(uri="bundle.yaml", text=text, lines=text.count("\n"))
     report = gate.run([src], fail_on="never")
