@@ -175,7 +175,9 @@ How two commands fit the table (G280):
   the command that the memory verifier counts as one (cluster-admin, the privileged SCC, wildcard RBAC), or a
   literal credential in `set env` (KN-S013's finding, before there is a manifest). 5 is "the evidence was
   incomplete": what the change does could not be read from its text and the local files -- a URL, a delete whose
-  target is cluster state, an `exec`. That is the rule above and not an exception to it: no verdict was reached.
+  target is cluster state, an `exec`, or manifests whose audit the gate itself calls undetermined (an object the
+  rules did not read, a rule that declined: G329). That is the rule above and not an exception to it: no verdict
+  was reached.
   A deny with something unread is still 1, because a verdict WAS reached and more evidence cannot turn a deny into
   an allow -- where `gate`, whose answer is a score over a set it promises to have read, exits 1 for its own
   undetermined verdict instead. Both are listed in the output.
