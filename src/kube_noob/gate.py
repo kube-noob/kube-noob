@@ -1450,6 +1450,26 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
         named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
         gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
         undetermined = f"{undetermined}; {gap}" if undetermined else gap
+    # The coverage record G328 gave `audit --format sarif`, built here too. This is the file `scripts/ci/gate.sh`
+    # uploads to code scanning, so it is the one that decides what a reviewer sees: without this it carried
+    # fourteen findings and nothing else for a report whose own `controlSummary` said fifty-two rules reached no
+    # verdict, and nothing at all for an input made only of kinds no rule reads. G328 fixed the audit's SARIF and
+    # left its neighbour, which is review class 21 in the same function that records the lesson.
+    #
+    # Two keys differ from the audit's report and are normalised rather than read twice: `unreadable` rows carry
+    # `file` here and `path` there, and the input uri comes from `files` because a gate finding has no `file`.
+    # A file the walk declined to read as a manifest (`forbidsVerdict`, G325) is a file nothing in which was
+    # audited, so it is the same absence and gets the same result.
+    cov_unreadable = [
+        {"path": str(u.get("file") or ""), "why": str(u.get("why") or "")} for u in report.get("unreadable") or []
+    ] + [{"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked]
+    files = [str(f) for f in report.get("files") or [] if f]
+    coverage = {
+        "controlSummary": report.get("controlSummary") or {},
+        "unreadable": cov_unreadable,
+        "uri": files[0] if len(files) == 1 else "manifests",
+    }
+    report = {**report, "coverage": coverage}
     if not notes and not undetermined:
         return sarif(report)
     invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}
