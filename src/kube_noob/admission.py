@@ -194,7 +194,7 @@ def _owned(obj: dict[str, Any]) -> bool:
 
 def _findings(
     obj: dict[str, Any], namespace: str, cfg: Config, context: list[dict[str, Any]]
-) -> list[tuple[str, str, str, str]]:
+) -> tuple[list[tuple[str, str, str, str]], str]:
     """(rule, path, warning text, resource) for the admitted object only."""
     from kube_noob.audit.engine import analyze
     from kube_noob.audit.model import Stage
@@ -219,6 +219,13 @@ def _findings(
         schema=False,
         allowed_registries=cfg.allowed_registries,
     )
+    # What the audit could not read about THIS object. `report.findings` is only half the answer, and the half
+    # that is missing is the one this product exists to report: a Tekton `Task` carrying a privileged
+    # `docker:24-dind` step was admitted with no warning of any kind, because no rule reads that kind and the
+    # loop below has nothing to iterate. The webhook still ADMITS -- a fail-closed webhook that denies what it
+    # cannot read freezes a cluster, including the deploy that would fix it -- but silence is not the same as
+    # admitting out loud, and `warnings` is the non-blocking channel the API server already has for this (G337).
+    withheld = report.undetermined() or ""
     out: list[tuple[str, str, str, str]] = []
     for f in report.findings:
         if f.doc_index != 0 or f.rule_id in SKIPPED_RULES:
@@ -235,7 +242,7 @@ def _findings(
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     sev = {f.rule_id: order.get(f.severity.name.lower(), 5) for f in report.findings}
     out.sort(key=lambda x: (x[0] not in cfg.enforce, sev.get(x[0], 5), x[0], x[1]))
-    return out
+    return out, str(withheld)
 
 
 def review(
@@ -273,12 +280,12 @@ def review(
         unread_lists: list[str] = []
         if cfg.lookups and context is not None and ns and hasattr(context, "unread"):
             unread_lists = list(context.unread(ns))
-        found = _findings(obj, ns, cfg, extra)
+        found, withheld = _findings(obj, ns, cfg, extra)
         if unread_lists:
             found = [f for f in found if f[0] not in CROSS_OBJECT]
         before: set[tuple[str, str]] | None = None
         if op == "UPDATE" and isinstance(request.get("oldObject"), dict):
-            before = {(r, p) for r, p, _, _ in _findings(request["oldObject"], ns, cfg, extra)}
+            before = {(r, p) for r, p, _, _ in _findings(request["oldObject"], ns, cfg, extra)[0]}
         if sub and before is not None:
             # On a subresource the request IS the change, so the Pod's existing findings are not this
             # request's business: they were reported when it was created and repeating them here would bury
@@ -295,6 +302,10 @@ def review(
                     f"{', '.join(unread_lists)} could not be read"
                 )
             )
+        if withheld:
+            # Said even when there are findings: "this object has three problems" and "part of it was never read"
+            # are different statements, and the second does not stop being true because the first is.
+            warnings.append(_warning(f"kube-noob: not fully audited, so this is not a clean result: {withheld}"))
         if len(found) > cfg.max_warnings:
             warnings.append(_warning(f"kube-noob: {len(found) - cfg.max_warnings} more findings: kube-noob audit"))
         if enforced:
