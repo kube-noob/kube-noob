@@ -605,9 +605,9 @@ class Inventory:
             from kube_noob.audit.rules import refusal
             from kube_noob.yamlio import Document
 
-            why = refusal(Document(index=0, data=obj))
-            if why is not None:
-                self.unread(f"{_ref(obj)}: {why}, so it was not ranked", "refused")
+            refused_why = refusal(Document(index=0, data=obj))
+            if refused_why is not None:
+                self.unread(f"{_ref(obj)}: {refused_why}, so it was not ranked", "refused")
                 return
         if not isinstance(obj.get("spec") or {}, dict):
             self.unread(f"{_ref(obj)}: spec is not a mapping, so it was not read", "refused")
