@@ -1111,9 +1111,13 @@ def test_the_first_diff_after_stamping_names_api_version_as_the_one_changed_fiel
 
 
 def test_the_oscal_numbers_the_changelog_quotes_for_a_deployment_only_directory() -> None:
-    """`kube-noob audit -f <dir holding DEPLOYMENT> --format json --oscal`: 10 of 31 controls excluded, 7
+    """`kube-noob audit -f <dir holding DEPLOYMENT> --format json --oscal`: 11 of 31 controls excluded, 6
     satisfied (0.9.2 excluded none and reported 16). The CHANGELOG sentence is measured here, not remembered.
-    31, not 30: G272 added SC-28(1) to the control catalogue, and a Deployment-only directory excludes it."""
+    31, not 30: G272 added SC-28(1) to the control catalogue, and a Deployment-only directory excludes it.
+
+    11 and 6, not 10 and 7: G335 stopped reporting an objective satisfied on evidence that was never gathered, and
+    on this input exactly one control moves -- CM-2, which read satisfied on 1 clean rule with 1 that reached no
+    verdict. It is now excluded, because partial evidence supports asserting nothing rather than either word."""
     from kube_noob import oscal
     from kube_noob.audit.controls import RULE_CONTROLS
 
@@ -1121,8 +1125,11 @@ def test_the_oscal_numbers_the_changelog_quotes_for_a_deployment_only_directory(
     result = oscal.assessment_results(rep)["assessment-results"]["results"][0]
     selection = result["reviewed-controls"]["control-selections"][0]
     assert len({c for cs in RULE_CONTROLS.values() for c in cs}) == 31
-    assert len(selection["exclude-controls"]) == 10
-    assert sum(1 for f in result["findings"] if f["target"]["status"]["state"] == "satisfied") == 7
+    assert len(selection["exclude-controls"]) == 11
+    assert sum(1 for f in result["findings"] if f["target"]["status"]["state"] == "satisfied") == 6
+    # The one that moved, named with its counts, so a future change to the discrimination shows up here as the
+    # control it affected rather than as a number that drifted.
+    assert "CM-2 (1 clean, 1 not evaluated)" in selection["remarks"]
 
 
 def test_the_text_headline_names_only_controls_with_findings_and_lists_the_unevaluated_apart(
