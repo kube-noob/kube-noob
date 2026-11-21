@@ -145,6 +145,37 @@ class _Fixer:
             return
         valid = KIND_API_VERSIONS.get(kind)
         if valid and av not in valid and not removed_api(av, kind, "99.0"):
+            # A kind this tool knows, under a group it does not, is somebody else's CRD that happens to share a
+            # name -- not a typo in a built-in. Rewriting it produced a BROKEN manifest from a valid one:
+            # `projectcalico.org/v3 NetworkPolicy` (whose spec is `selector: app == 'web'` and an `ingress` of
+            # actions) became `networking.k8s.io/v1`, Knative's `Service` became core `v1`, Volcano's `Job` became
+            # `batch/v1`, and the Kubernetes documentation's own `stable.example.com/v1 CronJob` example became
+            # `batch/v1`. Through `protocol`, where `apply_fixes` is the default, that silently handed back a
+            # broken core Service carrying a new HIGH finding of its own.
+            #
+            # The audit already draws this line and the fixer contradicted it: `audit` on the same Calico file
+            # says "apiVersion names a group kube-noob does not know NetworkPolicy under" and withholds the
+            # verdict, while the fixer called that same unknown a typo (G344). `refusal` is that one predicate --
+            # it returns None for a wrong VERSION inside a group this tool does serve (`apps/v3 Deployment`,
+            # `networking.k8s.io/v1beta9 NetworkPolicy`), which is the real typo this rewrite exists for.
+            from kube_noob.audit.rules import SUBJECT_GROUPS, refusal
+            from kube_noob.catalog import api_group
+
+            why = refusal(doc)
+            # The guard is narrowed to a group this tool does not serve AT ALL, read off the same `SUBJECT_GROUPS`
+            # table the audit uses -- never a second list of what a group is (class 9 again, one level down).
+            # `apps.openshift.io/v1 Route` is the case on the other side of the line: `apps.openshift.io` is a
+            # group kube-noob serves (`DeploymentConfig` lives there), so a `Route` under it is a typo in the group
+            # of a real OpenShift kind, the spec is unchanged by the rewrite, and the result is a valid manifest.
+            # `projectcalico.org` is in no rule's subject at all, so a `NetworkPolicy` under it cannot be a typo
+            # for anything this tool serves, and the rewrite turned a valid manifest into a broken one.
+            if why is not None and api_group(av) not in {g for v in SUBJECT_GROUPS.values() for g in v}:
+                self.result.manual.append(
+                    f"{doc.ref()}: {av} {kind} was not rewritten: {why}, and no rule in kube-noob reads any "
+                    f"kind under {api_group(av)}, so this is a custom resource that shares a built-in's name "
+                    f"rather than a typo. A built-in {kind} is served by {valid[0]}."
+                )
+                return
             obj["apiVersion"] = valid[0]
             self.change("KN-V002", doc.ref(), ("apiVersion",), av, valid[0], f"{kind} is served by {valid[0]}.")
         elif removed_api(av, kind, "99.0"):
