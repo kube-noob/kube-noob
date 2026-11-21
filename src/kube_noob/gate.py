@@ -68,6 +68,10 @@ REQUIRED_KEYS = ("apiVersion", "kind")
 #: What a reason for a key spelled differently from one of those starts with. One string, so the report, the exit
 #: code, the renderers and `verify` all read the same marker rather than keeping a second list of files (class 9).
 NEAR_MISS_PREFIX = "a Kubernetes manifest whose key "
+
+#: A candidate manifest the walk did not open. The sentence names the rule that excluded it and what to
+#: pass instead, because the fix is the caller's: name the file, or point `-f` at the directory that holds it.
+NOT_OPENED_PREFIX = "not opened by the directory walk"
 #: Every reason `_classify` gives for not auditing a YAML file found in a directory walk, and whether that reason
 #: forbids a verdict. A reason that forbids one makes the gate fail, report `incomplete`, and exit 5: the walk
 #: declined to read the file, which is neither a policy violation (1) nor a clean result (0). A reason that does
@@ -83,6 +87,13 @@ SKIP_REASONS: tuple[tuple[str, bool], ...] = (
     # ground of a verdict either. It keeps `skipped`'s exit code rather than `unreadable`'s only because the two
     # answers must stay distinct (`unreadable_reason`'s docstring); both are incomplete evidence.
     ("YAML nested too deeply", True),
+    # A file the directory walk declined to OPEN, as opposed to one it opened and found was not a manifest. The
+    # walk keeps `.yaml` and `.yml` and does not enter dot-directories, and until G332 a file outside that was not
+    # recorded anywhere: `gate -f k8s/` on a directory holding `pod.json` (privileged, hostPID) and
+    # `.hidden/pod.yaml` answered `passed: true` with `skipped: []`, while `audit -f k8s/` on the same directory
+    # reported eleven findings. Which extensions the walk should read is a separate question and is still open;
+    # stating a verdict about files nobody opened is wrong under every answer to it.
+    (NOT_OPENED_PREFIX, True),
 )
 
 
@@ -122,6 +133,39 @@ def _near_miss_reason(docs: list[Any]) -> str | None:
                 "case-sensitive, so the API server would reject this document too"
             )
     return None
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    """`(st_dev, st_ino)` for a file, following symlinks: what makes two names the same file.
+
+    Used so the walk cannot report a file it already read under a different name. A ConfigMap volume mount is the
+    case that matters -- `key` is a symlink to `..data/key`, and `..data` is itself a symlink to a timestamped
+    directory -- and the walk reads the first while the dot-directory rule declines the second.
+    """
+    try:
+        st = path.stat()
+    except OSError:  # pragma: no cover - a dangling symlink is not a file this walk read
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _holds_a_manifest(path: Path) -> bool:
+    """Whether a file the walk declined to open demonstrably holds a Kubernetes manifest.
+
+    The question this answers is whether a pass over the directory would be a false statement, and that turns on
+    whether there was a manifest nobody read -- not on the file's name. So the file is opened and looked at.
+
+    A file that does not parse is not treated as a manifest. The walk never claimed to read it, `kubectl apply -f`
+    would not succeed on it either, and the alternative is a gate held incomplete by every unparseable `.json` in
+    a dot-directory. A file that does parse and carries `apiVersion` and `kind` is a manifest whatever it is
+    called, and a pass stated over the directory holding it is wrong.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
+    except (OSError, sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+        return False
+    return any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs)
 
 
 def _classify(path: Path | None, text: str) -> str | None:
@@ -217,17 +261,53 @@ def collect(paths: list[str], read: Any) -> list[Source]:
         else:
             p = Path(raw)
             if p.is_dir():
-                files = sorted(
-                    f
-                    for f in p.rglob("*")
-                    if f.suffix in {".yaml", ".yml"}
-                    and not any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
-                    and f.is_file()
-                )
                 items = []
-                for f in files:
-                    text = f.read_text(encoding="utf-8", errors="replace")
-                    items.append((_uri(f), text, _classify(f, text)))
+                # Every file the walk actually opens, by identity rather than by name. A ConfigMap volume mount
+                # exposes each key TWICE -- as `key`, a symlink, and as `..data/key`, the real file behind it --
+                # so reporting the second as an unopened manifest counted the same bytes as a gap and took the
+                # Tekton Task from `passed` to `evidence-incomplete`, exit 5. `..data` is the case the walk's own
+                # comment names as the reason it skips dot-directories (G332).
+                # Two passes, because `sorted` puts `..data/` and `..2026_.../` BEFORE `gate.yaml`: the dot
+                # copy is reached first, and a set filled as we go would still be empty for it.
+                every = [f for f in sorted(p.rglob("*")) if f.is_file()]
+                opened: set[tuple[int, int]] = {
+                    ident
+                    for f in every
+                    if f.suffix in {".yaml", ".yml"}
+                    and not any(part.startswith(".") for part in f.relative_to(p).parts)
+                    and (ident := _identity(f)) is not None
+                }
+                for f in every:
+                    hidden = any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
+                    if f.suffix in {".yaml", ".yml"} and not hidden:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                        items.append((_uri(f), text, _classify(f, text)))
+                        continue
+                    # Everything else the walk leaves alone, and a file it left alone is recorded only if it is
+                    # demonstrably a manifest -- `_holds_a_manifest` opens it and looks for a document with both
+                    # `apiVersion` and `kind`. Guessing from the extension instead is what the first version of
+                    # this did, and `.github/workflows/ci.yml` is a `.yml` file in a dot-directory in every
+                    # repository, so it made every real gate run incomplete: an alert on every repository is one
+                    # nobody reads, which is a worse outcome than the gap it replaces. Reading the file to decide
+                    # does not audit it and does not change which files are audited (G332).
+                    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
+                        continue
+                    if _identity(f) in opened:
+                        continue  # the same file under another name: already audited, so not a gap
+                    rel = f.relative_to(p)
+                    if f.name.startswith("."):
+                        where = "a dot-file, which the walk does not read"
+                    elif hidden:
+                        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
+                    else:
+                        where = "the walk reads only .yaml and .yml"
+                    items.append(
+                        (
+                            _uri(f),
+                            f.read_text(encoding="utf-8", errors="replace"),
+                            f"{NOT_OPENED_PREFIX}: {where}; name it with -f to audit it",
+                        )
+                    )
                 for uri, text, why in items:
                     if why is None:
                         bad[uri] = unreadable_reason(text)
