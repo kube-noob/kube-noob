@@ -255,6 +255,21 @@ def _findings(
                 f"{excepted} finding(s) bearing on {cid} {title} were accepted by an exception list. "
                 "An accepted finding is a recorded decision, not a satisfied objective."
             )
+        elif coverage and int(c.get("notEvaluated") or 0):
+            # Part of this control's evidence was never gathered, so the objective has not been SHOWN satisfied.
+            # This is the same answer the branches above give for evidence that exists and was withheld, for the
+            # reason G199 records there: emitting `satisfied` on partial coverage is how a privileged container
+            # became a clean compliance record. It arrived here as `satisfied/pass` with the gap stated in the
+            # description only -- CM-6 read satisfied on 7 clean rules with 26 not evaluated, a fifth of its
+            # evidence, in a run the gate itself called undetermined. A GRC tool reads `status.state`, not prose
+            # (review class 6), so the state carries it now and the description keeps the counts (G335).
+            state, reason = "not-satisfied", "other"
+            description = (
+                f"{int(c.get('clean') or 0)} rule(s) giving evidence about {cid} {title} ran over this input and "
+                f"produced no finding, and {int(c['notEvaluated'])} further rule(s) for it were not evaluated. "
+                "Part of the evidence was not gathered, so the objective is not shown satisfied; what would "
+                "satisfy it is a run in which every rule for this control reached a verdict."
+            )
         else:
             state, reason = "satisfied", "pass"
             description = (
@@ -266,7 +281,9 @@ def _findings(
                 f" {int(c['partlyEvaluated'])} rule(s) for this control found something and declined on other "
                 "objects, which are not covered by this record (G272)."
             )
-        if coverage and int(c.get("notEvaluated") or 0):
+        if coverage and int(c.get("notEvaluated") or 0) and reason != "other":
+            # The branch above already states this for a control whose only limit IS the unevaluated rules; this
+            # adds it beside a finding, a withheld rule or an exception, where it is a second limit.
             description += (
                 f" {int(c['notEvaluated'])} further rule(s) for this control were not evaluated, so this "
                 "covers part of the control's evidence, not all of it."
