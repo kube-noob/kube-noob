@@ -250,11 +250,13 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                     # does not audit it and does not change which files are audited (G332).
                     if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
                         continue
-                    where = (
-                        "in a dot-directory, which the walk does not enter"
-                        if hidden
-                        else "the walk reads only .yaml and .yml"
-                    )
+                    rel = f.relative_to(p)
+                    if f.name.startswith("."):
+                        where = "a dot-file, which the walk does not read"
+                    elif hidden:
+                        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
+                    else:
+                        where = "the walk reads only .yaml and .yml"
                     items.append(
                         (
                             _uri(f),
