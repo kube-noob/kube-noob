@@ -921,7 +921,16 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             file=sys.stderr,
         )
         return 5
-    return 0 if report["passed"] else 1
+    if report["passed"]:
+        return 0
+    # `--skip-unreadable` keeps the exit code it documents (G126): the files that were read decide between 0 and
+    # 1. What it no longer buys is a report that says "passed" -- the report is incomplete and names the file
+    # whatever the flag (G340), which is "merge: allowed, evidence: incomplete" as `scripts/ci/gate.sh` already
+    # words it (G291). Any other reason in `failures` is still a failure.
+    unread = report.get("unreadable") or []
+    if unread and a.skip_unreadable and report["failures"] == [gate.unreadable_failure(unread)]:
+        return 0
+    return 1
 
 
 def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:

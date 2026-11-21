@@ -371,11 +371,15 @@ def assessment_results(
     if oscal_findings:
         result["findings"] = oscal_findings
     remarks = [str(a) for a in report.get("assumptions") or []]
-    unreadable = [u for u in report.get("unreadable") or [] if isinstance(u, dict)]
+    from kube_noob.gate import unread_rows
+
+    unreadable = unread_rows(report)
     if unreadable:
         # `--skip-unreadable` promises the skipped files are listed "so a gate never reads a partial audit as a
         # clean one". With --oscal the document IS the whole report, so the list has to be in it.
-        names = ", ".join(sorted(str(u.get("path") or "?") for u in unreadable))
+        # `unread_rows` because `gate --oscal` hands this a GATE report, whose rows carry `file`: reading `path`
+        # wrote "could not be read and were skipped: ?." for every one of them (G341).
+        names = ", ".join(sorted(u["path"] or "?" for u in unreadable))
         remarks.append(
             f"{len(unreadable)} input file(s) could not be read and were skipped: {names}. This assessment "
             "covers only the files that were read."

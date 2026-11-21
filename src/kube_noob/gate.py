@@ -160,6 +160,52 @@ def unreadable_reason(text: str) -> str | None:
     return None
 
 
+def unread_rows(report: dict[str, Any]) -> list[dict[str, str]]:
+    """The files a report could not read, as `{"path", "why"}` rows, whichever command wrote the report.
+
+    A GATE report's `unreadable` rows carry `file` and an AUDIT report's carry `path` -- the gate names a file the
+    way `files` and `skipped` do, the audit the way `cli._dir_yaml` does. `sarif_of_gate` normalised the two
+    inline (G331) and two renderers further along did not: the HTML page printed "File not read." beside an
+    empty name and the OSCAL remark said "could not be read and were skipped: ?." for every gate report (G341).
+    One reader, so the next renderer of these rows cannot pick the wrong key (review classes 9 and 21).
+    """
+    return [
+        {"path": str(u.get("file") or u.get("path") or ""), "why": str(u.get("why") or "")}
+        for u in report.get("unreadable") or []
+        if isinstance(u, dict)
+    ]
+
+
+def unreadable_failure(unreadable: list[dict[str, Any]]) -> str:
+    """The one line `failures` carries for files that could not be read. A function, because `gate
+    --skip-unreadable` has to recognise this line to keep its documented exit code (G126) without a second copy of
+    the sentence (class 9)."""
+    shown = "; ".join(f"{u['file']}: {u['why']}" for u in unreadable[:5])
+    return f"{len(unreadable)} file(s) could not be read, so this gate reached no verdict on them: {shown}" + (
+        f"; and {len(unreadable) - 5} more under `unreadable`" if len(unreadable) > 5 else ""
+    )
+
+
+def incomplete_reason(report: dict[str, Any]) -> str:
+    """Why this gate report is incomplete, as one line, or an empty string when it is not.
+
+    Three reasons make a gate incomplete and only the first has a key of its own (`undetermined`, the audit's).
+    The SARIF invocation assembled the second inline (G325) and the HTML masthead read the first alone, so a
+    report incomplete for a file printed "The gate is incomplete: None". Every renderer that states the reason
+    reads this.
+    """
+    parts = [str(report["undetermined"])] if report.get("undetermined") else []
+    blocked = [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
+    if blocked:
+        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
+        parts.append(f"{len(blocked)} file(s) were not read as manifests: {named}")
+    unread = unread_rows(report)
+    if unread:
+        named = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
+        parts.append(f"{len(unread)} file(s) could not be read: {named}")
+    return "; ".join(parts)
+
+
 def _in_chart_templates(path: Path, parent: Path) -> bool:
     return parent.name == "templates" and (parent.parent / "Chart.yaml").is_file() and path.is_relative_to(parent)
 
@@ -390,6 +436,13 @@ def run(
             f"{len(blocking)} file(s) were not read as manifests, so this gate reached no verdict: {shown_blocking}"
             + (f"; and {len(blocking) - 5} more under `skipped`" if len(blocking) > 5 else "")
         )
+    if unreadable:
+        # G325 taught this report about a file the walk declined to OPEN and never about one it could not READ,
+        # though `SKIP_REASONS` says of the two that "both are incomplete evidence". The command exits 5 for
+        # this, which is why nobody read the report: it said `passed: true`, the Markdown said "gate passed"
+        # without naming the file, and nothing was annotated on the pull request (G340). One line in `failures`,
+        # because that is the list the Markdown, the HTML page and the annotations already render.
+        failures.append(unreadable_failure(unreadable))
     combined = _combine(sources) if sources else ""
     if sources:
         # A path named with -f used to be audited even when it was a Helm values file, so `gate -f values.yaml`
@@ -565,7 +618,10 @@ def run(
         # false and the headline says "incomplete", not "failed" (G272).
         # ... or a file the walk declined to read: that is evidence the gate does not have, exactly as an
         # undetermined audit is, and it must not render as "failed" either (G325).
-        "incomplete": "undetermined" in coverage or bool(blocking),
+        # ... or a file that could not be read at all, which is the same missing evidence (G340). Decided HERE and
+        # not in a renderer: `verdict_word`, the Markdown headline, the HTML masthead and the annotations all read
+        # this key, and seven renderers taught one at a time is how the eighth was missed.
+        "incomplete": "undetermined" in coverage or bool(blocking) or bool(unreadable),
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -1492,20 +1548,16 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     """
     notes = _caveat_notes(report)
     notes += [
-        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
-        for u in report.get("unreadable") or []
+        {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}} for u in unread_rows(report)
     ]
     blocked = [s for s in report.get("skipped") or [] if s.get("forbidsVerdict")]
     notes += [
         {"level": "error", "message": {"text": f"not read as a manifest: {s['file']} ({s['why']})"}} for s in blocked
     ]
-    undetermined = report.get("undetermined")
-    if blocked:
-        # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
-        # invocation's properties sees the gap either way (G272, G325).
-        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
-        gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
-        undetermined = f"{undetermined}; {gap}" if undetermined else gap
+    # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
+    # invocation's properties sees the gap either way (G272, G325) -- and a file that could not be read is the
+    # same gap: `properties.incomplete` was absent for it while the report beside it said five (G340).
+    undetermined = incomplete_reason(report)
     # The coverage record G328 gave `audit --format sarif`, built here too. This is the file `scripts/ci/gate.sh`
     # uploads to code scanning, so it is the one that decides what a reviewer sees: without this it carried
     # fourteen findings and nothing else for a report whose own `controlSummary` said fifty-two rules reached no
@@ -1516,9 +1568,9 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     # `file` here and `path` there, and the input uri comes from `files` because a gate finding has no `file`.
     # A file the walk declined to read as a manifest (`forbidsVerdict`, G325) is a file nothing in which was
     # audited, so it is the same absence and gets the same result.
-    cov_unreadable = [
-        {"path": str(u.get("file") or ""), "why": str(u.get("why") or "")} for u in report.get("unreadable") or []
-    ] + [{"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked]
+    cov_unreadable = unread_rows(report) + [
+        {"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked
+    ]
     files = [str(f) for f in report.get("files") or [] if f]
     coverage = {
         "controlSummary": report.get("controlSummary") or {},
