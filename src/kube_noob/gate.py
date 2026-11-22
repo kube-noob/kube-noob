@@ -14,7 +14,6 @@ not run until the scanner reader (requirements R5.1) is built.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,19 +182,8 @@ def _json_stream(text: str) -> list[Any]:
     Only ever asked about a file YAML could not read. Nothing here audits the file: the answer decides whether a
     pass over the directory would be a statement about a manifest nobody opened.
     """
-    if not sanitize.json_nesting_ok(text, sanitize.MAX_JSON_DEPTH_FILE):
-        return []
-    decoder = json.JSONDecoder()
-    out: list[Any] = []
-    at = 0
     try:
-        while True:
-            while at < len(text) and text[at] in " \t\r\n":
-                at += 1
-            if at >= len(text):
-                return out
-            value, at = decoder.raw_decode(text, at)
-            out.append(value)
+        return sanitize.loads_all_bounded(text, sanitize.MAX_JSON_DEPTH_FILE)
     except (ValueError, RecursionError):
         return []
 

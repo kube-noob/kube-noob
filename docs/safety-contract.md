@@ -329,7 +329,7 @@ Where it is applied (found in the code):
 - `kube_noob/gate.py` `_cell` calls `sanitize.visible_squeezed`
 - `kube_noob/gate.py` `_classify` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/gate.py` `_holds_a_manifest` calls `sanitize.safe_load_all_bounded`
-- `kube_noob/gate.py` `_json_stream` calls `sanitize.json_nesting_ok`
+- `kube_noob/gate.py` `_json_stream` calls `sanitize.loads_all_bounded`
 - `kube_noob/gate.py` `markdown` calls `sanitize.visible_lines`
 - `kube_noob/gate.py` `unreadable_reason` calls `sanitize.safe_load_all_bounded`
 - `kube_noob/generate/policies.py` `Generated.yaml` calls `sanitize.defuse_workflow_commands`
