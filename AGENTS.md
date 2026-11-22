@@ -124,7 +124,9 @@ through the same output boundary (G279).
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
 Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
-shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
+shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`
+-- with or without `--fail-above` (G353). A command that reads `-f DIR` and has no `--skip-unreadable` exits 5 on a
+file in it that could not be read, and prints no answer (G350).
 
 ### 1 and 5 are not two answers to the same question (G272)
 

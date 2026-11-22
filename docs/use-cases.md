@@ -1063,7 +1063,8 @@ step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret
 unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate: exit 1 when a path
 scores above it, exit 5 when an object or a read was refused (an object of the wrong shape, a read the cluster forbade
 or did not answer; listed under `refused`), else 0. A CRD the cluster does not serve or a role the bundle does not
-carry is listed under `notRead` and fails the gate only with `--require-complete`. NetworkPolicies
+carry is listed under `notRead` and fails the gate only with `--require-complete`, which exits 5 on it with or
+without `--fail-above`. A file in `-f DIR` that cannot be read is exit 5 too, and no answer is printed. NetworkPolicies
 on the entry edge are not applied: check a path with `policy reach`. RBAC resources match as the API server
 matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what the scan could not account for:
 a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway
