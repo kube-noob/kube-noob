@@ -26,10 +26,11 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 MAX_INPUT_BYTES = 5 * 1024 * 1024  # the same cap kube-noob puts on manifests and pasted text
-# The versions the Claude plugin's uv.lock pins (a test keeps them equal), installed only when one is missing.
+# The versions plugin/kube-noob/uv.lock pins, installed only when one is missing. Generated: do not edit by
+# hand -- `python scripts/build_skill.py --write` rewrites these from the lock and `--check` refuses a mismatch.
 NEEDED = (
-    ("pydantic", "pydantic==2.14.2"),
-    ("yaml", "PyYAML==6.0.3"),
+    ("pydantic", "pydantic==2.14.4"),
+    ("yaml", "PyYAML==6.0.4"),
     ("jsonschema", "jsonschema==4.26.0"),
 )
 # Settings the skill always runs with: these override the config file and the KUBE_NOOB_* variables.

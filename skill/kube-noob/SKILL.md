@@ -35,8 +35,8 @@ code sandbox), use the path to `scripts/kn.py` inside the copied skill folder.
 
 1. The first time in a session, run `kn.py check`. It needs Python 3.11 or later and three libraries. If some are
    missing it prints them; install only those, at these versions (the ones the kube-noob Claude plugin pins):
-   `python3 -m pip install pydantic==2.14.2 PyYAML==6.0.3 jsonschema==4.26.0`. In Claude Code, prefer
-   `uv run --with pydantic==2.14.2 --with PyYAML==6.0.3 --with jsonschema==4.26.0 python3 -I -B
+   `python3 -m pip install pydantic==2.14.4 PyYAML==6.0.4 jsonschema==4.26.0`. In Claude Code, prefer
+   `uv run --with pydantic==2.14.4 --with PyYAML==6.0.4 --with jsonschema==4.26.0 python3 -I -B
    .../kn.py ...` so nothing is installed globally. If installing is not possible, tell the user what is missing; do
    not guess answers.
 2. Manifests and `helm template` output go the same way: `kn.py audit_manifests --text-file manifests=/tmp/app.yaml`.
