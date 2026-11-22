@@ -328,7 +328,12 @@ def _masthead_of(report: dict[str, Any]) -> Masthead | None:
             # the input (G272, G281). `incomplete` and `undetermined` are the gate report's own two keys for it,
             # the ones `verdict_word` and the SARIF invocation read; a second `verdict`/`verdictReason` pair
             # beside them was the same fact said twice (class 9).
-            lede += f" The gate is incomplete: {_esc(report.get('undetermined'))}, so the verdict is undetermined."
+            # The reason is the gate's own sentence for whichever of its three reasons applies. Reading
+            # `undetermined` alone printed "The gate is incomplete: None" for a gate incomplete because of a
+            # file, which has no `undetermined` key (G340).
+            from kube_noob.audit.model import incomplete_reason
+
+            lede += f" The gate is incomplete: {_esc(incomplete_reason(report))}, so the verdict is undetermined."
             return Masthead(tiles, "Gate incomplete.", lede)
         return Masthead(tiles, "The gate passed." if report.get("passed") else "The gate failed.", lede)
     rows = report.get("indicators")
@@ -479,15 +484,19 @@ def _limits(report: dict[str, Any], sec: Sections) -> list[str]:
     limit = report.get("notCheckedBeyond")
     if isinstance(limit, dict) and limit.get("why"):
         items.append(("Not checked that far", str(limit["why"]), "Nothing beyond that point is covered either way."))
-    for u in report.get("unreadable") or []:
-        if isinstance(u, dict):
-            items.append(
-                (
-                    "File not read",
-                    f'<span class="mono">{_esc(u.get("path"))}</span>: {_esc(u.get("why"))}',
-                    "Every count below is a floor: this is not a complete audit.",
-                )
+    # `unread_rows`, not `u["path"]`: a gate report's rows carry `file`, so this printed "File not read." beside
+    # an empty name for every gate report. And backticks, not a `<span>`: the loop below passes `what` through
+    # `_rich`, which escapes first, so the markup arrived on the page as the text `&lt;span class=...` (G341).
+    from kube_noob.audit.model import unread_rows
+
+    for u in unread_rows(report):
+        items.append(
+            (
+                "File not read",
+                f"`{u['path'].replace('`', ' ')}`: {u['why']}",
+                "Every count below is a floor: this is not a complete audit.",
             )
+        )
     unread = [str(n) for n in report.get("notRead") or []]
     if unread:
         shown = "; ".join(unread[:MAX_ROWS])
@@ -690,11 +699,11 @@ def _caveats(report: dict[str, Any]) -> list[str]:
     limit = report.get("notCheckedBeyond")
     if limit:
         out.append(f'<div class="caveat"><b>Not checked that far</b>{_rich(limit.get("why"))}</div>')
-    unreadable = report.get("unreadable") or []
+    from kube_noob.audit.model import unread_rows
+
+    unreadable = unread_rows(report)
     if unreadable:
-        items = "".join(
-            f'<li><span class="mono">{_esc(u.get("path"))}</span>: {_esc(u.get("why"))}</li>' for u in unreadable
-        )
+        items = "".join(f'<li><span class="mono">{_esc(u["path"])}</span>: {_esc(u["why"])}</li>' for u in unreadable)
         out.append(
             '<div class="caveat"><b>Files that could not be read</b>'
             f"<ul>{items}</ul>This is not a complete audit, so nothing below is a clean result.</div>"

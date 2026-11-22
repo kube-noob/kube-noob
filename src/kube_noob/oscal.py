@@ -212,7 +212,74 @@ def _observations(findings: list[dict[str, Any]], collected: str, scope: str) ->
     return out
 
 
-def _is_reviewed(c: dict[str, Any], coverage: bool) -> bool:
+#: A rule that did not run because its SUBJECT is not in the input. `rulesNotEvaluated` phrases these as
+#: "no Secret in the input", "no networking.k8s.io Ingress in the input". That is this report's scope, not a gap
+#: in its evidence: there was nothing of that kind here to audit, and a control is not less evidenced about what
+#: IS here because something else is absent. Every reason on a clean manifest bundle is of this form, which is
+#: why treating `notEvaluated` alone as a gap made `satisfied` almost unreachable -- 1 objective of 23.
+_ABSENT_SUBJECT = "no "
+
+
+def _is_absent_subject(why: str) -> bool:
+    return why.startswith(_ABSENT_SUBJECT) and "in the input" in why
+
+
+def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) -> list[str]:
+    """The rules for this control that reached no verdict for a reason that IS a gap in the evidence.
+
+    Not the ones whose subject is simply absent (see `_ABSENT_SUBJECT`): an unreadable file, a refused object, a
+    declined rule, a stage or platform filter. Those are the cases where something was here and went unread.
+
+    A rule whose reason this document cannot see is counted as a gap. `notEvaluatedRules` is truncated at a limit
+    with the remainder in `moreNotEvaluated`, and an unknown reason must not read as a pass -- which is the rule
+    this whole product exists to apply.
+
+    ``unread`` is how many input files could not be read. The paragraph above always named "an unreadable file"
+    and nothing counted one: such a file is in no rule's `why`, because no rule ever met it, so seven objectives
+    read `satisfied/pass` beside a remark that a file had been skipped (G343). It is a gap in EVERY control's
+    evidence -- the file could hold any kind -- so it is counted here, once, for whichever control is asked about.
+    """
+    gaps = [r for r in (c.get("notEvaluatedRules") or []) if not _is_absent_subject(reasons.get(str(r), ""))]
+    unseen = int(c.get("moreNotEvaluated") or 0)
+    return (
+        gaps
+        + [f"{unseen} further rule(s) whose reason is not recorded here"] * bool(unseen)
+        + [f"{unread} input file(s) that could not be read"] * bool(unread)
+    )
+
+
+def _partly_evidenced(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) -> bool:
+    """A control whose only evidence is clean rules, and some of whose rules went unread rather than unneeded.
+
+    `satisfied` is the strongest word this document says, so it has to mean the objective was evidenced. It did
+    not: CM-6 read `satisfied/pass` on 7 clean rules with 26 not evaluated, in a run the gate itself called
+    undetermined, and the gap sat in the description where a GRC tool reading `status.state` never sees it
+    (review class 6).
+
+    Such a control is EXCLUDED rather than reported. `not-satisfied` was the other candidate and is wrong for the
+    same reason `satisfied` is: it asserts the objective is not met, and the evidence does not say that either.
+    An exclusion asserts nothing, which is what partial evidence supports, and this document already has that
+    mechanism for a control no rule ran over at all -- this extends it from no coverage to partial coverage
+    (G335).
+
+    A control with a finding, a withheld rule or an accepted exception is NOT excluded, however many of its rules
+    went unevaluated: something was found, and a gap elsewhere does not withdraw it.
+    """
+    if c.get("findings") or c.get("excepted") or c.get("withheld"):
+        return False
+    return bool(c.get("clean")) and bool(_evidence_gaps(c, reasons, unread))
+
+
+def _not_evaluated_reasons(summary: dict[str, Any]) -> dict[str, str]:
+    """rule id -> why it was not evaluated, from the one list the report states (G281)."""
+    return {
+        str(r["ruleId"]): str(r.get("why") or "")
+        for r in (summary.get("rulesNotEvaluated") or [])
+        if isinstance(r, dict) and r.get("ruleId")
+    }
+
+
+def _is_reviewed(c: dict[str, Any], coverage: bool, reasons: dict[str, str], unread: int = 0) -> bool:
     """The ONE predicate for whether this document reviews a control.
 
     `include-controls`, `exclude-controls` and whether a finding is emitted all have to agree. When they did
@@ -220,19 +287,24 @@ def _is_reviewed(c: dict[str, Any], coverage: bool) -> bool:
     document, beside a description saying no control was reviewed.
     """
     if coverage:
-        return _reviewed(c)
+        return _reviewed(c) and not _partly_evidenced(c, reasons, unread)
     # Without a coverage record, "no findings" is not evidence of anything, so only findings count.
     return bool(c.get("findings") or c.get("excepted"))
 
 
 def _findings(
-    controls: list[dict[str, Any]], scope: str, obs_by_control: dict[str, list[str]], coverage: bool
+    controls: list[dict[str, Any]],
+    scope: str,
+    obs_by_control: dict[str, list[str]],
+    coverage: bool,
+    reasons: dict[str, str],
+    unread: int = 0,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in controls:
         cid, title = str(c["id"]), str(c.get("title", ""))
         n, excepted = int(c.get("findings") or 0), int(c.get("excepted") or 0)
-        if not _is_reviewed(c, coverage):
+        if not _is_reviewed(c, coverage, reasons, unread):
             continue  # not reviewed: it gets an exclusion, never a finding
         withheld = int(c.get("withheld") or 0)
         if n:
@@ -271,10 +343,23 @@ def _findings(
                 f" {int(c['notEvaluated'])} further rule(s) for this control were not evaluated, so this "
                 "covers part of the control's evidence, not all of it."
             )
+        # The coverage behind this objective, as numbers rather than a sentence. The counts were already in the
+        # description, which is prose a GRC tool does not parse -- the same class-6 gap `status.state` had.
+        coverage_props = [
+            _prop("rules-clean", str(int(c.get("clean") or 0))),
+            _prop("rules-with-findings", str(n)) if n else None,
+            _prop("rules-withheld", str(withheld)) if withheld else None,
+            _prop("findings-excepted", str(excepted)) if excepted else None,
+            _prop("rules-not-evaluated", str(int(c.get("notEvaluated") or 0))),
+            _prop("rules-partly-evaluated", str(int(c.get("partlyEvaluated") or 0)))
+            if c.get("partlyEvaluated")
+            else None,
+        ]
         entry: dict[str, Any] = {
             "uuid": _uuid("finding", scope, cid),
             "title": f"{cid} {title}",
             "description": f"{description} {_NOT_A_COMPLIANCE_CLAIM}",
+            "props": [q for q in coverage_props if q],
             "target": {
                 "type": "objective-id",
                 "target-id": objective_id(cid),
@@ -310,8 +395,17 @@ def assessment_results(
         for cid in f.get("controls") or []:
             obs_by_control.setdefault(str(cid), []).append(o["uuid"])
 
-    reviewed = [c for c in controls if _is_reviewed(c, coverage)]
-    excluded = [c for c in controls if not _is_reviewed(c, coverage)]
+    reasons = _not_evaluated_reasons(summary)
+    # Read once, here, and handed to the ONE predicate: the include list, the exclude list and the findings all
+    # have to agree about a file that was not read, as they do about a rule that was not run (G335, G343).
+    # Only a file nobody accepted: under `--skip-unreadable` the caller has said "decide without that file", so
+    # the objectives are stated over the files that were read and the remarks below name the rest (AGENTS.md).
+    from kube_noob.audit.model import open_unread, unread_rows
+
+    unreadable = unread_rows(report)
+    unread = len(open_unread(report))
+    reviewed = [c for c in controls if _is_reviewed(c, coverage, reasons, unread)]
+    excluded = [c for c in controls if not _is_reviewed(c, coverage, reasons, unread)]
     selection: dict[str, Any] = {
         "description": (
             f"Controls for which at least one kube-noob rule ran over this input. {_NOT_A_COMPLIANCE_CLAIM}"
@@ -330,14 +424,33 @@ def assessment_results(
         )
     if excluded:
         selection["exclude-controls"] = [{"control-id": control_id(str(c["id"]))} for c in excluded]
+        partial = [c for c in excluded if _partly_evidenced(c, reasons, unread)]
         selection["remarks"] = (
-            "Excluded controls had no rule run over this input -- a stage filter, an object kind no rule "
-            "covers, or a partial bundle. They are neither satisfied nor unsatisfied here, and the absence of "
-            "a finding for them is not evidence."
+            "Excluded controls had no rule run over this input, or had some rules run clean while others "
+            "reached no verdict -- a stage filter, an object kind no rule covers, or a partial bundle. They are "
+            "neither satisfied nor unsatisfied here, and the absence of a finding for them is not evidence."
             if coverage
             else "This report carried no coverage record, so these controls cannot be distinguished between "
             "checked and clean, and not checked at all. They are excluded rather than reported satisfied."
         )
+        if partial:
+            # Named with their counts, because this group is the one an assessor is most likely to query: these
+            # controls DID have rules run clean, and before G335 they read `satisfied` on that alone.
+            named = "; ".join(
+                f"{c['id']} ({int(c.get('clean') or 0)} clean, {int(c.get('notEvaluated') or 0)} not evaluated)"
+                for c in partial
+            )
+            selection["remarks"] += (
+                f" {len(partial)} of them had rules run clean and others reach no verdict, so part of the "
+                f"evidence was never gathered and the objective is not shown satisfied: {named}."
+            )
+            if unread:
+                # Said here as well as in the result's remarks: this is the field beside `exclude-controls`, and
+                # "0 not evaluated" above would otherwise read as an exclusion with no reason.
+                selection["remarks"] += (
+                    f" {unread} input file(s) could not be read, and what they hold is evidence for any of "
+                    "these controls that was never gathered."
+                )
         # The record's own reasons, grouped: an assessor reading "excluded" needs "no Service in the input",
         # not a list of possibilities (G281). Grouped by reason so a Deployment-only input is one line per
         # absent kind rather than seventy repeats.
@@ -367,15 +480,16 @@ def assessment_results(
         # ordered by (severity, docIndex, line), so listing the same two files in the other order produced the
         # same uuids and different bytes -- an identity that says "unchanged" over a document that is not.
         result["observations"] = sorted(observations, key=lambda o: o["uuid"])
-    oscal_findings = _findings(controls, scope, obs_by_control, coverage)
+    oscal_findings = _findings(controls, scope, obs_by_control, coverage, reasons, unread)
     if oscal_findings:
         result["findings"] = oscal_findings
     remarks = [str(a) for a in report.get("assumptions") or []]
-    unreadable = [u for u in report.get("unreadable") or [] if isinstance(u, dict)]
     if unreadable:
         # `--skip-unreadable` promises the skipped files are listed "so a gate never reads a partial audit as a
         # clean one". With --oscal the document IS the whole report, so the list has to be in it.
-        names = ", ".join(sorted(str(u.get("path") or "?") for u in unreadable))
+        # `unread_rows` because `gate --oscal` hands this a GATE report, whose rows carry `file`: reading `path`
+        # wrote "could not be read and were skipped: ?." for every one of them (G341).
+        names = ", ".join(sorted(u["path"] or "?" for u in unreadable))
         remarks.append(
             f"{len(unreadable)} input file(s) could not be read and were skipped: {names}. This assessment "
             "covers only the files that were read."
