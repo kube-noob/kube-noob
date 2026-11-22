@@ -208,7 +208,8 @@ arithmetic, and it cost this repository several rounds of conflict resolution th
 
 Both files are append-only, so `.gitattributes` gives them `merge=union` and a merge keeps both sides' lines
 instead of stopping (G297). It does not pick your `G<n>` for you: two branches can still land the same number, and
-`tests/test_guidance.py` fails on a duplicate. Nothing whose lines are rewritten -- `docs/roadmap.md`,
+`tests/test_guidance.py` fails on a duplicate. Union also cannot tell you that it kept a line both sides carried, so
+`tests/test_append_only_duplicates.py` names any `G<n>` row and any `## Unreleased` bullet that appears twice (G347). Nothing whose lines are rewritten -- `docs/roadmap.md`,
 `docs/limits.md`, `docs/use-cases.md`, `docs/compliance.md`, `docs/safety-contract.md` -- is merged that way, so
 those still conflict and are resolved by regenerating them with their script.
 
