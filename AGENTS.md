@@ -25,6 +25,12 @@ This used to claim it ran every gate and ran eleven fewer, and it passed four ti
 (G260, G261, G263, G264). `tests/test_check_sh.py` now fails if a gate a CI code job runs is neither in check.sh
 nor named with a reason, so the claim above stays true as ci.yml changes.
 
+Its first line says which tree it is testing, and it runs nothing if `kube_noob` would be imported from another
+one. That matters in a git worktree: the editable install points at ONE checkout, so before G346 this script, run
+from `.claude/worktrees/<name>`, ran the worktree's tests against the main checkout's code and reported failures
+the branch did not have. `bash scripts/check.sh --where` prints that line and stops. Anything you run by hand
+needs the same root, absolute: `PYTHONPATH=$PWD/src python -m pytest ...`.
+
 Read its **exit status**, not its last lines. Piping it through `tail` or `head` replaces the exit status with the
 pipe's, so a failing gate looks green — and a step killed by SIGPIPE reports 141, which is a failure too:
 
