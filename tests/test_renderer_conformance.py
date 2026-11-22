@@ -210,11 +210,14 @@ FIXTURES: tuple[Fixture, ...] = (
     ),
     Fixture(
         name="kind-no-rule-reads",
-        proves="A Tekton Task with a privileged `docker:24-dind` step. The renderers are not what is wrong "
-        "here: the gate reports this input as a PASS, so there is no withheld verdict for any of them to carry. "
-        "See `test_a_kind_no_rule_reads_still_reaches_the_renderers_as_a_pass`.",
+        proves="A Tekton Task with a privileged `docker:24-dind` step: a container in a field no pod-spec "
+        "detector looked at. It used to reach every renderer in this file as a PASS -- gate `passed`, "
+        "`incomplete: false`, zero findings, and the webhook admitting it with no warning -- and this fixture "
+        "recorded that, with `withheld=False` and a test asserting the pass so the gap could not be mistaken "
+        "for a renderer bug. G333 reads the step as the container it is, so the gate now withholds the verdict "
+        "and every adapter in the registry is held to carrying it.",
         files={"task.yaml": _TEKTON_TASK},
-        withheld=False,
+        withheld=True,
     ),
     Fixture(
         name="zero-findings-and-incomplete-evidence",
@@ -283,11 +286,12 @@ def _withheld(report: dict[str, Any]) -> bool:
 
     `gate.verdict_word` is THE predicate, and reading it rather than re-deriving it is the lesson of G329: `verify`
     kept a second list of what makes a report incomplete and answered `allow` the day the first list learned a new
-    reason (review classes 9 and 21). The `unreadable` disjunct is not a second list -- it is one documented hole
-    in the first one, pinned by `test_the_gate_predicate_does_not_count_a_file_it_could_not_read`, and it goes
-    away when that test fails.
+    reason (review classes 9 and 21). There was one documented hole in it -- a file the run could not read did not
+    make the verdict incomplete -- and this function carried an `unreadable` disjunct to cover it, with a test
+    pinning the hole so the disjunct could not outlive it. G340 closed the hole in `gate` itself, so both are
+    gone: one predicate, no local second opinion about what incomplete means.
     """
-    return gate.verdict_word(report) == "incomplete" or bool(report.get("unreadable"))
+    return gate.verdict_word(report) == "incomplete"
 
 
 # -- adapters: two questions per renderer, asked the way its real consumer asks them ---------------------------
@@ -656,34 +660,10 @@ ADAPTERS: dict[str, Adapter] = {
 #:    empty filename and the assessment-results remark says "1 input file(s) could not be read and were skipped:
 #:    ?.". That is the key mismatch `test_gate_sarif_coverage.py::
 #:    test_an_unreadable_file_keyed_on_file_rather_than_path_still_anchors` was written for, two renderers along.
-KNOWN_DEFECTS: dict[tuple[str, str], str] = {
-    ("mcp.red_team", "object-the-audit-refused"): "defect 1: RT-NODE-CRASH and RT-ZONE-OUTAGE answer "
-    "`mitigated` with `evidence: []` for an object no rule read, while RT-PRIVESC in the same answer answers "
-    "`undecided` and names the rules that were not evaluated (G338)",
-    ("gate.markdown", "unreadable-file"): "defect 2: the headline is `## kube-noob gate passed` because "
-    "`incomplete` does not count an `unreadable` row (G338)",
-    ("gate.markdown", "zero-findings-and-incomplete-evidence"): "defect 2: as above, and here the finding table "
-    "is all zeros, so `gate passed` is the whole summary (G338)",
-    ("gate.github_annotations", "unreadable-file"): "defect 2: the reasons it annotates come from `failures`, "
-    "which is empty because the gate did not call this run incomplete (G338)",
-    ("gate.github_annotations", "zero-findings-and-incomplete-evidence"): "defect 2: as above, and with no "
-    "findings either it annotates nothing at all, so the pull request says nothing (G338)",
-    ("oscal.assessment_results", "unreadable-file"): "defect 3: seven objectives read `satisfied/pass` on a run "
-    "with a file that was never read; the gap is in `remarks`, which is prose a GRC tool does not parse while "
-    "it reads `status.state` -- G335's own lesson, extended to coverage but not to unreadable files (G338)",
-    ("oscal.assessment_results", "zero-findings-and-incomplete-evidence"): "defect 3: as above (G338)",
-    # The naming test, keyed on `<renderer>:names`.
-    ("gate.markdown:names", "unreadable-file"): "defect 2: the summary does not mention the file at all (G338)",
-    ("gate.markdown:names", "zero-findings-and-incomplete-evidence"): "defect 2: as above (G338)",
-    ("gate.github_annotations:names", "unreadable-file"): "defect 2: nothing is annotated for it (G338)",
-    ("gate.github_annotations:names", "zero-findings-and-incomplete-evidence"): "defect 2: as above (G338)",
-    ("oscal.assessment_results:names", "unreadable-file"): 'defect 4: the remark reads "1 input file(s) could '
-    'not be read and were skipped: ?." -- it reads `u["path"]` and a gate report\'s rows carry `file` (G338)',
-    ("oscal.assessment_results:names", "zero-findings-and-incomplete-evidence"): "defect 4: as above (G338)",
-    ("report_html.render:names", "unreadable-file"): "defect 4: the limit reads `File not read.` with an empty "
-    "filename, for the same `path` versus `file` key mismatch (G338)",
-    ("report_html.render:names", "zero-findings-and-incomplete-evidence"): "defect 4: as above (G338)",
-}
+#: Empty, and that is the point: every entry here was a defect with an expiry date, and G340-G343 are the
+#: expiry. A strict xfail that starts passing fails, so this table could not be left behind -- which is the
+#: one failure mode a conformance suite has that an ordinary suite does not.
+KNOWN_DEFECTS: dict[tuple[str, str], str] = {}
 
 
 # -- the suite -------------------------------------------------------------------------------------------------
@@ -794,49 +774,6 @@ def test_the_empty_input_is_refused_rather_than_reported_clean(tmp_path: Path) -
     with pytest.raises(gate.GateError) as err:
         gate.run(gate.collect([str(root)], read=lambda _: ""), fail_on="never")
     assert "nothing to check" in str(err.value) or "Kubernetes manifest" in str(err.value)
-
-
-def test_the_gate_predicate_does_not_count_a_file_it_could_not_read(bundles: dict[str, Bundle]) -> None:
-    """Defect 2, pinned where the next reader will see it.
-
-    `gate.verdict_word` is the one predicate every renderer in this file reads, and for a run with an unreadable
-    file it says "passed". `incomplete` is `"undetermined" in coverage or bool(blocking)`, and `blocking` holds
-    `skipped` rows that forbid a verdict, not `unreadable` rows -- while `unreadable_reason`'s own docstring says
-    both are incomplete evidence. The command's exit code is right (5), which is why the report was never looked
-    at, and `_withheld` carries an `unreadable` disjunct only because of this.
-
-    When this test fails, the predicate has been fixed: drop the disjunct in `_withheld` and delete this test.
-    """
-    report = bundles["unreadable-file"].gate_report
-    assert report["unreadable"], "nothing was unreadable, so this test proves nothing"
-    assert gate.verdict_word(report) == "passed"
-    assert report["incomplete"] is False
-    assert report["passed"] is True
-
-
-def test_a_kind_no_rule_reads_still_reaches_the_renderers_as_a_pass(bundles: dict[str, Bundle]) -> None:
-    """The Tekton Task, recorded where the next reader will see it.
-
-    A `Task` carrying a privileged `docker:24-dind` step reaches every renderer in this file as a PASS: the gate
-    answers `passed`, `incomplete: false`, zero findings, and the admission webhook admits it with no warning. No
-    renderer is at fault -- there is no withheld verdict for one to carry -- so the conformance assertion
-    correctly does not fire, and saying that out loud is the point of this test. The detector that makes this
-    input undetermined is G333 (PR #87), which is not merged here; G337's own commit message says the webhook's
-    warning "composes with" it.
-
-    `Fixture.withheld` is checked against the report rather than trusted, so the day G333 merges this fixture is
-    withheld and every adapter in the registry is held to it. This test then fails, which is the signal to
-    delete it and set `withheld=True`.
-    """
-    bundle = bundles["kind-no-rule-reads"]
-    assert gate.verdict_word(bundle.gate_report) == "passed"
-    assert bundle.gate_report["findings"] == []
-    assert bundle.gate_report["notAudited"] == []
-    # The one place the input IS mentioned: the audit says the structural checks were skipped for this kind.
-    assert any("tekton.dev/v1 Task" in str(a) for a in bundle.gate_report["assumptions"])
-    response = ADAPTERS["admission.review"].render(bundle)
-    assert response["response"]["allowed"] is True
-    assert _review_warnings(response) == [], "the webhook warns, so G333 has landed and this test is stale"
 
 
 def test_two_renderers_of_one_report_state_the_same_gap(bundles: dict[str, Bundle]) -> None:
