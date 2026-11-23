@@ -2,15 +2,15 @@
 class KubeNoob < Formula
   desc "Kubernetes, OpenShift, ROSA HCP, Helm and RHACS audit, debugging and learning tools"
   homepage "https://github.com/kube-noob/kube-noob"
-  url "https://files.pythonhosted.org/packages/87/1b/ed24487366da4ad31224ce6304da807cd967190e016a2417b401f46b7afe/kube_noob-0.9.2.tar.gz"
-  sha256 "811bc3f74aaa6cb977c38fbd3efd402c1eeeb35f4f69d1d95bd676115e3ccdfb"
+  url "https://files.pythonhosted.org/packages/21/46/86582ccd2a48004609e02897e8aeeeba66442beaf957392b3a14820d7506/kube_noob-0.10.0.tar.gz"
+  sha256 "887487d4565fcfb6ef04faaa5dab5928bf12ca4c35c27827e0cf846019907ac8"
   license "Apache-2.0"
 
   depends_on "python@3.13"
 
   resource "kube-noob" do
-    url "https://files.pythonhosted.org/packages/ae/0d/7d6678a4a528483d0870f27ac366812813015705c3bbb1038bfdeb52f02f/kube_noob-0.9.2-py3-none-any.whl"
-    sha256 "19ab1fd1c083ac9b3dce2bbe81f4382d9db6dc40289f43c5db27014d152fbaef"
+    url "https://files.pythonhosted.org/packages/62/70/3bef792eb01cb18f5789d79b6fb8e92feb2fa3364248c4b2dcb6efbcc2c7/kube_noob-0.10.0-py3-none-any.whl"
+    sha256 "63867fa643545a4c8b48eb71ef12b5d9430074b5d949f67f5fdcb0a39d0eb16c"
   end
 
   resource "annotated-types" do
@@ -89,8 +89,8 @@ class KubeNoob < Formula
   end
 
   resource "opentelemetry-api" do
-    url "https://files.pythonhosted.org/packages/1e/41/f7dcf80b81ee8e71c1a2b59f14208bc723edbd89ed027a73b175abf6348e/opentelemetry_api-1.45.1-py3-none-any.whl"
-    sha256 "b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb"
+    url "https://files.pythonhosted.org/packages/a9/2d/610db864d7513158cebb8f36cc88e67e73bd6c7aa1905ef18d89e1281c81/opentelemetry_api-1.45.2-py3-none-any.whl"
+    sha256 "2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34"
   end
 
   resource "pycparser" do
