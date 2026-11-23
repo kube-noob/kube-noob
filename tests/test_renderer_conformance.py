@@ -487,6 +487,46 @@ def _ksi_carries(out: Any) -> bool:
 
 #: Every renderer of one report, and how its real consumer reads it. A name here is `<module>.<function>` or
 #: `mcp.<tool name>`, which is what `test_every_renderer_has_an_adapter` reads out of the source.
+def _receipt(b: Bundle, command: str) -> Any:
+    """The receipt `audit --receipt` or `gate --receipt` writes for this fixture, through the real command.
+
+    Through `cli.main` and not through `receipt.build`, because the fields this adapter reads are filled in by the
+    command (`_write_audit_receipt`, `_write_gate_receipt`), and that is where they went wrong: the receipt read
+    `summary.scoreWithheld` after G281 retired the name, and recorded exit 1 and the word `failed` for a gate
+    that exited 5 and said `incomplete` (G357). Written BESIDE the fixture directory, never inside it: a JSON
+    file in the directory being audited is a file the walk has to account for.
+
+    `audit` refuses a directory holding a file it could not read and writes no receipt (exit 5). That refusal is
+    this renderer's whole output for such an input, so it is returned as one -- with the stderr that names the
+    file -- rather than skipped: "no receipt exists" must not be confused with "a receipt that says clean".
+    """
+    target = b.root.parent / f"{b.fixture.name}.{command}.receipt.json"
+    target.unlink(missing_ok=True)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli.main([command, "-f", str(b.root), "--fail-on", "never", "--receipt", str(target)])
+    if not target.exists():
+        return {"refused": {"exitCode": code, "stderr": err.getvalue()}}
+    return json.loads(target.read_text(encoding="utf-8"))
+
+
+def _receipt_carries(doc: Any) -> bool:
+    """`payload.verdict.undetermined`: the reason there is no verdict, in the block `receipt verify` compares and a
+    third party reads. Not the scope lists beside it -- a reason that exists only in `scope` while the verdict
+    block says exit 0 is the caveat-beside-the-field shape of G328 and G335."""
+    if "refused" in doc:
+        return doc["refused"]["exitCode"] == 5
+    return bool(doc["payload"]["verdict"]["undetermined"])
+
+
+def _receipt_clean(doc: Any) -> bool:
+    """Exit 0 recorded and no reason beside it: what a reader of the verdict block takes for a pass."""
+    if "refused" in doc:
+        return False
+    verdict = doc["payload"]["verdict"]
+    return verdict["exitCode"] == 0 and not verdict["undetermined"]
+
+
 ADAPTERS: dict[str, Adapter] = {
     "gate.sarif_of_audit": Adapter(
         "GitHub code scanning, reading the audit's SARIF",
@@ -550,6 +590,20 @@ ADAPTERS: dict[str, Adapter] = {
         lambda b: b.audit_report,
         _json_carries,
         lambda report: not _json_carries(report),
+    ),
+    "receipt.audit": Adapter(
+        "a third party handed `audit --receipt`'s document, and `receipt verify` comparing its verdict block",
+        "report",
+        lambda b: _receipt(b, "audit"),
+        _receipt_carries,
+        _receipt_clean,
+    ),
+    "receipt.gate": Adapter(
+        "a third party handed `gate --receipt`'s document, and `receipt verify` comparing its verdict block",
+        "report",
+        lambda b: _receipt(b, "gate"),
+        _receipt_carries,
+        _receipt_clean,
     ),
     "admission.review": Adapter(
         "the API server, and kubectl printing the response's warnings",
@@ -821,6 +875,17 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     "mcp.vuln_report": "reads a scanner report; the manifests say which images are deployed",
     "mcp.compliance_results": "reads a must-gather's ComplianceCheckResults, not this audit",
     "mcp.operator_inventory": "lists the operators in the input",
+    # `verify_receipt` takes manifests and states no verdict over them: its three answers are about whether a
+    # RECEIPT's verdict was reproduced, and `identical` for a receipt that records `undetermined` means "still
+    # undetermined", not "clean". The receipt DOCUMENT is the verdict view, and it is adapted above
+    # (`receipt.audit`, `receipt.gate`). What this tool still owes, held by tests/test_receipts.py: it never
+    # answers `identical` for something it could not check (no manifests, a digest that differs, another
+    # kube-noob), and it recomputes the verdict by the same functions the command used rather than its own
+    # (`test_the_mcp_verifier_reproduces_an_undetermined_receipt`, G357).
+    "mcp.verify_receipt": (
+        "answers whether a receipt's recorded verdict is reproduced (identical / differs / cannot-be-checked), "
+        "not a verdict over the input; the receipt document itself is adapted as receipt.audit and receipt.gate"
+    ),
     "mcp.operator_known_issues": "matches that inventory against the known-issue index",
     # `fix_manifests` is excluded from the two verdict predicates because it states no verdict -- but that is not
     # the same as owing nothing, and reading it that way cost a real defect. G344: the fixer rewrote any
@@ -845,8 +910,10 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
 #: Adapters for a surface this guard does not enumerate, and why it does not. The CLI's text and JSON views are
 #: the two the `audit` command writes; the module has hundreds of print helpers and no one-renderer-per-function
 #: shape to read, so these two are named rather than discovered. `mcp.insight` takes `text` rather than
-#: `manifests`, so it is outside the mechanical rule below and is named too.
-NAMED_NOT_ENUMERATED = frozenset({"cli.text", "cli.json", "mcp.insight"})
+#: `manifests`, so it is outside the mechanical rule below and is named too. The two receipts are documents the
+#: `audit` and `gate` commands write from private helpers in `cli.py` (`receipt.py` holds no command and its
+#: public functions are parts, not a renderer), so they are named for the same reason the CLI views are.
+NAMED_NOT_ENUMERATED = frozenset({"cli.text", "cli.json", "mcp.insight", "receipt.audit", "receipt.gate"})
 
 
 def _public_functions(module: str) -> set[str]:
@@ -911,5 +978,6 @@ def test_the_adapters_cover_the_renderers_the_seven_defects_were_found_in() -> N
         "mcp.fedramp_ksi",  # G330
     ):
         assert name in ADAPTERS, f"{name} lost its adapter"
-    assert len(ADAPTERS) >= 18
+    assert {"receipt.audit", "receipt.gate"} <= set(ADAPTERS), "a receipt is a view of the verdict (G357)"
+    assert len(ADAPTERS) >= 20
     assert len(FIXTURES) >= 7

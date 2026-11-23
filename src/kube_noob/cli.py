@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from typing import Any
 import yaml
 
 from kube_noob import __version__, completion, sanitize
+from kube_noob import receipt as receipt_module
 
 # Re-exported: they lived here, `gate.py` and `report_html.py` imported them FROM here, and following that
 # import put the whole CLI -- the Jira client included -- in the plugin's hook closure (see audit/caveats.py).
@@ -865,12 +867,463 @@ def _version_flag(value: str, flag: str = "--version") -> str:
     return value
 
 
+# --- verdict receipts ---------------------------------------------------------------------------------------------
+
+
+def _receipt_target(a: argparse.Namespace) -> Path | None:
+    """The path ``--receipt`` names, refused if it is the stream the report uses.
+
+    A receipt and a report are two documents. Written to one stream they arrive as one file holding both, which no
+    reader can split and `receipt verify` refuses -- so `--receipt -` is a configuration error with the reason,
+    rather than a file somebody discovers is unusable later (exit 2).
+    """
+    target = getattr(a, "receipt", None)
+    if target is None:
+        return None
+    if target == "-":
+        raise ConfigError(
+            "--receipt takes a path: a receipt is a second document and stdout already carries the report, so the "
+            "two cannot share one stream"
+        )
+    return Path(target)
+
+
+def _receipt_written(target: Path) -> None:
+    """One line on stderr, where the other notices go, saying what the file is and what it does not prove.
+
+    Said once at the only moment the user is certainly looking: a reader who meets "receipt" for the first time in
+    a compliance pack will read it as a signature, and the caveat living only inside the JSON is the defect where
+    a limitation exists in one format and not the one a person actually sees.
+    """
+    print(
+        f"wrote {target}: a verdict receipt. SHA-256, unsigned -- it proves that the same inputs give the same "
+        f"verdict and proves nothing about who produced it. Check it with `kube-noob receipt verify {target}`.",
+        file=sys.stderr,
+    )
+
+
+def _control_roll_up(summary: Any) -> dict[str, int]:
+    """Every control bucket summed, from whichever shape the caller's report carries.
+
+    The per-rule coverage record is not on the audit document, so the receipt carries what the shipped report does
+    publish rather than a number it would have to re-derive. ``controlSummary`` is a mapping with a ``controls``
+    list; a caller that hands the list itself is accepted too, because this reader meeting a shape it does not
+    recognise must produce a number it can defend or say nothing -- and silently returning five zeros is neither.
+    """
+    rows = summary.get("controls") if isinstance(summary, dict) else summary
+    if not isinstance(rows, list):
+        return {}
+    out = {"findings": 0, "excepted": 0, "withheld": 0, "clean": 0, "notEvaluated": 0}
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        for key in out:
+            value = entry.get(key)
+            if isinstance(value, int):
+                out[key] += value
+    return out
+
+
+def _audit_inputs(
+    a: argparse.Namespace, text: str, sources: Sequence[tuple[str, int]], bad: list[dict[str, str]]
+) -> tuple[list[dict[str, Any]], str, list[tuple[str, str]]]:
+    """Every file this audit read or could not read, bound by the digest of its bytes; the input mode; the set."""
+    from kube_noob import receipt as rc
+
+    base = Path(a.file) if isinstance(a.file, str) and a.file != "-" and Path(a.file).is_dir() else None
+    mode = "stdin" if a.file == "-" else ("directory" if base is not None else "file")
+    entries: list[dict[str, Any]] = []
+    pairs: list[tuple[str, str]] = []
+    if mode == "stdin":
+        entries.append(
+            rc.text_input(
+                "-",
+                text,
+                order=0,
+                role="manifest",
+                not_retrievable="read from standard input: its bytes are not a file to read again",
+            )
+        )
+        return entries, mode, [("-", str(entries[0]["sha256"]))]
+    for order, (path, _line) in enumerate(sources):
+        given = str(base / path) if base is not None else path
+        entry = rc.file_input(given, order=order, role="manifest")
+        entry["member"] = path
+        entries.append(entry)
+        pairs.append((path, str(entry.get("sha256"))))
+    for order, b in enumerate(bad, start=len(sources)):
+        given = str(base / b["path"]) if base is not None else b["path"]
+        entry = rc.file_input(given, order=order, role="manifest-not-read")
+        entry["member"] = b["path"]
+        entries.append(entry)
+        pairs.append((b["path"], str(entry.get("sha256"))))
+    return entries, mode, pairs
+
+
+def _write_audit_receipt(
+    a: argparse.Namespace,
+    s: Settings,
+    target: Path,
+    rep: dict[str, Any],
+    text: str,
+    sources: Sequence[tuple[str, int]],
+    bad: list[dict[str, str]],
+    exit_code: int,
+    started: float,
+) -> None:
+    from kube_noob import receipt as rc
+
+    inputs, mode, pairs = _audit_inputs(a, text, sources, bad)
+    if a.exceptions:
+        inputs.append(rc.file_input(a.exceptions, order=len(inputs), role="exceptions"))
+    settings = {
+        "platform": rep.get("platform"),
+        "platformVersion": a.pversion,
+        "cni": a.cni,
+        "failOn": a.fail_on,
+        "minSeverity": a.min_severity,
+        "partialBundle": _partial_input(a),
+        "allowedRegistries": sorted(s.audit.allowed_registries),
+        "exceptions": a.exceptions,
+        "skipUnreadable": bool(getattr(a, "skip_unreadable", False)),
+        "inputMode": mode,
+        "fileArgument": a.file,
+    }
+    resources, resources_withheld = rc.capped(list(rep.get("resources") or []))
+    assumptions, assumptions_withheld = rc.capped(list(rep.get("assumptions") or []), 60)
+    scope = {
+        "inputsRead": len(sources),
+        "inputsNotRead": [{"path": b["path"], "why": b["why"]} for b in bad],
+        "inputsSkipped": [],
+        "inputSetDigest": rc.input_set_digest(pairs),
+        "documents": len(rep.get("resources") or []),
+        "resources": resources,
+        "resourcesWithheld": resources_withheld,
+        "assumptions": assumptions,
+        "assumptionsWithheld": assumptions_withheld,
+        "notRun": [],
+        "controlCoverage": _control_roll_up(rep.get("controlSummary")),
+        "notCheckedBeyond": rep.get("notCheckedBeyond"),
+        # The three records that make a report undetermined (G272), recorded whether or not any is present so a
+        # reader cannot tell a receipt that withheld them from one written before they existed. `declined` is
+        # rule -> why, `notEvaluated` rule -> why, `notAudited` the objects nothing read.
+        "declinedRules": dict(sorted((rep.get("declined") or {}).items())),
+        "notEvaluatedRules": dict(sorted((rep.get("notEvaluated") or {}).items())),
+        "notAudited": list(rep.get("notAudited") or []),
+    }
+    verdict = rc.verdict(
+        counts=dict(rep["summary"]["counts"]),
+        score=rep["summary"].get("score"),
+        undetermined=rc.audit_undetermined(rep),
+        exit_code=exit_code,
+        findings=list(rep.get("findings") or []),
+        excepted=list(rep.get("excepted") or []),
+    )
+    rc.write(
+        target,
+        rc.build(
+            command="audit",
+            inputs=inputs,
+            settings=settings,
+            scope=scope,
+            verdict=verdict,
+            replay={"supported": True, "notSupportedBecause": None},
+            duration_ms=int((time.monotonic() - started) * 1000),
+        ),
+    )
+
+
+_GATE_UNREPLAYABLE = (
+    ("chart", "a Helm chart was rendered by `helm template`; the rendered bytes are not a file this receipt binds"),
+    ("containerfile", "a Containerfile was audited as a build, which reads its build context"),
+    (
+        "scanner_report",
+        "a vulnerability scanner report was read, and its verdict also rests on the local advisory "
+        "and KEV data in kube-noob's data directory, which is not an input this receipt binds",
+    ),
+    ("sarif_report", "a SARIF report was read, and whether its findings ship rests on the build context"),
+    ("vex", "a VEX document was read"),
+    ("kev", "a KEV catalogue was read"),
+)
+
+
+def _write_gate_receipt(
+    a: argparse.Namespace,
+    s: Settings,
+    target: Path,
+    report: dict[str, Any],
+    sources: list[Any],
+    exit_code: int,
+    started: float,
+) -> None:
+    from kube_noob import receipt as rc
+    from kube_noob.gate import verdict_word as gate_verdict_word
+
+    inputs: list[dict[str, Any]] = []
+    pairs: list[tuple[str, str]] = []
+    for order, src in enumerate(sources):
+        if src.chart is not None:
+            entry = rc.text_input(
+                src.uri,
+                src.text,
+                order=order,
+                role="rendered-chart",
+                not_retrievable=f"rendered from {src.chart} by `helm template`: the bytes are not a file",
+            )
+        elif src.uri == "stdin":
+            entry = rc.text_input(
+                "-",
+                src.text,
+                order=order,
+                role="manifest",
+                not_retrievable="read from standard input: its bytes are not a file to read again",
+            )
+        else:
+            entry = rc.file_input(src.uri, order=order, role="manifest" if not src.skip else "manifest-skipped")
+        inputs.append(entry)
+        if src.chart is None and src.uri != "stdin":
+            pairs.append((str(entry["path"]), str(entry.get("sha256"))))
+    for order, path in enumerate(a.containerfile, start=len(inputs)):
+        inputs.append(rc.file_input(path.split("=")[0].split(",")[0], order=order, role="containerfile"))
+    if a.exceptions:
+        inputs.append(rc.file_input(a.exceptions, order=len(inputs), role="exceptions"))
+    reasons = [
+        why
+        for flag, why in _GATE_UNREPLAYABLE
+        if getattr(a, flag, None) or (flag == "chart" and any(x.chart for x in sources))
+    ]
+    settings = {
+        "platform": report.get("platform"),
+        "platformVersion": report.get("version"),
+        "cni": a.cni,
+        "failOn": report.get("failOn"),
+        "minSeverity": None,
+        "partialBundle": False,
+        "allowedRegistries": [],
+        "exceptions": a.exceptions,
+        "skipUnreadable": bool(getattr(a, "skip_unreadable", False)),
+        "inputMode": "gate",
+        "fileArguments": list(a.file),
+        "namespace": a.namespace,
+        "chartPath": a.chart_path,
+    }
+    scope = {
+        "inputsRead": len(report.get("files") or []),
+        "inputsNotRead": [{"path": u["file"], "why": u["why"]} for u in report.get("unreadable") or []],
+        "inputsSkipped": [{"path": u["file"], "why": u["why"]} for u in report.get("skipped") or []],
+        "inputSetDigest": rc.input_set_digest(pairs),
+        "documents": len(report.get("resources") or []),
+        "resources": rc.capped(list(report.get("resources") or []))[0],
+        "resourcesWithheld": rc.capped(list(report.get("resources") or []))[1],
+        # The gate report carries the audit's assumptions and how many findings an exception removed; a receipt
+        # that wrote `[]` and nothing was recording "none" for a thing it had not looked at (G357).
+        "assumptions": rc.capped(list(report.get("assumptions") or []), 60)[0],
+        "assumptionsWithheld": rc.capped(list(report.get("assumptions") or []), 60)[1],
+        "exceptedFindings": report.get("excepted"),
+        "notRun": list(report.get("notRun") or []),
+        "controlCoverage": _control_roll_up(report.get("controlSummary")),
+        "notCheckedBeyond": None,
+        "declinedRules": dict(sorted((report.get("declined") or {}).items())),
+        "notEvaluatedRules": dict(sorted((report.get("notEvaluated") or {}).items())),
+        "notAudited": list(report.get("notAudited") or []),
+        # The gate's own headline word, which is `incomplete` and never `passed` while the audit under it reached
+        # no verdict (G272). Recorded beside the exit code so the two cannot be read apart.
+        "gateVerdict": gate_verdict_word(report),
+    }
+    verdict = rc.verdict(
+        counts=dict(report.get("counts") or {}),
+        score=None,
+        undetermined=rc.gate_undetermined(report),
+        exit_code=exit_code,
+        findings=list(report.get("findings") or []),
+    )
+    rc.write(
+        target,
+        rc.build(
+            command="gate",
+            inputs=inputs,
+            settings=settings,
+            scope=scope,
+            verdict=verdict,
+            replay={
+                "supported": not reasons,
+                "notSupportedBecause": "; ".join(reasons) or None,
+            },
+            duration_ms=int((time.monotonic() - started) * 1000),
+        ),
+    )
+
+
+def _replay_audit(payload: dict[str, Any], s: Settings, base: Path | None) -> dict[str, Any]:
+    from kube_noob import receipt as rc
+    from kube_noob import toolkit as tk
+
+    settings = payload["settings"]
+    given = settings.get("fileArgument")
+    if settings.get("inputMode") == "stdin" or not isinstance(given, str):
+        raise rc.CannotCheck("replay", given, "the input was standard input: its bytes are not a file to read again")
+    args = argparse.Namespace(file=str(base / given) if base is not None and not Path(given).is_absolute() else given)
+    try:
+        text, bad, sources = _manifest_sources(args)
+    except (ConfigError, OSError) as exc:
+        raise rc.CannotCheck("replay", given, f"the input could not be read again: {exc}") from exc
+    root = Path(args.file) if Path(args.file).is_dir() else None
+
+    def _pair(member: str) -> tuple[str, str]:
+        path = root / member if root is not None else Path(member)
+        return (member if root is not None else str(given), rc.sha256_bytes(path.read_bytes()))
+
+    try:
+        pairs = [_pair(p) for p, _ in sources] + [_pair(b["path"]) for b in bad]
+    except OSError as exc:
+        raise rc.CannotCheck("replay", given, f"an input could not be read again: {exc}") from exc
+    if rc.input_set_digest(pairs) != payload["scope"].get("inputSetDigest"):
+        raise rc.CannotCheck(
+            "replay",
+            given,
+            f"the set of files under {given} is not the set this receipt binds: it read "
+            f"{payload['scope'].get('inputsRead')} file(s) and {len(sources)} are there now, or one of them is not "
+            "the file it was. A receipt binds the files it read; it cannot answer for a file added since.",
+        )
+    exceptions = None
+    for entry in payload.get("inputs") or []:
+        if entry.get("role") == "exceptions":
+            exceptions = Path(str(entry.get("resolvedPath") or entry.get("path"))).read_text(encoding="utf-8")
+    registries = list(settings.get("allowedRegistries") or [])
+    live = s.model_copy(update={"audit": s.audit.model_copy(update={"allowed_registries": registries})})
+    kit = tk.Toolkit(live)
+    try:
+        rep = kit.audit(
+            tk.AuditIn(
+                manifests=text,
+                platform=str(settings.get("platform") or "kubernetes"),
+                version=settings.get("platformVersion"),
+                min_severity=str(settings.get("minSeverity") or "low"),
+                exceptions=exceptions,
+                partial_bundle=bool(settings.get("partialBundle")),
+                cni=settings.get("cni"),
+            )
+        )
+    except (KubeNoobError, ValueError) as exc:
+        raise rc.CannotCheck("replay", given, f"re-running the audit was refused: {exc}") from exc
+    rep["unreadable"] = bad
+    exit_code = rc.audit_exit_code(rep, str(settings.get("failOn") or "high"))
+    if bad and not settings.get("skipUnreadable"):
+        exit_code = 5
+    return rc.verdict(
+        counts=dict(rep["summary"]["counts"]),
+        score=rep["summary"].get("score"),
+        undetermined=rc.audit_undetermined(rep),
+        exit_code=exit_code,
+        findings=list(rep.get("findings") or []),
+        excepted=list(rep.get("excepted") or []),
+    )
+
+
+def _replay_gate(payload: dict[str, Any], s: Settings, base: Path | None) -> dict[str, Any]:
+    from kube_noob import gate
+    from kube_noob import receipt as rc
+    from kube_noob.audit.exceptions import ExceptionsError
+
+    settings = payload["settings"]
+    files = [str(f) for f in settings.get("fileArguments") or []]
+    if base is not None:
+        files = [str(base / f) if not Path(f).is_absolute() else f for f in files]
+    try:
+        sources = gate.collect(files, _read)
+    except (gate.GateError, OSError) as exc:
+        raise rc.CannotCheck("replay", files, f"the inputs could not be read again: {exc}") from exc
+    try:
+        pairs = [
+            (s_.uri, rc.sha256_bytes(Path(s_.uri).read_bytes()))
+            for s_ in sources
+            if s_.chart is None and s_.uri != "stdin"
+        ]
+    except OSError as exc:
+        raise rc.CannotCheck("replay", files, f"an input could not be read again: {exc}") from exc
+    if rc.input_set_digest(pairs) != payload["scope"].get("inputSetDigest"):
+        raise rc.CannotCheck(
+            "replay",
+            files,
+            "the set of files the gate would read now is not the set this receipt binds, so the same question is "
+            "not being asked",
+        )
+    exceptions = None
+    for entry in payload.get("inputs") or []:
+        if entry.get("role") == "exceptions":
+            exceptions = Path(str(entry.get("resolvedPath") or entry.get("path"))).read_text(encoding="utf-8")
+    try:
+        report = gate.run(
+            sources,
+            platform=str(settings.get("platform") or "kubernetes"),
+            version=settings.get("platformVersion"),
+            exceptions=exceptions,
+            fail_on=str(settings.get("failOn") or "high"),
+            chart_path=settings.get("chartPath"),
+            data_dir=s.data_dir,
+            cni=settings.get("cni"),
+            default_namespace=settings.get("namespace"),
+            repo=Path.cwd(),
+            # The waiver is part of the question: `gate.run` marks an unread file `acceptedBy` when the caller
+            # passed the flag, and `incomplete` and the exit code are read from that row (G340, G357).
+            skip_unreadable=bool(settings.get("skipUnreadable")),
+        )
+    except (gate.GateError, ExceptionsError) as exc:
+        raise rc.CannotCheck("replay", files, f"re-running the gate was refused: {exc}") from exc
+    return rc.verdict(
+        counts=dict(report.get("counts") or {}),
+        score=None,
+        undetermined=rc.gate_undetermined(report),
+        exit_code=rc.gate_exit_code(report),
+        findings=list(report.get("findings") or []),
+    )
+
+
+def _receipt_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
+    from kube_noob import receipt as rc
+
+    # Named rather than assumed: argparse requires a subcommand today, and a second one added later must not fall
+    # through to `verify` and report a different question's answer under its exit code.
+    if a.receipt_cmd != "verify":
+        raise ConfigError(f"unknown receipt command {a.receipt_cmd!r}; this kube-noob has `receipt verify`")
+    doc = rc.load(Path(a.path))
+    base = Path(a.base) if getattr(a, "base", None) else None
+    command = str((doc["payload"] or {}).get("command") or "")
+    replays = {"audit": _replay_audit, "gate": _replay_gate}
+
+    def replay(payload: dict[str, Any]) -> dict[str, Any]:
+        fn = replays.get(command)
+        if fn is None:
+            raise rc.CannotCheck(
+                "replay",
+                command or "(unstated)",
+                f"this kube-noob ({__version__}) replays {', '.join(sorted(replays))}; it has no replay for "
+                f"{command!r}, so the verdict cannot be checked here",
+            )
+        return fn(payload, s, base)
+
+    answer = rc.verify(doc, replay=replay, base=base)
+    if a.format == "text":
+        _tprint(rc.summary_line(answer))
+        for entry in answer["cannotCheck"]:
+            _tprint(f"  cannot check the {entry['what']} {entry['which']}: {entry['why']}")
+        for entry in answer["differs"]:
+            _tprint(f"  {entry['field']}: the receipt says {entry['receipt']!r}, re-running gives {entry['rerun']!r}")
+        _tprint(f"integrity: SHA-256, unsigned. This checks {rc.PROVES}.")
+    else:
+        _emit(answer, fmt)
+    return rc.STATUS_EXIT[answer["status"]]
+
+
 def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     _check_cni(getattr(a, "cni", None))
     from kube_noob import gate
     from kube_noob.audit.exceptions import ExceptionsError
+    from kube_noob.audit.model import blocked_manifests, open_unread
     from kube_noob.code import builds as cb
 
+    receipt_target = _receipt_target(a)
+    started = time.monotonic()
     repo = Path.cwd()
     containerfiles: list[tuple[str, str]] = []
     code_builds = []
@@ -941,13 +1394,20 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint(gate.markdown(report, top=50))
     elif not quiet_pass:
         _emit(report, fmt)
-    if report.get("unreadable") and not a.skip_unreadable:
-        _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
-        return 5
+    # Decided once, before the receipt is written, by the one rule a replay also reads (`receipt.gate_exit_code`):
+    # the receipt records the code this function returns, including the 5 for a file the walk declined (G357).
+    rc = receipt_module.gate_exit_code(report)
+    if receipt_target is not None:
+        _write_gate_receipt(a, s, receipt_target, report, sources, rc, started)
+        _receipt_written(receipt_target)
+    unread = open_unread(report)
+    if unread:
+        _refuse_unreadable([{"path": u["path"], "why": u["why"]} for u in unread])
+        return rc
     # Beside the `unreadable` branch, and with no flag that waves it through: a file the walk declined to read is
     # not a policy violation (1) and not a clean result (0), and the fix for a key spelled wrong is to spell it
     # right, not to pass a flag. `--skip-unreadable` answers a different question (G126, G325).
-    blocked = [x for x in report.get("skipped") or [] if x.get("forbidsVerdict")]
+    blocked = blocked_manifests(report)
     if blocked:
         for entry in blocked:
             print(f"error: {entry['file']}: {entry['why']}", file=sys.stderr)
@@ -956,8 +1416,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             "key the message names and run the gate again",
             file=sys.stderr,
         )
-        return 5
-    return 0 if report["passed"] else 1
+    return rc
 
 
 def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
@@ -1491,6 +1950,13 @@ def _patch(subparsers: Any, common: argparse.ArgumentParser) -> None:
     subparsers.add_parser = add_parser
 
 
+_RECEIPT_HELP = (
+    "write a reproducible verdict receipt to PATH: one self-describing JSON document binding every input by "
+    "SHA-256, this kube-noob's version, the meaning of every rule, the settings that changed the verdict, the "
+    "scope actually read and the verdict itself. Check it with `kube-noob receipt verify PATH`. SHA-256 only: it "
+    "proves that the same inputs give the same verdict and proves nothing about who produced it"
+)
+
 GLOBAL_DEFAULTS: dict[str, Any] = {"config": None, "web_enabled": False, "cluster_enabled": False, "format": "text"}
 
 
@@ -1591,6 +2057,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="the assessment plan this document is assessed against. OSCAL requires the field; without it the "
         "document points at a local fragment and says plainly that no plan was imported",
     )
+    a.add_argument("--receipt", default=None, metavar="PATH", help=_RECEIPT_HELP)
+    rcp = sub.add_parser(
+        "receipt",
+        help="Check a verdict receipt: re-run its inputs and say whether the verdict is reproduced",
+        description="A receipt written by `audit --receipt` or `gate --receipt` binds its inputs by SHA-256 and "
+        "carries the verdict. `receipt verify` re-runs those inputs and answers one of three things: identical "
+        "(exit 0), differs and names the fields (exit 1), or CANNOT BE CHECKED (exit 5) because an input is "
+        "missing, an input's digest differs, the receipt was written by another kube-noob, the rule set has "
+        "changed, or the run is not replayable from the files the receipt binds. Exit 5 is not a pass. SHA-256 "
+        "only: a receipt proves that the same inputs give the same verdict and proves nothing about who produced "
+        "it. Example: kube-noob receipt verify audit.receipt.json",
+    )
+    rcpsub = rcp.add_subparsers(dest="receipt_cmd", required=True)
+    _patch(rcpsub, common)
+    rv = rcpsub.add_parser("verify", help="Re-run a receipt's inputs and say whether its verdict is reproduced")
+    rv.add_argument("path", help="the receipt (JSON) written by `audit --receipt` or `gate --receipt`")
+    rv.add_argument(
+        "--base",
+        default=None,
+        metavar="DIR",
+        help="resolve each input's recorded path under DIR, for a receipt checked in a different checkout of the "
+        "same files (the digests still have to match; a path that resolves nowhere is still exit 5)",
+    )
     exc_p = sub.add_parser(
         "exceptions",
         help="Check an exception list: owner, reason, expiry and scope of every entry",
@@ -1633,6 +2122,7 @@ def build_parser() -> argparse.ArgumentParser:
     gt.add_argument("--platform", choices=PLATFORMS)
     gt.add_argument("--version", dest="pversion", help="OpenShift (4.20) or Kubernetes (1.33) version")
     gt.add_argument("--exceptions", default=None, help="exception list (kube-noob.io/v1 ExceptionList)")
+    gt.add_argument("--receipt", default=None, metavar="PATH", help=_RECEIPT_HELP)
     gt.add_argument(
         "--github-annotations",
         action="store_true",
@@ -3125,6 +3615,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         print(completion.script(a.shell, build_parser()), end="")
         return 0
     if a.cmd in {"audit", "validate", "redteam", "fix"}:
+        # Before the input is read: a path that cannot hold a receipt is a usage error, and finding it out after a
+        # twenty-second audit is finding it out too late.
+        receipt_target = _receipt_target(a)
+        started = time.monotonic()
         text, unreadable, sources = _manifest_sources(a)
         if unreadable and not getattr(a, "skip_unreadable", False):
             _refuse_unreadable(unreadable)
@@ -3193,19 +3687,15 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 _emit(compact_report(rep), fmt)
             else:
                 _emit(rep, fmt)
-            if rep.get("exceptions") and not rep["exceptions"]["gate"]:
-                return 1
-            if rep["summary"].get("verdict") == "undetermined":
-                # An object the rules did not read and no exception accepted, or a rule that declined on the
-                # only API server, is not a pass and not a finding: the verdict is undetermined, and
-                # undetermined is exit 1, never 0 -- whatever --fail-on says (G281 R1; G272, seventh review).
-                return 1
-            if a.fail_on == "never":
-                return 0
-            from kube_noob.audit.model import Severity
-
-            limit = Severity.parse(a.fail_on)
-            return 1 if any(Severity.parse(f["severity"]) >= limit for f in rep["findings"]) else 0
+            # ONE place for the arithmetic (`receipt.audit_exit_code`): what is returned here is what the receipt
+            # records and what a replay recomputes. It reads `summary.verdict`, which `Report.undetermined()`
+            # decided -- an undetermined report is exit 1, never 0, whatever --fail-on says (G281 R1; G272,
+            # seventh review; G357).
+            rc = receipt_module.audit_exit_code(rep, a.fail_on)
+            if receipt_target is not None:
+                _write_audit_receipt(a, s, receipt_target, rep, text, sources, unreadable, rc, started)
+                _receipt_written(receipt_target)
+            return rc
         if a.cmd == "validate":
             rep = kit.validate(tk.ManifestsIn(manifests=text, platform=platform, version=a.pversion))
             _locate(rep, sources)
@@ -3521,6 +4011,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         return _posture(a, s, fmt)
     if a.cmd == "operators":
         return _operators_cmd(a, s, fmt)
+    if a.cmd == "receipt":
+        return _receipt_cmd(a, s, fmt)
     if a.cmd == "compliance":
         return _compliance_cmd(a, fmt)
     if a.cmd == "exceptions":

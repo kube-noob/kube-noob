@@ -259,6 +259,33 @@ class AuditIn(ManifestsIn):
     )
 
 
+class VerifyReceiptIn(_In):
+    """A receipt checked from text alone: this server reads no path on the caller's machine.
+
+    White space is NOT stripped here, unlike every other input on this server. A receipt binds its inputs by the
+    digest of their bytes, so trimming a trailing newline off the text before hashing it would turn every honest
+    check into "the input changed" -- the one answer this tool exists to distinguish from a changed verdict.
+    """
+
+    # Explicitly false, not merely omitted: pydantic MERGES a subclass's model_config into its parent's, so
+    # leaving the key out would keep `_In`'s stripping and silently defeat the paragraph above.
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=False)
+
+    receipt: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The receipt document itself (the JSON `kube-noob audit --receipt PATH` wrote), as text.",
+    )
+    manifests: str | None = Field(
+        None,
+        max_length=MAX_MANIFEST_CHARS,
+        description="The manifests the receipt was written for, as text. Without them the answer is "
+        "'cannot be checked': the inputs cannot be re-read here, so only the document's own consistency, the "
+        "kube-noob version and the rule set are checked, which is not a reproduced verdict.",
+    )
+
+
 class FixIn(ManifestsIn):
     harden: bool = Field(True, description="Apply securityContext hardening (restricted profile).")
 
@@ -1417,6 +1444,97 @@ class Toolkit:
             return compact_report(out)
         return out
 
+    def verify_receipt(self, p: VerifyReceiptIn) -> dict[str, Any]:
+        """Is this receipt's verdict reproduced by the manifests given here? identical, differs, or cannot be checked.
+
+        The MCP server reads nothing from the caller's machine, so a receipt reaches it as text and so do the
+        manifests. That bounds what can be checked and the answer says so: the document's own consistency, the
+        kube-noob version and the rule set are always checked, and the verdict is re-derived only when exactly one
+        manifest input is bound and the text given hashes to it. Every other case is the third answer, named --
+        never a pass. A receipt is integrity, not authenticity: it proves the same inputs give the same verdict and
+        nothing about who produced it.
+        """
+        from kube_noob import receipt as rc
+        from kube_noob import sanitize
+
+        # loads_bounded, not json.loads: every reader here refuses a nesting bomb at the same depth rather than
+        # at whatever the interpreter's recursion limit is on the machine that happens to be serving.
+        try:
+            doc = sanitize.loads_bounded(p.receipt)
+        except sanitize.JsonTooDeep as exc:
+            raise rc.ReceiptError(str(exc)) from exc
+        except ValueError as exc:
+            raise rc.ReceiptError(f"the receipt is not JSON ({exc})") from exc
+        if not isinstance(doc, dict) or doc.get("schema") != rc.SCHEMA:
+            raise rc.ReceiptError(
+                f"schema {(doc.get('schema') if isinstance(doc, dict) else None)!r} is not {rc.SCHEMA!r}, the only "
+                "receipt schema this kube-noob reads"
+            )
+        payload, integrity = doc.get("payload"), doc.get("integrity")
+        if not isinstance(payload, dict) or not isinstance(integrity, dict):
+            raise rc.ReceiptError("not a kube-noob receipt (no payload or no integrity block)")
+        if integrity.get("payloadDigest") != rc.digest_of(payload):
+            raise rc.ReceiptError(
+                "the payload does not match the payloadDigest this document carries, so it is refused rather than "
+                "checked"
+            )
+
+        def replay(pl: dict[str, Any]) -> dict[str, Any]:
+            manifests = p.manifests
+            bound = [i for i in pl.get("inputs") or [] if i.get("role") == "manifest"]
+            if manifests is None:
+                raise rc.CannotCheck(
+                    "replay",
+                    "manifests",
+                    "no manifests were given, so the inputs this receipt binds were not read and the verdict was "
+                    "not re-derived",
+                )
+            if pl.get("command") != "audit":
+                raise rc.CannotCheck(
+                    "replay",
+                    pl.get("command"),
+                    f"this tool replays an `audit` receipt from text; a {pl.get('command')!r} receipt is checked by "
+                    "`kube-noob receipt verify`, which reads the files",
+                )
+            if len(bound) != 1:
+                raise rc.CannotCheck(
+                    "replay",
+                    [i.get("path") for i in bound],
+                    f"the receipt binds {len(bound)} manifest input(s); one text cannot stand for them, so "
+                    "`kube-noob receipt verify` is the one that can read them",
+                )
+            got = rc.sha256_bytes(manifests.encode("utf-8"))
+            if got != bound[0].get("sha256"):
+                raise rc.CannotCheck(
+                    "input",
+                    bound[0].get("path"),
+                    f"sha256 differs: the receipt records {bound[0].get('sha256')} and the text given is {got}. A "
+                    "changed input is a different question, not a changed verdict.",
+                )
+            st = pl["settings"]
+            rep = self.audit(
+                AuditIn(
+                    manifests=manifests,
+                    platform=str(st.get("platform") or "kubernetes"),
+                    version=st.get("platformVersion"),
+                    min_severity=str(st.get("minSeverity") or "low"),
+                    partial_bundle=bool(st.get("partialBundle")),
+                    cni=st.get("cni"),
+                )
+            )
+            return rc.verdict(
+                counts=dict(rep["summary"]["counts"]),
+                score=rep["summary"].get("score"),
+                undetermined=rc.audit_undetermined(rep),
+                exit_code=rc.audit_exit_code(rep, str(st.get("failOn") or "high")),
+                findings=list(rep.get("findings") or []),
+                excepted=list(rep.get("excepted") or []),
+            )
+
+        answer = rc.verify(doc, replay=replay)
+        answer["exitCodeIfThisWereTheCli"] = rc.STATUS_EXIT[answer["status"]]
+        return answer
+
     def red_team(self, p: ManifestsIn) -> dict[str, Any]:
         r = analyze(p.manifests, p.platform, p.version)
         return {
@@ -2567,6 +2685,18 @@ class Toolkit:
                 "is evidence, never a claim of compliance -- an assessment decides whether an indicator is met.",
                 KsiIn,
                 self.fedramp_ksi,
+            ),
+            ToolSpec(
+                "verify_receipt",
+                "Check a verdict receipt",
+                "Re-derive the verdict a kube-noob receipt records and say whether it is reproduced: identical, "
+                "differs (naming the fields that moved), or CANNOT BE CHECKED -- which is not a pass. Pass the "
+                "receipt document and the manifests it was written for; the digests have to match, and a receipt "
+                "from another kube-noob or a changed rule set cannot be checked here, never silently passed. "
+                "SHA-256 only: a receipt proves that the same inputs give the same verdict and proves nothing "
+                "about who produced it.",
+                VerifyReceiptIn,
+                self.verify_receipt,
             ),
             ToolSpec(
                 "red_team",

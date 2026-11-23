@@ -112,6 +112,29 @@ Audit findings name the NIST SP 800-53 Rev. 5 controls they are evidence about, 
 mode. How to deploy kube-noob inside a FedRAMP High boundary, and what is not covered yet:
 [docs/compliance.md](docs/compliance.md).
 
+## Verdict receipts prove integrity, not authenticity
+
+`kube-noob audit --receipt PATH` and `kube-noob gate --receipt PATH` write a document that binds every input by
+SHA-256, the tool version, the meaning of every rule, the settings that changed the verdict and the verdict itself,
+and `kube-noob receipt verify PATH` re-runs those inputs. It is **not** a signature and not an attestation:
+
+- there is no key, no signing and no `cryptography` dependency. Anyone who can run kube-noob can write a receipt
+  for any input they hold, so a receipt says nothing about who produced it. The document states that in its own
+  text (`integrity.statement`), the command says it on stderr when it writes one, and `receipt verify` repeats it
+  with every answer. Do not treat a receipt as provenance, and do not accept one as evidence that a particular
+  party ran a particular scan;
+- what it does prove is worth having on its own: that these exact input bytes, under these exact settings, with
+  these exact rule meanings, give this exact verdict -- and that anybody holding the files can re-derive it
+  offline. Check the inputs with `sha256sum` and the verdict with `receipt verify`;
+- `receipt verify` exits **5** and names what it could not get whenever it cannot reach that conclusion: a missing
+  input, a digest that moved, a receipt from another kube-noob version, a rule set that has changed, a file added
+  to a directory since, standard input, or a gate run that also read a Containerfile, a scanner report, a SARIF
+  report, VEX, KEV or a rendered Helm chart. Exit 5 is not a pass, and a pipeline that treats it as one has no
+  check at all. A payload that does not match the digest the document carries is refused (exit 4), not checked;
+- signing would be an adapter over this document rather than a change to it: the payload digest is the seam. No
+  key handling exists in kube-noob today, and `gh attestation` and `cosign` below are how the released artefacts
+  are verified.
+
 ## Verifying releases
 
 ```bash
