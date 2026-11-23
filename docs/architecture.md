@@ -69,7 +69,8 @@ predicate, so a gap can neither hide in a format nor read as a pass (G272, seven
    evaluated, stays in `evaluated_rules`, and is listed in `controlSummary.partlyEvaluatedRules` instead. JSON key
    `notEvaluated`.
 4. `Report.undetermined()` is the one predicate: not None exactly when `declined` or `not_audited` is non-empty.
-   Then `summary.score` is null with the reason beside it as `summary.scoreWithheld`, `audit` and `gate` exit 1
+   Then `summary.score` is null under `summary.verdict: undetermined`, with the reason beside it as
+   `summary.verdictReason`, `audit` and `gate` exit 1
    whatever `--fail-on` says, the gate is `incomplete: true` and `passed: false` with the headline "gate
    incomplete" (JSON, Markdown, HTML, and in the SARIF as an invocation property plus one note-level result), the
    MCP tools carry the same dictionary, `fix`'s `after` is withheld, and the eval grader marks every

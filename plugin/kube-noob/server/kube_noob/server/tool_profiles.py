@@ -1,6 +1,6 @@
 """Named subsets of the MCP tool surface, so a client is offered the tools for one job rather than all of them.
 
-Fifty-six tools is more than most MCP clients list usefully and more than a model chooses well between: the ones
+Fifty-seven tools is more than most MCP clients list usefully and more than a model chooses well between: the ones
 that matter for the job in hand compete with fifty that do not. ``kube-noob mcp --tools incident`` offers the
 twenty-odd tools someone uses while something is broken, and so on for ``review``, ``compliance`` and ``learn``.
 
@@ -70,6 +70,8 @@ _INCIDENT = frozenset(
 _REVIEW = frozenset(
     {
         "verify_change",
+        # A receipt is checked where the verdict it records was reached: reviewing a change.
+        "verify_receipt",
         "audit_manifests",
         "validate_manifests",
         "fix_manifests",
@@ -99,6 +101,8 @@ _COMPLIANCE = frozenset(
         "compliance_results",
         "posture_report",
         "audit_manifests",
+        # ... and where it is handed on as evidence: an assessor is the third party a receipt is written for.
+        "verify_receipt",
         "policy_generate",
         "policy_migrate_check",
         "rhacs_compare",

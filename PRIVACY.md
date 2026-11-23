@@ -38,6 +38,18 @@ Everything lives in the data directory: `~/.local/share/kube-noob` by default, o
 Nothing from a request is kept after it is answered, except the alert reports in the table above, which are kept from the Alertmanager payloads posted to them. What is listed above stays until you delete it; the maintainers
 never receive it.
 
+`kube-noob audit --receipt PATH` and `kube-noob gate --receipt PATH` write the receipt to the path you name
+(owner-only, 0600), and it is written to be forwarded, so what it holds is deliberate and short: each input's path
+as you gave it and the absolute path it resolved to, the SHA-256 of each input's bytes and its size, the settings
+you passed, the resource references the audit already prints (`Kind/namespace/name`), the assumptions it already
+prints, and the verdict. Never the contents of any input, and never a finding's message. **No hostname, no user
+name, no process id, no command line, and no environment**: an unsigned document cannot attest to who produced it,
+so a self-asserted host in it would be a claim the document itself says it cannot support, and the fields are
+present and null with that reason in their place. An absolute path can name a person (`/home/alex/work/...`): that
+is the one identifying thing a receipt carries, it is there because a verifier has to find the file again, and it
+is removed by running the command with relative paths from the directory you want recorded. Nothing is sent
+anywhere, and `kube-noob receipt verify` reads only the receipt and the files the receipt names.
+
 `kube-noob must-gather analyze --report DIR` writes `report.md`, `report.json` and, with `--case-draft`, `case-draft.md` to the folder you name; they hold redacted findings from the must-gather, never its Secrets, and nothing is sent anywhere. `kube-noob bundle` writes a redacted evidence pack to the folder you name (default `./kube-noob-bundle`). The MCP
 server's log line records each tool name, argument sizes and duration, never argument contents.
 
