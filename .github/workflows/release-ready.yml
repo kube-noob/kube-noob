@@ -1,0 +1,118 @@
+name: release-ready
+
+# kube-noob.com is built from the latest GitHub RELEASE. The site repository rebuilds every six hours and skips
+# when nothing changed, so however often it runs, a week with no release is a week of the website stating the
+# previous release's version, rule counts and install commands. G358 was that failure at its worst: the site could
+# not build at all for six days and the alarm stayed green, because the published site and the latest release
+# agreed while nothing moved.
+#
+# So the cadence itself needs a check. Once a week this says, in one issue, whether the repository is ready to cut
+# a release and what to run -- or exactly what is stopping it. Three answers, never two:
+#
+#   ready       `## Unreleased` has bullets and every check on main is green. The issue carries the tag command.
+#   not ready   something names itself: nothing unreleased, or a check on main that is not green.
+#   not known   a reading could not be taken. This is NOT ready: an unchecked release is not a safe one, and a
+#               report that said ready because it could not look would be the defect this project exists to refuse.
+on:
+  schedule:
+    # Mondays, after risk-review's 06:41 so the two do not contend, and well outside the 06:00-09:00 Pacific window.
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ready:
+    runs-on: ubuntu-latest
+    # Three API reads and a file parse; the last ten runs of comparable jobs finish inside a minute.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Is there a release to cut, and would it be safe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          week=$(date -u +%G-W%V)
+          title="Release ready ${week}"
+
+          # The bullets under `## Unreleased`. bump_version renames that heading to the version and leaves it
+          # empty, so an empty section means the last release took everything -- not that the file is unreadable.
+          if [ ! -r CHANGELOG.md ]; then
+            echo "::error title=release-ready::CHANGELOG.md could not be read, so whether there is anything to release is NOT KNOWN. This is not 'nothing to release'."
+            exit 1
+          fi
+          bullets=$(awk '/^## Unreleased$/{f=1;next} /^## /{f=0} f && /^- /{n++} END{print n+0}' CHANGELOG.md)
+
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // ""')
+          if [ -z "${tag}" ]; then
+            echo "::error title=release-ready::no release exists in ${GITHUB_REPOSITORY}, so nothing can be compared and kube-noob.com has nothing to build from."
+            exit 1
+          fi
+          published=$(gh release view "${tag}" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)
+          days=$(( ( $(date -u +%s) - $(date -u -d "${published}" +%s) ) / 86400 ))
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+
+          # Every check on main, not only the eight required ones. gate-ci, db-image and e2e-kind are not required,
+          # and gate-ci is the only job that runs the gate as the real Action, a Tekton Task in kind and the GitLab
+          # template -- a release cut while it is red is exactly the kind nobody should cut.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs" --paginate > /tmp/checks.json; then
+            echo "::error title=release-ready::the checks on main could not be read, so whether a release would be safe is NOT KNOWN."
+            exit 1
+          fi
+          total=$(jq -r '[.check_runs[]] | length' /tmp/checks.json)
+          if [ "${total}" = "0" ]; then
+            echo "::error title=release-ready::main has no check runs at all, which is not a green main -- it is an unanswered question."
+            exit 1
+          fi
+          notgreen=$(jq -r '[.check_runs[] | select((.conclusion // .status) != "success" and .conclusion != "skipped") | "\(.conclusion // .status) \(.name)"] | join(", ")' /tmp/checks.json)
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label release-ready --state open --limit 1 --json number,title --jq '.[0].number // ""')
+
+          if [ "${bullets}" = "0" ]; then
+            echo "nothing under ## Unreleased; ${tag} took everything (${days} days ago)"
+            if [ -n "${existing}" ]; then
+              gh issue close "${existing}" --repo "$GITHUB_REPOSITORY" --comment "Closed by release-ready: \`## Unreleased\` is empty, so there is nothing to cut. The website is in step with ${tag}."
+            fi
+            exit 0
+          fi
+
+          if [ -n "${notgreen}" ]; then
+            body=$(printf '%s\n' \
+              "**Not ready.** \`## Unreleased\` has **${bullets}** bullet(s), and the latest release is \`${tag}\`, published **${days}** day(s) ago — so kube-noob.com has been stating ${tag}'s version, rule counts and install commands for that long." \
+              "" \
+              "These checks on \`main\` (\`${sha}\`) are not green:" \
+              "" \
+              "    ${notgreen}" \
+              "" \
+              "Every check counts here, not only the eight required ones: \`gate-ci\` is the only job that runs the gate as the real Action, as a Tekton Task in kind and as the GitLab template, and it is not required, so a merge queue can be green while it is red." \
+              "" \
+              "Fix those, then re-run this workflow for the tag command.")
+          else
+            body=$(printf '%s\n' \
+              "**Ready.** \`## Unreleased\` has **${bullets}** bullet(s), the latest release is \`${tag}\` from **${days}** day(s) ago, and all **${total}** checks on \`main\` (\`${sha}\`) are green." \
+              "" \
+              "Cut it:" \
+              "" \
+              "    python scripts/bump_version.py <next> \"<one-line reason>\"" \
+              "" \
+              "then open a pull request, let CI finish, confirm every check green again, merge, and tag:" \
+              "" \
+              "    gh api -X POST repos/${GITHUB_REPOSITORY}/git/refs -f ref=refs/tags/v<next> -f sha=<the merge commit>" \
+              "" \
+              "The tag publishes to PyPI, the image, the chart, the MCP Registry and Homebrew, and tells kube-noob.com within about twelve minutes (G356). The videos render afterwards and the site is asked again when they land.")
+          fi
+
+          if [ -n "${existing}" ]; then
+            gh issue edit "${existing}" --repo "$GITHUB_REPOSITORY" --title "${title}" --body "${body}"
+            echo "updated issue #${existing}"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "${title}" --label release-ready --body "${body}"
+          fi
