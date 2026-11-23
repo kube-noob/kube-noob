@@ -32,7 +32,7 @@ from typing import Any
 import yaml
 
 from kube_noob.debug.steps import classify_step, split_comment
-from kube_noob.yamlio import load_documents
+from kube_noob.yamlio import Document, load_documents
 
 IPNet = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -340,17 +340,32 @@ class Inventory:
         self.namespace_unread: list[str] = []
         # Namespaces whose NetworkPolicy list a live read could not get: a direction there is not evaluated (G279).
         self.np_unread: list[str] = []
+        # Imported here, as `attack_paths` imports it: `audit.rules` imports this module's siblings at load.
+        from kube_noob.audit.rules import refusal
+
+        # A workload the audit refuses (`rules.refusal`), by (namespace, kind, name), with the audit's own reason.
+        self.refused_workloads: dict[tuple[str, str, str], str] = {}
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
             kind = str(obj.get("kind", ""))
             meta = obj.get("metadata") or {}
             name = str(meta.get("name", ""))
+            # The audit's one detector, not a copy (class 9), as `attack_paths` and the fixer already ask it: an
+            # object under a group the API server does not serve this kind under is not that kind. This loop
+            # matched `kind` alone (class 3), so a `projectcalico.org/v3 NetworkPolicy` -- a real kind, with
+            # `selector` and `types` where this evaluator reads `podSelector` and `policyTypes` -- was evaluated
+            # as a Kubernetes NetworkPolicy and answered DENIED, exit 1, about traffic nothing in the input
+            # isolates, while `audit` on the same file refused the object and withheld its verdict (G365).
+            # `refusal` returns `None` for an absent apiVersion, which is what a live list's items carry.
+            refused_why = refusal(Document(index=0, data=obj))
             if kind == "NetworkPolicy":
                 pol = dict(obj)
                 pol_ns = str(meta.get("namespace") or default_namespace)
                 pol["metadata"] = {**meta, "namespace": pol_ns}
-                why = policy_problem(pol)
+                # Refused before it is read: `policy_problem` would call a Calico policy "valid" for having no
+                # field it recognises as wrong, which is the same answer by another route.
+                why = refused_why or policy_problem(pol)
                 if why:
                     # Not evaluated and not treated as absent: an unreadable policy only ever widens the answer.
                     self.invalid_policies.append(f"NetworkPolicy/{pol_ns}/{name} ({why})")
@@ -358,6 +373,11 @@ class Inventory:
                     self.policies.append(pol)
             elif kind == "Namespace":
                 self.namespace_labels[name] = _labels(meta.get("labels"))
+            elif kind in WORKLOAD_KINDS and refused_why is not None:
+                # A refused workload is not an endpoint, and it is not absent either: naming it with --from or
+                # --to gets the refusal, never "not in the manifests" for an object that is in them (class 24).
+                refused_ns = str(meta.get("namespace") or default_namespace)
+                self.refused_workloads[(refused_ns, kind.lower(), name)] = refused_why
             elif kind in WORKLOAD_KINDS:
                 ep = _endpoint_from(kind, obj, default_namespace)
                 self.workloads[(str(ep.namespace), kind.lower(), name)] = ep
@@ -543,6 +563,19 @@ class Inventory:
     def known(self) -> list[str]:
         return [f"{ns}/{kind}/{name}" for ns, kind, name in sorted(self.workloads)][:25]
 
+    @staticmethod
+    def _refuse_refused(spec: str, refused: list[tuple[str, str]]) -> None:
+        """Raise for an endpoint that IS in the manifests and that the audit refuses, with the audit's reason.
+
+        ``why`` is `rules.refusal`'s fixed phrase, built from a kind name the rules know and never from the
+        input's text, so it can stand in the message (class 7)."""
+        if refused:
+            kind, why = sorted(refused)[0]
+            raise ValueError(
+                f"{spec} is in the manifests as a {kind} kube-noob does not read ({why}), so it is not a workload "
+                "this can answer about; correct its apiVersion"
+            )
+
     def resolve(self, spec: str) -> Endpoint:
         """``ns/name``, ``ns/kind/name``, ``ns:key=value,key2=value2``, or an IP address / CIDR outside the cluster."""
         spec = spec.strip()
@@ -570,6 +603,14 @@ class Inventory:
             ns, kind, name = parts
             ep = self.workloads.get((ns, kind.lower(), name))
             if ep is None:
+                self._refuse_refused(
+                    spec,
+                    [
+                        (k, why)
+                        for (n, k, nm), why in self.refused_workloads.items()
+                        if (n, k, nm) == (ns, kind.lower(), name)
+                    ],
+                )
                 raise ValueError(
                     f"{spec} is not in the manifests; known workloads: {', '.join(self.known()) or 'none'}"
                 )
@@ -582,6 +623,9 @@ class Inventory:
             )
             if hits:
                 return hits[0][1]
+            self._refuse_refused(
+                spec, [(k, why) for (n, k, nm), why in self.refused_workloads.items() if (n, nm) == (ns, name)]
+            )
             raise ValueError(f"{spec} is not in the manifests; known workloads: {', '.join(self.known()) or 'none'}")
         named = [ep for (_, _, nm), ep in self.workloads.items() if nm == spec]
         if len(named) == 1:
