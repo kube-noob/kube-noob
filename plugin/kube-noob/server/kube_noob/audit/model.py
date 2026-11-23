@@ -168,8 +168,9 @@ class Report:
     declined: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Every object, or part of one, that was NOT audited: an object of a kind the rules know that this reader
     # REFUSED (an apiVersion that is not a string, not shaped like an API, or a group the kind is not known
-    # under -- G281), a pod spec in a kind with no reader, a container whose image an operator supplies, or an
-    # object in a group this reader refuses (G272). Each entry is {"object", "kind", "why"} with `why` a fixed
+    # under -- G281), a pod spec in a kind with no reader, a container where the reader for its kind does not
+    # look (G360), a container whose image an operator supplies, or an object in a group this reader refuses
+    # (G272). Each entry is {"object", "kind", "why"} with `why` a fixed
     # phrase, never input text, plus `acceptedBy` once an exception accepted it. Not a finding and not an
     # absence: `undetermined` reads it beside `declined`, and while one row no exception accepted is here the
     # verdict is undetermined and `audit` and `gate` exit 1 whatever `--fail-on` says (R1; the sixth review

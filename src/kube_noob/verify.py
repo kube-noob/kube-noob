@@ -2664,8 +2664,9 @@ def _key(f: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _unread_pods(sources: list[Any], accepted: Collection[str] = ()) -> list[str]:
-    """Pod specs the audit has no reader for, or in an API group it does not know for the kind: a container no rule
-    looked at. The audit's own detectors (``kube_noob.audit.podspec``), not a copy.
+    """Pod specs the audit has no reader for, a container where the reader for its kind does not look (G360), or
+    a pod spec in an API group it does not know for the kind: a container no rule looked at. The audit's own
+    detectors (``kube_noob.audit.podspec``), not a copy.
 
     This exists for the documents the gate never saw. ``verify``'s collector reads what ``kubectl apply`` would
     send -- .json files and dot-directories included -- and the gate's collector does not (see ``collect``), so a
@@ -2682,7 +2683,7 @@ def _unread_pods(sources: list[Any], accepted: Collection[str] = ()) -> list[str
     file and says what is in it that no rule read, which is what a reader needs in order to fix it. Saying it from
     two angles is not two problems.
     """
-    from kube_noob.audit.podspec import refused_group, unread_pod_specs
+    from kube_noob.audit.podspec import has_reader, refused_group, unread_pod_specs
     from kube_noob.yamlio import load_documents
 
     seen = set(accepted)
@@ -2700,7 +2701,11 @@ def _unread_pods(sources: list[Any], accepted: Collection[str] = ()) -> list[str
             if ref in seen:
                 continue
             if unread_pod_specs(d):
-                out.append(f"{frame(ref, 120)} in {frame(s.uri)} carries a pod spec no audit rule reads")
+                # One sentence that is true of both cases the predicate has: a kind with no reader, and a kind
+                # with one whose reader does not look where this container is. "Pod spec" was the word while only
+                # the first existed, and `explainer.alibi` is a container that is not a pod spec.
+                what = "a container" if has_reader(d) else "a pod spec"
+                out.append(f"{frame(ref, 120)} in {frame(s.uri)} carries {what} no audit rule reads")
             elif refused_group(d) is not None:
                 out.append(f"{frame(ref, 120)} in {frame(s.uri)} is in an API group kube-noob does not read pods for")
     return out

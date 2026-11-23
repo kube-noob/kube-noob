@@ -561,11 +561,19 @@ class Inventory:
             # An object of a kind this scan does not model is normally nothing to say: a ConfigMap is not a path.
             # One that carries a pod spec is different -- those pods can hold every capability this scan ranks,
             # and dropping them unmentioned reported "0 workloads" for a file full of Argo Rollouts (G232).
-            from kube_noob.audit.podspec import unread_pod_specs
+            from kube_noob.audit.podspec import has_reader, unread_pod_specs
             from kube_noob.yamlio import Document
 
-            if unread_pod_specs(Document(index=0, data=obj)):
-                self.unread(f"{_ref(obj)}: carries a pod spec kube-noob has no reader for, so not ranked", "unmodelled")
+            doc = Document(index=0, data=obj)
+            if unread_pod_specs(doc):
+                # A PodTemplate or a ReplicationController is a kind the AUDIT reads and this scan does not rank:
+                # the sentence for a kind with no reader is false for it (G360).
+                what = (
+                    "a container where kube-noob does not read one in this kind"
+                    if has_reader(doc)
+                    else ("a pod spec kube-noob has no reader for")
+                )
+                self.unread(f"{_ref(obj)}: carries {what}, so not ranked", "unmodelled")
             return
         if k in _KIND_GROUPS and isinstance(api, str) and group and group != _KIND_GROUPS[k]:
             # A Knative `Route` (serving.knative.dev) routes traffic too, to objects this scan does not model: it is
@@ -612,6 +620,31 @@ class Inventory:
         if not isinstance(obj.get("spec") or {}, dict):
             self.unread(f"{_ref(obj)}: spec is not a mapping, so it was not read", "refused")
             return
+        if k in _WORKLOAD_KINDS:
+            # The audit's detector again, for the kinds this scan RANKS. The branch above asks it only of a kind
+            # outside `KINDS`, on the same reasoning the detector itself used until G360 -- a kind with a reader
+            # has nothing unread in it -- so a DeploymentConfig with its containers under `template.Spec` was
+            # "0 workloads, notRead: [], refused: []", and an InferenceService with a privileged
+            # `explainer.alibi` was one workload ranked without it and no word that anything was missing. The
+            # object is still ranked on what was read; `refused`, because it is an object of the wrong shape, and
+            # a capability score that leaves a container out is not one a gate should pass on.
+            from kube_noob import sanitize
+            from kube_noob.audit.podspec import unread_pod_specs
+            from kube_noob.yamlio import Document
+
+            unread_at = unread_pod_specs(Document(index=0, data=obj))
+            if unread_at:
+                # The paths are the object's own keys: cleaned to one line and bounded before they are words in
+                # an entry every view of this scan prints (class 7).
+                where = ", ".join(
+                    sanitize.one_line(".".join(str(step) for step in path))[:120] for path in unread_at[:3]
+                )
+                more = f" and {len(unread_at) - 3} more" if len(unread_at) > 3 else ""
+                self.unread(
+                    f"{_ref(obj)}: holds a container where kube-noob does not read one in this kind "
+                    f"({where}{more}), so it is ranked without it",
+                    "refused",
+                )
         if not meta_ok:
             self.unread(f"{_ref(obj)}: metadata is not a mapping, so it is ranked without its name", "refused")
         if sum(len(v) for v in self.objects.values()) >= MAX_OBJECTS:

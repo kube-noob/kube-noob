@@ -386,7 +386,10 @@ def rules_read(fn: ScenarioFn, ctx: AuditContext, findings: list[Finding]) -> li
 
 
 def red_team_with(
-    ctx: AuditContext, findings: list[Finding], scenarios: tuple[ScenarioFn, ...]
+    ctx: AuditContext,
+    findings: list[Finding],
+    scenarios: tuple[ScenarioFn, ...],
+    not_audited: list[dict[str, Any]] | None = None,
 ) -> list[RedTeamScenario]:
     """Run ``scenarios``. A scenario is only as decided as the rules it reads: "mitigated" claims each of them ran
     and found nothing, so when one did not run (it declined to decide, or could not read its input) the verdict is
@@ -398,7 +401,26 @@ def red_team_with(
     for its apiVersion came back `RT-NODE-CRASH: mitigated` on `evidence: []` -- an affirmative claim of safety
     about an object nothing read, beside an `assumptions` line saying so (G342). Only a subject that was PRESENT
     and unread counts (`unread_subjects`). A subject that is absent ("no PersistentVolumeClaim in the input") is
-    this input's scope, and counting it would make every scenario on every bundle undecided."""
+    this input's scope, and counting it would make every scenario on every bundle undecided.
+
+    ``not_audited`` is the report's `notAudited` rows, and the third case of the same thing (G363). Both checks
+    above ask whether a RULE ran. A rule runs as soon as one object gives it a subject, and is then clean about
+    the objects it read: a hardened Pod beside a privileged Tekton step left `RT-RESOURCE-STARVATION` and
+    `RT-SUPPLY-CHAIN` `mitigated` on `evidence: []`, and an InferenceService whose image an operator supplies was
+    `RT-SUPPLY-CHAIN: mitigated` about an image that is not in the input. No rule declined and no subject was
+    missing, so nothing above fires -- the object is in no rule's record at all. While a row is listed, no scenario
+    is `mitigated`: every scenario here is a claim about what the workloads in this input can do, and the row is
+    an object, or a container, that claim was made without. `exposed` is untouched: a finding is a finding."""
+    rows = [r for r in (not_audited or []) if isinstance(r, dict)]
+    unaudited = ""
+    if rows:
+        # The rows' own cleaned, bounded `object` and fixed-phrase `why` (`engine._not_audited_row`), never the
+        # input's text read again here (class 7). Bounded: on a thousand objects this is one line, not a page.
+        shown = "; ".join(f"{r.get('object') or '?'} ({r.get('why') or 'no reason recorded'})" for r in rows[:3])
+        unaudited = (
+            f"{len(rows)} object(s) in this input were not audited, so this scenario cannot be called mitigated: "
+            f"{shown}{f'; and {len(rows) - 3} more' if len(rows) > 3 else ''}"
+        )
     out: list[RedTeamScenario] = []
     for fn in scenarios:
         with _recording() as recorded:
@@ -422,9 +444,14 @@ def red_team_with(
             ]
             if s.verdict == "mitigated":
                 s.verdict = "undecided"
+        if unaudited and s.verdict == "mitigated":
+            s.evidence = [*s.evidence, unaudited]
+            s.verdict = "undecided"
         out.append(s)
     return out
 
 
-def red_team(ctx: AuditContext, findings: list[Finding]) -> list[RedTeamScenario]:
-    return red_team_with(ctx, findings, SCENARIOS)
+def red_team(
+    ctx: AuditContext, findings: list[Finding], not_audited: list[dict[str, Any]] | None = None
+) -> list[RedTeamScenario]:
+    return red_team_with(ctx, findings, SCENARIOS, not_audited)

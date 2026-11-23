@@ -394,8 +394,142 @@ def _looks_like_a_pod_spec(node: dict[str, Any]) -> bool:
     return any(_container_shaped(node.get(key)) for key in _CONTAINER_MAPPINGS)
 
 
+#: The container lists `containers()` reads out of a pod spec. Named once because the walk below needs the same
+#: three: a list under one of these names is read where it sits in a pod spec the registries claim, and is a
+#: container nobody read anywhere else.
+_READ_LISTS: tuple[str, ...] = ("containers", "initContainers", "ephemeralContainers")
+
+#: Every key a registry names as holding a container, wherever it is registered: the pod spec's own three lists,
+#: the field-shaped containers (`model`, `art`, the framework shorthands) and the injected ones
+#: (`autoscalerOptions`). Derived, never listed again, so a key added to a registry is known here on the day it is
+#: added (review class 9). A mapping under one of these names is a container by NAME as well as by shape: KServe's
+#: canonical `model:` declares no `image` at all, so the image string alone would let an image-less one pass at a
+#: place the reader does not look.
+_REGISTERED_CONTAINER_KEYS: frozenset[str] = frozenset(
+    {
+        *_READ_LISTS,
+        *(key for keys in EMBEDDED_CONTAINER_KEYS.values() for key in keys),
+        *(str(where[-1]) for pairs in INJECTED_CONTAINERS.values() for where, _ in pairs),
+    }
+)
+
+
+def _path_order(path: PathT) -> tuple[tuple[int, int, str], ...]:
+    """A sort key for paths that cannot raise: list indices in numeric order, then every other step by its text.
+
+    A plain `sorted` over paths compares step with step, and a YAML mapping may hold `1:` beside `b:` -- an int
+    key and a string key at the same depth. Two hits under such siblings raised `TypeError: '<' not supported
+    between instances of 'int' and 'str'` out of this detector, on input that is perfectly legal YAML (review
+    class 16; found while writing G360, in the walk that was already here). For paths a plain sort could order,
+    this is the same order.
+    """
+    return tuple((0, step, "") if type(step) is int else (1, 0, str(step)) for step in path)
+
+
+def has_reader(doc: Document) -> bool:
+    """Whether a registry names this object's kind, so that a rule reads pod specs out of it.
+
+    The one question that decides which of two true sentences a caller prints for an `unread_pod_specs` hit: a
+    kind WITHOUT a reader holds "pods in a kind kube-noob has no reader for"; a kind WITH one holds a container at
+    a place its reader does not look. Saying the first about a DeploymentConfig is false and sends the reader to
+    ask for a kind that is already supported (G360).
+    """
+    return isinstance(doc.data, dict) and (doc.kind in POD_SPEC_PATHS or doc.kind in EMBEDDED_POD_SPEC_PATHS)
+
+
+def _holds_a_mapping(value: object) -> bool:
+    """A non-empty mapping, or a list with a mapping in it: what a container key holds when it holds anything."""
+    if isinstance(value, dict):
+        return bool(value)
+    return isinstance(value, list) and any(isinstance(item, dict) for item in value)
+
+
+def _unread_containers(doc: Document) -> list[PathT]:
+    """Every place in an object of a kind WITH a reader that holds a container the reader did not read.
+
+    A registry entry is a claim: "the containers of this kind are here". Until G360 `unread_pod_specs` took the
+    claim on trust and returned nothing for any kind a registry named, so a container anywhere else in such an
+    object was read by no rule and reported by no detector -- and three of these kinds (`DeploymentConfig`,
+    `InferenceService`, the KubeRay kinds) have no bundled schema to notice the difference. A privileged container
+    under `template.Spec` (capital S) in a DeploymentConfig scored 92.0, gated `passed` and verified `allow`.
+
+    So the claim is checked against what the reader DID, not against what the registry says it would do. The set
+    pruned from the walk is exactly the container paths `containers()` yielded, per CONTAINER and not per pod
+    spec. That granularity is the whole design: `spec.explainer.alibi` sits inside `spec.explainer`, a pod spec
+    the registry claims and the reader opened, and pruning by pod-spec path hides it behind the `art` beside it.
+
+    Two things are reported, both at a path nothing read:
+
+    * a container by SHAPE -- a mapping that declares a string `image`, the one discriminator this detector has
+      always rested on, under any key at all;
+    * a container by NAME -- a mapping, or a list holding one, under a key a registry names as a container holder
+      (`_REGISTERED_CONTAINER_KEYS`), whether or not it declares an image.
+
+    Three places hold a mapping with a string `image` that is not a container, and are not walked:
+
+    * inside a container the reader read: nothing under a container is another container;
+    * the `volumes` of a pod spec the reader read: `rbd.image` names a block-device image and an image volume
+      names an OCI artifact; both are storage. (`volumes` under a pod spec the reader did NOT read is walked like
+      everything else there -- that pod spec is already the finding.)
+    * the object's own top-level `status`: `kubectl get -o yaml` and a must-gather carry
+      `status.containerStatuses[].image`, written by the kubelet about containers the spec already declares, and
+      a `status` in a manifest is discarded on apply.
+
+    What a hit means, and what it does not. It withholds the verdict; it is not a finding and makes no claim about
+    what the container does. Where the field is one the kind's schema does not define, a current API server prunes
+    or rejects it and the container never runs -- which is the case for every shape this was found on. The defect
+    was never a deployable bypass: it was a score stated over a container no rule had looked at.
+
+    The path returned is the KEY that holds the container (`spec.explainer.alibi`,
+    `spec.template.Spec.containers`), once per key however many containers a list holds, so the reader of the
+    report is pointed at the field to fix.
+    """
+    pods = pod_templates(doc)
+    read = {c.path for pt in pods for c in containers(pt)}
+    read_pods = {pt.path for pt in pods}
+    # A container the operator injects into a pod the reader read is the reader's, whatever it holds: KubeRay's
+    # `autoscalerOptions: {upscalingMode: Aggressive}` declares neither an image nor a securityContext, the reader
+    # has nothing to say about it, and that is a decision about a field it looked at, not a field it missed.
+    read |= {where for where, joins in INJECTED_CONTAINERS.get(doc.kind, ()) if joins in read_pods}
+    # A list the reader iterated. An entry in it that is a mapping is in `read`; an entry that is not is not a
+    # container. A `containers:` that is not a list was skipped by the reader whole, and is not here.
+    read_lists = {(*pt.path, key) for pt in pods for key in _READ_LISTS if isinstance(pt.spec.get(key), list)}
+    out: set[PathT] = set()
+    seen = 0
+    stack: list[tuple[Any, PathT, int]] = [(doc.data, (), 0)]
+    while stack:
+        node, path, depth = stack.pop()
+        seen += 1
+        if seen > _WALK_MAX_NODES or depth > MAX_DEPTH:
+            # Unreachable behind the loader's own bounds, and if it is ever reached the answer is not "nothing
+            # found": the part of the object this walk did not finish is a part nobody read.
+            out.add(path)
+            break
+        if path in read or path == ("status",):
+            continue
+        if path and path[-1] == "volumes" and path[:-1] in read_pods:
+            continue
+        if isinstance(node, dict):
+            if path and _container_shaped(node):
+                # Reported at the key that holds it: the list for an entry of a list, itself for a mapping.
+                out.add(path[:-1] if isinstance(path[-1], int) else path)
+                continue
+            for key in node:
+                child = node[key]
+                at = (*path, key)
+                if key in _REGISTERED_CONTAINER_KEYS and at not in read and at not in read_lists:
+                    if _holds_a_mapping(child):
+                        out.add(at)
+                    continue
+                stack.append((child, at, depth + 1))
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                stack.append((item, (*path, i), depth + 1))
+    return sorted(out, key=_path_order)
+
+
 def unread_pod_specs(doc: Document) -> list[PathT]:
-    """Every pod-spec-shaped mapping in this object that no reader above would have looked at.
+    """Every place in this object that holds a container no reader above looked at.
 
     This is the answer to the question the registries cannot answer: there are far more workload CRDs than four,
     and a pod spec inside a kind with no reader produced no findings, no declined rules and **no word of any
@@ -403,15 +537,23 @@ def unread_pod_specs(doc: Document) -> list[PathT]:
     possible and guessing a path produces a confident wrong finding, so this does neither: it finds the shape,
     reports that it was not audited, and leaves the verdict to a reader who will be told the gap exists.
 
-    Returns nothing for a kind the registries do read -- there the pod specs are known, and a `containers` list
-    somewhere else in such an object is far more likely to be a template for something else than a pod kube-noob
-    missed. For those kinds the registry is the claim, and extending it is how a new path gets read.
+    Two cases, told apart by `has_reader`, and a caller that words the result must ask it:
+
+    * a kind with NO reader: the path of each pod-spec-shaped mapping (`_looks_like_a_pod_spec`);
+    * a kind WITH a reader: the path of each key holding a container that reader did not read
+      (`_unread_containers`). This case returned nothing until G360, by kind and without looking: "for those kinds
+      the registry is the claim". A claim nobody checks is how a privileged container in a DeploymentConfig, an
+      InferenceService and a RayCluster each printed a score and passed the gate.
+
+    Every consumer of this function inherits both cases, which is the point of fixing the predicate rather than a
+    call site (review class 25): the audit's `notAudited`, `verify`'s own detector, the control-plane rules and the
+    posture scan all call it directly.
     """
     if isinstance(doc.data, dict):
-        if doc.kind in POD_SPEC_PATHS or doc.kind in EMBEDDED_POD_SPEC_PATHS:
-            return []
         if refused_group(doc) is not None:
             return []  # already reported as a kind read from the wrong group; one message is enough
+        if has_reader(doc):
+            return _unread_containers(doc)
     elif not isinstance(doc.data, list):
         return []
     # A document that is a sequence (one item of a `kind: List` that was itself a list of Pods) is walked too:
@@ -423,6 +565,10 @@ def unread_pod_specs(doc: Document) -> list[PathT]:
         node, path, depth = stack.pop()
         seen += 1
         if seen > _WALK_MAX_NODES or depth > MAX_DEPTH:
+            # Not `break` alone. Stopping here and returning what was found so far is the truncation review class
+            # 2 is about: the part of the object this walk did not reach is a part nobody read, so it is reported
+            # where the walk stopped rather than left out (G362).
+            out.append(path)
             break
         if isinstance(node, dict):
             if _looks_like_a_pod_spec(node):
@@ -431,9 +577,14 @@ def unread_pod_specs(doc: Document) -> list[PathT]:
             for key in sorted(node, key=str):
                 stack.append((node[key], (*path, key), depth + 1))
         elif isinstance(node, list):
-            for i, item in enumerate(node[:200]):
+            # Every item. This read `node[:200]`, a second bound inside the node budget above, and what it cut
+            # was arrival order: an Argo Workflow whose 201st template ran a privileged `docker:24-dind` scored
+            # 100.0, exit 0, with nothing under `notAudited` -- a container that DOES run, in a document reported
+            # clean, because of where in a list it sat (G362, review class 2). The loader's node budget already
+            # bounds the document and `_WALK_MAX_NODES` bounds this loop; the walk is linear in both.
+            for i, item in enumerate(node):
                 stack.append((item, (*path, i), depth + 1))
-    return sorted(out)
+    return sorted(set(out), key=_path_order)
 
 
 def containers(pod: PodTemplate, include_init: bool = True, *, ephemeral: bool = True) -> Iterator[ContainerRef]:

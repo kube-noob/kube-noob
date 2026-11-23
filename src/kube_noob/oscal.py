@@ -224,7 +224,7 @@ def _is_absent_subject(why: str) -> bool:
     return why.startswith(_ABSENT_SUBJECT) and "in the input" in why
 
 
-def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) -> list[str]:
+def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0, unaudited: int = 0) -> list[str]:
     """The rules for this control that reached no verdict for a reason that IS a gap in the evidence.
 
     Not the ones whose subject is simply absent (see `_ABSENT_SUBJECT`): an unreadable file, a refused object, a
@@ -238,6 +238,14 @@ def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) 
     and nothing counted one: such a file is in no rule's `why`, because no rule ever met it, so seven objectives
     read `satisfied/pass` beside a remark that a file had been skipped (G343). It is a gap in EVERY control's
     evidence -- the file could hold any kind -- so it is counted here, once, for whichever control is asked about.
+
+    ``unaudited`` is how many OBJECTS in the input were not audited and no exception accepted (`notAudited`), and
+    it is the same argument one level down (G363). A rule's `clean` is a statement about the objects that rule
+    READ. An object nothing read -- a kind with no reader, a refused apiVersion, a container where the reader for
+    its kind does not look -- is in no rule's `why` whenever some OTHER object gave the rule a subject: a hardened
+    Pod beside a privileged Tekton step left every pod rule "clean", and sixteen objectives read `satisfied/pass`
+    in a run the gate called incomplete. The single-object case never showed it, because there the rules had no
+    subject at all and said so.
     """
     gaps = [r for r in (c.get("notEvaluatedRules") or []) if not _is_absent_subject(reasons.get(str(r), ""))]
     unseen = int(c.get("moreNotEvaluated") or 0)
@@ -245,10 +253,11 @@ def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) 
         gaps
         + [f"{unseen} further rule(s) whose reason is not recorded here"] * bool(unseen)
         + [f"{unread} input file(s) that could not be read"] * bool(unread)
+        + [f"{unaudited} object(s) in the input that were not audited"] * bool(unaudited)
     )
 
 
-def _partly_evidenced(c: dict[str, Any], reasons: dict[str, str], unread: int = 0) -> bool:
+def _partly_evidenced(c: dict[str, Any], reasons: dict[str, str], unread: int = 0, unaudited: int = 0) -> bool:
     """A control whose only evidence is clean rules, and some of whose rules went unread rather than unneeded.
 
     `satisfied` is the strongest word this document says, so it has to mean the objective was evidenced. It did
@@ -267,7 +276,7 @@ def _partly_evidenced(c: dict[str, Any], reasons: dict[str, str], unread: int = 
     """
     if c.get("findings") or c.get("excepted") or c.get("withheld"):
         return False
-    return bool(c.get("clean")) and bool(_evidence_gaps(c, reasons, unread))
+    return bool(c.get("clean")) and bool(_evidence_gaps(c, reasons, unread, unaudited))
 
 
 def _not_evaluated_reasons(summary: dict[str, Any]) -> dict[str, str]:
@@ -279,7 +288,9 @@ def _not_evaluated_reasons(summary: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _is_reviewed(c: dict[str, Any], coverage: bool, reasons: dict[str, str], unread: int = 0) -> bool:
+def _is_reviewed(
+    c: dict[str, Any], coverage: bool, reasons: dict[str, str], unread: int = 0, unaudited: int = 0
+) -> bool:
     """The ONE predicate for whether this document reviews a control.
 
     `include-controls`, `exclude-controls` and whether a finding is emitted all have to agree. When they did
@@ -287,7 +298,7 @@ def _is_reviewed(c: dict[str, Any], coverage: bool, reasons: dict[str, str], unr
     document, beside a description saying no control was reviewed.
     """
     if coverage:
-        return _reviewed(c) and not _partly_evidenced(c, reasons, unread)
+        return _reviewed(c) and not _partly_evidenced(c, reasons, unread, unaudited)
     # Without a coverage record, "no findings" is not evidence of anything, so only findings count.
     return bool(c.get("findings") or c.get("excepted"))
 
@@ -299,12 +310,13 @@ def _findings(
     coverage: bool,
     reasons: dict[str, str],
     unread: int = 0,
+    unaudited: int = 0,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in controls:
         cid, title = str(c["id"]), str(c.get("title", ""))
         n, excepted = int(c.get("findings") or 0), int(c.get("excepted") or 0)
-        if not _is_reviewed(c, coverage, reasons, unread):
+        if not _is_reviewed(c, coverage, reasons, unread, unaudited):
             continue  # not reviewed: it gets an exclusion, never a finding
         withheld = int(c.get("withheld") or 0)
         if n:
@@ -400,12 +412,23 @@ def assessment_results(
     # have to agree about a file that was not read, as they do about a rule that was not run (G335, G343).
     # Only a file nobody accepted: under `--skip-unreadable` the caller has said "decide without that file", so
     # the objectives are stated over the files that were read and the remarks below name the rest (AGENTS.md).
-    from kube_noob.audit.model import open_unread, unread_rows
+    from kube_noob.audit.model import open_not_audited, open_unread, unread_rows
 
     unreadable = unread_rows(report)
-    unread = len(open_unread(report))
-    reviewed = [c for c in controls if _is_reviewed(c, coverage, reasons, unread)]
-    excluded = [c for c in controls if not _is_reviewed(c, coverage, reasons, unread)]
+    # A file the directory walk declined to read AS A MANIFEST and that forbids a verdict (`apiversion:` for
+    # `apiVersion:`, a file it did not open) is a file nothing was audited from, like one that could not be
+    # parsed: G343 counted the second and not the first, so sixteen objectives read `satisfied/pass` beside a
+    # privileged Pod in a file whose first key was misspelt (G363). `forbidsVerdict` is the gate's own flag
+    # (`gate.forbids_verdict`), the same one `incomplete_reason` reads.
+    blocked = [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
+    unread = len(open_unread(report)) + len(blocked)
+    # The same for an OBJECT nothing read, through the same predicate the gate's verdict reads (G363). Only a row
+    # nobody accepted: a `notAudited` exception is the caller saying "decide without that object", exactly as
+    # `--skip-unreadable` says it of a file, and the objectives are then stated over what was audited.
+    open_rows = open_not_audited([r for r in report.get("notAudited") or [] if isinstance(r, dict)])
+    unaudited = len(open_rows)
+    reviewed = [c for c in controls if _is_reviewed(c, coverage, reasons, unread, unaudited)]
+    excluded = [c for c in controls if not _is_reviewed(c, coverage, reasons, unread, unaudited)]
     selection: dict[str, Any] = {
         "description": (
             f"Controls for which at least one kube-noob rule ran over this input. {_NOT_A_COMPLIANCE_CLAIM}"
@@ -424,7 +447,7 @@ def assessment_results(
         )
     if excluded:
         selection["exclude-controls"] = [{"control-id": control_id(str(c["id"]))} for c in excluded]
-        partial = [c for c in excluded if _partly_evidenced(c, reasons, unread)]
+        partial = [c for c in excluded if _partly_evidenced(c, reasons, unread, unaudited)]
         selection["remarks"] = (
             "Excluded controls had no rule run over this input, or had some rules run clean while others "
             "reached no verdict -- a stage filter, an object kind no rule covers, or a partial bundle. They are "
@@ -450,6 +473,13 @@ def assessment_results(
                 selection["remarks"] += (
                     f" {unread} input file(s) could not be read, and what they hold is evidence for any of "
                     "these controls that was never gathered."
+                )
+            if unaudited:
+                # For the same reason, and it is the only reason a reader is given for a control listed above
+                # as "N clean, 0 not evaluated": every rule that ran was clean on the objects it read.
+                selection["remarks"] += (
+                    f" {unaudited} object(s) in the input were not audited, and what they hold is evidence for "
+                    "any of these controls that was never gathered."
                 )
         # The record's own reasons, grouped: an assessor reading "excluded" needs "no Service in the input",
         # not a list of possibilities (G281). Grouped by reason so a Deployment-only input is one line per
@@ -480,7 +510,7 @@ def assessment_results(
         # ordered by (severity, docIndex, line), so listing the same two files in the other order produced the
         # same uuids and different bytes -- an identity that says "unchanged" over a document that is not.
         result["observations"] = sorted(observations, key=lambda o: o["uuid"])
-    oscal_findings = _findings(controls, scope, obs_by_control, coverage, reasons, unread)
+    oscal_findings = _findings(controls, scope, obs_by_control, coverage, reasons, unread, unaudited)
     if oscal_findings:
         result["findings"] = oscal_findings
     remarks = [str(a) for a in report.get("assumptions") or []]
@@ -493,6 +523,22 @@ def assessment_results(
         remarks.append(
             f"{len(unreadable)} input file(s) could not be read and were skipped: {names}. This assessment "
             "covers only the files that were read."
+        )
+    if blocked:
+        names = ", ".join(sorted(str(s.get("file") or "?") for s in blocked))
+        remarks.append(
+            f"{len(blocked)} input file(s) were not read as manifests and nothing in them was audited: {names}. No "
+            "control objective is reported satisfied on clean rules alone while that is so."
+        )
+    if open_rows:
+        # Named in the result itself, as an unread file is: the audit's own assumption lines say it too, but
+        # those are the audit's words about each object and this is the document's statement of its own scope.
+        # `object` and `why` are the rows' cleaned, bounded fields (`engine._not_audited_row`), never raw input.
+        named = "; ".join(f"{r.get('object') or '?'} ({r.get('why') or 'no reason recorded'})" for r in open_rows[:5])
+        more = f"; and {len(open_rows) - 5} more" if len(open_rows) > 5 else ""
+        remarks.append(
+            f"{len(open_rows)} object(s) in the input were not audited: {named}{more}. No control objective is "
+            "reported satisfied on clean rules alone while that is so."
         )
     orphans = sum(1 for f in findings_in if not (f.get("controls") or []))
     if orphans:
