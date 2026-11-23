@@ -50,8 +50,24 @@ def _read(path: str) -> str:
         return sys.stdin.read()
     p = Path(path)
     if p.is_dir():
-        return "\n---\n".join(text for _, text in _dir_yaml(p)[0])
+        ok, bad = _dir_yaml(p)
+        if bad:
+            # The files of a directory that could not be read used to be dropped here, without a word: every
+            # command that reads a directory through this function (`posture scan|reach|snapshot`, `policy
+            # reach`, `vuln threat`, `protocol`) answered about the files that were left, and
+            # `posture scan -f k8s/ --fail-above 30 --require-complete` exited 0 beside a file YAML could not
+            # parse. The same file named on its own is refused, so the directory is too (G350).
+            raise _UnreadInput(path, bad)
+        return "\n---\n".join(text for _, text in ok)
     return p.read_text(encoding="utf-8")
+
+
+class _UnreadInput(Exception):
+    """A directory given as input held a file that could not be read: no answer is attempted, exit 5."""
+
+    def __init__(self, path: str, bad: list[dict[str, str]]) -> None:
+        super().__init__(path)
+        self.path, self.bad = path, bad
 
 
 def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
@@ -61,14 +77,22 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     UTF-8 or not YAML then decided the outcome for every other file in the directory, and said so against a line of
     the combined text rather than against a path anyone could open.
     """
-    from kube_noob.gate import unreadable_reason
+    from kube_noob.gate import _identity, not_opened_reason, unreadable_reason
 
     ok: list[tuple[str, str]] = []
     bad: list[dict[str, str]] = []
-    for f in sorted(d.rglob("*")):
-        if f.suffix not in {".yaml", ".yml"} or not f.is_file():
-            continue
+    every = [f for f in sorted(d.rglob("*")) if f.is_file()]
+    opened = {ident for f in every if f.suffix in {".yaml", ".yml"} and (ident := _identity(f)) is not None}
+    for f in every:
         rel = str(f.relative_to(d))
+        if f.suffix not in {".yaml", ".yml"}:
+            # A manifest this walk does not open is a file nobody read, and it is named as one: `pod.json` beside
+            # a clean `ok.yaml` used to leave `audit -f k8s/` at score 100.0, exit 0, with no word about it. The
+            # decision is the gate's own, so the two walks cannot answer differently about one directory (G351).
+            why = not_opened_reason(d, f, opened, reads_hidden=True)
+            if why is not None:
+                bad.append({"path": rel, "why": why})
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
@@ -158,6 +182,17 @@ def _refuse_unreadable(bad: list[dict[str, str]], flag: str = "--skip-unreadable
     print(
         f"error: {len(bad)} file(s) could not be read, so this is not a clean result; pass {flag} to audit the rest "
         "and list these in the report",
+        file=sys.stderr,
+    )
+
+
+def _refuse_unread_input(exc: _UnreadInput) -> None:
+    """The refusal for a command with no `--skip-unreadable`: the files, and the two ways to get an answer."""
+    for b in exc.bad:
+        print(_error_line(f"error: {exc.path}: {b['path']}: {b['why']}"), file=sys.stderr)
+    print(
+        f"error: {len(exc.bad)} file(s) under {_error_line(exc.path)} could not be read, so no answer was given "
+        "about the rest; correct them, or name the files to read with -f",
         file=sys.stderr,
     )
 
@@ -2308,7 +2343,8 @@ def build_parser() -> argparse.ArgumentParser:
         "when a path scores above it; exit 5 when an object or a read was refused (an object of the wrong shape, "
         "a read the cluster forbade or did not answer), listed under `refused`, because the gate did not see "
         "everything; otherwise 0. What was absent rather than refused (a CRD the cluster does not serve, a role "
-        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete.",
+        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete, which "
+        "exits 5 on it with or without --fail-above.",
     )
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
@@ -2331,7 +2367,7 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument(
         "--require-complete",
         action="store_true",
-        help="with --fail-above: exit 5 when anything at all is under notRead, absent as well as refused",
+        help="exit 5 when anything at all is under notRead, absent as well as refused; with --fail-above or on its own",
     )
 
     prc = posub.add_parser(
@@ -3039,6 +3075,9 @@ def _main(a: argparse.Namespace) -> int:
 
             _MODEL_KNOWLEDGE["line"] = knowledge_line(s.data_dir)
         return _dispatch(a, s)
+    except _UnreadInput as exc:
+        _refuse_unread_input(exc)
+        return 5
     except ClarificationNeeded as exc:
         _emit({"status": "needs-clarification", "questions": exc.questions}, "yaml" if a.format == "text" else a.format)
         return 3
@@ -4404,9 +4443,13 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
-    if a.fail_above is None:
+    # `--require-complete` is the caller saying a partial answer is not an answer, and it says that whether or
+    # not a score threshold came with it. Returning 0 here whenever `--fail-above` was absent made the flag do
+    # nothing on its own: `posture scan -f x.yaml --require-complete` exited 0 on a Deployment the scan had
+    # refused and named under `refused` (G353). `posture reach --require-complete` never needed a second flag.
+    if a.fail_above is None and not a.require_complete:
         return 0
-    if top_score > a.fail_above:
+    if a.fail_above is not None and top_score > a.fail_above:
         return 1
     # A gate that was refused part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
     # privileged Deployment used to leave total 0 and exit 0. Only a refusal counts by default: a CRD the cluster

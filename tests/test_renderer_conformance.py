@@ -798,6 +798,7 @@ def test_two_renderers_of_one_report_state_the_same_gap(bundles: dict[str, Bundl
 NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.forbids_verdict": "a predicate over one skip reason, not an output",
     "gate.unreadable_reason": "a predicate over one file's bytes, not an output",
+    "gate.not_opened_reason": "a predicate over one file a directory walk left alone, not an output (G351)",
     "gate.verdict_word": "THE predicate every renderer here reads; it has no output of its own",
     "gate.render": "renders a Helm chart to manifests; it runs before the audit and reports no verdict",
     "gate.collect": "reads files into Sources; it reports no verdict",

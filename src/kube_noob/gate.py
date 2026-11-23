@@ -162,10 +162,58 @@ def _holds_a_manifest(path: Path) -> bool:
     """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-        docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
-    except (OSError, sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+    except OSError:
         return False
+    try:
+        docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
+    except (sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+        # Not YAML is not the same as not a manifest. JSON indented with tabs is valid JSON that YAML refuses (a
+        # tab cannot start a YAML token), and a stream of objects written one after another (`}{`) is what
+        # `kubectl get -o json` piped through a filter and several generators emit; `kubectl apply -f` sends both.
+        # Asking the YAML parser alone made each of them "a file that does not parse", so a privileged Pod in
+        # `pod.json` beside a clean `ok.yaml` gated `passed`, exit 0, with `skipped: []` (G352).
+        docs = _json_stream(text)
     return any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs)
+
+
+def _json_stream(text: str) -> list[Any]:
+    """Every JSON value in a text that is one value or several written one after another; `[]` when it is not JSON.
+
+    Only ever asked about a file YAML could not read. Nothing here audits the file: the answer decides whether a
+    pass over the directory would be a statement about a manifest nobody opened.
+    """
+    try:
+        return sanitize.loads_all_bounded(text, sanitize.MAX_JSON_DEPTH_FILE)
+    except (ValueError, RecursionError):
+        return []
+
+
+def not_opened_reason(root: Path, f: Path, opened: set[tuple[int, int]], *, reads_hidden: bool = False) -> str | None:
+    """Why a file a directory walk left alone is a gap in the answer, or None when it is not one.
+
+    The ONE decision about a file a walk did not open, asked by every walk that states a verdict over a directory:
+    the gate's (`collect`) and the audit family's (`cli._dir_yaml`). The audit's walk had no such question to
+    ask, so `audit -f k8s/` over a clean `ok.yaml` and a privileged `pod.json` scored 100.0 and exited 0 while the
+    gate, on the same directory, exited 5 naming the file (G351, review class 9).
+
+    A file is a gap only if it is demonstrably a manifest -- `_holds_a_manifest` opens it and looks -- and is not
+    a second name for a file the walk did open (`opened`, by identity). Guessing from the extension made every
+    repository with a `.github/workflows/ci.yml` incomplete (G332). `reads_hidden` is for a walk that enters
+    dot-directories and reads dot-files, so that only the extension can be why it left a file alone.
+    """
+    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
+        return None
+    if _identity(f) in opened:
+        return None  # the same file under another name: already audited, so not a gap
+    rel = f.relative_to(root)
+    hidden = any(part.startswith(".") for part in rel.parts)  # .git, .github, ..data
+    if f.name.startswith(".") and not reads_hidden:
+        where = "a dot-file, which the walk does not read"
+    elif hidden and not reads_hidden:
+        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
+    else:
+        where = "the walk reads only .yaml and .yml"
+    return f"{NOT_OPENED_PREFIX}: {where}; name it with -f to audit it"
 
 
 def _classify(path: Path | None, text: str) -> str | None:
@@ -290,24 +338,9 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                     # repository, so it made every real gate run incomplete: an alert on every repository is one
                     # nobody reads, which is a worse outcome than the gap it replaces. Reading the file to decide
                     # does not audit it and does not change which files are audited (G332).
-                    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
-                        continue
-                    if _identity(f) in opened:
-                        continue  # the same file under another name: already audited, so not a gap
-                    rel = f.relative_to(p)
-                    if f.name.startswith("."):
-                        where = "a dot-file, which the walk does not read"
-                    elif hidden:
-                        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
-                    else:
-                        where = "the walk reads only .yaml and .yml"
-                    items.append(
-                        (
-                            _uri(f),
-                            f.read_text(encoding="utf-8", errors="replace"),
-                            f"{NOT_OPENED_PREFIX}: {where}; name it with -f to audit it",
-                        )
-                    )
+                    why = not_opened_reason(p, f, opened)
+                    if why is not None:
+                        items.append((_uri(f), f.read_text(encoding="utf-8", errors="replace"), why))
                 for uri, text, why in items:
                     if why is None:
                         bad[uri] = unreadable_reason(text)

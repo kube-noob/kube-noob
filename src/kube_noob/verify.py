@@ -2747,6 +2747,14 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                         out.append(gate.Source(gate._uri(f), "", unreadable="not UTF-8 text"))
                         continue
                     why = gate._classify(f, text)
+                    if why is not None and not gate.forbids_verdict(why) and gate._holds_a_manifest(f):
+                        # kubectl knows nothing about charts: a file under `templates/` that IS a manifest as it
+                        # stands is sent like any other, so it is audited like any other. The gate's "a Helm
+                        # template" answer is about a chart somebody will render; taking it here made
+                        # `verify -f .` answer `allow`, exit 0, with a privileged Pod in `chart/templates/pod.yaml`
+                        # listed under `files` as checked (G354). A template that is not yet YAML keeps the
+                        # gate's answer: kubectl cannot send it.
+                        why = None
                     bad = gate.unreadable_reason(text) if why is None else None
                     out.append(gate.Source(gate._uri(f), text, skip=why, unreadable=bad))
                     total += len(text)
