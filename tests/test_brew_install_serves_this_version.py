@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -81,4 +82,9 @@ def test_the_job_still_waits_for_pypi_before_writing_anything() -> None:
     assert jobs["homebrew"]["needs"] == "publish-pypi"
     script = _homebrew_script()
     assert "PyPI files for $version not available" in script and "for attempt in" in script
-    assert "files.pythonhosted.org" in FORMULA.read_text(encoding="utf-8")
+    # By host, not by substring. `"files.pythonhosted.org" in url` also matches
+    # https://elsewhere.example/files.pythonhosted.org/... -- review class 3, and CodeQL flagged exactly
+    # that here as "incomplete URL substring sanitization" when this line was first written as one.
+    urls = re.findall(r'url "(https://[^"]+)"', FORMULA.read_text(encoding="utf-8"))
+    assert urls, "the formula pins no urls at all"
+    assert {urlsplit(u).netloc for u in urls} == {"files.pythonhosted.org"}, sorted({urlsplit(u).netloc for u in urls})
