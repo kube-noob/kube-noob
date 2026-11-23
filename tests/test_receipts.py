@@ -658,14 +658,14 @@ def test_a_gate_that_exits_5_still_has_a_verdict_and_the_receipt_records_that_co
     # before G340, when a file nobody could read left the gate's own word at `failed`. G340 made that file the
     # missing evidence it is -- `report["incomplete"]` is true and every renderer says `incomplete` -- and a
     # receipt still saying `failed` with no reason beside exit 5 would be the one view of this run that disagrees
-    # with the others (G357). The receipt reads the gate's word and the gate's reason; it has neither of its own.
+    # with the others (G359). The receipt reads the gate's word and the gate's reason; it has neither of its own.
     assert payload["scope"]["gateVerdict"] == "incomplete"
     assert "broken.yaml" in payload["verdict"]["undetermined"]
     assert "could not be read" in payload["verdict"]["undetermined"]
     assert [b["path"] for b in payload["scope"]["inputsNotRead"]]
 
 
-# --- the receipt reads the verdict the report already carries (G357) ----------------------------------------------
+# --- the receipt reads the verdict the report already carries (G359) ----------------------------------------------
 
 _NEAR_MISS = _DEPLOY.replace("apiVersion: apps/v1", "apiversion: apps/v1")
 
@@ -676,7 +676,7 @@ def _gate_report(argv: list[str]) -> dict[str, Any]:
 
 
 def test_an_undetermined_audit_is_not_exit_0_because_a_key_was_renamed_under_the_receipt(tmp_path: Path) -> None:
-    """The defect G357 fixes, at the call site: `audit` returns what `receipt.audit_exit_code` says, with or
+    """The defect G359 fixes, at the call site: `audit` returns what `receipt.audit_exit_code` says, with or
     without `--receipt`. That function read `summary.scoreWithheld`, the name G281 retired; the key was then
     simply absent, an absent key read as "not withheld", and an undetermined audit with nothing at `--fail-on`
     exited 0. The same run with and without the flag must return the same code, and it is 1."""

@@ -493,7 +493,7 @@ def _receipt(b: Bundle, command: str) -> Any:
     Through `cli.main` and not through `receipt.build`, because the fields this adapter reads are filled in by the
     command (`_write_audit_receipt`, `_write_gate_receipt`), and that is where they went wrong: the receipt read
     `summary.scoreWithheld` after G281 retired the name, and recorded exit 1 and the word `failed` for a gate
-    that exited 5 and said `incomplete` (G357). Written BESIDE the fixture directory, never inside it: a JSON
+    that exited 5 and said `incomplete` (G359). Written BESIDE the fixture directory, never inside it: a JSON
     file in the directory being audited is a file the walk has to account for.
 
     `audit` refuses a directory holding a file it could not read and writes no receipt (exit 5). That refusal is
@@ -881,7 +881,7 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     # (`receipt.audit`, `receipt.gate`). What this tool still owes, held by tests/test_receipts.py: it never
     # answers `identical` for something it could not check (no manifests, a digest that differs, another
     # kube-noob), and it recomputes the verdict by the same functions the command used rather than its own
-    # (`test_the_mcp_verifier_reproduces_an_undetermined_receipt`, G357).
+    # (`test_the_mcp_verifier_reproduces_an_undetermined_receipt`, G359).
     "mcp.verify_receipt": (
         "answers whether a receipt's recorded verdict is reproduced (identical / differs / cannot-be-checked), "
         "not a verdict over the input; the receipt document itself is adapted as receipt.audit and receipt.gate"
@@ -978,6 +978,6 @@ def test_the_adapters_cover_the_renderers_the_seven_defects_were_found_in() -> N
         "mcp.fedramp_ksi",  # G330
     ):
         assert name in ADAPTERS, f"{name} lost its adapter"
-    assert {"receipt.audit", "receipt.gate"} <= set(ADAPTERS), "a receipt is a view of the verdict (G357)"
+    assert {"receipt.audit", "receipt.gate"} <= set(ADAPTERS), "a receipt is a view of the verdict (G359)"
     assert len(ADAPTERS) >= 20
     assert len(FIXTURES) >= 7

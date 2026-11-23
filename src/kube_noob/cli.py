@@ -1116,7 +1116,7 @@ def _write_gate_receipt(
         "resources": rc.capped(list(report.get("resources") or []))[0],
         "resourcesWithheld": rc.capped(list(report.get("resources") or []))[1],
         # The gate report carries the audit's assumptions and how many findings an exception removed; a receipt
-        # that wrote `[]` and nothing was recording "none" for a thing it had not looked at (G357).
+        # that wrote `[]` and nothing was recording "none" for a thing it had not looked at (G359).
         "assumptions": rc.capped(list(report.get("assumptions") or []), 60)[0],
         "assumptionsWithheld": rc.capped(list(report.get("assumptions") or []), 60)[1],
         "exceptedFindings": report.get("excepted"),
@@ -1265,7 +1265,7 @@ def _replay_gate(payload: dict[str, Any], s: Settings, base: Path | None) -> dic
             default_namespace=settings.get("namespace"),
             repo=Path.cwd(),
             # The waiver is part of the question: `gate.run` marks an unread file `acceptedBy` when the caller
-            # passed the flag, and `incomplete` and the exit code are read from that row (G340, G357).
+            # passed the flag, and `incomplete` and the exit code are read from that row (G340, G359).
             skip_unreadable=bool(settings.get("skipUnreadable")),
         )
     except (gate.GateError, ExceptionsError) as exc:
@@ -1395,7 +1395,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     elif not quiet_pass:
         _emit(report, fmt)
     # Decided once, before the receipt is written, by the one rule a replay also reads (`receipt.gate_exit_code`):
-    # the receipt records the code this function returns, including the 5 for a file the walk declined (G357).
+    # the receipt records the code this function returns, including the 5 for a file the walk declined (G359).
     rc = receipt_module.gate_exit_code(report)
     if receipt_target is not None:
         _write_gate_receipt(a, s, receipt_target, report, sources, rc, started)
@@ -3690,7 +3690,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             # ONE place for the arithmetic (`receipt.audit_exit_code`): what is returned here is what the receipt
             # records and what a replay recomputes. It reads `summary.verdict`, which `Report.undetermined()`
             # decided -- an undetermined report is exit 1, never 0, whatever --fail-on says (G281 R1; G272,
-            # seventh review; G357).
+            # seventh review; G359).
             rc = receipt_module.audit_exit_code(rep, a.fail_on)
             if receipt_target is not None:
                 _write_audit_receipt(a, s, receipt_target, rep, text, sources, unreadable, rc, started)

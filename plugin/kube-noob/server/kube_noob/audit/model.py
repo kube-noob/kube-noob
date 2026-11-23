@@ -385,7 +385,7 @@ def blocked_manifests(report: dict[str, Any]) -> list[dict[str, Any]]:
 
     `gate.run` puts the marker on the row; this is the reader for a caller that holds the report. `incomplete_reason`
     reads it, and so do the gate's exit code and the receipt that records that code (`receipt.gate_exit_code`,
-    G357), so the code a receipt records and the reason beside it are taken from the same rows.
+    G359), so the code a receipt records and the reason beside it are taken from the same rows.
     """
     return [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
 

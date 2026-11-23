@@ -227,7 +227,7 @@ def audit_undetermined(report: dict[str, Any]) -> str | None:
     ``summary.verdict: undetermined`` with ``summary.verdictReason`` beside it (G281). This reads those two keys
     and nothing else. It used to read ``summary.scoreWithheld``, the name G272 gave the same string and G281
     retired; after that the key was simply absent, an absent key read as "not withheld", and an undetermined audit
-    would have exited 0 under ``--fail-on never`` with a receipt saying so (G357, review classes 4 and 9).
+    would have exited 0 under ``--fail-on never`` with a receipt saying so (G359, review classes 4 and 9).
 
     A report that says ``undetermined`` and gives no reason is still undetermined: the word decides, and the
     reason is the word itself rather than nothing.
@@ -284,7 +284,7 @@ def audit_exit_code(report: dict[str, Any], fail_on: str) -> int:
 
 def gate_exit_code(report: dict[str, Any]) -> int:
     """The exit code a ``gate`` report means, in ONE place: what the CLI returns, the receipt records and
-    ``receipt verify`` recomputes on a replay (G357).
+    ``receipt verify`` recomputes on a replay (G359).
 
     ``5`` when no verdict was reached because of evidence the gate refused to decide from: a file that could not
     be read and that ``--skip-unreadable`` did not accept (``model.open_unread``: the row carries ``acceptedBy``
