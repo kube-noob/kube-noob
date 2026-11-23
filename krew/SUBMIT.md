@@ -9,8 +9,8 @@ says so instead of guessing.
 
 The Claude plugin directory submission waits for the same release: the directory plugin's skills need kube-noob
 0.9.3 or later (`KUBE_NOOB_FOR_MODEL`, exit 4 for a crash, `undecided`), and a user who installs from the listing
-before 0.9.3 is on PyPI is told to install a version that does not exist yet. Submit `plugin/kube-noob-skills` after
-publishing it.
+before a release that satisfies that floor is on PyPI is told to install a version that does not exist yet. 0.9.3 was
+never cut, so 0.10.0 is that release. Submit `plugin/kube-noob-skills` after publishing it.
 
 ## Submit after the next release, not v0.9.2
 

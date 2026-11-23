@@ -432,6 +432,21 @@ def test_the_release_job_survives_a_release_the_maintainer_made_first() -> None:
         )
 
 
+def test_a_rerun_of_the_pypi_upload_is_a_no_op_not_a_failure() -> None:
+    """PyPI versions are immutable, so a rerun after a partial upload hits the file already there. Without
+    `skip-existing` the publish action exits non-zero on it, and `publish-mcp-registry`, `homebrew`, `brew` and
+    `github-release` are all skipped behind it -- so PyPI holds the wheel while the tag has no release page and
+    the krew manifest points at an archive that was never attached. docs/operations.md records that exact shape
+    on v0.7.1 and v0.8.0; the flag is what makes the rerun recoverable instead of terminal."""
+    steps = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"]["publish-pypi"]["steps"]
+    publish = [s for s in steps if "gh-action-pypi-publish" in str(s.get("uses", ""))]
+    assert len(publish) == 1, f"expected one PyPI publish step, found {len(publish)}"
+    assert publish[0].get("with", {}).get("skip-existing") is True, (
+        "publish-pypi must pass skip-existing: true, or a rerun after a partial upload fails and takes every "
+        "job behind it with it"
+    )
+
+
 def test_the_package_points_at_the_website() -> None:
     """A stranger arrives at PyPI, Homebrew or the GitHub page, not at kube-noob.com. Nothing linked it: not
     `project.urls`, not the README, not the plugin manifest, not the chart. The site is where the demos, the videos
