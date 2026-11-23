@@ -423,6 +423,13 @@ Verify a change before it is applied. Call this before running kubectl apply, oc
 - `stdin` (null/string): What the command reads with -f - (if anything).
 - `version` (null/string): Platform version, e.g. '4.22' (OCP) or '1.35'.
 
+## verify_receipt
+
+Check a verdict receipt. Re-derive the verdict a kube-noob receipt records and say whether it is reproduced: identical, differs (naming the fields that moved), or CANNOT BE CHECKED -- which is not a pass. Pass the receipt document and the manifests it was written for; the digests have to match, and a receipt from another kube-noob or a changed rule set cannot be checked here, never silently passed. SHA-256 only: a receipt proves that the same inputs give the same verdict and proves nothing about who produced it.
+
+- `manifests` (null/string): The manifests the receipt was written for, as text. Without them the answer is 'cannot be checked': the inputs cannot be re-read here, so only the document's own consistency, the kube-noob version and the rule set are checked, which is not a reproduced verdict.
+- `receipt`* (string): The receipt document itself (the JSON `kube-noob audit --receipt PATH` wrote), as text.
+
 ## vuln_report
 
 Assess scanner output: VEX, exploitation, reachability. Read Trivy or Grype JSON, CycloneDX or SPDX SBOMs, or an RHACS image scan into one finding per package, version and CVE (with the fix version); apply Red Hat VEX (a not-affected or already-fixed finding drops out, citing the statement); mark CISA KEV entries; and, with the manifests, rank by exposure, privileges and RBAC reach with each finding's attack path. SBOM packages are matched against Red Hat VEX. Local only.
