@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A weekly release-ready check says whether there is anything to release and whether every check on main is green, because the website is built from the latest release and the cadence had no check on it (G361).
 - `brew install kube-noob` serves the version this repository is, and the release workflow stops pushing the formula at a protected branch and reporting success over a branch nobody merged (G357).
 ## 0.10.0 - 2026-11-23
 
