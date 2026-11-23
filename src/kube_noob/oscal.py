@@ -240,7 +240,7 @@ def _evidence_gaps(c: dict[str, Any], reasons: dict[str, str], unread: int = 0, 
     evidence -- the file could hold any kind -- so it is counted here, once, for whichever control is asked about.
 
     ``unaudited`` is how many OBJECTS in the input were not audited and no exception accepted (`notAudited`), and
-    it is the same argument one level down (G361). A rule's `clean` is a statement about the objects that rule
+    it is the same argument one level down (G363). A rule's `clean` is a statement about the objects that rule
     READ. An object nothing read -- a kind with no reader, a refused apiVersion, a container where the reader for
     its kind does not look -- is in no rule's `why` whenever some OTHER object gave the rule a subject: a hardened
     Pod beside a privileged Tekton step left every pod rule "clean", and sixteen objectives read `satisfied/pass`
@@ -418,11 +418,11 @@ def assessment_results(
     # A file the directory walk declined to read AS A MANIFEST and that forbids a verdict (`apiversion:` for
     # `apiVersion:`, a file it did not open) is a file nothing was audited from, like one that could not be
     # parsed: G343 counted the second and not the first, so sixteen objectives read `satisfied/pass` beside a
-    # privileged Pod in a file whose first key was misspelt (G361). `forbidsVerdict` is the gate's own flag
+    # privileged Pod in a file whose first key was misspelt (G363). `forbidsVerdict` is the gate's own flag
     # (`gate.forbids_verdict`), the same one `incomplete_reason` reads.
     blocked = [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
     unread = len(open_unread(report)) + len(blocked)
-    # The same for an OBJECT nothing read, through the same predicate the gate's verdict reads (G361). Only a row
+    # The same for an OBJECT nothing read, through the same predicate the gate's verdict reads (G363). Only a row
     # nobody accepted: a `notAudited` exception is the caller saying "decide without that object", exactly as
     # `--skip-unreadable` says it of a file, and the objectives are then stated over what was audited.
     open_rows = open_not_audited([r for r in report.get("notAudited") or [] if isinstance(r, dict)])

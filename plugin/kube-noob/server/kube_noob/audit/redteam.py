@@ -403,7 +403,7 @@ def red_team_with(
     and unread counts (`unread_subjects`). A subject that is absent ("no PersistentVolumeClaim in the input") is
     this input's scope, and counting it would make every scenario on every bundle undecided.
 
-    ``not_audited`` is the report's `notAudited` rows, and the third case of the same thing (G361). Both checks
+    ``not_audited`` is the report's `notAudited` rows, and the third case of the same thing (G363). Both checks
     above ask whether a RULE ran. A rule runs as soon as one object gives it a subject, and is then clean about
     the objects it read: a hardened Pod beside a privileged Tekton step left `RT-RESOURCE-STARVATION` and
     `RT-SUPPLY-CHAIN` `mitigated` on `evidence: []`, and an InferenceService whose image an operator supplies was

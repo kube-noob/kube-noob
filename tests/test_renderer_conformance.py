@@ -283,7 +283,7 @@ FIXTURES: tuple[Fixture, ...] = (
         "Pod gives every pod rule a subject, each runs clean on it, and the privileged Tekton step beside it is "
         "in no rule's record. On 0.10.0 OSCAL reported sixteen objectives `satisfied/pass` and `red_team` "
         "answered `RT-RESOURCE-STARVATION: mitigated` and `RT-SUPPLY-CHAIN: mitigated` on this input, in a run "
-        "the gate called incomplete (G361). The Task's file sorts first on purpose: the webhook adapter is sent "
+        "the gate called incomplete (G363). The Task's file sorts first on purpose: the webhook adapter is sent "
         "the first object, and a renderer handed only the clean Pod has nothing withheld to report.",
         files={"a-task.yaml": _TEKTON_TASK, "pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY},
         withheld=True,

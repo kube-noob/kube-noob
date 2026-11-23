@@ -341,7 +341,7 @@ def analyze(
     if Stage.RED_TEAM in stages:
         # Red team always reasons over the complete finding set, even if the caller filters the output.
         all_findings = findings if rule_stages >= {Stage.AUDIT, Stage.CALIBRATE} else run_rules(ctx, None)
-        # With the rows, so a scenario is not `mitigated` about an object this report lists as not audited (G361).
+        # With the rows, so a scenario is not `mitigated` about an object this report lists as not audited (G363).
         report.scenarios = red_team(ctx, all_findings, report.not_audited)
     # Recorded BEFORE the filter: a rule that fired must not look clean because this view hides its finding.
     report.fired_rules = sorted({f.rule_id for f in findings})
