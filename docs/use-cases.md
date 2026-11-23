@@ -894,8 +894,15 @@ outputs; in GitLab a later job reads `KUBE_NOOB_RESULT`, `KUBE_NOOB_EXIT`, `KUBE
 `KUBE_NOOB_BECAUSE` from the dotenv report; in Tekton they are the Task's results. Merge status is not evidence
 status: a gate at `fail-on: never`, or a step under `continue-on-error`, exits 0 with `evidence: incomplete` when
 no scanner report or SARIF was given, and its summary reads "merge allowed · evidence: incomplete (…)" rather than
-"passed". A workflow that must not merge on a gate that could not read its inputs gates on `result == 'passed'`
-(never on `!= 'failed'`), and one that rolls the gate out non-blocking watches `evidence`.
+"passed". A workflow that must not merge on a gate that could not read its inputs gates on **both**:
+`result == 'passed' && evidence == 'complete'` (never on `!= 'failed'`, and never on `result` alone). `result`
+alone is not enough and the paragraph above says why: a gate at `fail-on: never`, or one given no
+`--containerfile`, `--scanner-report` or `--sarif-report`, exits 0 and so reports `result: passed` with
+`evidence: incomplete`. Measured on a clean Pod with no scanner input: `result=passed`, `exit-code=0`,
+`evidence=incomplete`, `because=Containerfile audit ... vulnerability checks ... code checks`. Three families of
+check never ran, and a gate written to the old advice merges it. One that rolls the gate out non-blocking gates
+on `result` only and watches `evidence` -- that is the case the old sentence described, and it is the only one it
+was right for (G367).
 
 ### Which tests are flaky, and which steps got slower?
 
