@@ -13,7 +13,8 @@ run the same code:
       LICENSE
 
 Usage:
-  python scripts/build_skill.py --check        exit 1 if SKILL.md breaks the Agent Skills rules or tools.md is stale
+  python scripts/build_skill.py --check        exit 1 if SKILL.md breaks the Agent Skills rules, tools.md is
+                                               stale, or the dependency pins disagree with plugin/kube-noob/uv.lock
   python scripts/build_skill.py --write        regenerate skill/kube-noob/references/tools.md
   python scripts/build_skill.py --out DIR      write the complete skill folder to DIR (named kube-noob)
   python scripts/build_skill.py --zip FILE     write the ZIP to upload in claude.ai (the folder at its top level)
@@ -46,6 +47,68 @@ MAX_LINES = 500
 _NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 _TOOL_WORD = re.compile(r"`([a-z]+(?:_[a-z]+)+)`")
 _SKIP = frozenset({"__pycache__", ".pytest_cache"})
+PLUGIN_LOCK = ROOT / "plugin" / "kube-noob" / "uv.lock"
+# The three libraries the skill asks the model to install when they are missing. The left name is the name in
+# plugin/kube-noob/uv.lock, the right one is the name pip installs. Nothing else in the lock is quoted to the user,
+# so nothing else is read from it.
+PINNED = (("pydantic", "pydantic"), ("pyyaml", "PyYAML"), ("jsonschema", "jsonschema"))
+PIN_FILES = (Path("SKILL.md"), Path("scripts") / "kn.py")
+_PIN = re.compile(r"\b(pydantic|PyYAML|jsonschema)==([0-9][^\s`'\")]*)")
+
+
+def lock_pins() -> dict[str, str]:
+    """``{pip name: version}`` for the three libraries, read off plugin/kube-noob/uv.lock.
+
+    The lock is the one source of truth for these versions: dependabot bumps it, so a copy of the number anywhere
+    else is a second source that goes stale the moment the lock moves and says nothing (class 9). ``--write``
+    rewrites the copies from here and ``--check`` refuses when they disagree.
+    """
+    text = PLUGIN_LOCK.read_text(encoding="utf-8")
+    pins: dict[str, str] = {}
+    for lock_name, pip_name in PINNED:
+        found = re.search(rf'^name = "{re.escape(lock_name)}"\nversion = "([^"]+)"', text, re.M)
+        if found is None:
+            raise ValueError(f"{PLUGIN_LOCK.relative_to(ROOT)} pins no version for {lock_name}")
+        pins[pip_name] = found.group(1)
+    return pins
+
+
+def rewrite_pins(pins: dict[str, str]) -> list[Path]:
+    """Rewrite every ``name==version`` in the skill's two hand-written files. Returns the files that changed."""
+    changed = []
+    for rel in PIN_FILES:
+        before = (SKILL / rel).read_text(encoding="utf-8")
+        after = _PIN.sub(lambda m: f"{m.group(1)}=={pins[m.group(1)]}", before)
+        if after != before:
+            (SKILL / rel).write_text(after, encoding="utf-8")
+            changed.append(rel)
+    return changed
+
+
+def pin_problems() -> list[str]:
+    try:
+        pins = lock_pins()
+    except (OSError, ValueError) as exc:
+        return [str(exc)]
+    problems = []
+    for rel in PIN_FILES:
+        try:
+            text = (SKILL / rel).read_text(encoding="utf-8")
+        except OSError as exc:
+            problems.append(str(exc))
+            continue
+        seen = set(_PIN.findall(text))
+        # An absent pin is not a matching pin: a file that quotes none of the three would otherwise pass this
+        # check while telling the model to install nothing, which is the defect this project refuses.
+        for pip_name, version in pins.items():
+            if (pip_name, version) not in seen:
+                quoted = sorted(v for n, v in seen if n == pip_name)
+                problems.append(
+                    f"{rel.as_posix()} should pin {pip_name}=={version} from "
+                    f"{PLUGIN_LOCK.relative_to(ROOT)} but pins {quoted or 'nothing'}: "
+                    f"run python scripts/build_skill.py --write"
+                )
+    return problems
 
 
 def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -146,6 +209,8 @@ def check() -> list[str]:
             problems.append(f"{REFERENCE} is stale: run python scripts/build_skill.py --write")
     if not (SKILL / "scripts" / "kn.py").is_file():
         problems.append("scripts/kn.py is missing")
+    else:
+        problems.extend(pin_problems())
     if not SERVER.is_dir():
         problems.append(f"{SERVER.relative_to(ROOT)} is missing: run python scripts/sync_plugin_server.py")
     return problems
@@ -201,6 +266,8 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["--write"]:
         (SKILL / REFERENCE).parent.mkdir(parents=True, exist_ok=True)
         (SKILL / REFERENCE).write_text(reference_text(), encoding="utf-8")
+        for rel in rewrite_pins(lock_pins()):
+            print(f"skill: rewrote the dependency pins in {rel.as_posix()} from {PLUGIN_LOCK.relative_to(ROOT)}")
         return 0
     if len(argv) == 2 and argv[0] == "--out":
         print(build(Path(argv[1])))

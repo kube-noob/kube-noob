@@ -328,3 +328,61 @@ def undetermined_reason(not_audited: list[dict[str, Any]]) -> str | None:
 
 def _sort_key(f: Finding) -> tuple[int, int, int, str]:
     return (-int(f.severity), f.doc_index if f.doc_index is not None else -1, f.line or 0, f.rule_id)
+
+
+#: What an `unreadable` row's `acceptedBy` holds when the caller passed the flag. The same key an accepted
+#: `notAudited` row carries, for the same reason (AGENTS.md, "a waiver the person asked for"): the person has
+#: said "decide without that file", so a verdict IS reached on the files that were read, and the file stays named.
+SKIP_UNREADABLE = "--skip-unreadable"
+
+
+def unread_rows(report: dict[str, Any]) -> list[dict[str, str]]:
+    """The files a report could not read, as `{"path", "why"}` rows, whichever command wrote the report.
+
+    A GATE report's `unreadable` rows carry `file` and an AUDIT report's carry `path` -- the gate names a file the
+    way `files` and `skipped` do, the audit the way `cli._dir_yaml` does. `sarif_of_gate` normalised the two
+    inline (G331) and two renderers further along did not: the HTML page printed "File not read." beside an
+    empty name and the OSCAL remark said "could not be read and were skipped: ?." for every gate report (G341).
+    One reader, so the next renderer of these rows cannot pick the wrong key (review classes 9 and 21).
+
+    Every row, accepted or not: a file is NAMED whatever was decided about it. `open_unread` is the predicate.
+    """
+    return [
+        {
+            "path": str(u.get("file") or u.get("path") or ""),
+            "why": str(u.get("why") or ""),
+            **({"acceptedBy": str(u["acceptedBy"])} if u.get("acceptedBy") else {}),
+        }
+        for u in report.get("unreadable") or []
+        if isinstance(u, dict)
+    ]
+
+
+def open_unread(report: dict[str, Any]) -> list[dict[str, str]]:
+    """The unread files nobody accepted: the ones that withhold the verdict (G340).
+
+    The ONE predicate for it, read by `gate.run` for `incomplete`, by `incomplete_reason` and by the OSCAL emitter,
+    as `open_not_audited` is for objects. A row `--skip-unreadable` accepted is still listed and does not
+    withhold anything: a waiver is an answer about less evidence, never a cleaner answer about the same evidence.
+    """
+    return [u for u in unread_rows(report) if not u.get("acceptedBy")]
+
+
+def incomplete_reason(report: dict[str, Any]) -> str:
+    """Why this gate report is incomplete, as one line, or an empty string when it is not.
+
+    Three reasons make a gate incomplete and only the first has a key of its own (`undetermined`, the audit's).
+    The SARIF invocation assembled the second inline (G325) and the HTML masthead read the first alone, so a
+    report incomplete for a file printed "The gate is incomplete: None". Every renderer that states the reason
+    reads this.
+    """
+    parts = [str(report["undetermined"])] if report.get("undetermined") else []
+    blocked = [s for s in report.get("skipped") or [] if isinstance(s, dict) and s.get("forbidsVerdict")]
+    if blocked:
+        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
+        parts.append(f"{len(blocked)} file(s) were not read as manifests: {named}")
+    unread = open_unread(report)
+    if unread:
+        named = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
+        parts.append(f"{len(unread)} file(s) could not be read: {named}")
+    return "; ".join(parts)

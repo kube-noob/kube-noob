@@ -298,6 +298,9 @@ class AuditContext:
     #: being in neither `evaluated_rules` nor `not_evaluated`, which is how four surfaces each carried a rule
     #: they did not account for.
     no_subject: dict[str, str] = field(default_factory=dict)
+    #: The rules in `no_subject` whose subject WAS in the input and was not read, with the objects: red team
+    #: must not call a scenario `mitigated` on them (G342). A stated absence is not in here.
+    unread_subjects: dict[str, str] = field(default_factory=dict)
     #: Rules that ran, with the declared `context` kinds they did not get: "KN-S014 without ServiceAccount".
     absent_subjects: dict[str, list[str]] = field(default_factory=dict)
     #: Rules that declined on part of the input and reported a finding on the rest: evaluated, with the note.
@@ -5098,6 +5101,8 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             (refused if not_read else absent).append(refused_summary(not_read) if not_read else subject_label(sub))
         if absent or refused:
             ctx.no_subject[r.rule_id] = subject_reason(absent, refused)
+            if refused:
+                ctx.unread_subjects[r.rule_id] = "; ".join(refused)
             continue
         # Findings the rule produced before it met a shape it could not read are real, so they are kept; the
         # rule itself is recorded as not evaluated, never as evaluated-and-clean (G276).

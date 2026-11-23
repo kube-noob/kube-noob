@@ -1,0 +1,53 @@
+name: site-publish
+
+# Ask the private kube-noob-site repository to build kube-noob.com from a release. Called twice by release.yml --
+# once the moment the release exists, and again once its videos are attached -- so it lives here rather than being
+# written out twice. Two copies of this dispatch would be two places that know how to publish the website, and the
+# one that drifts is the one nobody runs (review class 9).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "The released tag to publish, e.g. v0.10.0"
+        required: true
+        type: string
+      why:
+        description: "What this publish is for, quoted back in the log and in any error"
+        required: true
+        type: string
+    secrets:
+      dispatch-token:
+        description: "Fine-grained PAT scoped to kube-noob/kube-noob-site with Contents: write"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # The last ten runs of this step finished in under three seconds; it is one HTTP request. Five minutes is a
+    # hung connection, not a slow one.
+    timeout-minutes: 5
+    steps:
+      - name: Ask kube-noob-site to publish this release
+        env:
+          DISPATCH_TOKEN: ${{ secrets.dispatch-token }}
+          TAG: ${{ inputs.tag }}
+          WHY: ${{ inputs.why }}
+        run: |
+          if [ -z "${DISPATCH_TOKEN}" ]; then
+            echo "::error title=site::no SITE_DISPATCH_TOKEN secret, so kube-noob.com was never told about ${TAG} (${WHY}). This job reporting success would mean the site was asked and it was not; the site would sit on the previous release until someone noticed. Add a fine-grained PAT scoped to kube-noob/kube-noob-site with Contents: write (.github/workflows/site-sync.yml says how), or dispatch deploy.yml there by hand with product_ref=${TAG}."
+            exit 1
+          fi
+          code=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/kube-noob/kube-noob-site/dispatches" \
+            -d "$(jq -nc --arg ref "${TAG}" '{event_type: "product-release", client_payload: {ref: $ref}}')")
+          if [ "${code}" != "204" ]; then
+            echo "::error title=site::kube-noob-site refused the publish request for ${TAG} (${WHY}) (HTTP ${code}): $(tr '\n' ' ' < /tmp/dispatch.out)"
+            exit 1
+          fi
+          echo "asked kube-noob-site to publish ${TAG} (${WHY})"

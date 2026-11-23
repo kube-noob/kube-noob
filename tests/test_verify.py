@@ -1262,7 +1262,15 @@ def test_a_huge_render_and_helms_own_words_are_bounded_and_framed(
 
 def test_verify_f_reads_a_directory_the_way_kubectl_does(ws: Path) -> None:
     """Dot-files and .json are sent by `kubectl apply -R -f`; the gate's collector skips them (stated), verify's
-    does not (S1.9)."""
+    does not (S1.9).
+
+    This test used to assert the gate *passed* this directory. It does not any more, and the change is the point
+    of G332: `.config/x.json` is a privileged pod, this very test asserts `verify` and the kubectl-command path
+    both deny because of it, and the gate answered `passed: true` with `skipped: []`. Three commands, one
+    directory, and the one people put in CI was the one that said clean. The collector is still unchanged -- the
+    gate audits `orders-api.yaml` and nothing else here -- but it no longer states a verdict over files it never
+    opened: they are named in `skipped` with `forbidsVerdict`, and the gate reads incomplete.
+    """
     hid = ws / "hid"
     (hid / ".config").mkdir(parents=True)
     shutil.copy(GOOD, hid / "orders-api.yaml")
@@ -1272,7 +1280,15 @@ def test_verify_f_reads_a_directory_the_way_kubectl_does(ws: Path) -> None:
     assert v["verdict"] == "deny"
     assert {f["uri"].rsplit("/", 1)[-1] for f in v["findings"]} >= {".hidden.yaml", "x.json"}
     g = gate.run(gate.collect([str(hid)], _read), **OCP)  # type: ignore[arg-type]
-    assert g["passed"], "the gate's collection is unchanged and documented as skipping these"
+    # The collection is unchanged: still only the one file it was ever going to audit.
+    assert [f.rsplit("/", 1)[-1] for f in g["files"]] == ["orders-api.yaml"]
+    # But a pass is no longer stated over the two it did not open, and each is named with the rule and the remedy.
+    assert not g["passed"], "the gate passed a directory holding a privileged pod it never opened (G332)"
+    blocked = {s["file"].rsplit("/", 1)[-1]: s for s in g["skipped"] if s.get("forbidsVerdict")}
+    assert set(blocked) == {".hidden.yaml", "x.json"}
+    assert "a dot-file" in blocked[".hidden.yaml"]["why"]
+    assert ".config/" in blocked["x.json"]["why"]
+    assert all("name it with -f" in s["why"] for s in blocked.values())
     assert _verify("kubectl apply -R -f hid", ws)["verdict"] == "deny"
 
 

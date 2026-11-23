@@ -14,7 +14,7 @@ from typing import Any
 from kube_noob import shape
 from kube_noob.audit.model import Finding, RedTeamScenario, Severity
 from kube_noob.audit.podspec import REPLICATED_KINDS, replicas
-from kube_noob.audit.rules import AuditContext
+from kube_noob.audit.rules import WORKLOAD_SUBJECT, AuditContext
 from kube_noob.yamlio import get_path
 
 ScenarioFn = Callable[[AuditContext, list[Finding]], RedTeamScenario | None]
@@ -54,6 +54,18 @@ def _verdict(fs: list[Finding]) -> tuple[str, Severity]:
     if not fs:
         return "mitigated", Severity.INFO
     return "exposed", max(f.severity for f in fs)
+
+
+def _no_pod_spec(ctx: AuditContext) -> bool:
+    """Whether the input holds no pod spec at all, which is when a scenario about pods does not apply.
+
+    "None the rules could read" is a different statement, and the scenarios used to make that one: a privileged
+    Deployment under `apps.k8s.io/v1` has no readable workload, so three scenarios that answer `exposed` for the
+    same object under `apps/v1` were dropped from the answer without a word (G342). A pod spec the audit refused
+    or could not read keeps the scenario in the answer, where `red_team_with` calls it `undecided`.
+    """
+    pods = (WORKLOAD_SUBJECT,)
+    return not (any(True for _ in ctx.workloads()) or ctx.refused_of(pods) or ctx.unreadable_of(pods))
 
 
 def node_crash(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
@@ -284,7 +296,7 @@ def upgrade_block(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario
 def secret_leak(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
     read = ("KN-S013", "KN-S018", "KN-S026", "KN-S027", "KN-S014")
     fs = [f for f in _ids(findings, *read) if f.severity >= Severity.LOW]
-    if not fs and not any(r in ctx.undecided for r in read):
+    if not fs and not any(r in ctx.undecided or r in ctx.unread_subjects for r in read):
         return None  # shown only when something leaks -- or when whether it does could not be decided (G276)
     verdict, sev = _verdict(fs)
     return RedTeamScenario(
@@ -309,7 +321,7 @@ def secret_leak(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario |
 
 def resource_starvation(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
     fs = _ids(findings, "KN-C004", "KN-C005", "KN-C006", "KN-C003", "KN-C014")
-    if not any(True for _ in ctx.workloads()):
+    if _no_pod_spec(ctx):
         return None
     verdict, sev = _verdict(fs)
     return RedTeamScenario(
@@ -333,7 +345,7 @@ def resource_starvation(ctx: AuditContext, findings: list[Finding]) -> RedTeamSc
 
 def supply_chain(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario | None:
     fs = [f for f in _ids(findings, "KN-S012") if f.severity >= Severity.MEDIUM]
-    if not any(True for _ in ctx.workloads()):
+    if _no_pod_spec(ctx):
         return None
     verdict, sev = _verdict(fs)
     return RedTeamScenario(
@@ -379,7 +391,14 @@ def red_team_with(
     """Run ``scenarios``. A scenario is only as decided as the rules it reads: "mitigated" claims each of them ran
     and found nothing, so when one did not run (it declined to decide, or could not read its input) the verdict is
     `undecided` and the rule is named. An `exposed` scenario stays exposed -- a finding is a finding -- and names the
-    rules it could not consult as well (G276)."""
+    rules it could not consult as well (G276).
+
+    A rule that never ran because its subject was in the input and not read is the same case, and was not treated
+    as one: `run_rules` records it in `no_subject`, not `undecided`, so a privileged Deployment the audit refused
+    for its apiVersion came back `RT-NODE-CRASH: mitigated` on `evidence: []` -- an affirmative claim of safety
+    about an object nothing read, beside an `assumptions` line saying so (G342). Only a subject that was PRESENT
+    and unread counts (`unread_subjects`). A subject that is absent ("no PersistentVolumeClaim in the input") is
+    this input's scope, and counting it would make every scenario on every bundle undecided."""
     out: list[RedTeamScenario] = []
     for fn in scenarios:
         with _recording() as recorded:
@@ -388,9 +407,19 @@ def red_team_with(
         if s is None:
             continue
         missing = [r for r in read if r in ctx.undecided]
-        if missing:
-            why = ", ".join(f"{r} ({ctx.unreadable_shapes[r]})" if r in ctx.unreadable_shapes else r for r in missing)
-            s.evidence = [*s.evidence, f"not evaluated, so this scenario cannot be called mitigated: {why}"]
+        named = [f"{r} ({ctx.unreadable_shapes[r]})" if r in ctx.unreadable_shapes else r for r in missing]
+        # Grouped by the objects, not one clause per rule: five rules that all wanted the same Deployment are one
+        # reason, and the object's name is the part a reader can act on.
+        unread: dict[str, list[str]] = {}
+        for r in read:
+            if r in ctx.unread_subjects and r not in missing:
+                unread.setdefault(ctx.unread_subjects[r], []).append(r)
+        named += [f"{', '.join(rules)} ({why})" for why, rules in unread.items()]
+        if named:
+            s.evidence = [
+                *s.evidence,
+                f"not evaluated, so this scenario cannot be called mitigated: {', '.join(named)}",
+            ]
             if s.verdict == "mitigated":
                 s.verdict = "undecided"
         out.append(s)

@@ -25,6 +25,12 @@ This used to claim it ran every gate and ran eleven fewer, and it passed four ti
 (G260, G261, G263, G264). `tests/test_check_sh.py` now fails if a gate a CI code job runs is neither in check.sh
 nor named with a reason, so the claim above stays true as ci.yml changes.
 
+Its first line says which tree it is testing, and it runs nothing if `kube_noob` would be imported from another
+one. That matters in a git worktree: the editable install points at ONE checkout, so before G346 this script, run
+from `.claude/worktrees/<name>`, ran the worktree's tests against the main checkout's code and reported failures
+the branch did not have. `bash scripts/check.sh --where` prints that line and stops. Anything you run by hand
+needs the same root, absolute: `PYTHONPATH=$PWD/src python -m pytest ...`.
+
 Read its **exit status**, not its last lines. Piping it through `tail` or `head` replaces the exit status with the
 pipe's, so a failing gate looks green — and a step killed by SIGPIPE reports 141, which is a failure too:
 
@@ -124,7 +130,9 @@ through the same output boundary (G279).
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
 Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
-shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
+shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`
+-- with or without `--fail-above` (G353). A command that reads `-f DIR` and has no `--skip-unreadable` exits 5 on a
+file in it that could not be read, and prints no answer (G350).
 
 ### 1 and 5 are not two answers to the same question (G272)
 
@@ -202,7 +210,8 @@ arithmetic, and it cost this repository several rounds of conflict resolution th
 
 Both files are append-only, so `.gitattributes` gives them `merge=union` and a merge keeps both sides' lines
 instead of stopping (G297). It does not pick your `G<n>` for you: two branches can still land the same number, and
-`tests/test_guidance.py` fails on a duplicate. Nothing whose lines are rewritten -- `docs/roadmap.md`,
+`tests/test_guidance.py` fails on a duplicate. Union also cannot tell you that it kept a line both sides carried, so
+`tests/test_append_only_duplicates.py` names any `G<n>` row and any `## Unreleased` bullet that appears twice (G347). Nothing whose lines are rewritten -- `docs/roadmap.md`,
 `docs/limits.md`, `docs/use-cases.md`, `docs/compliance.md`, `docs/safety-contract.md` -- is merged that way, so
 those still conflict and are resolved by regenerating them with their script.
 

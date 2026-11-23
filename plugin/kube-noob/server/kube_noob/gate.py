@@ -23,7 +23,14 @@ import yaml
 
 from kube_noob import __version__, sanitize
 from kube_noob.audit.controls import coverage_line, grouped_reasons
-from kube_noob.audit.model import Severity, open_not_audited
+from kube_noob.audit.model import (
+    SKIP_UNREADABLE,
+    Severity,
+    incomplete_reason,
+    open_not_audited,
+    open_unread,
+    unread_rows,
+)
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
@@ -61,6 +68,10 @@ REQUIRED_KEYS = ("apiVersion", "kind")
 #: What a reason for a key spelled differently from one of those starts with. One string, so the report, the exit
 #: code, the renderers and `verify` all read the same marker rather than keeping a second list of files (class 9).
 NEAR_MISS_PREFIX = "a Kubernetes manifest whose key "
+
+#: A candidate manifest the walk did not open. The sentence names the rule that excluded it and what to
+#: pass instead, because the fix is the caller's: name the file, or point `-f` at the directory that holds it.
+NOT_OPENED_PREFIX = "not opened by the directory walk"
 #: Every reason `_classify` gives for not auditing a YAML file found in a directory walk, and whether that reason
 #: forbids a verdict. A reason that forbids one makes the gate fail, report `incomplete`, and exit 5: the walk
 #: declined to read the file, which is neither a policy violation (1) nor a clean result (0). A reason that does
@@ -76,6 +87,13 @@ SKIP_REASONS: tuple[tuple[str, bool], ...] = (
     # ground of a verdict either. It keeps `skipped`'s exit code rather than `unreadable`'s only because the two
     # answers must stay distinct (`unreadable_reason`'s docstring); both are incomplete evidence.
     ("YAML nested too deeply", True),
+    # A file the directory walk declined to OPEN, as opposed to one it opened and found was not a manifest. The
+    # walk keeps `.yaml` and `.yml` and does not enter dot-directories, and until G332 a file outside that was not
+    # recorded anywhere: `gate -f k8s/` on a directory holding `pod.json` (privileged, hostPID) and
+    # `.hidden/pod.yaml` answered `passed: true` with `skipped: []`, while `audit -f k8s/` on the same directory
+    # reported eleven findings. Which extensions the walk should read is a separate question and is still open;
+    # stating a verdict about files nobody opened is wrong under every answer to it.
+    (NOT_OPENED_PREFIX, True),
 )
 
 
@@ -115,6 +133,87 @@ def _near_miss_reason(docs: list[Any]) -> str | None:
                 "case-sensitive, so the API server would reject this document too"
             )
     return None
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    """`(st_dev, st_ino)` for a file, following symlinks: what makes two names the same file.
+
+    Used so the walk cannot report a file it already read under a different name. A ConfigMap volume mount is the
+    case that matters -- `key` is a symlink to `..data/key`, and `..data` is itself a symlink to a timestamped
+    directory -- and the walk reads the first while the dot-directory rule declines the second.
+    """
+    try:
+        st = path.stat()
+    except OSError:  # pragma: no cover - a dangling symlink is not a file this walk read
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _holds_a_manifest(path: Path) -> bool:
+    """Whether a file the walk declined to open demonstrably holds a Kubernetes manifest.
+
+    The question this answers is whether a pass over the directory would be a false statement, and that turns on
+    whether there was a manifest nobody read -- not on the file's name. So the file is opened and looked at.
+
+    A file that does not parse is not treated as a manifest. The walk never claimed to read it, `kubectl apply -f`
+    would not succeed on it either, and the alternative is a gate held incomplete by every unparseable `.json` in
+    a dot-directory. A file that does parse and carries `apiVersion` and `kind` is a manifest whatever it is
+    called, and a pass stated over the directory holding it is wrong.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    try:
+        docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
+    except (sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+        # Not YAML is not the same as not a manifest. JSON indented with tabs is valid JSON that YAML refuses (a
+        # tab cannot start a YAML token), and a stream of objects written one after another (`}{`) is what
+        # `kubectl get -o json` piped through a filter and several generators emit; `kubectl apply -f` sends both.
+        # Asking the YAML parser alone made each of them "a file that does not parse", so a privileged Pod in
+        # `pod.json` beside a clean `ok.yaml` gated `passed`, exit 0, with `skipped: []` (G352).
+        docs = _json_stream(text)
+    return any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs)
+
+
+def _json_stream(text: str) -> list[Any]:
+    """Every JSON value in a text that is one value or several written one after another; `[]` when it is not JSON.
+
+    Only ever asked about a file YAML could not read. Nothing here audits the file: the answer decides whether a
+    pass over the directory would be a statement about a manifest nobody opened.
+    """
+    try:
+        return sanitize.loads_all_bounded(text, sanitize.MAX_JSON_DEPTH_FILE)
+    except (ValueError, RecursionError):
+        return []
+
+
+def not_opened_reason(root: Path, f: Path, opened: set[tuple[int, int]], *, reads_hidden: bool = False) -> str | None:
+    """Why a file a directory walk left alone is a gap in the answer, or None when it is not one.
+
+    The ONE decision about a file a walk did not open, asked by every walk that states a verdict over a directory:
+    the gate's (`collect`) and the audit family's (`cli._dir_yaml`). The audit's walk had no such question to
+    ask, so `audit -f k8s/` over a clean `ok.yaml` and a privileged `pod.json` scored 100.0 and exited 0 while the
+    gate, on the same directory, exited 5 naming the file (G351, review class 9).
+
+    A file is a gap only if it is demonstrably a manifest -- `_holds_a_manifest` opens it and looks -- and is not
+    a second name for a file the walk did open (`opened`, by identity). Guessing from the extension made every
+    repository with a `.github/workflows/ci.yml` incomplete (G332). `reads_hidden` is for a walk that enters
+    dot-directories and reads dot-files, so that only the extension can be why it left a file alone.
+    """
+    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
+        return None
+    if _identity(f) in opened:
+        return None  # the same file under another name: already audited, so not a gap
+    rel = f.relative_to(root)
+    hidden = any(part.startswith(".") for part in rel.parts)  # .git, .github, ..data
+    if f.name.startswith(".") and not reads_hidden:
+        where = "a dot-file, which the walk does not read"
+    elif hidden and not reads_hidden:
+        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
+    else:
+        where = "the walk reads only .yaml and .yml"
+    return f"{NOT_OPENED_PREFIX}: {where}; name it with -f to audit it"
 
 
 def _classify(path: Path | None, text: str) -> str | None:
@@ -160,6 +259,14 @@ def unreadable_reason(text: str) -> str | None:
     return None
 
 
+def _unreadable_failure(unread: list[dict[str, str]]) -> str:
+    """The one line `failures` carries for files that could not be read and that nobody accepted."""
+    shown = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
+    return f"{len(unread)} file(s) were not read, so this gate reached no verdict on them: {shown}" + (
+        f"; and {len(unread) - 5} more under `unreadable`" if len(unread) > 5 else ""
+    )
+
+
 def _in_chart_templates(path: Path, parent: Path) -> bool:
     return parent.name == "templates" and (parent.parent / "Chart.yaml").is_file() and path.is_relative_to(parent)
 
@@ -202,17 +309,38 @@ def collect(paths: list[str], read: Any) -> list[Source]:
         else:
             p = Path(raw)
             if p.is_dir():
-                files = sorted(
-                    f
-                    for f in p.rglob("*")
-                    if f.suffix in {".yaml", ".yml"}
-                    and not any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
-                    and f.is_file()
-                )
                 items = []
-                for f in files:
-                    text = f.read_text(encoding="utf-8", errors="replace")
-                    items.append((_uri(f), text, _classify(f, text)))
+                # Every file the walk actually opens, by identity rather than by name. A ConfigMap volume mount
+                # exposes each key TWICE -- as `key`, a symlink, and as `..data/key`, the real file behind it --
+                # so reporting the second as an unopened manifest counted the same bytes as a gap and took the
+                # Tekton Task from `passed` to `evidence-incomplete`, exit 5. `..data` is the case the walk's own
+                # comment names as the reason it skips dot-directories (G332).
+                # Two passes, because `sorted` puts `..data/` and `..2026_.../` BEFORE `gate.yaml`: the dot
+                # copy is reached first, and a set filled as we go would still be empty for it.
+                every = [f for f in sorted(p.rglob("*")) if f.is_file()]
+                opened: set[tuple[int, int]] = {
+                    ident
+                    for f in every
+                    if f.suffix in {".yaml", ".yml"}
+                    and not any(part.startswith(".") for part in f.relative_to(p).parts)
+                    and (ident := _identity(f)) is not None
+                }
+                for f in every:
+                    hidden = any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
+                    if f.suffix in {".yaml", ".yml"} and not hidden:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                        items.append((_uri(f), text, _classify(f, text)))
+                        continue
+                    # Everything else the walk leaves alone, and a file it left alone is recorded only if it is
+                    # demonstrably a manifest -- `_holds_a_manifest` opens it and looks for a document with both
+                    # `apiVersion` and `kind`. Guessing from the extension instead is what the first version of
+                    # this did, and `.github/workflows/ci.yml` is a `.yml` file in a dot-directory in every
+                    # repository, so it made every real gate run incomplete: an alert on every repository is one
+                    # nobody reads, which is a worse outcome than the gap it replaces. Reading the file to decide
+                    # does not audit it and does not change which files are audited (G332).
+                    why = not_opened_reason(p, f, opened)
+                    if why is not None:
+                        items.append((_uri(f), f.read_text(encoding="utf-8", errors="replace"), why))
                 for uri, text, why in items:
                     if why is None:
                         bad[uri] = unreadable_reason(text)
@@ -347,8 +475,13 @@ def run(
     repo: Path | None = None,
     cni: str | None = None,
     default_namespace: str | None = None,
+    skip_unreadable: bool = False,
 ) -> dict[str, Any]:
-    """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
+    """``skip_unreadable``: the caller passed `--skip-unreadable`, so a file that could not be read is accepted
+    and listed rather than withholding the verdict. Off unless asked for: every other caller of this function
+    gets a report that is incomplete while a file is unread (G340).
+
+    ``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
     (shipping is then unknown, which fails like shipped code). ``repo``: the checkout, to tell a SARIF path that is
     no file of the repository (scanned elsewhere) from one no image ships."""
@@ -367,7 +500,9 @@ def run(
         if s.skip
     ]
     blocking = [s for s in skipped if s.get("forbidsVerdict")]
-    unreadable = [{"file": s.uri, "why": s.unreadable} for s in sources if s.unreadable and not s.skip]
+    waived = {"acceptedBy": SKIP_UNREADABLE} if skip_unreadable else {}
+    unreadable = [{"file": s.uri, "why": s.unreadable, **waived} for s in sources if s.unreadable and not s.skip]
+    unread_open = open_unread({"unreadable": unreadable})
     sources = [s for s in sources if not s.skip and not s.unreadable]
     if not sources and not containerfiles and not scanner_reports and not sarif_reports:
         if unreadable:
@@ -390,6 +525,14 @@ def run(
             f"{len(blocking)} file(s) were not read as manifests, so this gate reached no verdict: {shown_blocking}"
             + (f"; and {len(blocking) - 5} more under `skipped`" if len(blocking) > 5 else "")
         )
+    if unread_open:
+        # G325 taught this report about a file the walk declined to OPEN and never about one it could not READ,
+        # though `SKIP_REASONS` says of the two that "both are incomplete evidence". The command exits 5 for
+        # this, which is why nobody read the report: it said `passed: true`, the Markdown said "gate passed"
+        # without naming the file, and nothing was annotated on the pull request (G340). One line in `failures`,
+        # because that is the list the Markdown, the HTML page and the annotations already render.
+        # `unread_open`, not `unreadable`: a row `--skip-unreadable` accepted is listed and withholds nothing.
+        failures.append(_unreadable_failure(unread_open))
     combined = _combine(sources) if sources else ""
     if sources:
         # A path named with -f used to be audited even when it was a Helm values file, so `gate -f values.yaml`
@@ -565,7 +708,10 @@ def run(
         # false and the headline says "incomplete", not "failed" (G272).
         # ... or a file the walk declined to read: that is evidence the gate does not have, exactly as an
         # undetermined audit is, and it must not render as "failed" either (G325).
-        "incomplete": "undetermined" in coverage or bool(blocking),
+        # ... or a file that could not be read at all, which is the same missing evidence (G340). Decided HERE and
+        # not in a renderer: `verdict_word`, the Markdown headline, the HTML masthead and the annotations all read
+        # this key, and seven renderers taught one at a time is how the eighth was missed.
+        "incomplete": "undetermined" in coverage or bool(blocking) or bool(unread_open),
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -1315,7 +1461,10 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     """
     rows = [f for f in report.get("findings") or () if isinstance(f, dict)]
     reasons = [str(x) for x in report.get("failures") or () if str(x).strip()]
-    if not rows and not reasons:
+    # A file `--skip-unreadable` accepted is in no failure line, because the gate did not fail on it. It is still
+    # a file nothing was audited from, so the pull request says so once, as a warning (G340).
+    waived = [u for u in unread_rows(report) if u.get("acceptedBy")]
+    if not rows and not reasons and not waived:
         return []
 
     def rank(f: dict[str, Any]) -> tuple[int, str, str]:
@@ -1340,6 +1489,15 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
         out[-1] = (
             f"::error title=kube-noob gate::{len(reasons) - MAX_ANNOTATIONS_PER_TYPE + 1} more reason(s) this "
             "gate failed are not annotated; the job summary has all of them."
+        )
+    if waived:
+        named = ", ".join(u["path"] for u in waived[:5]) + (f" and {len(waived) - 5} more" if len(waived) > 5 else "")
+        out.append(
+            "::warning title=kube-noob gate::"
+            + _annotation_data(
+                f"{len(waived)} file(s) were not read and {waived[0]['acceptedBy']} accepted that, so "
+                f"nothing in them was audited: {named}"
+            )
         )
     for level in ("error", "warning"):
         found = buckets[level]
@@ -1396,6 +1554,31 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
                 f"- {_cell(str(r.get('object')), 120)}: {_cell(str(r.get('why')), 200)}"
                 + (f" (accepted by {_cell(str(r['acceptedBy']), 64)})" if r.get("acceptedBy") else "")
                 for r in report["notAudited"]
+            ],
+            "",
+        ]
+    unread = unread_rows(report)
+    if unread:
+        # Named here whether or not the flag accepted them, as `notAudited` rows are above: under
+        # `--skip-unreadable` the headline is the verdict on the files that were read, and this summary did not
+        # mention the others at all (G340). A waiver must never make the gap disappear.
+        still_open = [u for u in unread if not u.get("acceptedBy")]
+        lines += [
+            f"### Not passed: {len(still_open)} file(s) not read"
+            if still_open
+            else f"### {len(unread)} file(s) not read, accepted by `{SKIP_UNREADABLE}`",
+            "",
+            "Nothing in these files was audited"
+            + (
+                ", so the verdict is incomplete, not a pass."
+                if still_open
+                else ", so the verdict above is about the files that were read and says nothing about these."
+            ),
+            "",
+            *[
+                f"- {_cell(u['path'], 200)}: {_cell(u['why'], 200)}"
+                + (f" (accepted by {_cell(u['acceptedBy'], 64)})" if u.get("acceptedBy") else "")
+                for u in unread
             ],
             "",
         ]
@@ -1492,20 +1675,16 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     """
     notes = _caveat_notes(report)
     notes += [
-        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
-        for u in report.get("unreadable") or []
+        {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}} for u in unread_rows(report)
     ]
     blocked = [s for s in report.get("skipped") or [] if s.get("forbidsVerdict")]
     notes += [
         {"level": "error", "message": {"text": f"not read as a manifest: {s['file']} ({s['why']})"}} for s in blocked
     ]
-    undetermined = report.get("undetermined")
-    if blocked:
-        # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
-        # invocation's properties sees the gap either way (G272, G325).
-        named = "; ".join(f"{s['file']}: {s['why']}" for s in blocked[:5])
-        gap = f"{len(blocked)} file(s) were not read as manifests: {named}"
-        undetermined = f"{undetermined}; {gap}" if undetermined else gap
+    # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
+    # invocation's properties sees the gap either way (G272, G325) -- and a file that could not be read is the
+    # same gap: `properties.incomplete` was absent for it while the report beside it said five (G340).
+    undetermined = incomplete_reason(report)
     # The coverage record G328 gave `audit --format sarif`, built here too. This is the file `scripts/ci/gate.sh`
     # uploads to code scanning, so it is the one that decides what a reviewer sees: without this it carried
     # fourteen findings and nothing else for a report whose own `controlSummary` said fifty-two rules reached no
@@ -1516,9 +1695,9 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     # `file` here and `path` there, and the input uri comes from `files` because a gate finding has no `file`.
     # A file the walk declined to read as a manifest (`forbidsVerdict`, G325) is a file nothing in which was
     # audited, so it is the same absence and gets the same result.
-    cov_unreadable = [
-        {"path": str(u.get("file") or ""), "why": str(u.get("why") or "")} for u in report.get("unreadable") or []
-    ] + [{"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked]
+    cov_unreadable = unread_rows(report) + [
+        {"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked
+    ]
     files = [str(f) for f in report.get("files") or [] if f]
     coverage = {
         "controlSummary": report.get("controlSummary") or {},

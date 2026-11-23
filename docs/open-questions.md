@@ -147,6 +147,88 @@ encode the constraint, so `kind: "review"` with `level: "note"` validates. If th
 `kind: review` result in this file is non-conforming and a strict validator in someone's pipeline would reject the
 document -- which would be the same class of first-hop failure all over again.
 
+## Proposed and not built, 2026-11-22: one file per guidance row
+
+This one is about the repository's own record rather than the product, and it is here because it is a decision
+and not a tidy-up. **Nothing below is implemented.** Every number was read off the tree at `981cd9f` on 2026-11-22.
+
+**What it is today.** [guidance.md](guidance.md) is one append-only table: 310 rows, G01 to G343, 542 KB, the
+longest single row 29,712 characters. Every behaviour change appends one row to its end.
+
+**What that has cost, four separate ways.**
+
+- *Every open branch conflicted on it whenever another merged*, because each appends at the same line. That was
+  fixed by `merge=union` in `.gitattributes` (G297).
+- *The fix writes rows twice.* Union cannot conflict, so when both sides carry the same row in differing hunks it
+  keeps both and reports nothing. Twice in one session: G335 once, then six rows at a time with three changelog
+  bullets. Now named by a test (G347), which is a detector for a defect the format keeps producing.
+- *Two branches take the same number.* The next number is "the highest one there, plus one", read from whatever
+  `main` the branch was cut from, so concurrent branches pick the same one by arithmetic. On 2026-11-21 G340 went
+  to two branches at once and the later became G345, in a follow-up commit, because a number is cited from test
+  names, changelog bullets and commit messages, and a citation that resolves to two rows resolves to neither.
+- *A row in the wrong shape is not read.* `tests/test_guidance.py` finds rows with a three-column expression. Six
+  rows (G279, G319-G322, G325) are written in two columns with their citations inline, so no citation in them has
+  been checked since they were written. They happen to resolve today. Nothing would say if they stopped.
+
+**The proposal.** One file per row, `docs/guidance/G0346.md`, each holding the rule, the prose and an
+`Enforced by` list. A twelfth generator, `scripts/guidance_table.py`, writes the table in `docs/guidance.md` from
+those files and has a `--check` form like the other eleven.
+
+- *Allocation.* The filename is the claim on the number. Two branches that both create `G0346.md` with different
+  contents produce an add/add conflict: git stops, and the pull request reads `dirty`. That is the same collision
+  as today, made loud at the merge instead of silent through it. It does not stop two branches choosing the same
+  number, and the later one still has to renumber everywhere the number is cited; what it removes is the case
+  where nobody is told.
+- *Duplicates.* A stacked branch that carries a row `main` already has carries an identical file, which merges to
+  one file. The repeated-row defect stops being detected and starts being impossible.
+- *The table.* Generated, sorted by number, so its lines are rewritten rather than appended and it would have to
+  leave the union list (`tests/test_merge_attributes.py` holds that list to exactly the append-only files). It
+  would then conflict on every merge the way `docs/roadmap.md` does, resolved by running the script. The
+  alternative is to stop committing the table and leave `docs/guidance.md` as a page that points at the directory,
+  which costs the one-page read that the README links to.
+- *The existing check.* `test_every_rule_has_existing_checks` would read the files instead of matching lines: one
+  id per file, taken from the filename and required to match the heading inside; a file with no `Enforced by`
+  entry fails by name instead of being skipped as a line that did not match. The duplicate-id assertion and the
+  guidance half of `tests/test_append_only_duplicates.py` would go; the changelog half stays, because
+  `CHANGELOG.md` is still merged by union.
+
+**What the migration costs.**
+
+- One commit that splits 310 rows into 310 files. It has to be mechanical and provable: the acceptance test is
+  that the generator, run on the new files, reproduces today's table byte for byte before anything is reordered.
+  The six two-column rows have to be given an `Enforced by` list by hand, and some of what they cite is shorthand
+  (`::test_name` with the file implied) that has never had to resolve.
+- Every pull request open at that moment (5 on 2026-11-22) conflicts once and has its row moved into a file. So it
+  is done with the queue empty or not at all.
+- Citations. Inside this repository the table is cited by number, not by line: 1,661 mentions of a `G<n>` in 224
+  files outside the table, and those survive. One link names the file by URL (the README, to
+  `blob/main/docs/guidance.md`), and survives if the table stays committed. No link in this repository carries a
+  line anchor. Links from outside it were not measured and cannot be from here: anything that points at a line of
+  `guidance.md` on `main` -- the site, an issue, a review comment -- breaks once, when rows that are in merge order
+  today (G320 sits above G319) become sorted. A permalink to a commit is unaffected.
+- `git blame` on a row restarts at the migration commit. The history before it is in the old file.
+
+**The case against.**
+
+- 310 small files today, and the table grew by 46 rows between `v0.9.2` (2026-11-08) and 2026-11-22. A directory
+  that gains three files a day is its own cost: GitHub's listing truncates at 1,000 entries, which at that rate is
+  about seven months away.
+- `git log -p docs/guidance.md` currently reads as this project's lessons in the order they were learned, in one
+  place. Across several hundred files the same question needs `git log -- docs/guidance/`, and the answer is
+  interleaved with every edit to every row.
+- A twelfth generator is a twelfth thing to re-run. `sync_plugin_server` and `doc_numbers` are already the two
+  that a change most often leaves stale, and this one would be stale after *every* change, by construction.
+- The cheaper position is the current one. Three of the four costs above now have a test standing on them
+  (G297, G347), the fourth is a six-row repair, and what remains is renumbering when two branches collide -- which
+  the proposal makes louder and does not prevent. "One pull request at a time", which [AGENTS.md](../AGENTS.md)
+  already asks for, prevents it outright and costs nothing to build.
+
+**What would decide it.** Whether more than one branch is going to be open at a time as a matter of course. If
+the rule is one pull request at a time and it holds, this is a migration to fix a problem the rule already
+prevents. If several agents are going to work in parallel worktrees -- which is what happened on 2026-11-21, and
+is how all four costs were found in two days -- then the table is a single line every one of them writes to, and
+a detector per failure mode is the more expensive design.
+
 ## Reading list for a reviewer
 
 - [roadmap.md](roadmap.md) -- the program, the moat backlog reconciliation, the riskiest assumptions
