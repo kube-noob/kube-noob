@@ -3,6 +3,7 @@
 ## Unreleased
 
 - site-sync fails when the website's own last deploy failed, not only when the published site is behind a release: twelve consecutive deploy failures were invisible because nothing had moved (G358).
+- `brew install kube-noob` serves the version this repository is, and the release workflow stops pushing the formula at a protected branch and reporting success over a branch nobody merged (G357).
 ## 0.10.0 - 2026-11-23
 
 - A rerun of the release workflow after a partial PyPI upload is a no-op instead of a failure that strands the tag with no release page and no krew archive (G345).
