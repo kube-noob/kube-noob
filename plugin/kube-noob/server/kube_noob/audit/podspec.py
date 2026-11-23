@@ -357,7 +357,13 @@ _CONTAINER_LISTS: tuple[str, ...] = ("containers", "initContainers", "ephemeralC
 
 #: Keys whose value is ONE container-shaped mapping rather than a list. Argo Workflows put it at
 #: `spec.templates[].container`, so the list check above walks past it.
-_CONTAINER_MAPPINGS: tuple[str, ...] = ("container",)
+#:
+#: The same shape under three more names, each a silent pass until G355 (review class 21: G333 fixed the key in the
+#: report and not its neighbours). An Argo `templates[].script` is a `v1.Container` plus `source`; a Tekton
+#: `spec.stepTemplate` is the container every step without its own `image` runs as; a KubeVirt
+#: `volumes[].containerDisk` names an image the virt-launcher pod pulls and runs. A privileged `docker:24-dind`
+#: under `script:` scored 100.0, gated `passed` and verified `allow`.
+_CONTAINER_MAPPINGS: tuple[str, ...] = ("container", "script", "stepTemplate", "containerDisk")
 
 
 def _container_shaped(node: object) -> bool:
