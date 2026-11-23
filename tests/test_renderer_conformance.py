@@ -39,6 +39,22 @@ to prevent.
 
 Putting the renderers side by side found three defects nobody had tripped over. They are recorded in
 `KNOWN_DEFECTS` with the evidence, under G338, and each entry fails the day it is fixed.
+
+The matrix had a blind spot of its own, and it cost two false passes (G363): every fixture that withheld an OBJECT
+held that object alone. With one object and no reader for it, no rule has a subject, every rule says so, and a
+renderer cannot go wrong. The mixed fixtures below (G364) are the other shape -- clean objects that give every
+rule a subject, beside one object nothing read -- in each position and combination a renderer could treat
+differently: the unread object first, last, and in the middle of one file; a refused object of the kind the
+passing rules read; a refused object that is the only subject a rule could have had; an accepted
+`--skip-unreadable` file beside a refusal nobody accepted; and a kind with no reader beside a kind whose reader
+missed a container.
+
+What these two predicates do NOT hold, and it is stated here so nobody reads a green matrix as more than it is:
+they ask whether an output SAYS part of the input reached no verdict. They do not ask whether a figure in the same
+output was computed over a denominator that excludes it -- `clean: 12` on a control, "42 rules evaluated", an
+indicator's `clean` count, a snapshot's `evaluatedRules`. On every mixed fixture here those figures are
+byte-identical to the clean fixture's. `docs/report-ir.md` records the measurement and why the fix is one
+coverage ledger the renderers project, not a ninth and tenth patch to a renderer.
 """
 
 from __future__ import annotations
@@ -57,6 +73,7 @@ import yaml
 
 from kube_noob import admission, cli, gate, oscal, report_html
 from kube_noob import toolkit as tk
+from kube_noob.audit.model import SKIP_UNREADABLE
 from kube_noob.gate import NOT_AUDITED_RULE, NOT_EVALUATED_RULE, NOT_READ_RULE
 from kube_noob.toolkit import Toolkit
 
@@ -190,6 +207,42 @@ spec:
       securityContext: {privileged: true}
 """
 
+#: The hardened Pod's own kind under a group the API server does not serve it under. A rule that passes on
+#: `Pod/prod/ok` beside it has this kind as its subject and never read this object.
+_REFUSED_POD = """\
+apiVersion: core.k8s.io/v1
+kind: Pod
+metadata: {name: debug, namespace: prod}
+spec:
+  hostPID: true
+  containers:
+  - name: debug
+    image: registry.example.com/debug:1
+    securityContext: {privileged: true}
+"""
+
+#: The only Service in its input, refused. Every rule whose subject is a Service found nothing because the one
+#: object it could have judged is the one it did not read -- which is not "no Service in the input".
+_REFUSED_SERVICE = """\
+apiVersion: core.k8s.io/v1
+kind: Service
+metadata: {name: edge, namespace: prod}
+spec:
+  type: LoadBalancer
+  selector: {app: ok}
+  ports: [{port: 80, targetPort: 8080}]
+"""
+
+#: The same for RBAC, and kept as its own fixture because `posture_scan` files it differently: a refused
+#: workload goes under `refused`, a refused binding only under `notRead`.
+_REFUSED_BINDING = """\
+apiVersion: rbac.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: everyone-admin}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cluster-admin}
+subjects: [{kind: Group, name: "system:authenticated", apiGroup: rbac.authorization.k8s.io}]
+"""
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -215,6 +268,10 @@ class Fixture:
     file_level: bool = False
     #: True when the input itself must be refused (exit 2) rather than reported on.
     refused: bool = False
+    #: True when the run is made with `--skip-unreadable`: the caller accepted the files that could not be read,
+    #: so those rows are listed with `acceptedBy` and withhold nothing. Whatever ELSE the input withholds still
+    #: does, which is the whole point of the one fixture that sets it.
+    skip_unreadable: bool = False
 
 
 FIXTURES: tuple[Fixture, ...] = (
@@ -289,6 +346,78 @@ FIXTURES: tuple[Fixture, ...] = (
         withheld=True,
     ),
     Fixture(
+        name="mixed-unread-object-last",
+        proves="The same three objects with the Task's file sorting LAST. Position must not matter and once did "
+        "for the webhook adapter, which was sent only the first object in the input: handed the clean "
+        "NetworkPolicy it had nothing withheld to report. The adapter is now sent every object, as an API server "
+        "sends them (G364).",
+        files={"netpol.yaml": _DNS_POLICY, "pod.yaml": _HARDENED_POD, "z-task.yaml": _TEKTON_TASK},
+        withheld=True,
+    ),
+    Fixture(
+        name="mixed-unread-object-in-the-middle-of-one-file",
+        proves="One file, three documents, the unread one between two clean ones. A renderer that reports per "
+        "FILE has one file here and it was read; what is withheld is a document inside it, at a line that is "
+        "neither the file's first nor its last.",
+        files={"all.yaml": f"{_HARDENED_POD}---\n{_TEKTON_TASK}---\n{_DNS_POLICY}"},
+        withheld=True,
+    ),
+    Fixture(
+        name="mixed-refused-object-of-the-kind-the-passing-rules-read",
+        proves="A hardened Pod and a privileged, hostPID Pod under `core.k8s.io/v1`. Every pod rule passes -- on "
+        "the Pod it read -- and its subject kind is exactly the kind of the object it did not read. No rule is "
+        "'not evaluated' here for want of a subject, so a renderer that looks for the gap in the rules' own "
+        "reasons finds none.",
+        files={"pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY, "refused-pod.yaml": _REFUSED_POD},
+        withheld=True,
+    ),
+    Fixture(
+        name="mixed-the-only-subject-of-a-rule-was-refused",
+        proves="A LoadBalancer Service under `core.k8s.io/v1`, the only Service in the input, beside the clean "
+        "Pod. The Service rules found nothing because the one object they could have judged was not read: "
+        "their reason must be the refusal, never 'no Service in the input' (class 24).",
+        files={"pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY, "service.yaml": _REFUSED_SERVICE},
+        withheld=True,
+    ),
+    Fixture(
+        name="mixed-the-only-binding-was-refused",
+        proves="`cluster-admin` for `system:authenticated` in a ClusterRoleBinding under `rbac.k8s.io/v1`, beside "
+        "the clean Pod. The RBAC rules' only subject, refused; and the one refusal `posture_scan` lists under "
+        "`notRead` alone, where it lists a refused workload under `refused` as well.",
+        files={"pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY, "binding.yaml": _REFUSED_BINDING},
+        withheld=True,
+    ),
+    Fixture(
+        name="mixed-accepted-unreadable-file-beside-a-refusal-nobody-accepted",
+        proves="`--skip-unreadable` accepts the file that could not be parsed; nothing accepts the refused "
+        "Deployment beside it. One waiver must not be read as two: a renderer that sees `acceptedBy` on the "
+        "unreadable row and concludes the run's gaps were accepted reports clean over a privileged container "
+        "no rule read.",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "deployment.yaml": _REFUSED_DEPLOYMENT,
+            BROKEN: _UNPARSEABLE,
+        },
+        withheld=True,
+        skip_unreadable=True,
+    ),
+    Fixture(
+        name="mixed-no-reader-kind-beside-a-reader-that-missed-a-container",
+        proves="Both of G360's and G333's shapes in one input, beside the clean Pod: a Tekton Task (no reader) "
+        "and a DeploymentConfig with its containers under `template.Spec` (a reader that found no pod spec, and "
+        "findings on the rest of the object). Two rows of two different reasons, findings, and a withheld "
+        "verdict at once: a renderer that names the first row and stops, or that drops the rows because there "
+        "are findings to show, fails here.",
+        files={
+            "a-task.yaml": _TEKTON_TASK,
+            "dc.yaml": _DC_CAPITAL_SPEC,
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+        },
+        withheld=True,
+    ),
+    Fixture(
         name="zero-findings-and-incomplete-evidence",
         proves="The exact shape every one of the seven got wrong: nothing to report AND evidence missing. Every "
         "finding list in the report is empty, so a renderer that derives its output from findings alone emits "
@@ -331,12 +460,16 @@ class Bundle:
     gate_report: dict[str, Any]
     audit_report: dict[str, Any]
     manifests: str
-    primary: dict[str, Any] | None  # the first object in the input: what the webhook would be sent
+    #: Every object in the input, in order: what the webhook is sent, one request each. It was the FIRST object
+    #: only, which made the webhook's conformance depend on which file sorted first (G364).
+    objects: list[dict[str, Any]]
     settings: Any
 
 
 def _bundle(fixture: Fixture, root: Path, settings: Any) -> Bundle:
-    gate_report = gate.run(gate.collect([str(root)], read=lambda _: ""), fail_on="never")
+    gate_report = gate.run(
+        gate.collect([str(root)], read=lambda _: ""), fail_on="never", skip_unreadable=fixture.skip_unreadable
+    )
     # `audit -f <dir>` reads each file on its own and attaches the ones it could not read, rather than
     # concatenating first: one unreadable file used to decide the outcome for every other file in the directory,
     # and said so against a line of the combined text rather than a path anyone could open (G251). `cli._dir_yaml`
@@ -345,9 +478,12 @@ def _bundle(fixture: Fixture, root: Path, settings: Any) -> Bundle:
     manifests = "\n---\n".join(text for _, text in ok)
     audit_report = dict(Toolkit(settings).audit(tk.AuditIn(manifests=manifests)))
     if bad:
-        audit_report["unreadable"] = bad
+        # As `audit --skip-unreadable` records them (`cli._audit`): the waiver is on the row, so every reader of
+        # the report sees who accepted the gap, and `open_unread` is the one place that decides it withholds none.
+        accepted = {"acceptedBy": SKIP_UNREADABLE} if fixture.skip_unreadable else {}
+        audit_report["unreadable"] = [{**u, **accepted} for u in bad]
     docs = [d for d in yaml.safe_load_all(manifests) if isinstance(d, dict) and d.get("kind")]
-    return Bundle(fixture, root, gate_report, audit_report, manifests, docs[0] if docs else None, settings)
+    return Bundle(fixture, root, gate_report, audit_report, manifests, docs, settings)
 
 
 def _withheld(report: dict[str, Any]) -> bool:
@@ -477,6 +613,22 @@ def _oscal_clean(doc: Any) -> bool:
 
 def _review_warnings(response: Any) -> list[str]:
     return [str(w) for w in (response["response"].get("warnings") or [])]
+
+
+def _review(obj: dict[str, Any]) -> Any:
+    """The webhook's answer for one object, as `admission.review` gives it to the API server."""
+    return admission.review(
+        {
+            "apiVersion": "admission.k8s.io/v1",
+            "kind": "AdmissionReview",
+            "request": {
+                "uid": "1",
+                "namespace": (obj.get("metadata") or {}).get("namespace") or "default",
+                "object": obj,
+            },
+        },
+        admission.Config(),
+    )
 
 
 def _admission_clean(response: Any) -> bool:
@@ -677,20 +829,11 @@ ADAPTERS: dict[str, Adapter] = {
     "admission.review": Adapter(
         "the API server, and kubectl printing the response's warnings",
         "object",
-        lambda b: admission.review(
-            {
-                "apiVersion": "admission.k8s.io/v1",
-                "kind": "AdmissionReview",
-                "request": {
-                    "uid": "1",
-                    "namespace": ((b.primary or {}).get("metadata") or {}).get("namespace") or "default",
-                    "object": b.primary,
-                },
-            },
-            admission.Config(),
-        ),
-        lambda response: any(_says_withheld(w) for w in _review_warnings(response)),
-        _admission_clean,
+        # One request per object, in order: the API server never sends a bundle. `kubectl apply -f dir/` prints
+        # the warnings of every response, so the consumer's view of the directory is the list.
+        lambda b: [_review(obj) for obj in b.objects],
+        lambda responses: any(_says_withheld(w) for r in responses for w in _review_warnings(r)),
+        lambda responses: all(_admission_clean(r) for r in responses),
     ),
     "mcp.audit_manifests": Adapter(
         "a model answering the user from the tool result",
@@ -915,9 +1058,107 @@ def test_two_renderers_of_one_report_state_the_same_gap(bundles: dict[str, Bundl
 
 # -- the guard: renderer eight cannot appear without an adapter ------------------------------------------------
 
+
 #: A public function in a renderer module, or an MCP tool over manifests, that is not a renderer of an audit
 #: verdict, and why. Every entry is a decision somebody made and can be argued with; the point is that it was
 #: made, rather than the function being absent from both lists and so from this suite.
+#: The fixtures that hold clean objects AND an object nothing read. Selected by shape, not by name, so a fixture
+#: added later with that shape is held to the tests below without anyone remembering to list it.
+def _label(obj: dict[str, Any]) -> str:
+    """`Kind/namespace/name`, the way the report's `notAudited` rows name an object."""
+    ns = obj["metadata"].get("namespace")
+    return f"{obj['kind']}/{ns + '/' if ns else ''}{obj['metadata']['name']}"
+
+
+def _mixed(bundles: dict[str, Bundle]) -> dict[str, Bundle]:
+    out: dict[str, Bundle] = {}
+    for name, b in bundles.items():
+        unread = {str(r.get("object")) for r in b.gate_report.get("notAudited") or []}
+        if unread and len(b.objects) > len(unread):
+            out[name] = b
+    return out
+
+
+def test_the_matrix_holds_the_mixture_and_not_only_the_object_alone(bundles: dict[str, Bundle]) -> None:
+    """The blind spot, as a floor (G364). Every fixture that withheld an object held it alone until G363, so no
+    adapter had been asked what it says when a report holds both; OSCAL and `red_team` answered `satisfied` and
+    `mitigated`, and passed this file. A matrix that loses its mixed fixtures goes back to proving less than it
+    appears to, silently, so their number and their variety are asserted."""
+    mixed = _mixed(bundles)
+    assert len(mixed) >= 8, sorted(mixed)
+    # The clean neighbour is really clean in each: nothing here is a "findings beside a gap" fixture by accident,
+    # except the one that says so.
+    with_findings = {n for n, b in mixed.items() if b.gate_report["findings"]}
+    assert with_findings <= {
+        "mixed-no-reader-kind-beside-a-reader-that-missed-a-container",
+        "read-object-with-an-unread-container",
+    }, with_findings
+    # Each position of the unread object, and each reason an object goes unread, is present at least once.
+    whys = {str(r["why"]) for b in mixed.values() for r in b.gate_report["notAudited"]}
+    assert any("no reader" in w for w in whys), whys
+    assert any("does not know" in w for w in whys), whys
+    assert any("does not read one" in w or "where kube-noob does not" in w for w in whys), whys
+    positions = set()
+    for b in mixed.values():
+        unread = {str(r.get("object")) for r in b.gate_report["notAudited"]}
+        labels = [_label(d) for d in b.objects]
+        for i, label in enumerate(labels):
+            if label in unread:
+                positions.add("first" if i == 0 else "last" if i == len(labels) - 1 else "middle")
+    assert positions == {"first", "middle", "last"}, positions
+
+
+def test_a_rule_whose_only_subject_was_refused_does_not_say_the_kind_is_absent(bundles: dict[str, Bundle]) -> None:
+    """Class 24, on the two fixtures built for it. "no Service in the input" about an input that holds a Service
+    is an absence standing in for a refusal, in the one field every renderer copies its reasons from."""
+    for fixture, kind in (
+        ("mixed-the-only-subject-of-a-rule-was-refused", "Service"),
+        ("mixed-the-only-binding-was-refused", "ClusterRoleBinding"),
+    ):
+        for report in (bundles[fixture].gate_report, bundles[fixture].audit_report):
+            reasons = [str(why) for why in report["notEvaluated"].values()]
+            named = [why for why in reasons if f"1 {kind} not audited" in why]
+            assert named, f"{fixture}: no rule gives the refused {kind} as its reason"
+            if kind == "Service":
+                # A rule that reads Services says the Service was refused, never that there is none.
+                assert "no Service in the input" not in reasons, fixture
+
+
+def test_the_webhook_warns_about_the_object_nothing_read_and_not_about_its_clean_neighbour(
+    bundles: dict[str, Bundle],
+) -> None:
+    """Per object, which the aggregated adapter cannot see: sent a directory one object at a time, the webhook
+    must put its warning on the response for the object that was not read. A warning on the clean Pod's response
+    instead would satisfy `any(...)` and tell the user the wrong object."""
+    for name, b in _mixed(bundles).items():
+        unread = {str(r.get("object")) for r in b.gate_report["notAudited"]}
+        for obj in b.objects:
+            label = _label(obj)
+            warned = any(_says_withheld(w) for w in _review_warnings(_review(obj)))
+            if label in unread:
+                assert warned, f"{name}: {label} was not read and its admission response does not say so"
+            elif label == "Pod/prod/ok":
+                assert not warned, f"{name}: the hardened Pod is fully audited and its response says it is not"
+
+
+def test_an_accepted_unreadable_file_does_not_accept_the_refusal_beside_it(bundles: dict[str, Bundle]) -> None:
+    """The one fixture run with `--skip-unreadable`. The file is listed with who accepted it and withholds
+    nothing; the refused Deployment was accepted by nobody and still withholds the verdict, and the report says
+    which is which rather than one sentence covering both."""
+    b = bundles["mixed-accepted-unreadable-file-beside-a-refusal-nobody-accepted"]
+    assert [u.get("acceptedBy") for u in b.gate_report["unreadable"]] == [SKIP_UNREADABLE]
+    assert gate.verdict_word(b.gate_report) == "incomplete"
+    assert [r["object"] for r in b.gate_report["notAudited"]] == ["Deployment/prod/web"]
+    # The failure the gate states is the refusal, and it does not blame the file somebody accepted.
+    assert any("Deployment/prod/web" in f for f in b.gate_report["failures"])
+    assert not any(BROKEN in f for f in b.gate_report["failures"]), b.gate_report["failures"]
+    # Without the refusal the same waiver gives a verdict: the control that makes the assertion above mean
+    # "the refusal withheld it" and not "this flag never yields a verdict".
+    clean = bundles["zero-findings-and-incomplete-evidence"]
+    waived = gate.run(gate.collect([str(clean.root)], read=lambda _: ""), fail_on="never", skip_unreadable=True)
+    assert gate.verdict_word(waived) == "passed"
+
+
 NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.forbids_verdict": "a predicate over one skip reason, not an output",
     "gate.unreadable_reason": "a predicate over one file's bytes, not an output",
@@ -1049,4 +1290,4 @@ def test_the_adapters_cover_the_renderers_the_seven_defects_were_found_in() -> N
         assert name in ADAPTERS, f"{name} lost its adapter"
     assert {"receipt.audit", "receipt.gate"} <= set(ADAPTERS), "a receipt is a view of the verdict (G359)"
     assert len(ADAPTERS) >= 20
-    assert len(FIXTURES) >= 7
+    assert len(FIXTURES) >= 17
