@@ -532,17 +532,29 @@ def diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     # A kind the new snapshot was refused cannot be said to have lost objects or had findings fixed: kube-noob
     # stopped being able to look, which is not the same event and must not be published as the good one.
     blind = set(new.get("notReadKinds") or ())
-    gone = sorted(set(a) - set(b))
-    removed = [k for k in gone if _kind_of(k) not in blind]
-    undetermined = [k for k in gone if _kind_of(k) in blind]
-    was_fixed = [old_f[i] for i in sorted(set(old_f) - set(new_f))]
-    fixed = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) not in blind]
-    undetermined_findings = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) in blind]
-    from kube_noob.audit.model import undetermined_reason
-
     # The snapshot's objects the rules did not read, and the verdict word they imply: a report built on such a
     # snapshot said "Drift and policy report" and exited 0 with the note in a bullet (review 5, item 3).
     not_audited = [r for r in (new.get("coverage") or {}).get("notAudited") or [] if isinstance(r, dict)]
+    # ... and the OBJECTS those rows name, in the `Kind/namespace/name` shape `_not_audited_row` builds and a
+    # finding's `resource` already uses. The guard below was a set of KINDS, which is the wrong granularity: one
+    # Deployment moved to an apiVersion the rules refuse, while another Deployment stays readable, leaves
+    # `Deployment` out of `notReadKinds` entirely, and the refused object's findings fell through into `fixed`
+    # -- measured at 15, the critical KN-S001 among them, from a one-line apiVersion change. The report named
+    # the object the whole time; the two lists were simply never joined (G366).
+    unread_objects = {str(r.get("object")) for r in not_audited if r.get("object")}
+
+    def _unreadable(ref: str) -> bool:
+        """Whether the new snapshot can still say anything about ``ref`` at all."""
+        return _kind_of(ref) in blind or ref in unread_objects
+
+    gone = sorted(set(a) - set(b))
+    removed = [k for k in gone if not _unreadable(k)]
+    undetermined = [k for k in gone if _unreadable(k)]
+    was_fixed = [old_f[i] for i in sorted(set(old_f) - set(new_f))]
+    fixed = [brief(f) for f in was_fixed if not _unreadable(str(f["resource"]))]
+    undetermined_findings = [brief(f) for f in was_fixed if _unreadable(str(f["resource"]))]
+    from kube_noob.audit.model import undetermined_reason
+
     why_undetermined = undetermined_reason(not_audited)
     out: dict[str, Any] = {
         "format": REPORT_FORMAT,
