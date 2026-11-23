@@ -348,17 +348,50 @@ def _operator_labels(doc: Document, path: PathT) -> dict[str, str]:
 _WALK_MAX_NODES = 200_000
 
 
-def _looks_like_a_pod_spec(node: dict[str, Any]) -> bool:
-    """True for a mapping that is a PodSpec in all but name.
+#: Keys whose value is a LIST of container-shaped mappings. `containers` is the pod spec's own; the rest are the
+#: shapes a container actually arrives in elsewhere, and each one was a silent pass before G333:
+#: a Tekton `Task` runs `spec.steps[]` and `spec.sidecars[]`, and a pod spec carrying only `initContainers` has no
+#: `containers` key at all. A privileged `docker:24-dind` step reported clean -- no finding, no declined rule and
+#: no word of any kind.
+_CONTAINER_LISTS: tuple[str, ...] = ("containers", "initContainers", "ephemeralContainers", "steps", "sidecars")
 
-    Deliberately narrow: a `containers` list holding at least one mapping with an `image`. That is the shape every
-    pod spec has and almost nothing else does, and being narrow is what keeps this from accusing an unrelated CRD
-    of hiding pods.
+#: Keys whose value is ONE container-shaped mapping rather than a list. Argo Workflows put it at
+#: `spec.templates[].container`, so the list check above walks past it.
+#:
+#: The same shape under three more names, each a silent pass until G355 (review class 21: G333 fixed the key in the
+#: report and not its neighbours). An Argo `templates[].script` is a `v1.Container` plus `source`; a Tekton
+#: `spec.stepTemplate` is the container every step without its own `image` runs as; a KubeVirt
+#: `volumes[].containerDisk` names an image the virt-launcher pod pulls and runs. A privileged `docker:24-dind`
+#: under `script:` scored 100.0, gated `passed` and verified `allow`.
+_CONTAINER_MAPPINGS: tuple[str, ...] = ("container", "script", "stepTemplate", "containerDisk")
+
+
+def _container_shaped(node: object) -> bool:
+    """A mapping that declares an image to run: the one discriminator this detector rests on."""
+    return isinstance(node, dict) and isinstance(node.get("image"), str)
+
+
+def _looks_like_a_pod_spec(node: dict[str, Any]) -> bool:
+    """True for a mapping that runs containers, whatever it calls them.
+
+    Deliberately narrow in the way that matters: a mapping is only container-shaped if it declares a **string
+    `image`**. That is what keeps this from accusing an unrelated CRD of hiding pods, and it is the whole guard --
+    so the KEY may be any of the names a container list actually goes by without widening what gets accused.
+
+    The first version required a `containers` list specifically. Three shapes that run containers therefore read
+    as clean: Tekton's `steps[]` and `sidecars[]`, Argo's single `templates[].container` mapping, and a pod spec
+    carrying only `initContainers`. Each one is a container this product never looked at, in a document it
+    reported as passing (G333).
+
+    Widening the key does not widen the verdict: a hit here means the document is reported as NOT AUDITED, which
+    withholds the verdict rather than making a claim about what is in it. A document that runs nothing still
+    matches nothing.
     """
-    items = node.get("containers")
-    if not isinstance(items, list):
-        return False
-    return any(isinstance(c, dict) and isinstance(c.get("image"), str) for c in items)
+    for key in _CONTAINER_LISTS:
+        items = node.get(key)
+        if isinstance(items, list) and any(_container_shaped(c) for c in items):
+            return True
+    return any(_container_shaped(node.get(key)) for key in _CONTAINER_MAPPINGS)
 
 
 def unread_pod_specs(doc: Document) -> list[PathT]:

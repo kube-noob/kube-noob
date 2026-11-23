@@ -440,7 +440,10 @@ def test_a_refused_api_group_is_said_out_loud() -> None:
     other["apiVersion"] = "example.com/v1"
     report = analyze(json.dumps(other))
     assert not report.findings
-    assert any(re.search(r"API group example\.com\b.*not audited", a) for a in report.assumptions), report.assumptions
+    assert any(re.search(r'apiVersion "example\.com/v1".*not audited', a) for a in report.assumptions), (
+        report.assumptions
+    )
+    assert [n["object"] for n in report.not_audited] == ["RayCluster/ns/r"]
 
 
 def test_the_threat_model_still_sees_an_embedded_workload() -> None:

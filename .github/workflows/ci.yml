@@ -13,9 +13,22 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job below sets timeout-minutes. One that does not gets GitHub's default of 360, and this account runs one
+# `ci` workflow at a time, so a single hung job holds every other pull request's checks for six hours. A budget is
+# two decisions: high enough that a slow healthy run never meets it (a timeout that fires on working code is a
+# false failure, and costs more trust than the hang), low enough to end a hang while someone is still waiting.
+# The numbers are read off the last 30 green runs before 2026-11-22, slowest observed per job:
+#   lint 1.0, plugin 1.1, publishable 0.5, airgap 0.5, helm-and-dogfood 0.9            -> 10
+#   db-image 2.2, admission-kind 2.9, gate-ci 3.7, e2e-kind 4.7, policy-kind (vap) 6.2 -> 20
+#   test: see the job.
+# Ten is nine times the slowest job without a cluster; twenty is three times the slowest job with one, because
+# those pull node images and install Tekton or Kyverno over a network nothing here controls.
+# tests/test_ci_timeouts.py fails on a job without one (G348).
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +49,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # 90, measured rather than rounded. Over those 30 runs the slowest leg was test (3.12) at 59.1 minutes, its
+    # median 47.8; 3.11 reached 55.1, 3.13 48.6, and 3.14 never passed 26.4. Ninety is half as much again as the
+    # slowest green run ever seen, so runner variance (the same commit has taken 32 and 55) cannot meet it, and it
+    # is a quarter of the default, so a hang costs the queue ninety minutes and not six hours. It is deliberately
+    # not 60: the slowest healthy run already sits a minute under that. When the median of the slowest leg passes
+    # 60 this number is no longer a margin -- raise it or split the suite, and say which here.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -170,6 +190,7 @@ jobs:
   plugin:
     # The Claude plugin runs the bundled server source with dependencies pinned by hash; prove it starts and answers.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -229,6 +250,7 @@ jobs:
   publishable:
     # Upload validation exactly as pypa/gh-action-pypi-publish runs it: same twine, same Python as its container.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -253,6 +275,7 @@ jobs:
     # their exit codes asserted. `prepare` is the one step with network: it mirrors the dependency wheels, which
     # at an air-gapped site is the operator's step.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [publishable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -272,6 +295,7 @@ jobs:
 
   helm-and-dogfood:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -842,6 +866,7 @@ jobs:
     # The public kube-noob-db image end to end: bundle, gate, image, the chart's cp init container (read-only, no
     # capabilities, user 1001) and the server importing the bundle on start.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -902,6 +927,8 @@ jobs:
           docker build -f Containerfile.db -t kube-noob-db:ci .
           docker build -f Containerfile -t kube-noob:ci .
           [ "$(docker image inspect kube-noob-db:ci --format '{{.Config.User}}')" = "1001" ]
+          docker run --rm --user 1001:0 kube-noob-db:ci cat /kube-noob-db/ATTRIBUTION.md > /dev/null \
+            || { echo "::error title=db::the image's own user (1001) cannot read /kube-noob-db. Check the directory's mode: a COPY --chmod into a directory the builder creates can leave it without its execute bit, and then nothing non-root can enter it"; exit 1; }
       - name: The init container copies the archive and the server imports it on start
         run: |
           set -euo pipefail
@@ -929,6 +956,7 @@ jobs:
     # One leg per supported OpenShift minor (by its Kubernetes version) plus the newest Kubernetes kind ships.
     name: e2e-kind (OpenShift ${{ matrix.ocp }}, Kubernetes ${{ matrix.k8s }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test]
     strategy:
       fail-fast: false
@@ -1024,7 +1052,7 @@ jobs:
             --set config.defaultPlatform=kubernetes --set networkPolicy.allowRouter=false \
             --set networkPolicy.egress.dnsNamespace=kube-system --set networkPolicy.egress.dnsPort=53 \
             --set "networkPolicy.egress.apiServerCIDRs={${EP}/32,${SVC}/32}" --wait --timeout 4m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
       - name: Helm test (in-cluster readiness through the Service)
         run: helm test kn -n kube-noob --timeout 3m --logs
       - name: Sealed private Jira seed, wrong key, sync on and off (requirements R1.4, R1.5)
@@ -1106,6 +1134,7 @@ jobs:
     # R4.3: the gate passes this repository's chart and fails on fixtures, as a GitHub Action, a Tekton Task (in
     # kind) and a GitLab CI template (run by gitlab-ci-local).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test]
     env:
       TEKTON_VERSION: v1.15.5
@@ -1304,6 +1333,7 @@ jobs:
     # 30 seconds answer with p99 under 50 ms; in enforce mode only the listed rule is denied, and an object that already
     # broke it can still be updated; a webhook scaled to zero blocks nothing.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1354,7 +1384,7 @@ jobs:
             --set networkPolicy.egress.dnsPort=53 --set admission.enabled=true --set admission.certificates=secret \
             --set admission.tls.secretName=kn-admission-tls --set "admission.tls.caBundle=$CA_BUNDLE" \
             --wait --timeout 5m \
-            || { kubectl -n kube-noob get events --sort-by=.lastTimestamp | tail -30 | sed 's/^/::error title=install::/'; exit 1; }
+            || { bash scripts/ci_pod_failure.sh kube-noob install; exit 1; }
           kubectl -n kube-noob rollout status deploy/kn-kube-noob-admission --timeout=180s
       - name: Warn mode - a privileged Deployment is admitted with KN-S001 as a kubectl warning
         run: |
@@ -1487,6 +1517,7 @@ jobs:
     # API server (server-side dry-run), for the built-in ValidatingAdmissionPolicy and for Kyverno ValidatingPolicy.
     name: policy-kind (${{ matrix.engine }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [test]
     strategy:
       fail-fast: false

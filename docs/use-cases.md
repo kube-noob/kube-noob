@@ -86,8 +86,8 @@ kube-noob --format json audit -f k8s/ --platform openshift --compact
 
 Each rule's constant fields -- title, severity, remediation, citations, controls and the rest -- are collected
 once into a `ruleInfo` map keyed by rule id instead of being repeated on every finding that rule produced. On
-this repository's `examples/` directory that is 122 findings over 21 rules, and the JSON goes from 159 459 to
-81 523 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
+this repository's `examples/` directory that is 122 findings over 21 rules, and the JSON goes from 169 899 to
+91 963 bytes with nothing dropped: `kube_noob.audit.compact.expand_report` turns it back into the flat report
 exactly. The MCP and HTTP tool takes the same thing as `compact: true`, off by default so the flat shape stays
 what it was. The exit code is the audit's either way, so a gate reads the same verdict with the flag as without.
 
@@ -384,7 +384,7 @@ copies it; the image needs `cp` and must run as non-root):
 ```bash
 gh run download "$(gh run list --repo kube-noob/kube-noob --workflow corpus-refresh.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')" --repo kube-noob/kube-noob -n jira-main-copy-encrypted -D seed
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in seed/jira-snapshot.tgz.enc -out seed/jira-snapshot.tgz -pass env:CORPUS_PASSPHRASE
-printf 'FROM registry.access.redhat.com/ubi9/ubi-micro:latest\nCOPY --chmod=0444 jira-snapshot.tgz /seed/jira-snapshot.tgz\nUSER 1001\n' > seed/Containerfile
+printf 'FROM registry.access.redhat.com/ubi9/ubi-micro:latest\nRUN mkdir -p /seed && chmod 0755 /seed\nCOPY --chmod=0444 jira-snapshot.tgz /seed/jira-snapshot.tgz\nUSER 1001\n' > seed/Containerfile
 podman build -t registry.example.com/platform/kube-noob-jira-seed:2026-10-28 seed
 podman push registry.example.com/platform/kube-noob-jira-seed:2026-10-28
 helm upgrade --install kube-noob deploy/helm/kube-noob --reuse-values --set jira.seed.source=image --set jira.seed.image.repository=registry.example.com/platform/kube-noob-jira-seed --set jira.seed.image.tag=2026-10-28
@@ -552,6 +552,55 @@ From an MCP client, `kubenoob_operator_known_issues` takes the objects as YAML a
 most five issues per package; its hints point at `kube-noob operators issues --must-gather` for the rest. The next
 step that would make this an answer about the operators rather than the release notes is a join through the local
 Red Hat Jira copy, which keeps each ticket's components and fix versions (roadmap R5).
+
+### Is that compliance report compliant, or was the failing check tailored out?
+
+`compliance results` reads the OpenShift Compliance Operator's own objects -- `ComplianceCheckResult`,
+`ComplianceScan`, `ComplianceSuite`, `Rule`, `Profile`, `TailoredProfile` -- and answers with the rules the profile
+**said** would be evaluated, each passing, failing or **not evaluated**. That is the whole point: an operator report
+is easiest to misread when it is green, because four different absences all look like a pass.
+
+- a rule a `TailoredProfile` **disabled** -- the answer names the tailored profile and the rationale it gave
+- a rule it marked **manual** -- no automated check evaluated it
+- a check reporting `NOT-APPLICABLE`, `INFO`, `MANUAL`, `ERROR` or `INCONSISTENT`, each named with its own reason
+- a rule the profile lists that **no result names at all** -- the silent one, and the most valuable thing here
+- a `PASS` from a `ComplianceScan` that never reached `DONE` or reported an error, which is not a pass
+
+A `ComplianceSuite` reporting `COMPLIANT` over any of those is reported as **undetermined, not compliant**, with the
+suite's own claim printed beside the reason it does not hold, and the pass rate withheld rather than computed over
+rules nothing evaluated. A `FAIL` is never softened: an incomplete scan does not withdraw a failure the operator did
+report. Nothing here reaches a cluster: it reads files and must-gathers, needs no credential, and an input with no
+Compliance Operator objects is undetermined, never "the operator is not installed".
+
+Where a `Rule` carries `control.compliance.openshift.io/NIST-800-53`, those ids are joined to kube-noob's own
+control map, so each control comes out evidenced by the Compliance Operator, by a kube-noob rule, by **both**, or by
+**neither** -- the last being a control the operator names only on a rule it did not evaluate and that kube-noob has
+no rule for. There is no "satisfied": the operator's reference is to 800-53 Rev 4 and kube-noob's catalogue is Rev 5,
+and a mapping is evidence about a control, not an assessment of it.
+
+```bash
+kube-noob compliance results --must-gather must-gather.tar.gz
+oc get compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles -n openshift-compliance -o yaml > compliance.yaml
+kube-noob compliance results -f compliance.yaml --format json
+kube-noob compliance results -f compliance.yaml --require-complete
+```
+
+```text
+compliance results (manifests): undetermined -- 6 rule(s) the profile expected: 1 evaluated and passing, 0 failing, 5 not evaluated (2 tailored out, 1 with no result at all, 1 NOT-APPLICABLE, 1 from a scan that did not complete); undetermined, not compliant: 3 reason(s) below. A suite that is green because checks were tailored out or never ran is not a compliant one.
+pass rate withheld: 5 of 6 rule(s) were not evaluated
+  suite cis-suite  phase DONE  reports COMPLIANT  DOES NOT HOLD
+      5 rule(s) in its profile were never evaluated; its scan(s) ocp4-cis-node-worker did not complete
+  ocp4-scc-limit-privileged-containers  NOT-EVALUATED [disabled-by-tailoring]  severity high  Platform
+      a TailoredProfile disabled this rule, so the suite never evaluated it
+      TailoredProfile cis-tailored: accepted risk for the build namespace
+  control IA-2 (no title)  evidence neither  not-evaluated  operator 0 passing / 0 failing / 1 not evaluated  kube-noob rules none
+      the Compliance Operator names this control on a rule it did not evaluate, and kube-noob has no rule mapped to it: nothing in this answer is evidence about it
+```
+
+`--require-complete` exits 5 on anything but a complete answer, so a pipeline cannot read a tailored-out suite as a
+passing one. From an MCP client, `kubenoob_compliance_results` takes the objects as YAML. What it cannot do is
+re-check a rule, decide whether a `NOT-APPLICABLE` check should have applied, or see a rule no profile in the input
+names -- so pass the `Profile` or `TailoredProfile` along with the results.
 
 ### Why was this denied?
 
@@ -1014,7 +1063,8 @@ step; unexposed pods are not paths. It reads RBAC objects, never Secrets (Secret
 unread). The same documents in any order give the same output. `--fail-above` makes it a CI gate: exit 1 when a path
 scores above it, exit 5 when an object or a read was refused (an object of the wrong shape, a read the cluster forbade
 or did not answer; listed under `refused`), else 0. A CRD the cluster does not serve or a role the bundle does not
-carry is listed under `notRead` and fails the gate only with `--require-complete`. NetworkPolicies
+carry is listed under `notRead` and fails the gate only with `--require-complete`, which exits 5 on it with or
+without `--fail-above`. A file in `-f DIR` that cannot be read is exit 5 too, and no answer is printed. NetworkPolicies
 on the entry edge are not applied: check a path with `policy reach`. RBAC resources match as the API server
 matches them (`*`, the exact name, or `*/<subresource>`). `notRead` names what the scan could not account for:
 a read that failed, a routing object of a kind it does not read (Contour, Traefik, Ambassador, the other Gateway

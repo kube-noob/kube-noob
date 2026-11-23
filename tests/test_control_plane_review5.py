@@ -116,9 +116,10 @@ def test_a_list_with_a_non_mapping_item_is_still_opened_and_every_rule_answers(l
 def test_the_control_plane_rules_decline_a_document_that_is_not_a_mapping() -> None:
     report = _r(_list("List", [KAS_POD, "not an object"]))
     assert [h.severity for h in _hits(report, KAS)] == [Severity.CRITICAL]
-    assert KAS not in report.evaluated_rules and any(
-        a.startswith(f"{KAS} was not evaluated") for a in report.assumptions
-    )
+    # It found the CRITICAL on the pod it could read and declined the document it could not, so it RAN:
+    # partly evaluated rather than not evaluated (G281, D4), with the decline still stated.
+    assert KAS in report.partly_evaluated and KAS not in report.not_evaluated
+    assert any(a.startswith(f"{KAS} was not evaluated") for a in report.assumptions)
     assert any("not a mapping" in a for a in report.assumptions if a.startswith(ETCD))
 
 
@@ -458,7 +459,11 @@ def test_the_score_is_not_a_number_while_a_rule_declined_on_an_object(
     report = _r(text)
     out = report.as_dict()
     assert out["declined"] and out["summary"]["score"] is None
-    assert "KN-S038" in out["summary"]["scoreWithheld"] and "not evaluated in full" in out["summary"]["scoreWithheld"]
+    # `verdictReason`, the name `alert_report` already gives the same thing, and the verdict word beside it:
+    # G272's `scoreWithheld` said the same string a second way (class 9).
+    assert out["summary"]["verdict"] == "undetermined"
+    why = out["summary"]["verdictReason"]
+    assert "KN-S038" in why and "not evaluated in full" in why
     assert isinstance(report.score(), float)  # the number itself still exists for the eval grader, by name
     path = tmp_path / "b.yaml"
     path.write_text(text, encoding="utf-8")
@@ -477,7 +482,7 @@ def test_the_score_stays_a_number_when_only_a_partial_bundle_guard_declined() ->
     report = analyze(text, "kubernetes", None, partial_bundle=True)
     out = report.as_dict()
     assert "declined" not in out and isinstance(out["summary"]["score"], float)
-    assert "scoreWithheld" not in out["summary"]
+    assert "verdict" not in out["summary"] and "verdictReason" not in out["summary"]
 
 
 def test_a_partly_evaluated_rule_withholds_the_score_too() -> None:

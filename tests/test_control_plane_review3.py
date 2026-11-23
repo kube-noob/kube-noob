@@ -113,20 +113,35 @@ def test_a_rule_with_a_finding_and_a_decline_is_partly_evaluated_everywhere() ->
     report = _r(bundle)
     out = report.as_dict()
     cs = out["controlSummary"]
-    assert cs["partlyEvaluatedRules"] == ["KN-S038"] and "KN-S038" not in cs["notEvaluatedRules"]
+    named = {row["ruleId"] for row in cs["rulesNotEvaluated"]}
+    assert cs["partlyEvaluatedRules"] == ["KN-S038"] and "KN-S038" not in named
     assert next(c for c in cs["controls"] if c["id"] == "AC-3")["findings"] >= 1
     assert out["declined"]["KN-S038"]["decided"] == 1
     assert "1 other object" in next(a for a in report.assumptions if a.startswith("KN-S038"))
-    direct = summary([f.rule_id for f in report.findings], None, report.evaluated_rules, report.fired_rules)
+    # Both surfaces read the audit's own record of which rules were partly evaluated. Neither infers it from
+    # "has findings and did not run": such a rule DID run (G281, D4), and each had its own copy of that
+    # inference, so each would have reported an empty list for every input.
+    direct = summary(
+        [f.rule_id for f in report.findings],
+        None,
+        report.evaluated_rules,
+        report.fired_rules,
+        partly_evaluated=report.partly_evaluated,
+    )
     assert direct["partlyEvaluatedRules"] == ["KN-S038"]
-    rows = ksi([f.rule_id for f in report.findings], evaluated_rule_ids=report.evaluated_rules)["indicators"]
+    rows = ksi(
+        [f.rule_id for f in report.findings],
+        evaluated_rule_ids=report.evaluated_rules,
+        partly_evaluated=report.partly_evaluated,
+    )["indicators"]
     assert any("KN-S038" in r.get("partlyEvaluatedRules", []) for r in rows)
 
 
 def test_a_rule_clean_on_one_object_and_declined_on_another_is_not_clean_and_says_both() -> None:
     report = _r(GOOD_KAS + "---\n" + _pod(["sh", "-c", "kube-apiserver"], name="b"))
     out = report.as_dict()
-    assert not _clean(report, KAS) and "KN-S038" in out["controlSummary"]["notEvaluatedRules"]
+    named = {row["ruleId"] for row in out["controlSummary"]["rulesNotEvaluated"]}
+    assert not _clean(report, KAS) and "KN-S038" in named
     assert out["declined"]["KN-S038"]["decided"] == 1
 
 
@@ -316,7 +331,10 @@ def test_a_script_file_on_the_etcd_image_declines(command: list[str]) -> None:
 )
 def test_abac_or_webhook_declines_the_authorizer_and_still_reads_anonymous(flags: list[str]) -> None:
     report = _r(_pod(["kube-apiserver", *flags]))
-    assert _declined(report, KAS)
+    # It reported the anonymous default AND declined the authorizer, so it RAN: partly evaluated, not
+    # not-evaluated (G281, D4). The decline is still stated in the assumptions.
+    assert KAS in report.partly_evaluated and KAS not in report.not_evaluated
+    assert any(a.startswith(f"{KAS} was not evaluated") for a in report.assumptions)
     assert [h.severity for h in _hits(report, KAS)] == [Severity.MEDIUM]  # anonymous default still read
     assert not _hits(_r(_pod(["kube-apiserver", *flags, "--anonymous-auth=false"])), KAS)
     assert not _clean(_r(GOOD_KAS + "---\n" + _pod(["kube-apiserver", *flags, "--anonymous-auth=false"])), KAS)

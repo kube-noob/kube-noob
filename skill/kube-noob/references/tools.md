@@ -70,6 +70,13 @@ Clarify requirements. Check a (partial) generator blueprint and return blocking 
 
 - `blueprint`* (object): Partial blueprint; missing/invalid fields become questions.
 
+## compliance_results
+
+What the OpenShift Compliance Operator's results do and do not prove. Read ComplianceCheckResults, ComplianceScans, ComplianceSuites, Rules, Profiles and TailoredProfiles and answer with the rules the profile said would be evaluated, each passing, failing or NOT evaluated with the object that proves it: a rule a TailoredProfile disabled (naming the profile and its rationale), a rule it marked manual, a NOT-APPLICABLE, INFO, MANUAL, ERROR or INCONSISTENT check, a rule the profile lists that no result names, and a pass from a ComplianceScan that never reached DONE or reported an error. A suite reporting COMPLIANT over any of those is undetermined, not compliant, and the pass rate is withheld with the reason beside it. Rule CRs' NIST 800-53 annotations are joined to kube-noob's own controls, so a control is evidenced by the operator, by a kube-noob rule, by both, or by neither -- never 'satisfied'. Offline: no cluster, no credential, nothing written; Secret objects are dropped unread.
+
+- `manifests`* (string): Compliance Operator objects as YAML: ComplianceCheckResults, ComplianceScans, ComplianceSuites, Rules, Profiles and TailoredProfiles (a List, or `oc get compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles -n openshift-compliance -o yaml` output, works). Include the Profile or TailoredProfile: without one, a rule that produced no result at all cannot be seen. Other kinds are ignored; Secret objects are dropped unread.
+- `top` (integer): How many rules to return.
+
 ## config_status
 
 Show configuration. Effective configuration (webEnabled, cluster access, model), version and knowledge stats.
@@ -343,7 +350,7 @@ Compare RHACS policies with kube-noob's rules. Map every policy in an RHACS (Sta
 
 ## run_protocol
 
-Run the 7-step engineering protocol. Clarify -> Validate -> Research -> Audit -> Calibrate -> Generate -> Red Team for a request with existing manifests or a generator blueprint. Returns the Audit & Validation Brief, the production manifest, and Red Team findings with safeguards. Use this first for any design/review request.
+Run the 7-step engineering protocol. Clarify -> Validate -> Research -> Audit -> Calibrate -> Generate -> Red Team for a request with existing manifests or a generator blueprint. Returns the Audit & Validation Brief, the production manifest, and Red Team findings with safeguards. Use this first for any design/review request. `status` is ready, blocked (a finding at high or above remains), undetermined (part of the input was not read or not evaluated: `statusReason` says what, and it is not a pass) or needs-clarification.
 
 - `apply_fixes` (boolean)
 - `blueprint` (null/object): Generator blueprint (see generate_manifests).

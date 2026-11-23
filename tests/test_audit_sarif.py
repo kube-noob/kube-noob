@@ -19,6 +19,7 @@ import pytest
 
 from kube_noob.audit.controls import RULE_CONTROLS
 from kube_noob.cli import main
+from kube_noob.gate import NOT_AUDITED_RULE, NOT_EVALUATED_RULE, NOT_READ_RULE
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "examples" / "insecure-deployment.yaml"
@@ -45,13 +46,29 @@ def test_the_audit_writes_one_sarif_document_and_nothing_else(capsys: pytest.Cap
 
 
 def test_every_finding_in_the_report_is_a_result(capsys: pytest.CaptureFixture[str]) -> None:
+    """Every finding reaches `results`, in order, anchored to its line -- and every result that is NOT a finding is
+    one of the coverage rules, declaring itself as one.
+
+    This used to assert `len(results) == len(report["findings"])`, which is stronger than the name and forbade any
+    non-finding result. That is the opposite of what G328 needed: what the audit did NOT evaluate has to reach
+    `results` too, because `toolExecutionNotifications` is not what a SARIF consumer parses. The equality also only
+    held because this bundle produces no `notAudited` rows, which have been results since review 5. So the
+    invariant is split: the findings are checked exactly as before, and anything else must be a coverage result
+    rather than unconstrained -- a stray result still fails this test.
+    """
     _, out = _run(capsys, "audit", "-f", str(BUNDLE), *ARGS, "--format", "json")
     report = json.loads(out)
     _, doc = _sarif(capsys)
     results = doc["runs"][0]["results"]
-    assert len(results) == len(report["findings"]) > 0
-    assert [r["ruleId"] for r in results] == [f["ruleId"] for f in report["findings"]]
-    assert all(r["locations"][0]["physicalLocation"]["region"]["startLine"] >= 1 for r in results)
+    findings = [r for r in results if r.get("kind", "fail") == "fail"]
+    assert len(findings) == len(report["findings"]) > 0
+    assert [r["ruleId"] for r in findings] == [f["ruleId"] for f in report["findings"]]
+    assert all(r["locations"][0]["physicalLocation"]["region"]["startLine"] >= 1 for r in findings)
+    # A finding is never `kind: review`, and a coverage result is never `kind: fail`: the two cannot be confused
+    # by a consumer that filters on kind, which is the whole reason the coverage results carry one.
+    coverage = [r for r in results if r.get("kind") == "review"]
+    assert {r["ruleId"] for r in coverage} <= {NOT_AUDITED_RULE, NOT_EVALUATED_RULE, NOT_READ_RULE}
+    assert len(findings) + len(coverage) == len(results), "a result that is neither a finding nor coverage"
 
 
 def test_the_exit_code_is_the_same_as_without_the_flag(capsys: pytest.CaptureFixture[str]) -> None:
@@ -87,15 +104,25 @@ def test_what_a_partial_audit_did_not_evaluate_is_in_the_document(
     pod = tmp_path / "pod.yaml"
     pod.write_text(POD, encoding="utf-8")
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "json", "--fail-on", "never")
-    assumptions = json.loads(out)["assumptions"]
+    report = json.loads(out)
+    assumptions = report["assumptions"]
     assert assumptions, "this input is expected to make the audit record an assumption"
     _, out = _run(capsys, "audit", "-f", str(pod), *ARGS, "--format", "sarif", "--fail-on", "never")
     invocation = json.loads(out)["runs"][0]["invocations"][0]
     notes = [n["message"]["text"] for n in invocation["toolExecutionNotifications"]]
-    # The assumptions in order, then one line naming the rules that reached no verdict (G272).
+    # The assumptions in order first (G272 and G281 both), then G272's one bounded line naming the rules that
+    # reached no verdict, then G281's one notification per reason group: the rules that never ran because their
+    # kind was not in the file are in the document, not only in the JSON. Both claims are kept, so the SARIF
+    # says WHICH rules did not run and WHY, which is what a consumer of the document alone needs.
+    from kube_noob.audit.controls import grouped_reasons
+
     assert notes[: len(assumptions)] == assumptions
-    assert notes[len(assumptions) :] == [n for n in notes[len(assumptions) :] if n.startswith("not evaluated: KN-")]
-    assert len(notes) == len(assumptions) + 1
+    rest = notes[len(assumptions) :]
+    assert [n for n in rest if n.startswith("not evaluated: KN-")], "G272's bounded one-line list is missing"
+    grouped = [f"not evaluated, {why}: {', '.join(ids)}" for why, ids in grouped_reasons(report["controlSummary"])]
+    assert grouped, "a one-Pod file leaves rules without a subject"
+    assert rest[-len(grouped) :] == grouped
+    assert any(n.startswith("not evaluated, no Service in the input: ") for n in notes)
     assert all(n["level"] == "warning" for n in invocation["toolExecutionNotifications"])
     assert invocation["executionSuccessful"] is True
 

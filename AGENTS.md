@@ -25,6 +25,12 @@ This used to claim it ran every gate and ran eleven fewer, and it passed four ti
 (G260, G261, G263, G264). `tests/test_check_sh.py` now fails if a gate a CI code job runs is neither in check.sh
 nor named with a reason, so the claim above stays true as ci.yml changes.
 
+Its first line says which tree it is testing, and it runs nothing if `kube_noob` would be imported from another
+one. That matters in a git worktree: the editable install points at ONE checkout, so before G346 this script, run
+from `.claude/worktrees/<name>`, ran the worktree's tests against the main checkout's code and reported failures
+the branch did not have. `bash scripts/check.sh --where` prints that line and stops. Anything you run by hand
+needs the same root, absolute: `PYTHONPATH=$PWD/src python -m pytest ...`.
+
 Read its **exit status**, not its last lines. Piping it through `tail` or `head` replaces the exit status with the
 pipe's, so a failing gate looks green — and a step killed by SIGPIPE reports 141, which is a failure too:
 
@@ -92,6 +98,7 @@ other type, the other order) in the same commit. A review will try those first.
 | `tests/test_plugin.py::test_bundle_names_no_credential_variables` | a credential variable name (`*_TOKEN`, `*_API_KEY`) appearing anywhere in the plugin copy, **including in a comment** |
 | `tests/test_plugin.py::test_manifest_uses_only_fields_the_plugin_reference_defines` | a field the plugin manifest reference does not define |
 | `docs/guidance.md` row check | a row whose `file.py::test_name` citation does not resolve. Every behaviour claim in that table must name a test that exists |
+| `tests/test_timing_assertions.py::test_no_test_asserts_a_tight_wall_clock_budget` | a raw wall-clock comparison below 30 s in a test. A tight budget measures the runner, and when it loses it reports a false failure; state the shape of the regression and let `tests/bounds.py` derive the ceiling, or assert the bounded output instead and drop the clock (G326) |
 
 ## Documentation is part of the change, not a follow-up
 
@@ -109,11 +116,11 @@ A behaviour change updates, in the same commit:
 | Code | Meaning |
 |---|---|
 | 0 | success |
-| 1 | findings at or above `--fail-on`, or a verdict that is undetermined |
+| 1 | findings at or above `--fail-on`, or a verdict that is undetermined (`audit`/`gate`/`ksi`/`posture diff|report`: an object the rules did not read and no `notAudited:` exception accepted, or a rule that declined on every object it had -- `summary.verdict`; the exceptions gate) -- never 0 for undetermined, whatever `--fail-on` says (G272, G281) |
 | 2 | configuration error, or a file that is not there |
 | 3 | clarification needed |
 | 4 | a kube-noob error, or refused input |
-| 5 | the evidence was incomplete (`--require-complete`, unreadable files) |
+| 5 | the evidence was incomplete (`--require-complete`, unreadable files, a file the directory walk declined to read as a manifest) |
 | 141 | the output pipe closed |
 
 An error kube-noob did not anticipate is caught at the entry point (`cli.main`) and reported as one cleaned line
@@ -123,7 +130,9 @@ through the same output boundary (G279).
 Never add a meaning to an existing code. 5 exists because a gate that crashed used to leave 1, and a pipeline read
 that as policy violations. For the same reason an exception nothing else caught exits 4 with that one line, never
 Python's default 1 (G276, G279); `posture scan --fail-above` exits 5 on what was refused (an object of the wrong
-shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`.
+shape, a read the cluster forbade or did not answer) and, with `--require-complete`, on anything under `notRead`
+-- with or without `--fail-above` (G353). A command that reads `-f DIR` and has no `--skip-unreadable` exits 5 on a
+file in it that could not be read, and prints no answer (G350).
 
 ### 1 and 5 are not two answers to the same question (G272)
 
@@ -174,7 +183,9 @@ How two commands fit the table (G280):
   the command that the memory verifier counts as one (cluster-admin, the privileged SCC, wildcard RBAC), or a
   literal credential in `set env` (KN-S013's finding, before there is a manifest). 5 is "the evidence was
   incomplete": what the change does could not be read from its text and the local files -- a URL, a delete whose
-  target is cluster state, an `exec`. That is the rule above and not an exception to it: no verdict was reached.
+  target is cluster state, an `exec`, or manifests whose audit the gate itself calls undetermined (an object the
+  rules did not read, a rule that declined: G329). That is the rule above and not an exception to it: no verdict
+  was reached.
   A deny with something unread is still 1, because a verdict WAS reached and more evidence cannot turn a deny into
   an allow -- where `gate`, whose answer is a score over a set it promises to have read, exits 1 for its own
   undetermined verdict instead. Both are listed in the output.
@@ -199,7 +210,8 @@ arithmetic, and it cost this repository several rounds of conflict resolution th
 
 Both files are append-only, so `.gitattributes` gives them `merge=union` and a merge keeps both sides' lines
 instead of stopping (G297). It does not pick your `G<n>` for you: two branches can still land the same number, and
-`tests/test_guidance.py` fails on a duplicate. Nothing whose lines are rewritten -- `docs/roadmap.md`,
+`tests/test_guidance.py` fails on a duplicate. Union also cannot tell you that it kept a line both sides carried, so
+`tests/test_append_only_duplicates.py` names any `G<n>` row and any `## Unreleased` bullet that appears twice (G347). Nothing whose lines are rewritten -- `docs/roadmap.md`,
 `docs/limits.md`, `docs/use-cases.md`, `docs/compliance.md`, `docs/safety-contract.md` -- is merged that way, so
 those still conflict and are resolved by regenerating them with their script.
 

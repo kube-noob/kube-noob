@@ -57,6 +57,21 @@ def _cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str,
 # --- A: undetermined is exit 1, in every output ---
 
 
+def _rows(report: Report) -> list[tuple[str, str]]:
+    """(object, why) per `notAudited` row, after checking every row carries the keys the record promises.
+
+    The merged row is G281's: the object cleaned once, the Kubernetes `kind` and `apiGroup` the exceptions gate
+    matches on, the fixed-phrase `why`, and the `line` the SARIF locates it by. G272's rows carried a category
+    label in `kind` ("pod spec") and nothing else, which no exception could accept and no SARIF could locate --
+    and the label said what `why` already says. One row per unread DOCUMENT: the per-path detail is in the
+    assumption line, which names every spec path.
+    """
+    for row in report.not_audited:
+        assert set(row) == {"object", "kind", "apiGroup", "why", "line"}, row
+        assert row["why"], row
+    return [(r["object"], r["why"]) for r in report.not_audited]
+
+
 def test_an_undetermined_audit_exits_1_whatever_fail_on_says(capsys: pytest.CaptureFixture[str]) -> None:
     src = FX6 / "q2-declined.yaml"
     report = analyze(src.read_text(encoding="utf-8"), "kubernetes", "1.30")
@@ -68,7 +83,7 @@ def test_an_undetermined_audit_exits_1_whatever_fail_on_says(capsys: pytest.Capt
     code, out, _ = _cli(["audit", "-f", str(src), "--format", "json", "--fail-on", "never"], capsys)
     rep = json.loads(out)
     assert code == 1 and rep["summary"]["score"] is None
-    assert rep["summary"]["scoreWithheld"] == "1 rule not evaluated in full: KN-S038"
+    assert rep["summary"]["verdictReason"] == "1 rule not evaluated in full: KN-S038"
 
 
 def test_refused_evidence_is_5_and_the_same_evidence_waived_is_the_undetermined_1(
@@ -94,7 +109,7 @@ def test_refused_evidence_is_5_and_the_same_evidence_waived_is_the_undetermined_
     assert code == 1, out
     rep = json.loads(out)
     assert rep["summary"]["score"] is None
-    assert rep["summary"]["scoreWithheld"] == "1 rule not evaluated in full: KN-S038"
+    assert rep["summary"]["verdictReason"] == "1 rule not evaluated in full: KN-S038"
     assert [u["path"] for u in rep["unreadable"]] == ["blob.yaml"]
 
 
@@ -132,12 +147,10 @@ def test_the_mcp_tools_carry_the_undetermined_state() -> None:
     kit = Toolkit(load_settings(overrides={"offline": True}))
     out = kit.audit(AuditIn(manifests=text))
     assert out["summary"]["score"] is None
-    assert out["notAudited"] == [
-        {"object": "<kind not a string>/q", "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}
-    ]
-    assert out["summary"]["scoreWithheld"].startswith("2 rules not evaluated in full and 1 pod spec not audited")
+    assert [(r["object"], r["why"]) for r in out["notAudited"]] == [("<kind not a string>/q", "kind is not a string")]
+    assert out["summary"]["verdictReason"].startswith("2 rules not evaluated in full and 1 object not audited")
     fixed = kit.fix(FixIn(manifests=text))
-    assert fixed["after"]["score"] is None and fixed["after"]["scoreWithheld"]
+    assert fixed["after"]["score"] is None and fixed["after"]["verdictReason"]
 
 
 def test_not_evaluated_names_the_stage_not_requested_and_the_declined_rules() -> None:
@@ -145,10 +158,17 @@ def test_not_evaluated_names_the_stage_not_requested_and_the_declined_rules() ->
 
     text = (FX6 / "q2-declined.yaml").read_text(encoding="utf-8")
     full = _t(text)
-    assert full.not_evaluated[KAS] == "declined on 1 object"
-    assert full.as_dict()["notEvaluated"] == {KAS: "declined on 1 object"}
+    # The rule's OWN words, from the one store of what it declined on, rather than a count of that store
+    # beside it: `declined` keeps the per-object detail, and the reason is what every reader groups by.
+    why = full.not_evaluated[KAS]
+    assert "starts kube-apiserver from a shell script" in why, why
+    # Every rule that did not run is in this record, not only the declined one, so the entry is looked up
+    # rather than the whole map compared (G281).
+    assert full.as_dict()["notEvaluated"][KAS] == why
+    assert full.declined[KAS]["entries"] == [{"resource": "Pod/kube-system/kube-apiserver", "reason": why}]
     validate_only = analyze(text, "kubernetes", "1.30", stages={Stage.VALIDATE})
-    assert validate_only.not_evaluated["KN-S001"] == "stage not requested"
+    # The reason NAMES the stage the caller left out, rather than saying only that one was (G281).
+    assert validate_only.not_evaluated["KN-S001"] == "stage audit was not requested"
     assert validate_only.undetermined() is None  # a stage the caller did not ask for is not an unread object
 
 
@@ -496,7 +516,7 @@ def test_an_empty_files_list_is_nothing_to_read() -> None:
 def test_a_non_string_or_null_kind_is_named_with_a_fixed_phrase(fixture: str, ref: str) -> None:
     report = _r(fixture)
     assert report.resources == [ref]
-    assert report.not_audited == [{"object": ref, "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}]
+    assert [obj for obj, _ in _rows(report)] == [ref]
     text = "\n".join([*report.assumptions, report.undetermined() or "", *(f.message for f in report.findings)])
     assert "['Pod']" not in text and "None/" not in text and "{}/" not in text
 
@@ -571,10 +591,9 @@ def test_a_sequence_item_names_each_pod_by_document_and_line() -> None:
         "2 pod spec(s) are in kinds kube-noob has no reader for, so their containers were NOT audited: "
         "document 1 (line 4) at spec path 0.spec, document 1 (line 4) at spec path 1.spec."
     )
-    assert (
-        report.not_audited
-        == [{"object": "document 1 (line 4)", "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}] * 2
-    )
+    # ONE row for the one document that was not read -- the two spec paths are named in the assumption line
+    # just asserted above, not as two rows of the record an exception accepts per object.
+    assert _rows(report) == [("<no kind>/<unnamed>", "pods are in a kind kube-noob has no reader for")]
 
 
 def test_a_wrapper_whose_last_kind_is_not_a_list_names_the_privileged_pod() -> None:
@@ -584,8 +603,6 @@ def test_a_wrapper_whose_last_kind_is_not_a_list_names_the_privileged_pod() -> N
         .replace("kind: ConfigMap\nkind: List\n", "kind: List\nkind: ConfigMap\n")
     )
     report = _t(text)
-    assert report.not_audited == [
-        {"object": "ConfigMap/<unnamed>", "kind": "pod spec", "why": "in a kind kube-noob has no reader for"}
-    ]
+    assert [obj for obj, _ in _rows(report)] == ["ConfigMap/<unnamed>"]
     assert "ConfigMap/<unnamed> at spec path items.0.spec" in next(a for a in report.assumptions if "NOT audited" in a)
     assert [(f.resource, f.line) for f in _hits(report, "KN-V018")] == [("ConfigMap/<unnamed>", 3)]

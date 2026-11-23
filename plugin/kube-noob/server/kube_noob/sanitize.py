@@ -164,6 +164,27 @@ def loads_bounded(data: str | bytes, limit: int = MAX_JSON_DEPTH, object_pairs_h
     return json.loads(data, object_pairs_hook=object_pairs_hook)
 
 
+def loads_all_bounded(data: str, limit: int = MAX_JSON_DEPTH) -> list[Any]:
+    """Every JSON value in a text that holds one value or several written one after another, depth counted first.
+
+    The stream form (`{...}{...}`, or one object per line) is what some generators emit and what `kubectl apply -f`
+    accepts, and `json.loads` refuses it as "extra data". Raises ``JsonTooDeep`` or ``json.JSONDecodeError`` (both
+    ``ValueError``) for anything that is not such a text, so a caller cannot take half of one for the whole.
+    """
+    if not json_nesting_ok(data, limit):
+        raise JsonTooDeep(f"JSON nested too deeply (more than {limit} levels)")
+    decoder = json.JSONDecoder()
+    out: list[Any] = []
+    at = 0
+    while True:
+        while at < len(data) and data[at] in " \t\r\n":
+            at += 1
+        if at >= len(data):
+            return out
+        value, at = decoder.raw_decode(data, at)
+        out.append(value)
+
+
 # Terminal control sequences, removed whole (to nothing: a space would split what the sequence sat inside): CSI
 # (ESC [ ... final), the string sequences OSC (ESC ], which carries OSC 8 hyperlinks and OSC 52 clipboard writes), DCS
 # (ESC P), SOS (ESC X), PM (ESC ^) and APC (ESC _), each to BEL or ST, and the two-character escapes. A lone ESC that

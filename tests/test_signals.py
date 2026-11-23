@@ -5,12 +5,15 @@ from __future__ import annotations
 import dataclasses
 import json
 import random
-import time
 
 import pytest
 
 from kube_noob.signals import Signal, extract, normalise_error
 from kube_noob.signals import core as ex
+from tests import bounds
+
+#: Measured: one hostile 300 KB paste through extract. Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_HOSTILE_EXTRACT = 0.28
 
 
 def names(signals: list[Signal], kind: str) -> list[str]:
@@ -254,9 +257,8 @@ def test_inputs_are_bounded_and_hostile_input_is_cheap() -> None:
     deep = "[" * 5000 + "]" * 5000
     assert extract(deep) == [] or isinstance(extract(deep), list)
     hostile = ("error " + "a-" * 40_000 + "\n") * 3 + "1" * 100_000 + "\n" + "::" * 50_000
-    start = time.monotonic()
-    extract(hostile)
-    assert time.monotonic() - start < 3.0
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_HOSTILE_EXTRACT, guards="hostile signal text"):
+        extract(hostile)
     assert (
         len(
             [

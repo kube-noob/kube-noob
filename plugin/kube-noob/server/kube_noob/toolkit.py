@@ -792,6 +792,20 @@ class ClusterOperatorKnownIssuesIn(_In):
     _version = field_validator("openshift_version", mode="before")(_strict_ocp_version)
 
 
+class ComplianceResultsIn(_In):
+    manifests: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_MANIFEST_CHARS,
+        description="Compliance Operator objects as YAML: ComplianceCheckResults, ComplianceScans, "
+        "ComplianceSuites, Rules, Profiles and TailoredProfiles (a List, or `oc get "
+        "compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles "
+        "-n openshift-compliance -o yaml` output, works). Include the Profile or TailoredProfile: without one, a rule "
+        "that produced no result at all cannot be seen. Other kinds are ignored; Secret objects are dropped unread.",
+    )
+    top: int = Field(500, ge=1, le=5000, description="How many rules to return.")
+
+
 class BuildDiagnoseIn(_In):
     log: str = Field(
         ...,
@@ -1186,8 +1200,16 @@ class Toolkit:
         rule_ids: list[str] = []
         evaluated: list[str] | None = None
         fired: list[str] | None = None
+        reasons: dict[str, str] | None = None
+        absent: dict[str, list[str]] | None = None
+        # Defaulted beside its siblings, not inside the audit branch: with no manifests this name was never bound
+        # and the command raised UnboundLocalError, so `ksi` with nothing to audit -- the crosswalk-only call the
+        # dataset exists to answer -- exited 4 instead of printing every indicator as not evaluated (G281).
+        partly: dict[str, str] | None = None
         assumptions: list[str] = []
         ceiling: dict[str, str] | None = None
+        not_audited: list[dict[str, Any]] = []
+        verdict: str | None = None
         excepted: list[dict[str, Any]] = []
         excepted_ids: list[str] = []
         exceptions_block: dict[str, Any] | None = None
@@ -1216,10 +1238,17 @@ class Toolkit:
             if review is not None:
                 kept, excepted, used = self._split_excepted(review, r.findings)
                 r.findings = kept
+                used |= exc_mod.accept_not_audited(review, r.not_audited)
                 excepted_ids = [str(e["ruleId"]) for e in excepted if "ruleId" in e]
+                # `self._unused`, not a bare list comprehension over `review.active`: it is the one place that
+                # decides what "unused" means, and it reads the evaluated rules too (G272).
                 exceptions_block = {**review.summary(), **self._unused(review, used, r.evaluated_rules)}
+            not_audited = [dict(row) for row in r.not_audited]
+            verdict = r.undetermined()
             rule_ids = [f.rule_id for f in r.findings]
             evaluated, fired = sorted(r.evaluated_rules), sorted(r.fired_rules)
+            reasons, absent = dict(r.not_evaluated), dict(r.absent_subjects)
+            partly = dict(r.partly_evaluated)
             assumptions = list(r.assumptions)
             ceiling = not_checked_beyond(r.kubernetes_version)
         out = fedramp.summary(
@@ -1232,12 +1261,22 @@ class Toolkit:
             evaluated_rule_ids=evaluated,
             fired_rule_ids=fired,
             not_checked_beyond=ceiling,
+            not_evaluated=reasons,
+            absent_subjects=absent,
+            partly_evaluated=partly,
         )
         if exceptions_block is not None:
             out["exceptions"] = exceptions_block
             out["excepted"] = excepted
         if assumptions:
             out["assumptions"] = assumptions
+        if not_audited:
+            # The objects the audit did not read, and the verdict word: a KSI page built on an audit whose verdict
+            # is undetermined said `audited: true` and nothing else (review 5, item 3).
+            out["notAudited"] = not_audited
+        if verdict:
+            out["verdict"] = "undetermined"
+            out["verdictReason"] = verdict
         rows = out["indicators"]
         total = len(rows)
         hidden: dict[str, Any] = {}
@@ -1265,6 +1304,13 @@ class Toolkit:
                     + (", with evidenced_only" if p.evidenced_only else "")
                 )
             out["filtered"] = hidden
+        if verdict:
+            # First, not last. `indicators` is the bulk of this payload -- fifty-odd kilobytes of it -- and a dict
+            # serialises in insertion order, so the verdict set above sat at byte 54,945 of 55,269. An MCP client
+            # that truncates a long tool result dropped exactly the word that says the audit under this page
+            # reached no verdict, and the model then read a full KSI crosswalk with every indicator and no caveat.
+            # The caveat has to survive the truncation, so it goes at the front (G330, review class 6).
+            out = {"verdict": "undetermined", "verdictReason": verdict, **out}
         return out
 
     def _allowed_registries(self) -> tuple[str, ...]:
@@ -1335,6 +1381,9 @@ class Toolkit:
         if review is not None:
             kept, excepted, used = self._split_excepted(review, r.findings)
             r.findings = kept
+            # A `notAudited:` entry accepts an object the rules did not read: the row stays listed, marked, and
+            # no longer makes the verdict undetermined (review 5, item 4). Before `as_dict`, which reads it.
+            used |= exc.accept_not_audited(review, r.not_audited)
         out = r.as_dict()
         if review is not None:
             out["excepted"] = excepted
@@ -1353,6 +1402,9 @@ class Toolkit:
                 # And the fired set, or a withheld finding would become clean again on any report that
                 # applies an exception list (G199).
                 r.fired_rules or None,
+                # And the reasons, or the rebuild would lose why a rule was not evaluated (G281).
+                not_evaluated=r.not_evaluated or None,
+                absent_subjects=r.absent_subjects or None,
             )
         self._observe(
             [f"platform:{out.get('platform')}"]
@@ -1936,6 +1988,15 @@ class Toolkit:
             data_dir=self.settings.data_dir,
         )
 
+    def compliance_results(self, p: ComplianceResultsIn) -> dict[str, Any]:
+        """What the Compliance Operator's own results do and do not prove: which rules it evaluated, and which it
+        never did."""
+        from kube_noob import compliance_results
+
+        out = compliance_results.assess(compliance_results.from_manifests(p.manifests), top=p.top)
+        self._observe([f"compliance-results:{out['verdict']}"])
+        return out
+
     def build_diagnose(self, p: BuildDiagnoseIn) -> dict[str, Any]:
         """The failing step, the error line and its template, the cause class and the fix; reported issues and team
         memory for the error lines."""
@@ -2453,7 +2514,9 @@ class Toolkit:
                 "Run the 7-step engineering protocol",
                 "Clarify -> Validate -> Research -> Audit -> Calibrate -> Generate -> Red Team for a request with "
                 "existing manifests or a generator blueprint. Returns the Audit & Validation Brief, the production "
-                "manifest, and Red Team findings with safeguards. Use this first for any design/review request.",
+                "manifest, and Red Team findings with safeguards. Use this first for any design/review request. "
+                "`status` is ready, blocked (a finding at high or above remains), undetermined (part of the input was "
+                "not read or not evaluated: `statusReason` says what, and it is not a pass) or needs-clarification.",
                 ProtocolIn,
                 self.run_protocol,
             ),
@@ -2758,6 +2821,22 @@ class Toolkit:
                 "determined. Secret objects are dropped unread.",
                 OperatorKnownIssuesIn,
                 self.operator_known_issues,
+            ),
+            ToolSpec(
+                "compliance_results",
+                "What the OpenShift Compliance Operator's results do and do not prove",
+                "Read ComplianceCheckResults, ComplianceScans, ComplianceSuites, Rules, Profiles and "
+                "TailoredProfiles and answer with the rules the profile said would be evaluated, each passing, "
+                "failing or NOT evaluated with the object that proves it: a rule a TailoredProfile disabled (naming "
+                "the profile and its rationale), a rule it marked manual, a NOT-APPLICABLE, INFO, MANUAL, ERROR or "
+                "INCONSISTENT check, a rule the profile lists that no result names, and a pass from a "
+                "ComplianceScan that never reached DONE or reported an error. A suite reporting COMPLIANT over any "
+                "of those is undetermined, not compliant, and the pass rate is withheld with the reason beside it. "
+                "Rule CRs' NIST 800-53 annotations are joined to kube-noob's own controls, so a control is "
+                "evidenced by the operator, by a kube-noob rule, by both, or by neither -- never 'satisfied'. "
+                "Offline: no cluster, no credential, nothing written; Secret objects are dropped unread.",
+                ComplianceResultsIn,
+                self.compliance_results,
             ),
             ToolSpec(
                 "build_diagnose",

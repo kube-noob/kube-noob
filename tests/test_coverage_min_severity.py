@@ -32,9 +32,13 @@ def _controls(min_severity: Severity) -> dict[str, dict]:
 def test_a_withheld_finding_does_not_become_clean() -> None:
     low = _controls(Severity.LOW)["CP-10"]
     high = _controls(Severity.HIGH)["CP-10"]
-    assert low["findings"] == 3 and low["clean"] == 6
+    # `clean` was 6 before G281; the CP-10 rules whose kind this bundle lacks (no PodDisruptionBudget, no
+    # HorizontalPodAutoscaler) are not evaluated now, so compare the two filters rather than pin the number.
+    assert low["findings"] == 3 and low["clean"] >= 1
     # The three rules whose findings were withheld may not migrate into `clean`.
-    assert high["clean"] == 6, f"clean grew from 6 to {high['clean']}: a rule that fired was counted clean"
+    assert high["clean"] == low["clean"], (
+        f"clean grew from {low['clean']} to {high['clean']}: a fired rule was counted clean"
+    )
     assert high["withheld"] == 3, high
     assert high["findings"] == 0, "the view really does hide them; that part is the caller's choice"
 

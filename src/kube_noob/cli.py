@@ -27,6 +27,7 @@ from kube_noob.audit.caveats import (
 )
 from kube_noob.config import Settings, load_settings
 from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.server import tool_profiles
 from kube_noob.yamlio import json_document
 
 PLATFORMS = ["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
@@ -49,8 +50,24 @@ def _read(path: str) -> str:
         return sys.stdin.read()
     p = Path(path)
     if p.is_dir():
-        return "\n---\n".join(text for _, text in _dir_yaml(p)[0])
+        ok, bad = _dir_yaml(p)
+        if bad:
+            # The files of a directory that could not be read used to be dropped here, without a word: every
+            # command that reads a directory through this function (`posture scan|reach|snapshot`, `policy
+            # reach`, `vuln threat`, `protocol`) answered about the files that were left, and
+            # `posture scan -f k8s/ --fail-above 30 --require-complete` exited 0 beside a file YAML could not
+            # parse. The same file named on its own is refused, so the directory is too (G350).
+            raise _UnreadInput(path, bad)
+        return "\n---\n".join(text for _, text in ok)
     return p.read_text(encoding="utf-8")
+
+
+class _UnreadInput(Exception):
+    """A directory given as input held a file that could not be read: no answer is attempted, exit 5."""
+
+    def __init__(self, path: str, bad: list[dict[str, str]]) -> None:
+        super().__init__(path)
+        self.path, self.bad = path, bad
 
 
 def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
@@ -60,14 +77,22 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     UTF-8 or not YAML then decided the outcome for every other file in the directory, and said so against a line of
     the combined text rather than against a path anyone could open.
     """
-    from kube_noob.gate import unreadable_reason
+    from kube_noob.gate import _identity, not_opened_reason, unreadable_reason
 
     ok: list[tuple[str, str]] = []
     bad: list[dict[str, str]] = []
-    for f in sorted(d.rglob("*")):
-        if f.suffix not in {".yaml", ".yml"} or not f.is_file():
-            continue
+    every = [f for f in sorted(d.rglob("*")) if f.is_file()]
+    opened = {ident for f in every if f.suffix in {".yaml", ".yml"} and (ident := _identity(f)) is not None}
+    for f in every:
         rel = str(f.relative_to(d))
+        if f.suffix not in {".yaml", ".yml"}:
+            # A manifest this walk does not open is a file nobody read, and it is named as one: `pod.json` beside
+            # a clean `ok.yaml` used to leave `audit -f k8s/` at score 100.0, exit 0, with no word about it. The
+            # decision is the gate's own, so the two walks cannot answer differently about one directory (G351).
+            why = not_opened_reason(d, f, opened, reads_hidden=True)
+            if why is not None:
+                bad.append({"path": rel, "why": why})
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
@@ -126,7 +151,7 @@ def _locate(report: dict[str, Any], sources: Sequence[tuple[str, int]]) -> None:
     """
     if not sources:
         return
-    for key in ("findings", "excepted"):
+    for key in ("findings", "excepted", "notAudited"):
         for f in report.get(key) or []:
             if not isinstance(f, dict):
                 continue
@@ -157,6 +182,17 @@ def _refuse_unreadable(bad: list[dict[str, str]], flag: str = "--skip-unreadable
     print(
         f"error: {len(bad)} file(s) could not be read, so this is not a clean result; pass {flag} to audit the rest "
         "and list these in the report",
+        file=sys.stderr,
+    )
+
+
+def _refuse_unread_input(exc: _UnreadInput) -> None:
+    """The refusal for a command with no `--skip-unreadable`: the files, and the two ways to get an answer."""
+    for b in exc.bad:
+        print(_error_line(f"error: {exc.path}: {b['path']}: {b['why']}"), file=sys.stderr)
+    print(
+        f"error: {len(exc.bad)} file(s) under {_error_line(exc.path)} could not be read, so no answer was given "
+        "about the rest; correct them, or name the files to read with -f",
         file=sys.stderr,
     )
 
@@ -456,6 +492,14 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         out["applicability"],
         "",
     ]
+    if out.get("verdict") == "undetermined":
+        rows = out.get("notAudited") or []
+        lines += [
+            f"verdict: undetermined ({out.get('verdictReason')}); the audit this page projects did not read: "
+            + "; ".join(f"{r.get('object')} ({r.get('why')})" for r in rows[:5])
+            + (f"; and {len(rows) - 5} more" if len(rows) > 5 else ""),
+            "",
+        ]
     if out.get("unmappedControls"):
         lines += [
             "Controls kube-noob maps that no indicator cites, so no finding reaches an indicator through them: "
@@ -476,6 +520,9 @@ def _ksi_markdown(out: dict[str, Any], audited: bool) -> str:
         lines += [f"{miss['findings']} finding(s) from {miss['ruleId']} reach no indicator: {miss['why']}"]
     if out.get("findingsNotMapped"):
         lines.append("")
+    # The reasons behind every `not evaluated` column below, once, before the rows that count them (G281).
+    if coverage := _coverage_lines(out):
+        lines += [*coverage, ""]
     f = out.get("filtered")
     if f:
         lines += [
@@ -608,6 +655,52 @@ def _print_upgrade_risks(out: dict[str, Any]) -> None:
     )
 
 
+def not_audited_lines(rep: dict[str, Any]) -> list[str]:
+    """The text view of `notAudited`: one line per refused object, and the verdict word (review 4, R1)."""
+    rows = [r for r in rep.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    from kube_noob import sanitize
+
+    open_rows = [r for r in rows if not r.get("acceptedBy")]
+    head = (
+        f"not audited: {len(open_rows)} object(s) the rules did not read; the verdict is undetermined (exit 1)"
+        if open_rows
+        else f"not audited: {len(rows)} object(s) the rules did not read, every one accepted by the exception list"
+    )
+    lines = [head]
+    for r in rows:
+        tail = f" (accepted by {sanitize.visible(str(r['acceptedBy']))[:64]})" if r.get("acceptedBy") else ""
+        obj, why = sanitize.visible(str(r.get("object")))[:120], sanitize.visible(str(r.get("why")))[:200]
+        lines.append(f"  {obj}: {why}{tail}")
+    return lines
+
+
+def _coverage_lines(summary: dict[str, Any]) -> list[str]:
+    """The text view of the coverage record: what ran, what did not and why, grouped by reason (G281).
+
+    The JSON carries `rulesNotEvaluated` with one reason per rule; printed one per line, a Deployment-only
+    file would show seventy lines of "no Service in the input". Grouped, the reader sees the kinds that were
+    not there and the rules that waited for them. The count on the first line is the JSON's count, so the two
+    views cannot say different numbers.
+    """
+    skipped = summary.get("rulesNotEvaluated")
+    if not isinstance(skipped, list):
+        return []
+    from kube_noob.audit.controls import RULE_CONTROLS, grouped_reasons
+
+    groups = grouped_reasons(summary)
+    total = sum(len(ids) for _, ids in groups)
+    # Rules that ran, whether clean, withheld or fired: every rule the record does not list as not evaluated.
+    lines = [f"rules: {len(RULE_CONTROLS) - total} evaluated, {total} not evaluated"]
+    for why, ids in groups:
+        lines.append(f"  not evaluated, {why}: {', '.join(ids)}")
+    for row in summary.get("rulesEvaluatedWithout") or []:
+        if isinstance(row, dict) and row.get("ruleId"):
+            lines.append(f"  evaluated without {', '.join(str(k) for k in row.get('absent') or [])}: {row['ruleId']}")
+    return lines
+
+
 #: How long one line of the audit's text view may be. A manifest-derived string (a container name, a flag value)
 #: is the user's text, and a newline in it forged a line of the report; a 100,000-character one flooded it (G272).
 MAX_TEXT_LINE = 2000
@@ -623,10 +716,15 @@ def _one_line(value: object) -> str:
 
 def _print_report(rep: dict[str, Any]) -> None:
     s = rep["summary"]
-    # "not determined", not a number, while a rule declined on an object (`scoreWithheld` says which): a number
-    # printed above "was not evaluated in full" read as a verdict on what was not read (G272).
-    withheld = s.get("scoreWithheld")
-    score = f"not determined ({_one_line(withheld).partition(':')[0]})" if withheld else str(s["score"])
+    # The verdict word on the headline, in the score's place: a number beside "undetermined" further down was
+    # two verdicts in one report (G281, review 5, item 3), and a number printed above "was not evaluated in
+    # full" read as a verdict on what was not read (G272). The SHORT form of the reason -- the text before the
+    # first colon -- because the rest of it is a list of objects and this is one line.
+    score = (
+        f"not determined ({_one_line(s.get('verdictReason')).partition(':')[0]})"
+        if s.get("verdict") == "undetermined"
+        else str(s["score"])
+    )
     print(
         f"kube-noob audit | platform={rep['platform']} k8s={rep['kubernetesVersion']} | score={score} | "
         + " ".join(f"{k}={v}" for k, v in s["counts"].items() if v)
@@ -655,11 +753,18 @@ def _print_report(rep: dict[str, Any]) -> None:
         print(f"           fix: {_one_line(f['remediation'])}")
         if f.get("stackroxPolicies"):
             print(f"           RHACS: {', '.join(f['stackroxPolicies'])}")
-    # Only controls that HAVE findings: the list also holds clean and not-evaluated controls, and printing those
-    # as "(0)" made a control no rule looked at read exactly like a clean one (G272).
-    touched = [c for c in (rep.get("controlSummary") or {}).get("controls") or [] if c.get("findings")]
-    if touched:
-        print("NIST SP 800-53 controls with findings: " + ", ".join(f"{c['id']} ({c['findings']})" for c in touched))
+    # `control_headlines` names only controls that HAVE findings on its first line, and the controls with a rule
+    # not evaluated on its second: printing a clean or unevaluated control as "(0)" made a control no rule looked
+    # at read exactly like a clean one (G272), which is the shared helper's whole reason for existing (G281,
+    # review 3, N8). One helper, so every text view prints the same lists.
+    from kube_noob.audit.controls import control_headlines
+
+    for line in control_headlines(rep.get("controlSummary") or {}):
+        print(line)
+    for line in not_audited_lines(rep):
+        print(line)
+    for line in _coverage_lines(rep.get("controlSummary") or {}):
+        print(line)
     if cov := rep.get("detectionCoverage"):
         from kube_noob.audit.detection import render_text
 
@@ -811,6 +916,7 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             source_roots=[str(Path.cwd().resolve()), *(r.rstrip("/") for r in a.source_root if r.startswith("/"))],
             cni=a.cni,
             default_namespace=_dns_label(a.namespace),
+            skip_unreadable=a.skip_unreadable,
         )
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -837,6 +943,19 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(report, fmt)
     if report.get("unreadable") and not a.skip_unreadable:
         _refuse_unreadable([{"path": u["file"], "why": u["why"]} for u in report["unreadable"]])
+        return 5
+    # Beside the `unreadable` branch, and with no flag that waves it through: a file the walk declined to read is
+    # not a policy violation (1) and not a clean result (0), and the fix for a key spelled wrong is to spell it
+    # right, not to pass a flag. `--skip-unreadable` answers a different question (G126, G325).
+    blocked = [x for x in report.get("skipped") or [] if x.get("forbidsVerdict")]
+    if blocked:
+        for entry in blocked:
+            print(f"error: {entry['file']}: {entry['why']}", file=sys.stderr)
+        print(
+            f"error: {len(blocked)} file(s) were not read as manifests, so this is not a clean result; correct the "
+            "key the message names and run the gate again",
+            file=sys.stderr,
+        )
         return 5
     return 0 if report["passed"] else 1
 
@@ -2224,7 +2343,8 @@ def build_parser() -> argparse.ArgumentParser:
         "when a path scores above it; exit 5 when an object or a read was refused (an object of the wrong shape, "
         "a read the cluster forbade or did not answer), listed under `refused`, because the gate did not see "
         "everything; otherwise 0. What was absent rather than refused (a CRD the cluster does not serve, a role "
-        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete.",
+        "the bundle does not carry) is listed under notRead and fails the gate only with --require-complete, which "
+        "exits 5 on it with or without --fail-above.",
     )
     psc.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
     psc.add_argument("--live", action="store_true", help="read the cluster (read-only, never Secrets)")
@@ -2247,7 +2367,7 @@ def build_parser() -> argparse.ArgumentParser:
     psc.add_argument(
         "--require-complete",
         action="store_true",
-        help="with --fail-above: exit 5 when anything at all is under notRead, absent as well as refused",
+        help="exit 5 when anything at all is under notRead, absent as well as refused; with --fail-above or on its own",
     )
 
     prc = posub.add_parser(
@@ -2359,6 +2479,35 @@ def build_parser() -> argparse.ArgumentParser:
         "settled (no update in progress), indexed and OpenShift (not OKD, not plain Kubernetes) -- so a cluster the "
         "release notes do not cover exits 5 too, with the reason. Whether every operator was matched is allMatched "
         "in the JSON, not an exit code",
+    )
+
+    cmp_ = sub.add_parser(
+        "compliance",
+        help="OpenShift Compliance Operator results, read as evidence rather than repeated as a score (offline)",
+        description="results reads the Compliance Operator's own objects -- ComplianceCheckResults, ComplianceScans, "
+        "ComplianceSuites, Rules, Profiles and TailoredProfiles -- from manifests (-f) or a must-gather "
+        "(--must-gather), never from a cluster and never with a credential, and answers with the rules the profile "
+        "said would be evaluated, each passing, failing or NOT evaluated. A rule a TailoredProfile disabled, a "
+        "NOT-APPLICABLE check, a rule the profile lists that no result names, and a pass from a scan that never "
+        "reached DONE are each not evaluated, named with the object that proves it. A suite reporting COMPLIANT over "
+        "any of them comes out undetermined, not compliant. Example: kube-noob compliance results --must-gather "
+        "must-gather.tar.gz",
+    )
+    cmpsub = cmp_.add_subparsers(dest="compliance_cmd", required=True)
+    _patch(cmpsub, common)
+    cmr = cmpsub.add_parser(
+        "results",
+        help="Read Compliance Operator results in manifests (-f) or a must-gather (--must-gather) and say what was "
+        "never evaluated",
+    )
+    cmr.add_argument("-f", "--file", action="append", default=[], help="YAML file or directory; repeat for several")
+    cmr.add_argument("--must-gather", default=None, help="a must-gather directory, or a .tar, .tar.gz or .tgz of one")
+    cmr.add_argument("--top", type=int, default=500, help="rules to show (1-5000, default 500)")
+    cmr.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit 5 unless every rule the profile expected was evaluated and every object the answer needs was "
+        "read, so a gate never reads a tailored-out or half-finished suite as a compliant one",
     )
 
     def snap_source(sp: argparse.ArgumentParser) -> None:
@@ -2588,7 +2737,17 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="Optional: ask a model you configure, which calls these tools")
     ask.add_argument("question")
 
-    sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mc = sub.add_parser("mcp", help="Run the MCP server over stdio")
+    mc.add_argument(
+        "--tools",
+        metavar="PROFILE[,PROFILE]",
+        help=(
+            "offer one named subset of the tools instead of all of them: "
+            + ", ".join(tool_profiles.NAMES)
+            + ". A profile changes only which tools are listed, never what one answers, and every tool it "
+            "withholds is named in the server's instructions with the flag that offers it"
+        ),
+    )
     sv = sub.add_parser("serve", help="Run the MCP server over streamable HTTP (sidecar/service)")
     sv.add_argument("--host")
     sv.add_argument("--port", type=int)
@@ -2916,6 +3075,9 @@ def _main(a: argparse.Namespace) -> int:
 
             _MODEL_KNOWLEDGE["line"] = knowledge_line(s.data_dir)
         return _dispatch(a, s)
+    except _UnreadInput as exc:
+        _refuse_unread_input(exc)
+        return 5
     except ClarificationNeeded as exc:
         _emit({"status": "needs-clarification", "questions": exc.questions}, "yaml" if a.format == "text" else a.format)
         return 3
@@ -2989,7 +3151,12 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 )
             except ExceptionsError as exc:
                 raise ConfigError(f"{a.exceptions}: {exc}") from exc
-            rep["unreadable"] = unreadable
+            # Reaching here with a file unread means `--skip-unreadable` was passed (the refusal above returned 5
+            # otherwise), and the row says so, as the gate's does: a reader of the report -- the OSCAL emitter
+            # among them -- can then tell a file the caller accepted from one nobody decided about (G343).
+            from kube_noob.audit.model import SKIP_UNREADABLE
+
+            rep["unreadable"] = [{**u, "acceptedBy": SKIP_UNREADABLE} for u in unreadable]
             # Before anything is printed or emitted, and before OSCAL and the compact form are built from it:
             # they all carry the line numbers (G251).
             _locate(rep, sources)
@@ -3028,9 +3195,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 _emit(rep, fmt)
             if rep.get("exceptions") and not rep["exceptions"]["gate"]:
                 return 1
-            if rep["summary"].get("scoreWithheld"):
-                # Undetermined is exit 1 whatever --fail-on says: a rule that declined on the only API server, or
-                # a pod spec nothing read, is never a pass (G272, seventh review; the owner's decision, as G281).
+            if rep["summary"].get("verdict") == "undetermined":
+                # An object the rules did not read and no exception accepted, or a rule that declined on the
+                # only API server, is not a pass and not a finding: the verdict is undetermined, and
+                # undetermined is exit 1, never 0 -- whatever --fail-on says (G281 R1; G272, seventh review).
                 return 1
             if a.fail_on == "never":
                 return 0
@@ -3109,7 +3277,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             print("\n".join(out["validationCommands"]))
         else:
             _emit(out, fmt)
-        return {"ready": 0, "blocked": 1, "needs-clarification": 3}.get(out["status"], 0)
+        # `undetermined` is evidence incomplete (5), not a pass: the default here was 0, so the one status that
+        # withholds the verdict exited the way `ready` does. A status this table does not know is an internal
+        # error (4) for the same reason -- an unrecognised word must not read as a pass (G339).
+        return {"ready": 0, "blocked": 1, "needs-clarification": 3, "undetermined": 5}.get(out["status"], 4)
 
     if a.cmd in {"generate", "helm-chart"}:
         from kube_noob.generate.blueprint import Blueprint
@@ -3281,6 +3452,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         # The exception gate decides the exit code here as it does for `audit`: the page already printed
         # "gate: failed" for an expired or refused entry, and saying so while exiting 0 is two answers (G249).
         gate = (out.get("exceptions") or {}).get("gate")
+        if out.get("verdict") == "undetermined":
+            return 1  # the audit this page projects is undetermined: never 0 (review 5, item 3)
         return 0 if gate is not False else 1
 
     if a.cmd == "upgrade-risks":
@@ -3348,6 +3521,8 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         return _posture(a, s, fmt)
     if a.cmd == "operators":
         return _operators_cmd(a, s, fmt)
+    if a.cmd == "compliance":
+        return _compliance_cmd(a, fmt)
     if a.cmd == "exceptions":
         return _exceptions_cmd(a, fmt)
     if a.cmd == "rhacs":
@@ -3526,7 +3701,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
     if a.cmd == "mcp":
         from kube_noob.server.mcp_app import build_server
 
-        build_server(s).run("stdio")
+        # An unknown profile is a usage error (exit 2), never a quiet fall back to all or to none: a server that
+        # offered some other set of tools than the one asked for would say so nowhere in the session.
+        try:
+            profiles = tool_profiles.parse(a.tools)
+        except tool_profiles.UnknownProfile as exc:
+            raise ConfigError(str(exc)) from exc
+        build_server(s, profiles=profiles).run("stdio")
         return 0
 
     if a.cmd == "serve":
@@ -4117,7 +4298,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
                 Path(a.markdown).write_text(sanitize.defuse_workflow_commands(drift.markdown(rep)), encoding="utf-8")
             _write_html(a.html, rep)
             _print_drift(rep) if a.format == "text" else _emit(rep, fmt)
-            return 0
+            return 1 if rep.get("verdict") == "undetermined" else 0
         snap = _snapshot_from_args(a, s)
         if a.posture_cmd == "snapshot":
             out = Path(a.output)
@@ -4138,7 +4319,7 @@ def _posture_drift(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             _tprint(f"\nwrote {paths['report']} and {paths['markdown']}")
         else:
             _emit({**rep, "files": {k: str(v) for k, v in paths.items()}}, fmt)
-        return 0
+        return 1 if rep.get("verdict") == "undetermined" else 0
     except (drift.DriftError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
 
@@ -4262,9 +4443,13 @@ def _posture(a: argparse.Namespace, s: Settings, fmt: str) -> int:
     else:
         _emit(out, fmt)
     top_score = out["paths"][0]["score"] if out["paths"] else 0
-    if a.fail_above is None:
+    # `--require-complete` is the caller saying a partial answer is not an answer, and it says that whether or
+    # not a score threshold came with it. Returning 0 here whenever `--fail-above` was absent made the flag do
+    # nothing on its own: `posture scan -f x.yaml --require-complete` exited 0 on a Deployment the scan had
+    # refused and named under `refused` (G353). `posture reach --require-complete` never needed a second flag.
+    if a.fail_above is None and not a.require_complete:
         return 0
-    if top_score > a.fail_above:
+    if a.fail_above is not None and top_score > a.fail_above:
         return 1
     # A gate that was refused part of the input cannot pass it: 5, "the evidence was incomplete" (G276). A refused
     # privileged Deployment used to leave total 0 and exit 0. Only a refusal counts by default: a CRD the cluster
@@ -4397,6 +4582,43 @@ def _operators_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         _emit(out, fmt)
     if a.require_complete and not out["complete"]:
         print(f"refusing a complete verdict: the inventory is {out['verdict']} ({out['summary']})", file=sys.stderr)
+        return 5
+    return 0
+
+
+def _compliance_cmd(a: argparse.Namespace, fmt: str) -> int:
+    """Compliance Operator results from files or a must-gather. There is no ``--live``: nothing here asks a cluster
+    for anything, so the command needs no credential and no allowlist entry."""
+    from kube_noob import compliance_results
+
+    if not 1 <= a.top <= compliance_results.MAX_RULES:
+        raise ConfigError(f"--top must be 1-{compliance_results.MAX_RULES}")
+    given = [name for name, on in (("-f", bool(a.file)), ("--must-gather", bool(a.must_gather))) if on]
+    if len(given) != 1:
+        raise ConfigError("pass exactly one of -f manifests or --must-gather PATH")
+    if a.must_gather:
+        from kube_noob.mustgather import compliance as mg_compliance
+        from kube_noob.mustgather import ingest
+
+        try:
+            bundle = ingest.open_bundle(Path(a.must_gather))
+        except ingest.MustGatherError as exc:
+            raise ConfigError(str(exc)) from exc
+        collected = mg_compliance.collect(bundle)
+    else:
+        sources, unreadable, refused = _operator_files(a.file)
+        collected = compliance_results.from_sources(sources, unreadable, refused)
+    out = compliance_results.assess(collected, top=a.top)
+    if a.format == "text":
+        _tprint(compliance_results.render_text(out))
+    else:
+        _emit(out, fmt)
+    if a.require_complete and not out["complete"]:
+        print(
+            f"refusing a complete verdict: the answer is {out['verdict']}, incomplete because "
+            f"{'; '.join(out['undeterminedBecause'][:5])}",
+            file=sys.stderr,
+        )
         return 5
     return 0
 

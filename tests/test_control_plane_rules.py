@@ -17,6 +17,11 @@ import yaml
 from kube_noob.audit import controls
 from kube_noob.audit.engine import analyze
 from kube_noob.audit.model import Report, Severity
+from tests import bounds
+
+#: Measured: twenty thousand argv tokens through the rules.
+#: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_ARGV = 1.3
 
 
 def _report(text: str, platform: str = "kubernetes", version: str | None = None) -> Report:
@@ -538,6 +543,9 @@ def test_a_declined_rule_is_not_evaluated_in_the_control_summary_and_the_oscal_e
         "findings": 0,
         "clean": 0,
         "notEvaluated": 1,
+        # Named, not just counted: `notEvaluated: 1` beside nothing that says which one is a number a reader
+        # cannot act on (G281).
+        "notEvaluatedRules": ["KN-S040"],
     }
     document = oscal.assessment_results(report.as_dict())
     selection = document["assessment-results"]["results"][0]["reviewed-controls"]["control-selections"][0]
@@ -622,12 +630,10 @@ def test_the_reason_reaches_sarif_the_text_view_and_the_mcp_result(
 
 def test_hostile_argv_is_bounded_and_never_crashes() -> None:
     """Twenty thousand tokens, a dangling value flag, non-string tokens and URLs that do not parse."""
-    import time
 
     noise = [f"--x{i}" for i in range(20_000)]
-    start = time.monotonic()
-    report = _report(_apiserver(*noise, "--authorization-mode"))
-    assert time.monotonic() - start < 5
+    with bounds.bounded(bounds.LINEAR, honest_seconds=HONEST_ARGV, guards="twenty thousand argv tokens"):
+        report = _report(_apiserver(*noise, "--authorization-mode"))
     assert _declined(report, "KN-S038")  # a dangling --authorization-mode: kube-apiserver would not start
     weird = _pod("kube-apiserver", ["kube-apiserver"]).replace("- kube-apiserver", "- kube-apiserver\n      - 7")
     assert not _hits(_report(weird), "KN-S038")  # a non-string token: not a command line kube-noob can read

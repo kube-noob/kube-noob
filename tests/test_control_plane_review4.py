@@ -445,7 +445,13 @@ def test_the_ksi_row_says_how_many_partly_evaluated_rules_it_withheld() -> None:
     from kube_noob.audit.controls import RULE_CONTROLS
 
     every = sorted(RULE_CONTROLS)
-    rows = fedramp.summary(every, evaluated_rule_ids=[])["indicators"]
+    # The partly-evaluated set is now stated by the caller rather than inferred from "has findings and did not
+    # run" (G281, D4: such a rule DID run), so the case this test is about is built by stating it.
+    rows = fedramp.summary(
+        every,
+        evaluated_rule_ids=every,
+        partly_evaluated=dict.fromkeys(every, "declined on part of this input"),
+    )["indicators"]
     long = [r for r in rows if r.get("rulesBehind", 0) > fedramp.MAX_NAMED_RULES]
     assert long
     for row in long:

@@ -20,6 +20,19 @@ from pathlib import Path
 import pytest
 
 from kube_noob import hook, verify
+from tests import bounds
+
+#: The budget the hook is given below, and how long the work it kills would take if the budget were not enforced.
+#: `pow(3, 20_000_000)` measured 5.8 s on the development machine (see the test's docstring), so 5.0 is a floor on
+#: the regression, not an estimate of it. The old assertion was `< 10`, which could not tell a budget that works
+#: from one that does not: the stuck call finishes inside 10 s either way.
+HOOK_BUDGET_SECONDS = 1.0
+HOOK_STUCK_SECONDS = 5.0
+#: The plugin guard's own limit, and the two shells `_run_plugin_hook` runs it in. `uv` is made to sleep 30 s, and
+#: `subprocess.run`'s own 30 s timeout is the ceiling on what an unenforced limit could cost.
+PLUGIN_LIMIT_SECONDS = 1
+PLUGIN_SHELLS = 2
+PLUGIN_UNBOUNDED_SECONDS = 30
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = (ROOT / "tests" / "fixtures" / "hook" / "pretooluse-bash.json").read_text()
@@ -140,7 +153,6 @@ def test_the_hook_answers_inside_its_budget_whatever_the_input(ws: Path, monkeyp
     and reads as a vulnerability in a security tool's own repository, which is why it is not used.
     """
     import io
-    import time
 
     from kube_noob import verify
 
@@ -149,9 +161,14 @@ def test_the_hook_answers_inside_its_budget_whatever_the_input(ws: Path, monkeyp
 
     monkeypatch.setattr(verify, "evaluate", stuck_in_c)
     stdin = io.BytesIO(_input("kubectl apply -f k8s/good.yaml", ws).encode())
-    start = time.monotonic()
-    code = hook.main(stdin=stdin, env={}, options=OPTS, budget=1.0, isolate="fork")
-    assert code == 2 and time.monotonic() - start < 10
+    with bounds.within_deadline(
+        deadline_seconds=HOOK_BUDGET_SECONDS,
+        source="the `budget` this call passes to hook.main",
+        ignored_would_take=HOOK_STUCK_SECONDS,
+        guards="the hook killing a check stuck in C code at its budget rather than waiting for it",
+    ):
+        code = hook.main(stdin=stdin, env={}, options=OPTS, budget=HOOK_BUDGET_SECONDS, isolate="fork")
+    assert code == 2
 
 
 def test_the_spawned_check_answers_and_is_killed_at_its_deadline(ws: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -580,12 +597,17 @@ def test_the_plugin_hook_blocks_a_uv_that_does_not_finish(tmp_path: Path) -> Non
     """uv itself is bounded: a run that outlives the guard's limit (45 s by default, inside Claude Code's 60) is
     killed and the command blocked with exit 2 -- Claude Code would let a timed-out hook through, since the plugin
     sets no onFailure."""
-    import time
-
-    start = time.monotonic()
-    code, out, err, started = _run_plugin_hook(tmp_path, "true", uv_exit=0, uv_sleeps=30, limit=1)
-    assert (code, out, started) == (2, b"", [LAUNCH_ARGS]) and "did not finish within 1 seconds" in err
-    assert time.monotonic() - start < 20, "both shells together, each bounded by its 1-second limit"
+    with bounds.within_deadline(
+        deadline_seconds=PLUGIN_LIMIT_SECONDS * PLUGIN_SHELLS,
+        source="KUBE_NOOB_HOOK_SECONDS, once per shell _run_plugin_hook tries",
+        ignored_would_take=PLUGIN_UNBOUNDED_SECONDS,
+        guards="the guard killing a uv that does not finish, in every POSIX shell",
+    ):
+        code, out, err, started = _run_plugin_hook(
+            tmp_path, "true", uv_exit=0, uv_sleeps=PLUGIN_UNBOUNDED_SECONDS, limit=PLUGIN_LIMIT_SECONDS
+        )
+    assert (code, out, started) == (2, b"", [LAUNCH_ARGS])
+    assert f"did not finish within {PLUGIN_LIMIT_SECONDS} seconds" in err
     assert "45" in str(_plugin_hook()["command"]) and int(str(_plugin_hook()["timeout"])) > 45
 
 

@@ -24,8 +24,17 @@ MAX_NOT_EVALUATED_NAMED = 20
 
 
 def not_evaluated_line(summary: dict[str, Any]) -> str:
-    """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did."""
-    ids = [str(r) for r in summary.get("notEvaluatedRules") or []]
+    """One bounded line naming the rules that reached no verdict on this input, or "" when every rule did.
+
+    The ids come from ``rulesNotEvaluated``, the one list of them, which carries each rule's reason beside it.
+    This used to read a bare ``notEvaluatedRules`` list of the same ids, which was a strict SUBSET of that one:
+    a rule not evaluated because its kind was absent from the input appeared in ``rulesNotEvaluated`` with its
+    reason and not in ``notEvaluatedRules`` at all, so the text view, the SARIF notes and the HTML report named
+    fewer rules than the JSON did and a reader reconciling the two got different answers from one audit (G281,
+    and review class 9 -- two lists of the same thing that can disagree). Every renderer reads this function,
+    so they now all count the same rules."""
+    rows = [r for r in summary.get("rulesNotEvaluated") or [] if isinstance(r, dict) and r.get("ruleId")]
+    ids = [str(r["ruleId"]) for r in rows]
     if not ids:
         return ""
     more = f" and {len(ids) - MAX_NOT_EVALUATED_NAMED} more" if len(ids) > MAX_NOT_EVALUATED_NAMED else ""

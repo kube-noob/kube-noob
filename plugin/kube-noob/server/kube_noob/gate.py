@@ -22,7 +22,15 @@ from typing import Any
 import yaml
 
 from kube_noob import __version__, sanitize
-from kube_noob.audit.model import Severity
+from kube_noob.audit.controls import coverage_line, grouped_reasons
+from kube_noob.audit.model import (
+    SKIP_UNREADABLE,
+    Severity,
+    incomplete_reason,
+    open_not_audited,
+    open_unread,
+    unread_rows,
+)
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
@@ -55,6 +63,159 @@ class Source:
     lines: int = 0
 
 
+#: The keys every Kubernetes document must carry, spelled the way the API server spells them.
+REQUIRED_KEYS = ("apiVersion", "kind")
+#: What a reason for a key spelled differently from one of those starts with. One string, so the report, the exit
+#: code, the renderers and `verify` all read the same marker rather than keeping a second list of files (class 9).
+NEAR_MISS_PREFIX = "a Kubernetes manifest whose key "
+
+#: A candidate manifest the walk did not open. The sentence names the rule that excluded it and what to
+#: pass instead, because the fix is the caller's: name the file, or point `-f` at the directory that holds it.
+NOT_OPENED_PREFIX = "not opened by the directory walk"
+#: Every reason `_classify` gives for not auditing a YAML file found in a directory walk, and whether that reason
+#: forbids a verdict. A reason that forbids one makes the gate fail, report `incomplete`, and exit 5: the walk
+#: declined to read the file, which is neither a policy violation (1) nor a clean result (0). A reason that does
+#: not is a file that was read and understood and holds no Kubernetes object -- a workflow, a values file -- and
+#: saying so must stay silent, or every repository scanned with `gate -f .` turns red (G325).
+#: `tests/test_near_miss_manifest.py::test_every_skip_reason_decides_whether_it_forbids_a_verdict` fails when a
+#: reason reaches `_classify` without an entry here.
+SKIP_REASONS: tuple[tuple[str, bool], ...] = (
+    ("a Helm template:", False),
+    ("not a Kubernetes manifest", False),
+    (NEAR_MISS_PREFIX, True),
+    # Raised by the bounded loader, returned by `_classify`: the file was not read at all, so it cannot be the
+    # ground of a verdict either. It keeps `skipped`'s exit code rather than `unreadable`'s only because the two
+    # answers must stay distinct (`unreadable_reason`'s docstring); both are incomplete evidence.
+    ("YAML nested too deeply", True),
+    # A file the directory walk declined to OPEN, as opposed to one it opened and found was not a manifest. The
+    # walk keeps `.yaml` and `.yml` and does not enter dot-directories, and until G332 a file outside that was not
+    # recorded anywhere: `gate -f k8s/` on a directory holding `pod.json` (privileged, hostPID) and
+    # `.hidden/pod.yaml` answered `passed: true` with `skipped: []`, while `audit -f k8s/` on the same directory
+    # reported eleven findings. Which extensions the walk should read is a separate question and is still open;
+    # stating a verdict about files nobody opened is wrong under every answer to it.
+    (NOT_OPENED_PREFIX, True),
+)
+
+
+def forbids_verdict(why: str | None) -> bool:
+    """Whether a file skipped for this reason makes the gate incomplete rather than clean."""
+    if not why:
+        return False
+    return any(why.startswith(prefix) for prefix, forbids in SKIP_REASONS if forbids)
+
+
+def _fold(key: str) -> str:
+    """A key reduced to what a case-, whitespace- or separator-only typo leaves unchanged."""
+    return key.strip().replace("-", "").replace("_", "").lower()
+
+
+def _near_miss_reason(docs: list[Any]) -> str | None:
+    """A required key spelled differently from the way the API server spells it, or None.
+
+    Deliberately narrow, and narrower than "a required key is missing": the document must be a mapping that lacks
+    the key EXACTLY, carries a spelling that folds onto it, and carries both required keys when folded that way.
+    A kustomization, a Helm values file or a CRD fragment with a `kind` and no `apiVersion` at all is therefore
+    not a near miss -- it is a file that is no manifest, which is the answer it already gets.
+    """
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        keys = [k for k in d if isinstance(k, str)]
+        folded = {_fold(k): k for k in reversed(keys)}  # the first spelling wins, so the reason is deterministic
+        if not all(_fold(r) in folded for r in REQUIRED_KEYS):
+            continue
+        for required in REQUIRED_KEYS:
+            if required in d:
+                continue
+            written = folded[_fold(required)]
+            return (
+                f"{NEAR_MISS_PREFIX}`{written}` is spelled differently from `{required}`: Kubernetes keys are "
+                "case-sensitive, so the API server would reject this document too"
+            )
+    return None
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    """`(st_dev, st_ino)` for a file, following symlinks: what makes two names the same file.
+
+    Used so the walk cannot report a file it already read under a different name. A ConfigMap volume mount is the
+    case that matters -- `key` is a symlink to `..data/key`, and `..data` is itself a symlink to a timestamped
+    directory -- and the walk reads the first while the dot-directory rule declines the second.
+    """
+    try:
+        st = path.stat()
+    except OSError:  # pragma: no cover - a dangling symlink is not a file this walk read
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _holds_a_manifest(path: Path) -> bool:
+    """Whether a file the walk declined to open demonstrably holds a Kubernetes manifest.
+
+    The question this answers is whether a pass over the directory would be a false statement, and that turns on
+    whether there was a manifest nobody read -- not on the file's name. So the file is opened and looked at.
+
+    A file that does not parse is not treated as a manifest. The walk never claimed to read it, `kubectl apply -f`
+    would not succeed on it either, and the alternative is a gate held incomplete by every unparseable `.json` in
+    a dot-directory. A file that does parse and carries `apiVersion` and `kind` is a manifest whatever it is
+    called, and a pass stated over the directory holding it is wrong.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    try:
+        docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
+    except (sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+        # Not YAML is not the same as not a manifest. JSON indented with tabs is valid JSON that YAML refuses (a
+        # tab cannot start a YAML token), and a stream of objects written one after another (`}{`) is what
+        # `kubectl get -o json` piped through a filter and several generators emit; `kubectl apply -f` sends both.
+        # Asking the YAML parser alone made each of them "a file that does not parse", so a privileged Pod in
+        # `pod.json` beside a clean `ok.yaml` gated `passed`, exit 0, with `skipped: []` (G352).
+        docs = _json_stream(text)
+    return any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs)
+
+
+def _json_stream(text: str) -> list[Any]:
+    """Every JSON value in a text that is one value or several written one after another; `[]` when it is not JSON.
+
+    Only ever asked about a file YAML could not read. Nothing here audits the file: the answer decides whether a
+    pass over the directory would be a statement about a manifest nobody opened.
+    """
+    try:
+        return sanitize.loads_all_bounded(text, sanitize.MAX_JSON_DEPTH_FILE)
+    except (ValueError, RecursionError):
+        return []
+
+
+def not_opened_reason(root: Path, f: Path, opened: set[tuple[int, int]], *, reads_hidden: bool = False) -> str | None:
+    """Why a file a directory walk left alone is a gap in the answer, or None when it is not one.
+
+    The ONE decision about a file a walk did not open, asked by every walk that states a verdict over a directory:
+    the gate's (`collect`) and the audit family's (`cli._dir_yaml`). The audit's walk had no such question to
+    ask, so `audit -f k8s/` over a clean `ok.yaml` and a privileged `pod.json` scored 100.0 and exited 0 while the
+    gate, on the same directory, exited 5 naming the file (G351, review class 9).
+
+    A file is a gap only if it is demonstrably a manifest -- `_holds_a_manifest` opens it and looks -- and is not
+    a second name for a file the walk did open (`opened`, by identity). Guessing from the extension made every
+    repository with a `.github/workflows/ci.yml` incomplete (G332). `reads_hidden` is for a walk that enters
+    dot-directories and reads dot-files, so that only the extension can be why it left a file alone.
+    """
+    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
+        return None
+    if _identity(f) in opened:
+        return None  # the same file under another name: already audited, so not a gap
+    rel = f.relative_to(root)
+    hidden = any(part.startswith(".") for part in rel.parts)  # .git, .github, ..data
+    if f.name.startswith(".") and not reads_hidden:
+        where = "a dot-file, which the walk does not read"
+    elif hidden and not reads_hidden:
+        where = f"under {rel.parts[0]}/, a dot-directory the walk does not enter"
+    else:
+        where = "the walk reads only .yaml and .yml"
+    return f"{NOT_OPENED_PREFIX}: {where}; name it with -f to audit it"
+
+
 def _classify(path: Path | None, text: str) -> str | None:
     """Why a YAML file found in a directory is not a manifest to audit, or None when it is one.
 
@@ -69,7 +230,12 @@ def _classify(path: Path | None, text: str) -> str | None:
     except (yaml.YAMLError, RecursionError):
         return None  # audited, so the parse error is reported
     if not any(isinstance(d, dict) and "apiVersion" in d and "kind" in d for d in docs):
-        return "not a Kubernetes manifest (no document with apiVersion and kind)"
+        # A key that differs from `apiVersion` or `kind` only in shape is a typo in a manifest, not a file that is
+        # no manifest: the two answers shared one sentence and one exit code, so `apiversion: v1` on a privileged
+        # pod read exactly like a CI workflow and the gate passed (G325). The document is NOT normalised and
+        # audited: the API server would reject it as it stands, so auditing it as valid would be the same false
+        # answer pointing the other way. The honest answer is that it was not read, which makes this incomplete.
+        return _near_miss_reason(docs) or "not a Kubernetes manifest (no document with apiVersion and kind)"
     return None
 
 
@@ -91,6 +257,14 @@ def unreadable_reason(text: str) -> str | None:
     except RecursionError:
         return "YAML nesting is too deep to read safely"
     return None
+
+
+def _unreadable_failure(unread: list[dict[str, str]]) -> str:
+    """The one line `failures` carries for files that could not be read and that nobody accepted."""
+    shown = "; ".join(f"{u['path']}: {u['why']}" for u in unread[:5])
+    return f"{len(unread)} file(s) were not read, so this gate reached no verdict on them: {shown}" + (
+        f"; and {len(unread) - 5} more under `unreadable`" if len(unread) > 5 else ""
+    )
 
 
 def _in_chart_templates(path: Path, parent: Path) -> bool:
@@ -135,17 +309,38 @@ def collect(paths: list[str], read: Any) -> list[Source]:
         else:
             p = Path(raw)
             if p.is_dir():
-                files = sorted(
-                    f
-                    for f in p.rglob("*")
-                    if f.suffix in {".yaml", ".yml"}
-                    and not any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
-                    and f.is_file()
-                )
                 items = []
-                for f in files:
-                    text = f.read_text(encoding="utf-8", errors="replace")
-                    items.append((_uri(f), text, _classify(f, text)))
+                # Every file the walk actually opens, by identity rather than by name. A ConfigMap volume mount
+                # exposes each key TWICE -- as `key`, a symlink, and as `..data/key`, the real file behind it --
+                # so reporting the second as an unopened manifest counted the same bytes as a gap and took the
+                # Tekton Task from `passed` to `evidence-incomplete`, exit 5. `..data` is the case the walk's own
+                # comment names as the reason it skips dot-directories (G332).
+                # Two passes, because `sorted` puts `..data/` and `..2026_.../` BEFORE `gate.yaml`: the dot
+                # copy is reached first, and a set filled as we go would still be empty for it.
+                every = [f for f in sorted(p.rglob("*")) if f.is_file()]
+                opened: set[tuple[int, int]] = {
+                    ident
+                    for f in every
+                    if f.suffix in {".yaml", ".yml"}
+                    and not any(part.startswith(".") for part in f.relative_to(p).parts)
+                    and (ident := _identity(f)) is not None
+                }
+                for f in every:
+                    hidden = any(part.startswith(".") for part in f.relative_to(p).parts)  # .git, .github, ..data
+                    if f.suffix in {".yaml", ".yml"} and not hidden:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                        items.append((_uri(f), text, _classify(f, text)))
+                        continue
+                    # Everything else the walk leaves alone, and a file it left alone is recorded only if it is
+                    # demonstrably a manifest -- `_holds_a_manifest` opens it and looks for a document with both
+                    # `apiVersion` and `kind`. Guessing from the extension instead is what the first version of
+                    # this did, and `.github/workflows/ci.yml` is a `.yml` file in a dot-directory in every
+                    # repository, so it made every real gate run incomplete: an alert on every repository is one
+                    # nobody reads, which is a worse outcome than the gap it replaces. Reading the file to decide
+                    # does not audit it and does not change which files are audited (G332).
+                    why = not_opened_reason(p, f, opened)
+                    if why is not None:
+                        items.append((_uri(f), f.read_text(encoding="utf-8", errors="replace"), why))
                 for uri, text, why in items:
                     if why is None:
                         bad[uri] = unreadable_reason(text)
@@ -280,8 +475,13 @@ def run(
     repo: Path | None = None,
     cni: str | None = None,
     default_namespace: str | None = None,
+    skip_unreadable: bool = False,
 ) -> dict[str, Any]:
-    """``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
+    """``skip_unreadable``: the caller passed `--skip-unreadable`, so a file that could not be read is accepted
+    and listed rather than withholding the verdict. Off unless asked for: every other caller of this function
+    gets a report that is incomplete while a file is unread (G340).
+
+    ``code_builds``: Containerfiles read with their context (``kube_noob.code.builds``); without them each
     Containerfile's directory is its context. ``unknown_builds``: Containerfiles given but not readable as builds
     (shipping is then unknown, which fails like shipped code). ``repo``: the checkout, to tell a SARIF path that is
     no file of the repository (scanned elsewhere) from one no image ships."""
@@ -292,18 +492,47 @@ def run(
     containerfiles = containerfiles or []
     scanner_reports = scanner_reports or []
     sarif_reports = sarif_reports or []
-    skipped = [{"file": s.uri, "why": s.skip} for s in sources if s.skip]
-    unreadable = [{"file": s.uri, "why": s.unreadable} for s in sources if s.unreadable and not s.skip]
+    # One list, one marker: `forbidsVerdict` on the entry rather than a second list of files that could disagree
+    # with this one (docs/review-classes.md class 9). Everything below derives from it.
+    skipped = [
+        {"file": s.uri, "why": s.skip, **({"forbidsVerdict": True} if forbids_verdict(s.skip) else {})}
+        for s in sources
+        if s.skip
+    ]
+    blocking = [s for s in skipped if s.get("forbidsVerdict")]
+    waived = {"acceptedBy": SKIP_UNREADABLE} if skip_unreadable else {}
+    unreadable = [{"file": s.uri, "why": s.unreadable, **waived} for s in sources if s.unreadable and not s.skip]
+    unread_open = open_unread({"unreadable": unreadable})
     sources = [s for s in sources if not s.skip and not s.unreadable]
     if not sources and not containerfiles and not scanner_reports and not sarif_reports:
         if unreadable:
             raise GateError("nothing could be read: " + "; ".join(f"{u['file']}: {u['why']}" for u in unreadable))
+        if blocking:
+            # Beside the `unreadable` refusal, for the same reason: there is nothing to report a verdict on, and
+            # an empty clean report would be the defect this fixes with the files removed.
+            raise GateError(
+                "nothing was read as a manifest: " + "; ".join(f"{s['file']}: {s['why']}" for s in blocking)
+            )
         raise GateError(
             "nothing to check: pass manifests with -f, Containerfiles with --containerfile, --scanner-report or "
             "--sarif-report"
         )
     findings: list[dict[str, Any]] = []
     failures: list[str] = []
+    if blocking:
+        shown_blocking = "; ".join(f"{s['file']}: {s['why']}" for s in blocking[:5])
+        failures.append(
+            f"{len(blocking)} file(s) were not read as manifests, so this gate reached no verdict: {shown_blocking}"
+            + (f"; and {len(blocking) - 5} more under `skipped`" if len(blocking) > 5 else "")
+        )
+    if unread_open:
+        # G325 taught this report about a file the walk declined to OPEN and never about one it could not READ,
+        # though `SKIP_REASONS` says of the two that "both are incomplete evidence". The command exits 5 for
+        # this, which is why nobody read the report: it said `passed: true`, the Markdown said "gate passed"
+        # without naming the file, and nothing was annotated on the pull request (G340). One line in `failures`,
+        # because that is the list the Markdown, the HTML page and the annotations already render.
+        # `unread_open`, not `unreadable`: a row `--skip-unreadable` accepted is listed and withholds nothing.
+        failures.append(_unreadable_failure(unread_open))
     combined = _combine(sources) if sources else ""
     if sources:
         # A path named with -f used to be audited even when it was a Helm values file, so `gate -f values.yaml`
@@ -355,26 +584,49 @@ def run(
             )
         from kube_noob.audit.controls import summary as control_summary
 
+        if review is not None:
+            exc.accept_not_audited(review, report.not_audited)
+        # ONE call of the one predicate, and ONE failure line from it. The merge of G272 and G281 left this
+        # computed twice and appended twice, so a gate that reached no verdict listed the same fact as two
+        # failures (class 9).
+        undetermined = report.undetermined()
+        if undetermined:
+            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh
+            # review). Objects the rules did not read (an apiVersion that is not a string, not shaped like an
+            # API, or in a group the kind is not known under; a kind that is not a kind name; a pod spec in a
+            # kind with no reader) and no exception accepted are not findings and not absences: a typo in
+            # apiVersion turned a failing gate into a passing one whose every output said no workload was
+            # present (G281, review 4, R1). The reason carries the counts and the names; this line adds the
+            # per-object `why`, which the reason does not have.
+            open_rows = open_not_audited(report.not_audited)
+            named = "; ".join(f"{r['object']} ({r['why']})" for r in open_rows[:MAX_NOT_AUDITED_NAMED])
+            if len(open_rows) > MAX_NOT_AUDITED_NAMED:
+                named += f"; and {len(open_rows) - MAX_NOT_AUDITED_NAMED} more"
+            failures.append(f"the audit is undetermined: {undetermined}" + (f" -- {named}" if named else ""))
         coverage = {
             "kubernetesVersion": report.kubernetes_version,
             "resources": report.resources,
+            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
+            # API server the audit had declined, and said nothing anywhere (G272). The rows carry the file and
+            # line of the object they name, as the findings do (G281) -- the raw rows beside them would have
+            # overwritten exactly that.
+            "assumptions": list(report.assumptions),
+            "notAudited": [_located_row(r, sources, chart_path) for r in report.not_audited],
+            # ONE key for the reason: `verdict_word`, the Markdown headline, the HTML masthead and the SARIF
+            # invocation all read `incomplete`, which is this key being present.
+            **({"undetermined": undetermined} if undetermined else {}),
             "controlSummary": control_summary(
                 kept_rules,
                 excepted_rules or None,
                 report.evaluated_rules or None,
                 report.fired_rules or None,
+                not_evaluated=report.not_evaluated or None,
+                absent_subjects=report.absent_subjects or None,
+                partly_evaluated=report.partly_evaluated or None,
             ),
-            # What the audit could not decide, as `audit` reports it: without these the gate passed a bundle whose
-            # API server the audit had declined, and said nothing anywhere (G272).
-            "assumptions": list(report.assumptions),
             **({"declined": report.declined} if report.declined else {}),
-            **({"notAudited": report.not_audited} if report.not_audited else {}),
             **({"notEvaluated": report.not_evaluated} if report.not_evaluated else {}),
         }
-        if (undetermined := report.undetermined()) is not None:
-            # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh review).
-            coverage["undetermined"] = undetermined
-            failures.append(f"the audit is undetermined: {undetermined}")
         if review is not None and not review.summary()["gate"]:
             failures.append("the exception list has expired or refused entries (kube-noob exceptions check)")
     for uri, text in containerfiles:
@@ -454,7 +706,12 @@ def run(
         "passed": not failures,
         # True while the audit under the gate reached no verdict (`undetermined` says why): then `passed` is
         # false and the headline says "incomplete", not "failed" (G272).
-        "incomplete": "undetermined" in coverage,
+        # ... or a file the walk declined to read: that is evidence the gate does not have, exactly as an
+        # undetermined audit is, and it must not render as "failed" either (G325).
+        # ... or a file that could not be read at all, which is the same missing evidence (G340). Decided HERE and
+        # not in a renderer: `verdict_word`, the Markdown headline, the HTML masthead and the annotations all read
+        # this key, and seven renderers taught one at a time is how the eighth was missed.
+        "incomplete": "undetermined" in coverage or bool(blocking) or bool(unread_open),
         "failures": failures,
         "files": [s.uri for s in sources],
         "skipped": skipped,
@@ -720,6 +977,79 @@ def _fingerprint(r: dict[str, Any]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
+#: How many refused objects the gate's failure line names before it gives a count.
+MAX_NOT_AUDITED_NAMED = 5
+#: The SARIF rule id under which a refused object is reported: a `note`, not a finding, with no severity score.
+NOT_AUDITED_RULE = "KN-NOT-AUDITED"
+NOT_EVALUATED_RULE = "KN-NOT-EVALUATED"
+NOT_READ_RULE = "KN-NOT-READ"
+
+
+def _located_row(row: dict[str, Any], sources: list[Source], chart_path: str | None) -> dict[str, Any]:
+    """A `notAudited` row with the file and line of the object it names, as the findings carry theirs."""
+    line = row.get("line")
+    uri, local = _where(sources, line if isinstance(line, int) else None, chart_path)
+    out = {k: v for k, v in row.items() if k != "line"}
+    out["uri"] = uri
+    if local is not None:
+        out["line"] = local
+    return out
+
+
+def _artifact(uri: str) -> dict[str, Any]:
+    """A SARIF artifactLocation. An absolute path becomes a file URI; anything else is relative to the checkout,
+    which is what a code-scanning upload needs to anchor the result to a file in the repository."""
+    return {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
+
+
+def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """One `note`-level result per object the rules refused to read, so a SARIF consumer sees the object that was
+    not audited beside the findings, and the run's invocation carries the list too (review 4, R1)."""
+    rows = [r for r in report.get("notAudited") or [] if isinstance(r, dict)]
+    if not rows:
+        return []
+    rules[NOT_AUDITED_RULE] = {
+        "id": NOT_AUDITED_RULE,
+        "name": "ObjectNotAudited",
+        "shortDescription": {"text": "Object not audited"},
+        "fullDescription": {"text": "The rules refused to read this object, so the verdict is undetermined."},
+        "help": {
+            "text": (
+                "The rules did not read this object (its apiVersion or kind is not one they know, or its pods are "
+                "in a kind with no reader), so the verdict is undetermined. To accept it as reviewed, add a "
+                "notAudited entry to the ExceptionList (kind, apiGroup, namespace, name, with owner, reason and "
+                "expiry); the row stays listed with acceptedBy."
+            )
+        },
+        "helpUri": INFO_URI,
+        "defaultConfiguration": {"level": "note"},
+        "properties": {"tags": ["kubernetes", "coverage"]},
+    }
+    out = []
+    for r in rows:
+        accepted = f" (accepted by {r['acceptedBy']})" if r.get("acceptedBy") else ""
+        uri = str(r.get("uri") or "manifests")
+        artifact = _artifact(uri)
+        loc: dict[str, Any] = {"artifactLocation": artifact}
+        if isinstance(r.get("line"), int) and r["line"] >= 1:
+            loc["region"] = {"startLine": int(r["line"])}
+        key = "\x1f".join([NOT_AUDITED_RULE, uri, str(r.get("object") or ""), str(r.get("why") or "")])
+        out.append(
+            {
+                "ruleId": NOT_AUDITED_RULE,
+                "ruleIndex": list(rules).index(NOT_AUDITED_RULE),
+                "level": "note",
+                # SARIF's word for "a reviewer should look, it is not a defect"; with the object's location and a
+                # fingerprint, so code scanning lists it in the file view and tracks it (review 5, item 10).
+                "kind": "review",
+                "message": {"text": f"{r.get('object')}: not audited, {r.get('why')}{accepted}"},
+                "locations": [{"physicalLocation": loc}],
+                "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+            }
+        )
+    return out
+
+
 def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> dict[str, Any]:
     rules: dict[str, dict[str, Any]] = {}
     results = []
@@ -736,7 +1066,7 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
                 "properties": _rule_properties(r),
             }
         uri = str(r["uri"])
-        artifact = {"uri": Path(uri).as_uri()} if uri.startswith("/") else {"uri": uri, "uriBaseId": "%SRCROOT%"}
+        artifact = _artifact(uri)
         loc: dict[str, Any] = {"artifactLocation": artifact}
         if r.get("line"):
             loc["region"] = {"startLine": int(r["line"])}
@@ -750,6 +1080,16 @@ def sarif(report: dict[str, Any], invocation: dict[str, Any] | None = None) -> d
                 "partialFingerprints": {"kubeNoob/v1": _fingerprint(r)},
             }
         )
+    results += _not_audited_results(report, rules)
+    # `coverage`: what this run did not evaluate and did not read, as results rather than only as notifications.
+    # Absent (the gate's own report) means this builder adds none, so that path is unchanged.
+    cov = report.get("coverage") or {}
+    results += _coverage_results(cov, rules, str(cov.get("uri") or "manifests"))
+    if report.get("notAudited"):
+        invocation = {
+            **(invocation or {"executionSuccessful": True}),
+            "properties": {**((invocation or {}).get("properties") or {}), "notAudited": list(report["notAudited"])},
+        }
     return {
         "$schema": SARIF_SCHEMA,
         "version": "2.1.0",
@@ -800,6 +1140,107 @@ def _caveat_notes(rep: dict[str, Any]) -> list[dict[str, Any]]:
     return notes
 
 
+def _coverage_results(rep: dict[str, Any], rules: dict[str, dict[str, Any]], uri: str) -> list[dict[str, Any]]:
+    """The rules that reached no verdict, and the files that were not read, as SARIF **results**.
+
+    They were already on the run's invocation as ``toolExecutionNotifications``, which is where the SARIF spec puts
+    what the tool wants to say about its own run. The trouble is that a notification is not a result, and the
+    consumers this file is written for read ``runs[].results``: GitHub code scanning shows alerts, DefectDojo and
+    the scanner operators import findings. A file carrying twelve findings and "forty-one rules were not evaluated"
+    only in a notification arrives at the other end as twelve findings and nothing else -- the honest part of the
+    answer destroyed at the first hop, which is the defect this product exists to refuse, one layer out from the
+    verdict.
+
+    So each one is also a result, exactly as ``notAudited`` already is (``_not_audited_results``): ``kind:
+    "review"``, SARIF's word for "a reviewer should look, this is not a defect in the input". The notifications
+    stay, because a reader of the invocation should still see them and because removing them would be a second
+    change; a consumer that reads both sees the same statement twice, which is the right failure of the two.
+
+    Grouped by reason, not one per rule, for the reason ``grouped_reasons`` exists: a Deployment-only input leaves
+    about forty rules unevaluated for six reasons, and forty near-identical alerts would be noise a reviewer mutes,
+    which is how an honest signal gets switched off.
+    """
+    from kube_noob.audit.controls import grouped_reasons
+
+    groups = grouped_reasons(rep.get("controlSummary") or {})
+    unreadable = [u for u in rep.get("unreadable") or [] if isinstance(u, dict)]
+    if not groups and not unreadable:
+        return []
+    out: list[dict[str, Any]] = []
+    if groups:
+        rules[NOT_EVALUATED_RULE] = {
+            "id": NOT_EVALUATED_RULE,
+            "name": "RulesNotEvaluated",
+            "shortDescription": {"text": "Rules not evaluated"},
+            "fullDescription": {
+                "text": "These rules reached no verdict on this input: neither clean nor findings. Their controls "
+                "are not evidenced by this run."
+            },
+            "help": {
+                "text": "A rule that was not evaluated has not passed. Give the audit the objects the reason names "
+                "(a whole namespace rather than one file, the Service beside the Deployment) and run it again, or "
+                "accept the gap deliberately with an ExceptionList entry that records who accepted it and why. "
+                "Counting these as clean is what makes a compliance score higher than the evidence supports."
+            },
+            "helpUri": INFO_URI,
+            "defaultConfiguration": {"level": "note"},
+            "properties": {"tags": ["kubernetes", "coverage"]},
+        }
+        # ONE result, not one per reason. A Deployment-only input leaves about forty rules unevaluated under
+        # thirty-odd reasons, and thirty-three near-identical alerts are what gets a rule muted in code scanning --
+        # which would switch off the honest signal more thoroughly than the notification did. The claim is about
+        # this run as a whole ("it did not evaluate these"), not about thirty-three places in the file, so it is
+        # one alert carrying every reason, and its fingerprint covers the whole set: the alert changes when
+        # coverage changes and closes when nothing is left unevaluated.
+        total = sum(len(ids) for _, ids in groups)
+        detail = "; ".join(f"{why}: {', '.join(ids)}" for why, ids in groups)
+        key = "\x1f".join([NOT_EVALUATED_RULE, detail])
+        out.append(
+            {
+                "ruleId": NOT_EVALUATED_RULE,
+                "ruleIndex": list(rules).index(NOT_EVALUATED_RULE),
+                "level": "note",
+                "kind": "review",
+                "message": {
+                    "text": f"{total} rules reached no verdict on this input, so their controls are not "
+                    f"evidenced by this run -- {detail}"
+                },
+                "locations": [{"physicalLocation": {"artifactLocation": _artifact(uri)}}],
+                "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+            }
+        )
+    if unreadable:
+        rules[NOT_READ_RULE] = {
+            "id": NOT_READ_RULE,
+            "name": "FileNotRead",
+            "shortDescription": {"text": "File not read"},
+            "fullDescription": {"text": "This file was not read, so nothing in it was audited."},
+            "help": {
+                "text": "The file could not be parsed or decoded. Nothing in it was audited, so a clean run over "
+                "the rest of the input says nothing about it: fix the file or remove it from the input, and do not "
+                "read the absence of findings for it as a pass."
+            },
+            "helpUri": INFO_URI,
+            "defaultConfiguration": {"level": "warning"},
+            "properties": {"tags": ["kubernetes", "coverage"]},
+        }
+        for u in unreadable:
+            path = str(u.get("path") or uri)
+            key = "\x1f".join([NOT_READ_RULE, path, str(u.get("why") or "")])
+            out.append(
+                {
+                    "ruleId": NOT_READ_RULE,
+                    "ruleIndex": list(rules).index(NOT_READ_RULE),
+                    "level": "warning",
+                    "kind": "review",
+                    "message": {"text": f"not read: {path} ({u.get('why')})"},
+                    "locations": [{"physicalLocation": {"artifactLocation": _artifact(path)}}],
+                    "partialFingerprints": {"kubeNoob/v1": hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]},
+                }
+            )
+    return out
+
+
 def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
     """SARIF for `kube-noob audit`: the same document the gate writes, plus what this run could not see.
 
@@ -826,19 +1267,77 @@ def sarif_of_audit(rep: dict[str, Any]) -> dict[str, Any]:
         for f in rep["findings"]
     ]
     notes = _caveat_notes(rep)
+    # The coverage record, one notification per reason: a consumer of the SARIF alone can see that the Service
+    # rules never ran rather than passed (G281). Grouped, so a Deployment-only file is a few lines, not seventy.
+    notes += [
+        {"level": "warning", "message": {"text": f"not evaluated, {why}: {', '.join(ids)}"}}
+        for why, ids in grouped_reasons(rep.get("controlSummary") or {})
+    ]
     notes += [
         {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}}
         for u in rep.get("unreadable") or []
     ]
     return sarif(
-        {"findings": findings, "tool": {"version": __version__}},
+        {
+            "findings": findings,
+            "tool": {"version": __version__},
+            # `_locate` put the file and line on each row as on each finding; `uri` is what the result reads.
+            "notAudited": [{**r, "uri": r.get("file") or "stdin"} for r in rep.get("notAudited") or []],
+            # The same two absences the notifications above carry, so they also reach `results`, which is the
+            # array every SARIF consumer reads. Anchored to the audited file when there is exactly one, because a
+            # code-scanning alert with no location is shown against the repository root or not at all.
+            "coverage": {
+                "controlSummary": rep.get("controlSummary") or {},
+                "unreadable": rep.get("unreadable") or [],
+                "uri": _one_input_uri(rep),
+            },
+        },
         invocation={"executionSuccessful": True, "toolExecutionNotifications": notes},
     )
 
 
+def _one_input_uri(rep: dict[str, Any]) -> str:
+    """The file to anchor a coverage result to: the single file this audit read, or ``manifests``.
+
+    A rule that was not evaluated is about the input as a whole and not about a place in it, so there is no honest
+    line number. With one file there is still an honest FILE, which is what a reviewer needs to find it; with
+    several, naming one of them would say the gap belongs to that one.
+    """
+    uris = {str(f.get("file") or "") for f in rep.get("findings") or []} | {
+        str(r.get("file") or "") for r in rep.get("notAudited") or []
+    }
+    uris.discard("")
+    return next(iter(uris)) if len(uris) == 1 else "manifests"
+
+
+def _cq_issue(rule: str, text: str, uri: str) -> dict[str, Any]:
+    """One CodeClimate issue for something the run did not evaluate or did not read.
+
+    `info` is GitLab's lowest severity and is the right one: this is not a defect in the code, it is a statement
+    that part of the input reached no verdict. The fingerprint is over the text, so the same gap is one issue
+    across pipelines and a changed gap is a new one.
+    """
+    return {
+        "description": f"{rule}: {text}"[:2000],
+        "check_name": rule,
+        "fingerprint": _fingerprint({"ruleId": rule, "uri": uri, "message": text}),
+        "severity": "info",
+        "location": {"path": uri, "lines": {"begin": 1}},
+    }
+
+
 def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitLab's code quality report (a list of CodeClimate issues)."""
-    return [
+    """GitLab's code quality report (a list of CodeClimate issues).
+
+    The findings, and then what the run did not evaluate or could not read. An empty list is how GitLab's Code
+    Quality widget spells "no issues", so an undetermined gate wrote `[]` and the widget said the change was
+    clean -- the same empty-list-reads-as-clean failure G328 and G331 removed from the two SARIF renderers, in the
+    third renderer of the same report (review class 21 again).
+
+    These carry `severity: info` and never a blocker: the gate's exit code is what stops a pipeline, and a
+    coverage gap raised as a defect would be dismissed as a false positive. Saying it at all is the point.
+    """
+    out = [
         {
             "description": f"{r['ruleId']} {r['resource']}: {r['message']}"[:2000],
             "check_name": r["ruleId"],
@@ -848,6 +1347,37 @@ def codequality(report: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for r in report["findings"]
     ]
+    files = [str(f) for f in report.get("files") or [] if f]
+    uri = files[0] if len(files) == 1 else "manifests"
+
+    undetermined = str(report.get("undetermined") or "")
+    if undetermined:
+        out.append(_cq_issue(NOT_AUDITED_RULE, undetermined, uri))
+
+    summary = report.get("controlSummary") or {}
+    unevaluated = [r for r in summary.get("rulesNotEvaluated") or [] if isinstance(r, dict) and r.get("ruleId")]
+    if unevaluated:
+        named = ", ".join(str(r["ruleId"]) for r in unevaluated)
+        out.append(
+            _cq_issue(
+                NOT_EVALUATED_RULE,
+                f"{len(unevaluated)} rules reached no verdict on this input, so they are not reported as clean: "
+                f"{named}",
+                uri,
+            )
+        )
+
+    for row in report.get("unreadable") or []:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("file") or row.get("path") or "")
+        if path:
+            out.append(_cq_issue(NOT_READ_RULE, f"not read, so nothing in it was audited: {row.get('why')}", path))
+
+    for row in report.get("skipped") or []:
+        if isinstance(row, dict) and row.get("forbidsVerdict") and row.get("file"):
+            out.append(_cq_issue(NOT_READ_RULE, f"not audited: {row.get('why')}", str(row["file"])))
+    return out
 
 
 _MD_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "|": "\\|"} | {c: "\\" + c for c in "\\`*_[]!#~"}
@@ -931,7 +1461,10 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
     """
     rows = [f for f in report.get("findings") or () if isinstance(f, dict)]
     reasons = [str(x) for x in report.get("failures") or () if str(x).strip()]
-    if not rows and not reasons:
+    # A file `--skip-unreadable` accepted is in no failure line, because the gate did not fail on it. It is still
+    # a file nothing was audited from, so the pull request says so once, as a warning (G340).
+    waived = [u for u in unread_rows(report) if u.get("acceptedBy")]
+    if not rows and not reasons and not waived:
         return []
 
     def rank(f: dict[str, Any]) -> tuple[int, str, str]:
@@ -956,6 +1489,15 @@ def github_annotations(report: dict[str, Any]) -> list[str]:
         out[-1] = (
             f"::error title=kube-noob gate::{len(reasons) - MAX_ANNOTATIONS_PER_TYPE + 1} more reason(s) this "
             "gate failed are not annotated; the job summary has all of them."
+        )
+    if waived:
+        named = ", ".join(u["path"] for u in waived[:5]) + (f" and {len(waived) - 5} more" if len(waived) > 5 else "")
+        out.append(
+            "::warning title=kube-noob gate::"
+            + _annotation_data(
+                f"{len(waived)} file(s) were not read and {waived[0]['acceptedBy']} accepted that, so "
+                f"nothing in them was audited: {named}"
+            )
         )
     for level in ("error", "warning"):
         found = buckets[level]
@@ -983,6 +1525,8 @@ def verdict_word(report: dict[str, Any]) -> str:
 
 
 def markdown(report: dict[str, Any], top: int = 25) -> str:
+    # Three words, one predicate, called and never re-derived: undetermined is neither passed nor failed, and
+    # the headline says which.
     verdict = verdict_word(report)
     target = _cell(report["platform"] + (f" {report['version']}" if report["version"] else ""), 60)
     lines = [
@@ -996,6 +1540,48 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
         *[f"| {sev} | {n} |" for sev, n in report["counts"].items()],
         "",
     ]
+    if report.get("notAudited"):
+        open_rows = [r for r in report["notAudited"] if not r.get("acceptedBy")]
+        lines += [
+            f"### Not passed: {len(open_rows)} object(s) not audited"
+            if open_rows
+            else f"### {len(report['notAudited'])} object(s) not audited, accepted by the exception list",
+            "",
+            "The rules did not read these objects"
+            + (", so the verdict is undetermined, not a pass." if open_rows else "; every one is accepted."),
+            "",
+            *[
+                f"- {_cell(str(r.get('object')), 120)}: {_cell(str(r.get('why')), 200)}"
+                + (f" (accepted by {_cell(str(r['acceptedBy']), 64)})" if r.get("acceptedBy") else "")
+                for r in report["notAudited"]
+            ],
+            "",
+        ]
+    unread = unread_rows(report)
+    if unread:
+        # Named here whether or not the flag accepted them, as `notAudited` rows are above: under
+        # `--skip-unreadable` the headline is the verdict on the files that were read, and this summary did not
+        # mention the others at all (G340). A waiver must never make the gap disappear.
+        still_open = [u for u in unread if not u.get("acceptedBy")]
+        lines += [
+            f"### Not passed: {len(still_open)} file(s) not read"
+            if still_open
+            else f"### {len(unread)} file(s) not read, accepted by `{SKIP_UNREADABLE}`",
+            "",
+            "Nothing in these files was audited"
+            + (
+                ", so the verdict is incomplete, not a pass."
+                if still_open
+                else ", so the verdict above is about the files that were read and says nothing about these."
+            ),
+            "",
+            *[
+                f"- {_cell(u['path'], 200)}: {_cell(u['why'], 200)}"
+                + (f" (accepted by {_cell(u['acceptedBy'], 64)})" if u.get("acceptedBy") else "")
+                for u in unread
+            ],
+            "",
+        ]
     if report["failures"]:
         why = "### Why it is incomplete" if verdict == "incomplete" else "### Why it failed"
         lines += [why, "", *[f"- {_cell(f)}" for f in report["failures"]], ""]
@@ -1018,6 +1604,11 @@ def markdown(report: dict[str, Any], top: int = 25) -> str:
     ]
     if report["excepted"]:
         lines += [f"{report['excepted']} finding(s) accepted by the exception list.", ""]
+    summary = report.get("controlSummary")
+    if isinstance(summary, dict) and (line := coverage_line(summary)):
+        # The gate's own coverage record, in the summary a reviewer reads: a clean gate over a Deployment-only
+        # change must not read as "every Service rule passed" (G281, G221).
+        lines += [line, ""]
     c = report.get("code")
     if c:
         shipped = "" if c["notShipped"] is None else f", {c['notShipped']} in files no image ships"
@@ -1084,10 +1675,36 @@ def sarif_of_gate(report: dict[str, Any]) -> dict[str, Any]:
     """
     notes = _caveat_notes(report)
     notes += [
-        {"level": "error", "message": {"text": f"not read: {u['file']} ({u['why']})"}}
-        for u in report.get("unreadable") or []
+        {"level": "error", "message": {"text": f"not read: {u['path']} ({u['why']})"}} for u in unread_rows(report)
     ]
-    undetermined = report.get("undetermined")
+    blocked = [s for s in report.get("skipped") or [] if s.get("forbidsVerdict")]
+    notes += [
+        {"level": "error", "message": {"text": f"not read as a manifest: {s['file']} ({s['why']})"}} for s in blocked
+    ]
+    # Through the same channel as an undetermined audit, so a consumer that reads only `results` or only the
+    # invocation's properties sees the gap either way (G272, G325) -- and a file that could not be read is the
+    # same gap: `properties.incomplete` was absent for it while the report beside it said five (G340).
+    undetermined = incomplete_reason(report)
+    # The coverage record G328 gave `audit --format sarif`, built here too. This is the file `scripts/ci/gate.sh`
+    # uploads to code scanning, so it is the one that decides what a reviewer sees: without this it carried
+    # fourteen findings and nothing else for a report whose own `controlSummary` said fifty-two rules reached no
+    # verdict, and nothing at all for an input made only of kinds no rule reads. G328 fixed the audit's SARIF and
+    # left its neighbour, which is review class 21 in the same function that records the lesson.
+    #
+    # Two keys differ from the audit's report and are normalised rather than read twice: `unreadable` rows carry
+    # `file` here and `path` there, and the input uri comes from `files` because a gate finding has no `file`.
+    # A file the walk declined to read as a manifest (`forbidsVerdict`, G325) is a file nothing in which was
+    # audited, so it is the same absence and gets the same result.
+    cov_unreadable = unread_rows(report) + [
+        {"path": str(s.get("file") or ""), "why": f"not read as a manifest: {s.get('why')}"} for s in blocked
+    ]
+    files = [str(f) for f in report.get("files") or [] if f]
+    coverage = {
+        "controlSummary": report.get("controlSummary") or {},
+        "unreadable": cov_unreadable,
+        "uri": files[0] if len(files) == 1 else "manifests",
+    }
+    report = {**report, "coverage": coverage}
     if not notes and not undetermined:
         return sarif(report)
     invocation: dict[str, Any] = {"executionSuccessful": True, "toolExecutionNotifications": notes}

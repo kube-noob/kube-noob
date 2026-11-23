@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -32,6 +33,7 @@ import yaml
 
 from kube_noob import sanitize
 from kube_noob.attack_paths import LIVE_RESOURCES
+from kube_noob.audit.controls import rules_evaluated_without, rules_not_evaluated
 from kube_noob.audit.podspec import LONG_RUNNING_EMBEDDED_KINDS
 from kube_noob.sanitize import MAX_JSON_DEPTH_FILE, loads_bounded
 
@@ -322,6 +324,13 @@ def snapshot(
         "coverage": {
             "evaluatedRules": sorted(report.evaluated_rules),
             "firedRules": sorted(report.fired_rules),
+            # Why each rule that did not run did not: the kind it reads was not in the input, the guard
+            # declined, the platform is not its own. A rule about a kind that was absent used to be in
+            # `evaluatedRules` and so in `clean` (G281). When the cluster refused the kind, the reason says so.
+            "notEvaluated": _not_evaluated_rows(report.not_evaluated, _kinds_not_read(unread), source == "live"),
+            # Objects the rules refused to read: never a pass, named here as in the audit (review 4, R1).
+            "notAudited": [dict(r) for r in report.not_audited],
+            "evaluatedWithout": rules_evaluated_without(report.absent_subjects),
         },
         "notRead": unread[:MAX_NOT_READ],
         "notReadKinds": sorted(_kinds_not_read(unread)),
@@ -332,6 +341,52 @@ def snapshot(
         # whole class of workload was never looked at, which is this project's own defect in a fifth place.
         "assumptions": list(report.assumptions[:MAX_ASSUMPTIONS]),
     }
+
+
+def _not_evaluated_rows(reasons: dict[str, str], blind_kinds: set[str], live: bool = False) -> list[dict[str, str]]:
+    """``rulesNotEvaluated`` for the snapshot, with "could not be read" added where the cluster refused the kind.
+
+    "no Role in the input" is true of a live snapshot whose `roles` read was forbidden, and it is not the whole
+    truth: the kind may well exist. The resource name the backend uses is what `notRead` carries, so a reader
+    can match the two lines.
+    """
+    rows = rules_not_evaluated(reasons, list(reasons))
+    resources = {**LIVE_RESOURCES, **EXTRA_LIVE}
+    refused = {kind: res for res, kind in resources.items() if kind in blind_kinds}
+    for row in rows:
+        named = [k for k in refused if _names_kind(row["why"], k)]
+        if named:
+            row["why"] += f" ({', '.join(refused[k] for k in sorted(named))} could not be read from the cluster)"
+        if live:
+            row["why"] = _live_reason(row["why"], set(resources.values()))
+    return rows
+
+
+def _live_reason(why: str, requested: set[str]) -> str:
+    """A reason as a live snapshot says it: nothing was "in the input", it was read from a cluster or never asked
+    for. "no Secret in the input" told a drift reader the cluster had no Secrets, when a live read never requests
+    them (review 4, R10)."""
+    if " in the input" not in why:
+        return why
+    head, tail = why.split(" in the input", 1)
+    body = head.removeprefix("no ")
+    kinds = {t.strip().rsplit(" ", 1)[-1] for t in re.split(r",\s*| or | and no ", body)}
+    never = sorted(k for k in kinds if k not in requested and k != "spec")
+    # "(roles could not be read from the cluster)" already says it; otherwise the read happened and found none.
+    out = f"{head}{tail}" if "could not be read from the cluster" in tail else f"{head} read from the cluster{tail}"
+    if never:
+        out += (
+            f"; {', '.join(never)} {'is' if len(never) == 1 else 'are'} never requested from a cluster "
+            "(not on the read-only allowlist)"
+        )
+    return out
+
+
+def _names_kind(why: str, kind: str) -> bool:
+    """Whether a reason built by `subject_reason` names this kind as absent (whole token, not a substring)."""
+    body = why.split(" in the input", 1)[0].removeprefix("no ")
+    # A label is "<group> Kind" for a kind outside the core group; the kind is its last word.
+    return kind in {t.strip().rsplit(" ", 1)[-1] for t in re.split(r",\s*| or | and no ", body)}
 
 
 def _kinds_not_read(not_read: Iterable[str]) -> set[str]:
@@ -406,14 +461,16 @@ def _standing(new: dict[str, Any], open_rows: list[dict[str, Any]]) -> tuple[dic
 
     unread = [str(x) for x in new.get("notRead") or ()]
     if unread:
-        # A rule whose SUBJECT kind was refused runs against nothing, finds nothing, and would be reported
-        # `clean`. The engine knows which rules fire on another object's absence (they decline to decide on a
-        # partial bundle) but not which kind each rule reads, so no `clean` on this snapshot can be trusted and
+        # A rule whose SUBJECT kind was refused everywhere now lands in `coverage.notEvaluated` with the
+        # resource named (G281). A kind refused in ONE namespace of several does not: the rule still has objects
+        # from the others, is evaluated on those, and would count `clean` over a namespace it could not see.
+        # The record cannot tell the two apart per rule, so no `clean` on this snapshot can be trusted and
         # none is offered. Counts still stand: a finding that was reported was reported.
         return None, (
             f"{len(unread)} resource(s) could not be read in this snapshot, so no per-control standing is "
-            "reported: a rule whose subject kind was refused finds nothing and would look clean. The open "
-            "findings per control below are still what was found. First: " + "; ".join(unread[:3])
+            "reported: a rule whose subject kind was refused in one namespace still ran over the others and "
+            "would look clean there. The open findings per control below are still what was found, and "
+            "coverage.notEvaluated names the rules that had nothing to read at all. First: " + "; ".join(unread[:3])
         )
     coverage = new.get("coverage")
     if not isinstance(coverage, dict) or not isinstance(coverage.get("evaluatedRules"), list):
@@ -423,12 +480,28 @@ def _standing(new: dict[str, Any], open_rows: list[dict[str, Any]]) -> tuple[dic
             "have been evaluated. Take a new snapshot to get per-control standing."
         )
     excepted = [str(f["ruleId"]) for f in new["findings"] if f.get("excepted") and f.get("ruleId")]
+    # A snapshot from before the reasons were recorded has no `notEvaluated` list; its standing then keeps the
+    # older shape rather than listing every unevaluated rule with a reason it never recorded (G281).
+    rows = coverage.get("notEvaluated")
+    reasons = (
+        {str(r["ruleId"]): str(r.get("why") or "") for r in rows if isinstance(r, dict) and r.get("ruleId")}
+        if isinstance(rows, list)
+        else None
+    )
+    without = coverage.get("evaluatedWithout")
+    absent = (
+        {str(r["ruleId"]): [str(k) for k in r.get("absent") or ()] for r in without if isinstance(r, dict)}
+        if isinstance(without, list)
+        else None
+    )
     return (
         control_summary(
             [str(r["ruleId"]) for r in open_rows],
             excepted,
             [str(x) for x in coverage.get("evaluatedRules") or ()],
             [str(x) for x in coverage.get("firedRules") or ()],
+            not_evaluated=reasons,
+            absent_subjects=absent,
         ),
         "",
     )
@@ -465,10 +538,19 @@ def diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     was_fixed = [old_f[i] for i in sorted(set(old_f) - set(new_f))]
     fixed = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) not in blind]
     undetermined_findings = [brief(f) for f in was_fixed if _kind_of(str(f["resource"])) in blind]
+    from kube_noob.audit.model import undetermined_reason
+
+    # The snapshot's objects the rules did not read, and the verdict word they imply: a report built on such a
+    # snapshot said "Drift and policy report" and exited 0 with the note in a bullet (review 5, item 3).
+    not_audited = [r for r in (new.get("coverage") or {}).get("notAudited") or [] if isinstance(r, dict)]
+    why_undetermined = undetermined_reason(not_audited)
     out: dict[str, Any] = {
         "format": REPORT_FORMAT,
         "from": old["takenAt"],
         "to": new["takenAt"],
+        # Only when there is one, so every report that never had one stays byte-identical.
+        **({"notAudited": not_audited} if not_audited else {}),
+        **({"verdict": "undetermined", "verdictReason": why_undetermined} if why_undetermined else {}),
         # What was snapshotted: `live`, or the manifests. Two reports in one folder can describe different
         # populations -- a `-f` run and a `--live` run -- and a trend drawn across them compares things nobody
         # compared, so the series needs to be able to see the difference.
@@ -518,8 +600,24 @@ def markdown(report: dict[str, Any]) -> str:
     o, f = report["objects"], report["findings"]
     since = report["from"] or "the first snapshot"
     lines = [
-        f"# Drift and policy report, {report['to']}",
+        f"# Drift and policy report, {report['to']}"
+        + (" -- verdict undetermined" if report.get("verdict") == "undetermined" else ""),
         "",
+    ]
+    if report.get("notAudited"):
+        rows = report["notAudited"]
+        named = "; ".join(
+            f"{r.get('object')} ({r.get('why')})" + (f", accepted by {r['acceptedBy']}" if r.get("acceptedBy") else "")
+            for r in rows[:10]
+        )
+        lines += [
+            f"**{report.get('verdictReason') or str(len(rows)) + ' object(s) not audited'}**: the rules did not read "
+            + named
+            + (f"; and {len(rows) - 10} more" if len(rows) > 10 else "")
+            + (". The verdict is undetermined." if report.get("verdict") == "undetermined" else "."),
+            "",
+        ]
+    lines += [
         f"Since {since}: {len(o['added'])} added, {len(o['removed'])} removed, {len(o['changed'])} changed, "
         f"{o['unchanged']} unchanged. Findings: {len(f['new'])} new, {len(f['fixed'])} fixed, {f['open']} open"
         + (f", {f['excepted']} excepted" if f["excepted"] else "")
@@ -625,6 +723,22 @@ def markdown(report: dict[str, Any]) -> str:
             for c in standing["controls"]
         ]
         lines += ["", standing["note"], ""]
+        skipped = standing.get("rulesNotEvaluated") or []
+        if skipped:
+            # The `Not evaluated` column, explained: the same grouping the CLI prints, so a reader of the
+            # Markdown is not sent to the JSON to learn that no Service was in the input (G281).
+            from kube_noob.audit.controls import grouped_reasons
+
+            lines += [
+                f"**{len(skipped)} rule(s) were not evaluated**, counted under `Not evaluated` above:",
+                "",
+                *[f"- {why}: {', '.join(ids)}" for why, ids in grouped_reasons(standing)],
+                "",
+            ]
+        for row in standing.get("rulesEvaluatedWithout") or []:
+            lines.append(f"- {row.get('ruleId')} was evaluated without {', '.join(row.get('absent') or [])}")
+        if standing.get("rulesEvaluatedWithout"):
+            lines.append("")
     for note in report.get("notes") or []:
         lines += [f"> {note}", ""]
     return sanitize.visible_lines("\n".join(lines))  # nothing that does not print reaches the file (G279)
@@ -647,7 +761,7 @@ def load(path: Path) -> dict[str, Any]:
 
 def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     """Objects for a live snapshot through the read-only backend (never Secrets), and what could not be read."""
-    from kube_noob.debug.cluster import list_items
+    from kube_noob.debug.cluster import list_items, stamp_api_version
     from kube_noob.errors import KubeNoobError
 
     objects: list[dict[str, Any]] = []
@@ -664,7 +778,8 @@ def collect_live(backend: Any, namespaces: list[str]) -> tuple[list[dict[str, An
                 continue
             for item in items:
                 if isinstance(item, dict):
-                    objects.append({**item, "kind": kind})
+                    # The record says which API the object was listed under, as a manifest would (review 3, N1).
+                    objects.append({**stamp_api_version(resource, item), "kind": kind})
     if namespaces:
         wanted = set(namespaces)
         objects = [o for o in objects if o["kind"] != "Namespace" or (o.get("metadata") or {}).get("name") in wanted]

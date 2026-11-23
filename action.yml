@@ -95,8 +95,9 @@ outputs:
   evidence:
     description: >-
       complete, incomplete or not-run, read from the gate's report: incomplete when a check did not run (no
-      Containerfile, no scanner report, no SARIF, an unreadable file); not-run when there is no report to read
-      (exit 2, 3 or 4). With fail-on never or continue-on-error, this is the output to gate on.
+      Containerfile, no scanner report, no SARIF, an unreadable file) or the audit reached no verdict (an object
+      the rules did not read, a rule that declined); not-run when there is no report to read (exit 2, 3 or 4).
+      With fail-on never or continue-on-error, this is the output to gate on.
     value: ${{ steps.gate.outputs.evidence }}
   because:
     description: Why the evidence is incomplete or not-run, as one line; empty when complete.

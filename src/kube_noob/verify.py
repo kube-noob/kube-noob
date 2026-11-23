@@ -34,6 +34,7 @@ import re
 import stat
 import time
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -2662,13 +2663,29 @@ def _key(f: dict[str, Any]) -> tuple[str, str, str]:
     return (str(f.get("ruleId")), str(f.get("resource")), str(f.get("path")))
 
 
-def _unread_pods(sources: list[Any]) -> list[str]:
+def _unread_pods(sources: list[Any], accepted: Collection[str] = ()) -> list[str]:
     """Pod specs the audit has no reader for, or in an API group it does not know for the kind: a container no rule
-    looked at. The audit's own detectors (``kube_noob.audit.podspec``), not a copy; the gate only notes them, and
-    a check before an action cannot allow what it did not read."""
+    looked at. The audit's own detectors (``kube_noob.audit.podspec``), not a copy.
+
+    This exists for the documents the gate never saw. ``verify``'s collector reads what ``kubectl apply`` would
+    send -- .json files and dot-directories included -- and the gate's collector does not (see ``collect``), so a
+    pod spec in one of those reaches no gate report at all and has to be found here.
+
+    ``accepted`` is every object an ``ExceptionList`` entry accepted under ``notAudited``, and a document in it is
+    skipped. Those are the one case where an object can be unaudited and the gate's verdict still determined:
+    ``accept_not_audited`` sets ``acceptedBy`` and ``undetermined_reason`` passes over the row. This detector never
+    saw the exception list, so it refused the object anyway -- exit 5 at the one hop that runs before an action,
+    while the gate honoured the entry. The remedy the tool documents did not work where it matters most, which is
+    this product's own class-9 defect: two sources of truth that can disagree.
+
+    An OPEN row is not skipped. The gate's own line names the object and withholds the verdict; this one names the
+    file and says what is in it that no rule read, which is what a reader needs in order to fix it. Saying it from
+    two angles is not two problems.
+    """
     from kube_noob.audit.podspec import refused_group, unread_pod_specs
     from kube_noob.yamlio import load_documents
 
+    seen = set(accepted)
     out: list[str] = []
     for s in sources:
         if s.skip or s.unreadable:
@@ -2679,12 +2696,13 @@ def _unread_pods(sources: list[Any]) -> list[str]:
             out.append(f"{frame(s.uri)} could not be read for pod specs")
             continue
         for d in docs:
+            ref = d.ref()
+            if ref in seen:
+                continue
             if unread_pod_specs(d):
-                out.append(f"{frame(d.ref(), 120)} in {frame(s.uri)} carries a pod spec no audit rule reads")
+                out.append(f"{frame(ref, 120)} in {frame(s.uri)} carries a pod spec no audit rule reads")
             elif refused_group(d) is not None:
-                out.append(
-                    f"{frame(d.ref(), 120)} in {frame(s.uri)} is in an API group kube-noob does not read pods for"
-                )
+                out.append(f"{frame(ref, 120)} in {frame(s.uri)} is in an API group kube-noob does not read pods for")
     return out
 
 
@@ -2729,6 +2747,14 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                         out.append(gate.Source(gate._uri(f), "", unreadable="not UTF-8 text"))
                         continue
                     why = gate._classify(f, text)
+                    if why is not None and not gate.forbids_verdict(why) and gate._holds_a_manifest(f):
+                        # kubectl knows nothing about charts: a file under `templates/` that IS a manifest as it
+                        # stands is sent like any other, so it is audited like any other. The gate's "a Helm
+                        # template" answer is about a chart somebody will render; taking it here made
+                        # `verify -f .` answer `allow`, exit 0, with a privileged Pod in `chart/templates/pod.yaml`
+                        # listed under `files` as checked (G354). A template that is not yet YAML keeps the
+                        # gate's answer: kubectl cannot send it.
+                        why = None
                     bad = gate.unreadable_reason(text) if why is None else None
                     out.append(gate.Source(gate._uri(f), text, skip=why, unreadable=bad))
                     total += len(text)
@@ -2806,7 +2832,15 @@ def evaluate(
     if report is not None:
         for s in report["skipped"]:
             not_evaluated.append({"what": show(s["file"]), "why": show(s["why"])})
-            if from_command:
+            if s.get("forbidsVerdict"):
+                # The gate declined to read this file, so there is no verdict to give about what it would create:
+                # `allow` on a privileged pod whose `apiVersion` key was mis-spelled is the defect G325 fixes.
+                # Same mechanism as the ~40 command shapes verify cannot model, and no new field.
+                undetermined.append(
+                    f"{frame(s['file'])} was not read as a manifest ({frame(s['why'])}), so what it would create "
+                    "is not known"
+                )
+            elif from_command:
                 # kubectl sends every .yaml it is pointed at; a file the audit skipped is one it would still send.
                 undetermined.append(
                     f"{frame(s['file'])} was not audited ({frame(s['why'])}), and kubectl would send it"
@@ -2816,7 +2850,27 @@ def evaluate(
             undetermined.append(f"{frame(u['file'])} could not be read ({frame(u['why'])})")
         for a in report.get("assumptions") or []:
             not_evaluated.append({"what": "audit", "why": show(a, 600)})
-        undetermined.extend(_unread_pods(sources))
+        if report.get("undetermined"):
+            # The gate's ONE predicate (`Report.undetermined`), read rather than re-derived. verify kept its own
+            # list of what makes an audit undetermined -- `_unread_pods` below, which knows a pod spec in a kind
+            # with no reader and nothing else -- so every reason the gate learned after it was written (an
+            # apiVersion or a kind the rules refuse, a rule that declined on an object) came back as `allow`,
+            # exit 0, printed above the audit's own sentence saying the verdict was undetermined (G329, class 9).
+            # An object an exception accepted under `notAudited` no longer makes the gate undetermined, so it is
+            # not named here either: that is the gate's answer, and this is the gate's audit.
+            undetermined.append(
+                f"the audit of these manifests is undetermined ({frame(report['undetermined'], 300)}), so what "
+                "they would create was not read in full"
+            )
+        # Objects an exception entry accepted, which the gate passes over and this detector never saw: see
+        # `_unread_pods`. Open rows are not excluded -- the gate's line withholds the verdict, this one says which
+        # file holds what no rule read.
+        accepted = {
+            str(r.get("object"))
+            for r in report.get("notAudited") or []
+            if isinstance(r, dict) and r.get("object") and r.get("acceptedBy")
+        }
+        undetermined.extend(_unread_pods(sources, accepted))
         base_keys: Counter[tuple[str, str, str]] = Counter()
         baseline = list(against or []) + list(cmd.baseline)
         if baseline:

@@ -29,8 +29,9 @@ kube-noob --version
 ```
 
 If that prints `kube-noob` and a version, that is the engine. These skills need **kube-noob 0.9.3 or later**: older
-releases do not clean their output for a model, can exit 1 on a crash, and lack fields the tables below name. If the
-version it printed is lower than 0.9.3, or a result's first key is not `forModel`, do not read its output as an answer.
+releases do not clean their output for a model, can exit 1 on a crash, and lack fields the tables below name. If a result's first key is not `forModel`, the engine is older than these skills need: do not read its
+output as an answer. Judge it by that key, never by comparing the version number yourself -- 0.10.0 is NEWER
+than 0.9.3 and sorts below it as text, so a version comparison would reject an engine that is perfectly good.
 Say exactly this: **this kube-noob is older than these skills need, so nothing has been audited**, and give the one
 command that upgrades it:
 
@@ -144,7 +145,7 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 |---|---|---|---|
 | `protocol` | 0 ready, 1 blocked (a HIGH or CRITICAL finding remains), 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
 | `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary` |
+| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
 | `redteam` | always 0 | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
 | `fix` | always 0 | `changes`, `manualFollowUps`, `after` | |
 | `generate` | 0, or 3 needs clarification | `audit`, `assumptions`, `prerequisites` | |

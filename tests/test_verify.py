@@ -19,6 +19,12 @@ import yaml
 
 from kube_noob import gate, verify
 from kube_noob.cli import main
+from tests import bounds
+
+#: Measured; re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
+HONEST_LONG_MK = 0.001  #: `verify` refusing a Makefile line of 250,000 spaces without reading it
+HONEST_MAKE_RULE = 0.001  #: `_make_rule` on that line alone
+HONEST_2000_TARGETS = 0.001  #: `verify` refusing a Makefile with 2,000 targets rather than walking them
 
 ROOT = Path(__file__).resolve().parents[1]
 GOOD = ROOT / "tests" / "fixtures" / "gate" / "good" / "orders-api.yaml"
@@ -1256,7 +1262,15 @@ def test_a_huge_render_and_helms_own_words_are_bounded_and_framed(
 
 def test_verify_f_reads_a_directory_the_way_kubectl_does(ws: Path) -> None:
     """Dot-files and .json are sent by `kubectl apply -R -f`; the gate's collector skips them (stated), verify's
-    does not (S1.9)."""
+    does not (S1.9).
+
+    This test used to assert the gate *passed* this directory. It does not any more, and the change is the point
+    of G332: `.config/x.json` is a privileged pod, this very test asserts `verify` and the kubectl-command path
+    both deny because of it, and the gate answered `passed: true` with `skipped: []`. Three commands, one
+    directory, and the one people put in CI was the one that said clean. The collector is still unchanged -- the
+    gate audits `orders-api.yaml` and nothing else here -- but it no longer states a verdict over files it never
+    opened: they are named in `skipped` with `forbidsVerdict`, and the gate reads incomplete.
+    """
     hid = ws / "hid"
     (hid / ".config").mkdir(parents=True)
     shutil.copy(GOOD, hid / "orders-api.yaml")
@@ -1266,7 +1280,15 @@ def test_verify_f_reads_a_directory_the_way_kubectl_does(ws: Path) -> None:
     assert v["verdict"] == "deny"
     assert {f["uri"].rsplit("/", 1)[-1] for f in v["findings"]} >= {".hidden.yaml", "x.json"}
     g = gate.run(gate.collect([str(hid)], _read), **OCP)  # type: ignore[arg-type]
-    assert g["passed"], "the gate's collection is unchanged and documented as skipping these"
+    # The collection is unchanged: still only the one file it was ever going to audit.
+    assert [f.rsplit("/", 1)[-1] for f in g["files"]] == ["orders-api.yaml"]
+    # But a pass is no longer stated over the two it did not open, and each is named with the rule and the remedy.
+    assert not g["passed"], "the gate passed a directory holding a privileged pod it never opened (G332)"
+    blocked = {s["file"].rsplit("/", 1)[-1]: s for s in g["skipped"] if s.get("forbidsVerdict")}
+    assert set(blocked) == {".hidden.yaml", "x.json"}
+    assert "a dot-file" in blocked[".hidden.yaml"]["why"]
+    assert ".config/" in blocked["x.json"]["why"]
+    assert all("name it with -f" in s["why"] for s in blocked.values())
     assert _verify("kubectl apply -R -f hid", ws)["verdict"] == "deny"
 
 
@@ -1380,17 +1402,13 @@ def test_the_reader_is_linear_on_crafted_lines(name: str) -> None:
 def test_a_makefile_line_built_to_be_slow_is_refused_quickly(ws: Path) -> None:
     """The reviewer's `a`, 250,000 spaces, `b` line took the old rule pattern 62 s. It is now not read at all, and
     the rule reader that replaced the pattern is linear anyway."""
-    import time
-
-    start = time.perf_counter()
-    r = _verify("make -f long.mk test", ws)
+    with bounds.bounded(bounds.FIXED_WORK, honest_seconds=HONEST_LONG_MK, guards="the 250,000-space Makefile line"):
+        r = _verify("make -f long.mk test", ws)
     assert r["verdict"] == "not-determined" and any("longer than" in u for u in r["notDetermined"])
-    assert time.perf_counter() - start < 5
     from kube_noob.debug.shell import _make_rule
 
-    start = time.perf_counter()
-    assert _make_rule("a" + " " * 250_000 + "b") is None
-    assert time.perf_counter() - start < 0.5
+    with bounds.bounded(bounds.BACKTRACKING, honest_seconds=HONEST_MAKE_RULE, guards="the old 62-second pattern"):
+        assert _make_rule("a" + " " * 250_000 + "b") is None
 
 
 def test_make_says_so_when_more_targets_are_reachable_than_it_reads(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1405,14 +1423,11 @@ def test_make_says_so_when_more_targets_are_reachable_than_it_reads(ws: Path, mo
 
 
 def test_two_thousand_make_targets_are_read_or_refused_quickly(ws: Path) -> None:
-    import time
-
     deps = " ".join(f"b{i}" for i in range(2000))
     recipes = "".join(f"b{i}:\n\techo {i}\n" for i in range(2000))
     (ws / "t2000.mk").write_text(f"deploy: {deps} apply\n{recipes}apply:\n\tkubectl apply -f bad/deploy.yaml\n")
-    start = time.perf_counter()
-    assert _verify("make -f t2000.mk deploy", ws)["verdict"] != "allow"
-    assert time.perf_counter() - start < 10
+    with bounds.bounded(bounds.FIXED_WORK, honest_seconds=HONEST_2000_TARGETS, guards="two thousand make targets"):
+        assert _verify("make -f t2000.mk deploy", ws)["verdict"] != "allow"
 
 
 # -- review 4 (G280): false asks, the shipped allow set, dry runs, targeting, the length cap, encoding ------------

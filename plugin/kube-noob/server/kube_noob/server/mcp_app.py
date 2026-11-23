@@ -11,6 +11,7 @@ import inspect
 import logging
 import time
 import traceback
+from collections.abc import Sequence
 from importlib import resources
 from typing import Annotated, Any, cast
 
@@ -31,7 +32,7 @@ from kube_noob.knowledge.store import get_store
 from kube_noob.knowledge_status import line as knowledge_line
 from kube_noob.learn.tutor import curriculum
 from kube_noob.prompts import system_prompt
-from kube_noob.server import admission, metrics
+from kube_noob.server import admission, metrics, tool_profiles
 from kube_noob.toolkit import Toolkit, ToolSpec
 
 TOOL_PREFIX = "kubenoob_"
@@ -283,16 +284,34 @@ def _forbid_unknown_arguments(mcp: MCPServer, name: str) -> None:
     tool.parameters["additionalProperties"] = False
 
 
-def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, gate: Any = None) -> MCPServer:
+def build_server(
+    settings: Settings,
+    *,
+    shared: bool = False,
+    rest: Any = None,
+    gate: Any = None,
+    profiles: Sequence[str] = (tool_profiles.ALL,),
+) -> MCPServer:
     """``rest``: the HTTP server's TransportSecuritySettings; given, the REST routes (``kube_noob.server.rest``) are
     added beside MCP with the same Host and Origin checks. ``gate``: the HTTP server's large-body tickets
-    (``admission.LargeBodies``); given, the MCP alert report takes its report slot on the event loop."""
+    (``admission.LargeBodies``); given, the MCP alert report takes its report slot on the event loop.
+    ``profiles``: the named tool subsets to offer (``kube_noob.server.tool_profiles``); the default offers every
+    tool the configuration allows, and any other value also tells the model which tools it is not being shown."""
     toolkit = Toolkit(settings, shared=shared)
+    # Before the server is built, because its instructions have to name the tools it is not listing: the prose
+    # below names tools by hand, and a profile can withhold one of them, so the model is told which of the two
+    # statements holds rather than being left to read the absence as "kube-noob cannot do this".
+    offered_specs, withheld_names = tool_profiles.select(toolkit.specs(), profiles)
+    withheld = (
+        ""
+        if tuple(profiles) == (tool_profiles.ALL,)
+        else tool_profiles.withheld_sentence(profiles, withheld_names, TOOL_PREFIX)
+    )
     mcp = MCPServer(
         name="kube_noob_mcp",
         title="kube-noob",
         version=__version__,
-        instructions=_instructions(settings),
+        instructions=_instructions(settings) + withheld,
         website_url="https://github.com/kube-noob/kube-noob",
         icons=_icons(),
     )
@@ -301,8 +320,8 @@ def build_server(settings: Settings, *, shared: bool = False, rest: Any = None, 
     logging.getLogger("mcp.server.mcpserver.server").setLevel(logging.WARNING)
     knowledge = knowledge_line(settings.data_dir)
     # So an unexpected tool label becomes `other` rather than growing the metric's label space (N11).
-    metrics.REGISTRY.known_tools(frozenset(spec.name for spec in toolkit.specs()))
-    for spec in toolkit.specs():
+    metrics.REGISTRY.known_tools(frozenset(spec.name for spec in offered_specs))
+    for spec in offered_specs:
         mcp.tool(
             name=TOOL_PREFIX + spec.name,
             title=spec.title,
