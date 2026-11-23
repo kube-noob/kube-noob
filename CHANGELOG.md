@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- kube-noob.com is published as soon as a release exists instead of after the 2-hour video render, and asked again once the videos are attached (G356).
 - The Agent Skill's install hint is generated from `plugin/kube-noob/uv.lock` instead of copied by hand, so a dependency bump can no longer leave a stale version behind two slow test legs (G349).
 - **Commands that read a directory dropped the files they could not read (G350).** `posture scan`, `posture reach`, `posture snapshot`, `policy reach`, `vuln threat` and `protocol` read `-f DIR` through a helper that kept the readable files and discarded the list of the rest, so `posture scan -f k8s/ --fail-above 30 --require-complete` exited 0 beside a file YAML could not parse. They now exit 5 naming each file, as the same file named on its own always was refused.
 - **`audit -f DIR` scored 100.0 over a directory holding a manifest it never opened (G351).** The audit's walk reads `.yaml` and `.yml`; a privileged Pod in `pod.json` beside a clean `ok.yaml` exited 0 where `gate` exited 5 on the same directory. The gate's decision about an unopened file is now one function both walks ask. The file is an `unreadable` row: exit 5, or `--skip-unreadable` to audit the rest with it still named. A JSON file that is not a manifest stays silent.
