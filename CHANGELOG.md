@@ -6,6 +6,7 @@
 - **OSCAL reported objectives `satisfied` and `red_team` answered `mitigated` beside an object nothing had read (G361).** Whenever one readable object sat beside an unaudited one, every rule ran clean on the readable one and both outputs took that for the input: a hardened Pod beside a privileged Tekton step gave 16 `satisfied/pass` objectives and two `mitigated` scenarios in a run the gate called incomplete. While a `notAudited` row is open, or a file was skipped in a way that forbids a verdict, no control is reported satisfied on clean rules alone and no scenario is `mitigated`; findings and `exposed` scenarios are reported as before, and an accepted exception restores the objectives.
 - **A container past the 200th item of a list was never looked at (G362).** In a kind with no reader the detector read the first 200 entries of each list, so an Argo `Workflow` with a privileged container in its 201st template scored 100.0. It reads every entry now. The same detector no longer raises `TypeError` on a mapping that has an integer key beside a string key.
 
+- `brew install kube-noob` serves the version this repository is, and the release workflow stops pushing the formula at a protected branch and reporting success over a branch nobody merged (G357).
 ## 0.10.0 - 2026-11-23
 
 - A rerun of the release workflow after a partial PyPI upload is a no-op instead of a failure that strands the tag with no release page and no krew archive (G345).

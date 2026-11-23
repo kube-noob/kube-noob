@@ -349,7 +349,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Homebrew formula for kube-noob $version" -- Formula/kube-noob.rb
-          git push origin HEAD:main
+          # main is a protected branch with eight required checks, and GITHUB_TOKEN is not an admin, so a direct
+          # push is refused with `GH006: Protected branch update failed` -- which is what happened at v0.10.0,
+          # leaving `brew install kube-noob` on the previous release off the documented tap. The formula cannot be
+          # written before the tag either: its URLs carry the PyPI-assigned path, which does not exist until the
+          # upload. So the commit goes to a branch, which protection allows, and this job then FAILS with the
+          # command to land it. It must fail: a job that pushed a branch nobody merges and reported success would
+          # be an update that never happened reading as a pass, and brew users would stay behind silently (G357).
+          branch="chore/brew-formula-${version}"
+          if git push origin "HEAD:refs/heads/${branch}"; then
+            echo "::error title=homebrew::the formula for ${version} is on branch ${branch}, NOT on main, so the documented \`brew install kube-noob\` still serves the previous release. GITHUB_TOKEN cannot push to protected main (GH006) and a pull request it opens does not start CI, so this has to be landed with an account token: gh api repos/${GITHUB_REPOSITORY}/pulls -X POST -f title=\"Homebrew formula for kube-noob ${version}\" -f head=${branch} -f base=main -f body=\"Written by the release workflow; main refused the direct push.\" then merge it once ci is green. tests/test_distribution.py fails on main until it lands."
+            exit 1
+          fi
+          echo "::error title=homebrew::could not even push branch ${branch}; the formula for ${version} exists nowhere and brew users stay on the previous release"
+          exit 1
 
   brew:
     needs: homebrew
