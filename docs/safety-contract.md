@@ -295,6 +295,7 @@ Where it is applied (found in the code):
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
 - `kube_noob/alert_report.py` `_str` calls `sanitize.clean`
 - `kube_noob/alert_report.py` `build` calls `sanitize.result`
+- `kube_noob/attack_paths.py` `Inventory.add` calls `sanitize.one_line`
 - `kube_noob/audit/engine.py` `_not_audited_row` calls `sanitize.one_line`
 - `kube_noob/audit/engine.py` `analyze` calls `sanitize.one_line`
 - `kube_noob/audit/exceptions.py` `review` calls `sanitize.safe_load_bounded`

@@ -32,6 +32,7 @@ from kube_noob.audit.podspec import (
     PodTemplate,
     containers,
     effective_security,
+    has_reader,
     pdb_allows_no_disruption,
     pod_template,
     pod_templates,
@@ -128,6 +129,15 @@ _DNS_1035_LABEL = r"[a-z](?:[-a-z0-9]*[a-z0-9])?"
 _API_VERSION_SHAPE = re.compile(rf"^(?:{_DNS_1123_LABEL}(?:\.{_DNS_1123_LABEL})*/)?{_DNS_1035_LABEL}\Z")
 REFUSED_NOT_STRING = "apiVersion is not a string"
 UNREAD_POD_SPECS = "pods are in a kind kube-noob has no reader for"
+#: The other thing `unread_pod_specs` finds, and a different fact: the kind HAS a reader, and a container in the
+#: object is at a place that reader does not look -- `template.Spec` for `template.spec`, `explainer.alibi`, a pod
+#: spec at a path the registry does not list (G360). A fixed phrase like the one above (class 7), and a separate
+#: one because the one above is false here: it sends the reader to ask for a kind that is already supported.
+#: Written to follow the object's name ("InferenceService/app/m holds a container where ...") and to sit in
+#: parentheses after "not audited", the two places every renderer puts a `notAudited` row's `why`.
+UNREAD_CONTAINERS = "holds a container where kube-noob does not read one in this kind"
+#: Both, for the callers that ask "is this row about a pod nobody read" rather than which of the two it is.
+UNREAD_REASONS: frozenset[str] = frozenset({UNREAD_POD_SPECS, UNREAD_CONTAINERS})
 REFUSED_MALFORMED = "apiVersion is not well-formed (<group>/<version> or <version>)"
 
 
@@ -186,6 +196,18 @@ def refused_subject_group(doc: Document) -> str | None:
     return refusal(doc)
 
 
+def unread_reason(doc: Document) -> str | None:
+    """Why a container in ``doc`` was read by no rule, as one of the two fixed phrases, or `None` when all were.
+
+    The ONE place that turns an `unread_pod_specs` hit into words. It replaced three guards of the form
+    `d.kind not in WORKLOAD_KINDS and unread_pod_specs(d)`, each of which decided by the kind's NAME that a kind
+    with a reader had nothing unread in it and never asked (G360).
+    """
+    if not unread_pod_specs(doc):
+        return None
+    return UNREAD_CONTAINERS if has_reader(doc) else UNREAD_POD_SPECS
+
+
 def _join_or(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
 
@@ -241,6 +263,11 @@ def refused_summary(docs: list[Document]) -> str:
         why = refusal(d) or object_unreadable(d.data)
         # A kind with no reader, or no kind name at all, is not one the rules know, so its name is the input's
         # own text and stays out of the reason (class 7): "1 object not audited (<fixed phrase>)".
+        if why is None and kind_refusal(d) is None and has_reader(d):
+            # A kind with a reader and a container that reader did not read (G360). The kind is one a registry
+            # names, so it is the rules' word and not the input's, and it is shown: "no pod spec in the input"
+            # beside a DeploymentConfig was the stated absence class 24 is about.
+            why = UNREAD_CONTAINERS
         key = (d.kind, why) if why is not None else ("object", kind_refusal(d) or UNREAD_POD_SPECS)
         counts[key] = counts.get(key, 0) + 1
     return ", ".join(f"{n} {kind} not audited ({why})" for (kind, why), n in sorted(counts.items()))
@@ -313,6 +340,12 @@ class AuditContext:
     # selector is a number): rule id -> the objects. Undecided too, never "no HPA" or "no PDB" (G276).
     unreadable_partners: dict[str, set[str]] = field(default_factory=dict)
     _has_workloads: bool | None = field(default=None, repr=False)
+    # `not_audited()`, computed once per context. It is asked for by the subject gate of every rule, by the two
+    # rules that conclude from "no pod template matches", by the engine and by the red team -- 45 times per
+    # document on a bundle of Deployments -- and since G360 the detector behind it walks an object of a kind WITH
+    # a reader instead of returning at once, so the answer is kept (review class 12). The documents of a context
+    # do not change while its rules run; a fixer that edits them audits again with a new context.
+    _not_audited: list[tuple[Document, str]] | None = field(default=None, repr=False)
 
     def looked_at(self, rule_id: str, resource: str) -> None:
         self.examined.setdefault(rule_id, set()).add(resource)
@@ -407,14 +440,17 @@ class AuditContext:
         are built from, and the verdict is undetermined by (review 5, item 1): a record that says "not audited"
         is never beside an empty list.
         """
-        out: list[tuple[Document, str]] = []
-        for d in self.docs:
-            why = refusal(d) or kind_refusal(d)
-            if why is None and d.kind not in WORKLOAD_KINDS and unread_pod_specs(d):
-                why = UNREAD_POD_SPECS
-            if why is not None:
-                out.append((d, why))
-        return out
+        if self._not_audited is None:
+            out: list[tuple[Document, str]] = []
+            for d in self.docs:
+                # `unread_reason` last and for EVERY kind. It used to be asked only of a kind outside
+                # WORKLOAD_KINDS, so a kind with a reader was never asked whether the reader had read all of it
+                # (G360).
+                why = refusal(d) or kind_refusal(d) or unread_reason(d)
+                if why is not None:
+                    out.append((d, why))
+            self._not_audited = out
+        return list(self._not_audited)
 
     def refused_of(self, subject: tuple[str, ...]) -> list[Document]:
         """The documents that would have been this subject had the rules read them: not-audited ones of its
@@ -425,7 +461,7 @@ class AuditContext:
         out: list[Document] = []
         for d, why in self.not_audited():
             if (d.kind in kinds and refusal(d) is not None) or (
-                WORKLOAD_SUBJECT in subject and (why == UNREAD_POD_SPECS or unread_pod_specs(d))
+                WORKLOAD_SUBJECT in subject and (why in UNREAD_REASONS or unread_pod_specs(d))
             ):
                 out.append(d)
         return out
@@ -454,9 +490,10 @@ class AuditContext:
         ]
 
     def unread_pod_spec_docs(self) -> list[Document]:
-        """Documents of a kind with no pod-spec reader that carry a pod-spec-shaped mapping (`unread_pod_specs`):
-        an Argo Rollout, a Knative Service. The engine names them; the pods they describe were not read."""
-        return [d for d in self.docs if d.kind not in WORKLOAD_KINDS and unread_pod_specs(d)]
+        """Documents that carry a container no reader read (`unread_pod_specs`): a kind with no pod-spec reader
+        (an Argo Rollout, a Knative Service), or a kind with one and a container where it does not look (G360).
+        The engine names them; the containers they describe were not read."""
+        return [d for d in self.docs if unread_pod_specs(d)]
 
     def refused_workloads(self) -> list[Document]:
         """Workload-kind documents `workloads` did NOT read because `refusal` refused them.
@@ -1122,7 +1159,7 @@ def _unread_workloads_by_ns(ctx: AuditContext) -> dict[str, list[str]]:
     """
     out: dict[str, list[str]] = {}
     for d, why in ctx.not_audited():
-        if d.kind in WORKLOAD_KINDS or why == UNREAD_POD_SPECS or unread_pod_specs(d):
+        if d.kind in WORKLOAD_KINDS or why in UNREAD_REASONS or unread_pod_specs(d):
             # The kind name is the input's own text unless `refusal` knew it; the phrase is fixed either way.
             phrase = (
                 f"a {d.kind} was not audited ({why})"

@@ -594,8 +594,9 @@ def run(
             # Not a verdict: the gate is incomplete, never passed, whatever --fail-on says (G272, seventh
             # review). Objects the rules did not read (an apiVersion that is not a string, not shaped like an
             # API, or in a group the kind is not known under; a kind that is not a kind name; a pod spec in a
-            # kind with no reader) and no exception accepted are not findings and not absences: a typo in
-            # apiVersion turned a failing gate into a passing one whose every output said no workload was
+            # kind with no reader; a container where the reader for its kind does not look, G360) and no
+            # exception accepted are not findings and not absences: a typo in apiVersion turned a failing gate
+            # into a passing one whose every output said no workload was
             # present (G281, review 4, R1). The reason carries the counts and the names; this line adds the
             # per-object `why`, which the reason does not have.
             open_rows = open_not_audited(report.not_audited)
@@ -1015,8 +1016,9 @@ def _not_audited_results(report: dict[str, Any], rules: dict[str, dict[str, Any]
         "fullDescription": {"text": "The rules refused to read this object, so the verdict is undetermined."},
         "help": {
             "text": (
-                "The rules did not read this object (its apiVersion or kind is not one they know, or its pods are "
-                "in a kind with no reader), so the verdict is undetermined. To accept it as reviewed, add a "
+                "The rules did not read this object, or did not read all of it (its apiVersion or kind is not "
+                "one they know, its pods are in a kind with no reader, or it holds a container where the reader "
+                "for its kind does not look), so the verdict is undetermined. To accept it as reviewed, add a "
                 "notAudited entry to the ExceptionList (kind, apiGroup, namespace, name, with owner, reason and "
                 "expiry); the row stays listed with acceptedBy."
             )

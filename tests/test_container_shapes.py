@@ -157,11 +157,28 @@ def test_the_image_string_is_the_whole_discriminator() -> None:
     assert not _looks_like_a_pod_spec({"replicas": 3})
 
 
-def test_a_kind_the_registries_do_read_is_unaffected(settings: Any) -> None:
-    """`unread_pod_specs` returns nothing for a kind with a reader, and widening the shapes must not change that:
-    a `steps` list inside a Deployment is far more likely to be a template for something else than a pod
-    kube-noob missed, and for those kinds the registry is the claim."""
-    text = """\
+def test_a_kind_the_registries_do_read_is_held_to_what_its_reader_read(settings: Any) -> None:
+    """Flipped by G360, deliberately. This test was `test_a_kind_the_registries_do_read_is_unaffected` and asserted
+    the opposite of its last line: that `unread_pod_specs` returns nothing for a kind with a reader, on the
+    reasoning that "a `steps` list inside a Deployment is far more likely to be a template for something else than
+    a pod kube-noob missed, and for those kinds the registry is the claim".
+
+    The claim was never checked, and that is what was wrong with it. The detector returned `[]` for a registered
+    kind by its NAME, so a container the reader did not read was reported by nobody: a privileged container under
+    `template.Spec` in a DeploymentConfig, `explainer.alibi` in an InferenceService and a pod spec at an unlisted
+    path in a RayCluster each printed a score and gated `passed` (tests/test_a_container_the_reader_did_not_read.py
+    holds those). A reader's claim is "I read every container in this object", and it is now compared with what
+    the reader read.
+
+    The two halves, on the input this test has always used:
+
+    * the Deployment's own container is read, and a kind the registries read is unaffected while that is all it
+      holds -- the half of the old assertion that was right, kept;
+    * the `steps` entry beside it declares an image and was read by no rule, so the object is reported as not
+      audited. For a Deployment that is a second statement beside KN-V007, whose strict schema already refuses
+      the unknown field; for a kind with no bundled schema it is the only statement there is.
+    """
+    read_in_full = """\
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: web, namespace: prod}
@@ -172,10 +189,16 @@ spec:
     metadata: {labels: {app: web}}
     spec:
       containers: [{name: web, image: 'registry.example.com/web:1'}]
-  steps: [{name: oddly, image: 'docker:24'}]
 """
-    assert _not_audited(text) == []
-    assert engine.analyze(text).findings, "the Deployment's own container was not audited either"
+    assert _not_audited(read_in_full) == []
+    assert engine.analyze(read_in_full).findings, "the Deployment's own container was not audited"
+
+    text = read_in_full + "  steps: [{name: oddly, image: 'docker:24'}]\n"
+    assert _not_audited(text) == ["Deployment/prod/web"]
+    report = engine.analyze(text)
+    assert report.undetermined()
+    assert "KN-V007" in {f.rule_id for f in report.findings}, "the strict schema stopped refusing the unknown field"
+    assert len(report.findings) > 1, "the Deployment's own container was not audited either"
 
 
 def test_the_same_input_gives_the_same_answer() -> None:

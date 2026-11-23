@@ -8,7 +8,7 @@ from kube_noob import sanitize
 from kube_noob.audit import detection
 from kube_noob.audit.controls import NO_REASON_RECORDED
 from kube_noob.audit.model import Report, Severity, Stage
-from kube_noob.audit.podspec import operator_supplied_images, unread_pod_specs
+from kube_noob.audit.podspec import has_reader, operator_supplied_images, unread_pod_specs
 from kube_noob.audit.redteam import red_team
 from kube_noob.audit.rules import RULES, SUBJECT_GROUPS, AuditContext, refusal, run_rules
 from kube_noob.catalog import (
@@ -124,8 +124,18 @@ def analyze(
             "partial_bundle=false with every object of the namespace in one call."
         )
     unread: list[str] = []
+    misplaced: list[str] = []
     for d in docs:
         for path in unread_pod_specs(d):
+            # Two lists for two facts. A kind WITH a reader is never put in the sentence that says the kind has
+            # none: that sentence ends "ask for the kind to be added", and the kind is already supported (G360).
+            if has_reader(d):
+                # The path is made of the document's own KEYS, which are input: cleaned to one line and bounded
+                # here, so a newline or a bidi override in a key reaches no view of this line, the JSON one
+                # included (class 7; a name did exactly that in G281).
+                where = sanitize.one_line(".".join(str(x) for x in path))[:160] or "(root)"
+                misplaced.append(f"{sanitize.one_line(_label(d))[:120]} at {where}")
+                continue
             unread.append(f"{_label(d)} at spec path {'.'.join(str(x) for x in path) or '(root)'}")
             # No `notAudited` row here: `ctx.not_audited()` below already yields THIS document with the
             # unread-pod-spec reason, and a row from each would list one fact twice, in two shapes, with only one
@@ -139,6 +149,22 @@ def analyze(
             f"audited: {', '.join(unread[:5])}"
             f"{f' and {len(unread) - 5} more' if len(unread) > 5 else ''}. Audit the Deployments the operator "
             "creates from them, or ask for the kind to be added with its published schema."
+        )
+    if misplaced:
+        # A container in a kind kube-noob DOES read, at a place its reader does not look: `template.Spec` for
+        # `template.spec`, `explainer.alibi`, a pod spec at a path the registry does not list. Until G360 the
+        # detector returned nothing for such a kind by its NAME, so a privileged container there printed a score
+        # and gated `passed`. The sentence states the mitigating fact as well as the gap, because the gap is easy
+        # to overstate: where the field is not in the kind's schema the container never runs, and what was wrong
+        # was the number, not the cluster.
+        report.assumptions.append(
+            f"{len(misplaced)} field(s) hold a container where kube-noob does not read one in that kind, so those "
+            f"containers were NOT audited: {', '.join(misplaced[:5])}"
+            f"{f' and {len(misplaced) - 5} more' if len(misplaced) > 5 else ''}. The rest of each object was "
+            "audited and its findings stand. If the field is not one the kind's schema defines (a misspelt or "
+            "misplaced key), a current API server prunes or rejects it and the container does not run as written; "
+            "kube-noob cannot tell that from the manifest, and states no score over a container no rule read. Move "
+            "the container to where the kind carries it, or remove the field."
         )
     supplied: list[str] = []
     for d in docs:
@@ -315,7 +341,8 @@ def analyze(
     if Stage.RED_TEAM in stages:
         # Red team always reasons over the complete finding set, even if the caller filters the output.
         all_findings = findings if rule_stages >= {Stage.AUDIT, Stage.CALIBRATE} else run_rules(ctx, None)
-        report.scenarios = red_team(ctx, all_findings)
+        # With the rows, so a scenario is not `mitigated` about an object this report lists as not audited (G361).
+        report.scenarios = red_team(ctx, all_findings, report.not_audited)
     # Recorded BEFORE the filter: a rule that fired must not look clean because this view hides its finding.
     report.fired_rules = sorted({f.rule_id for f in findings})
     report.findings = [f for f in findings if f.severity >= min_severity]

@@ -23,7 +23,7 @@ from kube_noob.audit.argv import (
     shown_value,
 )
 from kube_noob.audit.model import Finding, Severity
-from kube_noob.audit.podspec import unread_pod_specs
+from kube_noob.audit.podspec import has_reader, unread_pod_specs
 from kube_noob.catalog import parse_minor
 from kube_noob.yamlio import Document, PathT
 
@@ -306,6 +306,16 @@ def _unread_lists(ctx: AuditContext, r: Rule) -> bool:
         if unread:
             seen = True
             ref = _shown(d.ref(), 160) if isinstance(d.data, dict) else f"document {d.index + 1} (line {d.start_line})"
+            if has_reader(d):
+                # The kind has a reader and a container in it is where that reader does not look (G360). It is
+                # not "a kind kube-noob has no reader for", and the rule declines on it for the same reason.
+                ctx.cannot_decide(
+                    r.rule_id,
+                    f"{ref} holds a container at {len(unread)} place(s) kube-noob does not read one in this kind, "
+                    "which may run a control-plane binary, so they were not read",
+                    ref,
+                )
+                continue
             where = (
                 "in a kind kube-noob has no reader for" if isinstance(d.data, dict) else "in a sequence, not an object"
             )

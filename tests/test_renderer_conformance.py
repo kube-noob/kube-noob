@@ -151,6 +151,45 @@ spec:
     securityContext: {privileged: true}
 """
 
+#: A kind kube-noob DOES read, with its containers one capital letter away from where the reader looks:
+#: `template.Spec`. The reader finds no pod spec, so no pod-level rule runs and nothing fires on the privileged
+#: container. Until G360 the detector returned nothing for a registered kind by its name, and this scored 92.0,
+#: gated `passed` and verified `allow`. (An API server prunes or rejects `Spec`, so nothing here would run as
+#: written; what was wrong was the stated score.)
+_DC_CAPITAL_SPEC = """\
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata: {name: web, namespace: prod}
+spec:
+  replicas: 1
+  selector: {app: web}
+  template:
+    metadata: {labels: {app: web}}
+    Spec:
+      containers:
+      - name: web
+        image: registry.example.com/web:1
+        securityContext: {privileged: true}
+"""
+
+#: The other half of the same defect, and the one a per-pod-spec fix would have missed: the reader DID read this
+#: object -- `predictor` is audited and produces findings -- and a second container sits under `explainer.alibi`,
+#: a key the reader does not read inside a pod spec it does. Findings AND a withheld verdict in one object.
+_ISVC_UNREAD_EXPLAINER = """\
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata: {name: model, namespace: prod}
+spec:
+  predictor:
+    containers:
+    - name: kserve-container
+      image: registry.example.com/model:1
+  explainer:
+    alibi:
+      image: registry.example.com/alibi:1
+      securityContext: {privileged: true}
+"""
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -217,6 +256,36 @@ FIXTURES: tuple[Fixture, ...] = (
         "for a renderer bug. G333 reads the step as the container it is, so the gate now withholds the verdict "
         "and every adapter in the registry is held to carrying it.",
         files={"task.yaml": _TEKTON_TASK},
+        withheld=True,
+    ),
+    Fixture(
+        name="reader-kind-whose-pod-spec-went-unread",
+        proves="A DeploymentConfig with its containers under `template.Spec`. The kind has a reader, the reader "
+        "found no pod spec, and the detector that reports an unread container used to return nothing for a "
+        "registered kind without looking. Every renderer got a report with a score in it and no row saying a "
+        "container went unread, so every one of them was right about a report that was wrong (G360).",
+        files={"dc.yaml": _DC_CAPITAL_SPEC},
+        withheld=True,
+    ),
+    Fixture(
+        name="read-object-with-an-unread-container",
+        proves="An InferenceService whose `predictor` is audited and whose `explainer.alibi` is not: findings and "
+        'a withheld verdict about ONE object. A renderer that treats `notAudited` as "this object produced '
+        'nothing" and one that drops the row because the object has findings both fail here and on no other '
+        "fixture (G360).",
+        files={"isvc.yaml": _ISVC_UNREAD_EXPLAINER},
+        withheld=True,
+    ),
+    Fixture(
+        name="clean-objects-beside-one-nothing-read",
+        proves="The fixture this matrix did not have, and the reason two renderers passed it while wrong: every "
+        "withheld OBJECT above is alone in its input, so the rules had no subject and said so. Here a hardened "
+        "Pod gives every pod rule a subject, each runs clean on it, and the privileged Tekton step beside it is "
+        "in no rule's record. On 0.10.0 OSCAL reported sixteen objectives `satisfied/pass` and `red_team` "
+        "answered `RT-RESOURCE-STARVATION: mitigated` and `RT-SUPPLY-CHAIN: mitigated` on this input, in a run "
+        "the gate called incomplete (G361). The Task's file sorts first on purpose: the webhook adapter is sent "
+        "the first object, and a renderer handed only the clean Pod has nothing withheld to report.",
+        files={"a-task.yaml": _TEKTON_TASK, "pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY},
         withheld=True,
     ),
     Fixture(
