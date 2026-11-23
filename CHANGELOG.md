@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-## 0.10.0 - 2026-11-21
+## 0.10.0 - 2026-11-23
 
+- A rerun of the release workflow after a partial PyPI upload is a no-op instead of a failure that strands the tag with no release page and no krew archive (G345).
 - kube-noob.com is published as soon as a release exists instead of after the 2-hour video render, and asked again once the videos are attached (G356).
 - The Agent Skill's install hint is generated from `plugin/kube-noob/uv.lock` instead of copied by hand, so a dependency bump can no longer leave a stale version behind two slow test legs (G349).
 - **Commands that read a directory dropped the files they could not read (G350).** `posture scan`, `posture reach`, `posture snapshot`, `policy reach`, `vuln threat` and `protocol` read `-f DIR` through a helper that kept the readable files and discarded the list of the rest, so `posture scan -f k8s/ --fail-above 30 --require-complete` exited 0 beside a file YAML could not parse. They now exit 5 naming each file, as the same file named on its own always was refused.

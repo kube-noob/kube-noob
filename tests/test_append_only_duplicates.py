@@ -43,13 +43,24 @@ def _row_ids(text: str) -> list[str]:
     return _ROW_ID.findall(text)
 
 
-def _unreleased_bullets(text: str) -> list[str]:
-    """The first line of every bullet between `## Unreleased` and the next `## ` heading."""
+def _sections(text: str) -> dict[str, list[str]]:
+    """The first line of every bullet, per `## ` section, in file order.
+
+    Every section is read, not only `## Unreleased`. The duplicate a union merge leaves lands in whichever
+    section both branches were appending to, and on a release branch that is the version section: `bump_version`
+    renames `## Unreleased` to `## <version>` and leaves an empty `## Unreleased` behind, so a check that reads
+    only `## Unreleased` can read nothing exactly when a release is being cut -- which is when a silently
+    duplicated bullet would actually ship. Scanning every section also catches the repeat across a section
+    boundary that a release roll can produce.
+    """
     lines = text.splitlines()
-    assert "## Unreleased" in lines, "CHANGELOG.md has no `## Unreleased` heading, so this would be reading nothing"
-    start = lines.index("## Unreleased") + 1
-    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
-    return [line for line in lines[start:end] if line.startswith("- ")]
+    heads = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    assert heads, "CHANGELOG.md has no `## ` heading, so this would be reading nothing"
+    out: dict[str, list[str]] = {}
+    for n, i in enumerate(heads):
+        end = heads[n + 1] if n + 1 < len(heads) else len(lines)
+        out[lines[i][3:].strip()] = [line for line in lines[i + 1 : end] if line.startswith("- ")]
+    return out
 
 
 def _twice(items: list[str]) -> list[str]:
@@ -73,13 +84,17 @@ def test_no_guidance_row_id_appears_twice() -> None:
     )
 
 
-def test_no_unreleased_changelog_bullet_appears_twice() -> None:
-    bullets = _unreleased_bullets(CHANGELOG.read_text(encoding="utf-8"))
-    assert bullets, "no bullets under `## Unreleased`; nothing was compared"
-    twice = [_title(b) for b in _twice(bullets)]
-    assert twice == [], (
-        "CHANGELOG.md has the same bullet more than once under `## Unreleased`: "
-        + "; ".join(repr(t) for t in twice)
+def test_no_changelog_bullet_appears_twice_in_any_section() -> None:
+    sections = _sections(CHANGELOG.read_text(encoding="utf-8"))
+    assert sum(len(b) for b in sections.values()) >= 50, (
+        f"only {sum(len(b) for b in sections.values())} bullets found across "
+        f"{len(sections)} sections; the expression has stopped matching and this would be comparing nothing"
+    )
+    repeats = {name: [_title(b) for b in _twice(bullets)] for name, bullets in sections.items()}
+    offenders = {name: titles for name, titles in repeats.items() if titles}
+    assert offenders == {}, (
+        "CHANGELOG.md has the same bullet more than once in one section: "
+        + "; ".join(f"`## {name}`: " + ", ".join(repr(t) for t in titles) for name, titles in offenders.items())
         + ". A union merge keeps a line both sides carry and reports no conflict; delete the repeat."
     )
 
@@ -89,8 +104,10 @@ def test_distinct_rows_and_bullets_are_left_alone() -> None:
     table = "| ID | Rule | Enforced by |\n|---|---|---|\n| G01 | a | `t` |\n| G02 | a | `t` |\n| G100 | G01 again |\n"
     assert _twice(_row_ids(table)) == []
     log = "# Changelog\n\n## Unreleased\n\n- one (G02)\n\n- two (G02)\n  wrapped\n\n## 0.1.0\n\n- one (G02)\n"
-    assert _unreleased_bullets(log) == ["- one (G02)", "- two (G02)"]
-    assert _twice(_unreleased_bullets(log)) == []
+    sections = _sections(log)
+    assert sections == {"Unreleased": ["- one (G02)", "- two (G02)"], "0.1.0": ["- one (G02)"]}
+    # The same bullet in two different sections is a release roll, not a duplicate: each section is its own list.
+    assert all(_twice(bullets) == [] for bullets in sections.values())
 
 
 def test_a_repeated_row_is_named_whatever_its_shape() -> None:
@@ -105,7 +122,11 @@ def test_a_repeated_row_is_named_whatever_its_shape() -> None:
 
 def test_a_repeated_bullet_is_named_by_its_lead() -> None:
     log = "## Unreleased\n\n- **The gate passed (G1).** Why.\n- plain\n- **The gate passed (G1).** Why.\n- plain\n"
-    assert [_title(b) for b in _twice(_unreleased_bullets(log))] == ["The gate passed (G1).", "- plain"]
+    assert [_title(b) for b in _twice(_sections(log)["Unreleased"])] == ["The gate passed (G1).", "- plain"]
+    # And in a version section, which is where the duplicate lands while a release is being cut.
+    rolled = "## Unreleased\n\n## 0.10.0 - 2026-01-01\n\n- **Twice (G2).** Why.\n- **Twice (G2).** Why.\n"
+    assert _sections(rolled)["Unreleased"] == []
+    assert [_title(b) for b in _twice(_sections(rolled)["0.10.0 - 2026-01-01"])] == ["Twice (G2)."]
 
 
 def _git(repo: Path, *args: str) -> None:
