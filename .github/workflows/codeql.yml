@@ -13,6 +13,8 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # Slowest successful run of this job in the last ten: 3.2 min.
+    timeout-minutes: 20
     permissions:
       security-events: write
       contents: read
