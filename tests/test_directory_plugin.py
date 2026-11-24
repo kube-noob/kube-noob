@@ -712,6 +712,30 @@ def _rows() -> list[_Row]:
     return rows
 
 
+#: An exit code as a documented table column spells one: a bare single digit, or 141 for a closed pipe. A digit
+#: inside a version or a flag is not one, so the match is on whole words only.
+_EXIT_CODE = re.compile(r"(?<![\w.-])(141|[0-5])(?![\w.-])")
+
+
+def _documented_exits(column: str) -> frozenset[int]:
+    """The exit codes a table's exit column commits the command to, on an input the column says nothing special
+    about.
+
+    Only the `always 0` rows were ever checked (G276), which is every row whose code cannot be wrong and no row
+    whose code decides a CI gate -- `audit`, `validate`, `protocol`, `policy reach`, `posture scan` and
+    `must-gather analyze` all documented a contract nothing ran. Rewording `fix`'s row out of the `always 0`
+    spelling was enough to drop its only check, which is how this was found (G383).
+
+    A column that names a nonzero code is saying what that code MEANS, not that the command always returns it, so
+    0 stays admissible unless the column pins the command to 0 alone. A column naming no code at all returns the
+    empty set and the caller fails: a contract this test cannot read is not one it may call satisfied.
+    """
+    codes = {int(m) for m in _EXIT_CODE.findall(column)}
+    if not codes:
+        return frozenset()
+    return frozenset(codes | {0})
+
+
 def _fixture_argv(command: str, tmp: Path) -> list[str]:
     """A real input for each command a table names, from the repository's own fixtures."""
     import subprocess
@@ -826,8 +850,14 @@ def test_each_table_row_matches_what_the_command_really_prints(
     assert not required - keys, f"{row.where}: `{row.command}` prints no {sorted(required - keys)}; has {sorted(keys)}"
     unnamed = sorted(k for k in keys if _VOCABULARY.match(k) and k not in named)
     assert not unnamed, f"{row.where}: `{row.command}` reports what it did not read in {unnamed}; the row omits them"
-    if row.exit.startswith("always 0"):
-        assert rc == 0, f"{row.where}: the row says always 0; `{row.command}` exited {rc}"
+    expected = _documented_exits(row.exit)
+    assert expected, (
+        f"{row.where}: the exit column for `{row.command}` names no code this test can read "
+        f"({row.exit!r}); an unreadable contract is not a satisfied one"
+    )
+    assert rc in expected, (
+        f"{row.where}: the row documents {sorted(expected)}; `{row.command}` exited {rc} on the fixture"
+    )
 
 
 def test_words_written_on_a_command_line_are_single_quoted_and_cannot_run(tmp_path: Path) -> None:
