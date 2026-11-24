@@ -86,8 +86,15 @@ def test_helm_audit_prints_one_json_document(tmp_path: Path, monkeypatch: pytest
     chart = tmp_path / "chart"
     chart.mkdir()
     (chart / "Chart.yaml").write_text("apiVersion: v2\nname: web\nversion: 0.1.0\n")
-    helm = tmp_path / "bin" / "helm"
-    helm.parent.mkdir()
+    # OUTSIDE `tmp_path`, which `tests/conftest.py` makes the working directory: `helm_binary` looks only in
+    # absolute PATH entries outside the project tree, and with no git root the project tree IS the working
+    # directory, so a `helm` planted at `tmp_path/bin` is one the tool under review supplies and is never run
+    # (G280). This fixture planted it there, so on any machine without a real helm higher up PATH the command
+    # refused with exit 4 and an empty stdout, and the failure read as "helm is not installed" rather than as
+    # this fixture asking the product to do what it exists to refuse. In CI a system helm answered first and the
+    # fake was never exercised, so the fixture's own mechanism went untested (G376).
+    helm = tmp_path.parent / f"{tmp_path.name}-bin" / "helm"
+    helm.parent.mkdir(exist_ok=True)
     helm.write_text(f"#!/bin/sh\ncat '{ROOT / 'examples' / 'insecure-deployment.yaml'}'\n")
     helm.chmod(0o755)
     monkeypatch.setenv("PATH", f"{helm.parent}{os.pathsep}{os.environ['PATH']}")
