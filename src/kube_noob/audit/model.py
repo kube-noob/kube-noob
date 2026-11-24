@@ -288,6 +288,16 @@ def _all_accepted(record: dict[str, Any], accepted: set[str]) -> bool:
     entries = record.get("entries") if isinstance(record, dict) else None
     if not isinstance(entries, list) or not entries or record.get("withheld"):
         return False
+    # A decline that REPLACED a finding is never covered, however the object was accepted (G379). Accepting an
+    # object says the reader may stop asking to read it; it does not say what the rule would have found in it.
+    # Measured before this line: a hardened Deployment scored 94 with KN-N001 open, and the same Deployment
+    # beside an allow-all `projectcalico.org/v3` NetworkPolicy that nothing could read, with that object
+    # accepted, scored 98 and exited 0 -- a waiver buying a cleaner answer than the same input with no policy
+    # in it at all, which AGENTS.md says a waiver is never. The accept path was written (G281, review 5) when a
+    # decline only ever meant "found nothing because it did not look"; G368 and G369 made a decline able to
+    # stand in for a finding, and this is the half of that change that was missed.
+    if record.get("suppressedFinding"):
+        return False
     return all(isinstance(e, dict) and str(e.get("resource") or "") in accepted and e.get("resource") for e in entries)
 
 
