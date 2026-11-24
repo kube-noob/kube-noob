@@ -9,6 +9,7 @@ clean result for the bundle a reviewer actually passes.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -500,18 +501,40 @@ def test_an_exception_on_a_declined_object_is_not_called_stale(
 
 
 def test_agents_are_told_where_the_declines_are() -> None:
+    """Every `controlSummary.<field>` an agent is pointed at has to BE a key of `controlSummary`.
+
+    This asserted that the word `notEvaluatedRules` appears in the description -- which it did, as the path
+    `controlSummary.notEvaluatedRules`, a key that has not existed since G281 renamed the summary's list to
+    `rulesNotEvaluated` and left `notEvaluatedRules` only on each control ROW. So the one check on this text
+    enforced the stale name, and an agent following it read a missing key as empty and reported 49 rules that
+    reached no verdict as nothing unevaluated -- the product's own rule broken by its own instructions. The
+    paths are resolved against a real report now, so the name cannot drift again without this failing (G385).
+    """
     from kube_noob.config import load_settings
     from kube_noob.toolkit import Toolkit
 
     spec = next(s for s in Toolkit(load_settings(overrides={"offline": True})).specs() if s.name == "audit_manifests")
-    assert "declined" in spec.description and "notEvaluatedRules" in spec.description
     root = Path(__file__).resolve().parent.parent
-    for skill in (
+    skills = [
         root / "plugin" / "kube-noob" / "skills" / "kube-master-controller" / "SKILL.md",
         root / "plugin" / "kube-noob-skills" / "skills" / "kube-master-controller" / "SKILL.md",
-    ):
-        text = skill.read_text(encoding="utf-8")
-        assert "declined" in text and "notEvaluatedRules" in text, skill
+    ]
+    texts = {"the audit_manifests description": spec.description}
+    for skill in skills:
+        texts[str(skill.relative_to(root))] = skill.read_text(encoding="utf-8")
+
+    summary = _r((root / "examples" / "insecure-deployment.yaml").read_text()).as_dict()["controlSummary"]
+    assert summary.get("rulesNotEvaluated"), "the fixture reaches no unevaluated rule, so this proves nothing"
+
+    for where, text in texts.items():
+        assert "declined" in text, where
+        named = set(re.findall(r"controlSummary\.([A-Za-z]+)", text))
+        assert named, f"{where}: points an agent at no controlSummary field at all"
+        missing = sorted(f for f in named if f not in summary)
+        assert not missing, (
+            f"{where}: names controlSummary.{missing} -- not a key of controlSummary, which has "
+            f"{sorted(summary)}. A path that resolves to nothing reads as empty, and empty reads as clean."
+        )
 
 
 # --- 5. input-derived text never forges a line or reaches a terminal as an escape sequence ----------------------
