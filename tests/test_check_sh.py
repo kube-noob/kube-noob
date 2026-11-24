@@ -112,3 +112,54 @@ def test_check_sh_does_not_claim_to_run_what_it_cannot() -> None:
     assert "every gate CI runs on code" not in header or "NAME the ones" in header, (
         "check.sh must not claim completeness it does not have"
     )
+
+
+def test_the_headline_does_not_announce_a_pass_above_the_list_of_what_did_not_run() -> None:
+    """`notrun` was honest and the line above it was not (G375).
+
+    `check.sh` collected every gate it could not run and printed them under "NOT RUN ... this is not a pass" --
+    beneath the unconditional line `echo "All checks passed!"`. On a machine without helm, where
+    `ci/helm-and-dogfood` cannot run at all, that is what a reader saw first, and `AGENTS.md` names this script as
+    "the one command that decides whether you are done".
+    """
+    body = CHECK.read_text()
+    i = body.index('echo "All checks passed!"')
+    j = body.index("NOT RUN on this machine")
+    assert j < i, "the NOT RUN list must be decided before anything announces a pass"
+
+
+def test_a_gate_that_could_not_run_exits_five_and_not_zero() -> None:
+    """The exit status is what a wrapper and an agent read, and `AGENTS.md` tells the agent to read it.
+
+    The header's old rule was that the status is 0 "if everything ATTEMPTED passed", and a step whose tool is
+    missing was never attempted -- so 0 was the answer on a machine that could not run a required CI job. 5 is the
+    product's own word for evidence incomplete, and `AGENTS.md` publishes that 1 and 5 are not two answers to the
+    same question.
+    """
+    body = CHECK.read_text()
+    tail = body[body.index("NOT RUN on this machine") :]
+    assert "exit 5" in tail, "a gate that could not run has to leave a status that is not a pass"
+    assert re.search(r"if \[ \$\{#notrun\[@\]\} -gt 0 \]; then(?:.|\n)*?exit 5", body), (
+        "the 5 must be reached exactly when the NOT RUN list is non-empty"
+    )
+
+
+def test_a_clean_machine_still_exits_zero() -> None:
+    """The negative control, and the reason this is not just a stricter script.
+
+    If nothing is in `notrun`, every gate ran, and the script must still say so and exit 0 -- otherwise the 5
+    becomes the normal answer, which is how a real signal gets trained out of a reader.
+    """
+    body = CHECK.read_text()
+    after = body[body.index("exit 5") :]
+    assert 'echo "All checks passed!"' in after, "the pass line must still be reachable when nothing was skipped"
+    assert "exit 5" not in after.split('echo "All checks passed!"')[1], "nothing may force a 5 after a clean run"
+
+
+def test_the_header_and_agents_md_both_state_the_new_contract() -> None:
+    """A behaviour change with the old promise still written next to it is the next reader's bug."""
+    header = "\n".join(CHECK.read_text().splitlines()[:30])
+    assert "0 every gate ran and passed" in header
+    assert "everything ATTEMPTED passed" not in header or "It used to" in header
+    agents = (ROOT / "AGENTS.md").read_text()
+    assert "Exit 5 is not a pass" in agents, "AGENTS.md names this command; it has to say what 5 means"

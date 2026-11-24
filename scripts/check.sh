@@ -7,8 +7,13 @@
 # absence reading as a pass, which is the defect this project exists to refuse, pointed at its own gate (G264).
 #
 # So: every step below is one CI runs. A step whose tool is missing here is not skipped quietly -- it is
-# collected and printed at the end under NOT RUN, because "it did not run" is not "it passed". Exit status is
-# 0 only if everything attempted passed; read it directly rather than through a pipe.
+# collected and printed at the end under NOT RUN, because "it did not run" is not "it passed".
+#
+# Exit status, in the product's own contract: 0 every gate ran and passed; 5 every gate that RAN passed and at
+# least one could not run here, which is "evidence incomplete" and not a pass; non-zero otherwise. It used to
+# be "0 if everything ATTEMPTED passed", which made 0 the answer on a machine missing a tool -- the headline
+# said "All checks passed!" above the list of what had not run (G375). Read the status directly rather than
+# through a pipe.
 #
 # Usage: scripts/check.sh           run the gates
 #        scripts/check.sh --where   print which tree would be tested and stop; no gate is run
@@ -179,9 +184,30 @@ fi
 need helm "ci/helm-and-dogfood: chart guards and the dogfood audit" || true
 
 rm -rf "$w" dist build "$d"
-echo "All checks passed!"
+
+# The headline and the exit status have to agree with the NOT RUN list below them, and they did not (G375).
+#
+# `notrun` has been honest since G264: a step whose tool this machine lacks is collected and printed under
+# "NOT RUN ... this is not a pass". What sat ABOVE that list was the unconditional line "All checks passed!",
+# and what sat under it was `exit 0` -- because the header's own rule is that the status is 0 "if everything
+# ATTEMPTED passed", and a step that never ran was never attempted. So on a machine without helm, where
+# ci/helm-and-dogfood cannot run at all, this script printed "All checks passed!", listed the job it had not
+# run, and exited 0 -- while AGENTS.md names it as "the one command that decides whether you are done" and says
+# "Do not report a change as working until that exit status is 0". The instruction and the hole are in the same
+# file, and an agent reading `echo "exit: $?"` sees the hole and not the list.
+#
+# This is the shape G367 found in the documented CI gate and G368 found in a rule's own finding: the mechanism
+# was honest and the word on top of it was not. So the script now answers in the product's own published
+# contract, where "1 and 5 are not two answers to the same question": 0 when every gate ran and passed, 5 when
+# every gate that ran passed and at least one could not run, and non-zero from `set -e` when one failed.
 if [ ${#notrun[@]} -gt 0 ]; then
+  echo "Every gate that ran passed -- and ${#notrun[@]} could not run here, so this is NOT a pass (exit 5)."
   echo
   echo "NOT RUN on this machine (${#notrun[@]}) -- this is not a pass, and CI still runs them:"
   printf '  - %s\n' "${notrun[@]}"
+  echo
+  echo "Install what is missing to get a 0, or read the CI run for those gates. Exit 5 is \"evidence"
+  echo "incomplete\", the same word the product uses when it could not read its input."
+  exit 5
 fi
+echo "All checks passed!"

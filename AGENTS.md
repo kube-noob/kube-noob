@@ -40,6 +40,13 @@ bash scripts/check.sh > /tmp/gate.log 2>&1; echo "exit: $?"
 
 Do not report a change as working until that exit status is 0. "The tests I wrote pass" is not the gate.
 
+**Exit 5 is not a pass.** It means every gate that ran passed and at least one could not run on this machine --
+most often `ci/helm-and-dogfood`, because helm cannot be installed where the proxy refuses it. The script names
+each one under NOT RUN. Treat 5 the way the product treats it: the evidence is incomplete, so the question is
+unanswered. Report it as "everything I could run passed, and these could not run", name them, and say so rather
+than reporting a pass. Until 2026-11-24 this case exited 0 with "All checks passed!" printed above the list of
+what had not run (G375).
+
 ## After any change under `src/`
 
 ```bash
