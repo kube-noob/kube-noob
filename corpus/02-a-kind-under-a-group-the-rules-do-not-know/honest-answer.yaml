@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 02-a-kind-under-a-group-the-rules-do-not-know
+object: "A projectcalico.org/v3 NetworkPolicy -- a real kind of that name with a different schema -- beside a hardened apps/v1 Deployment in the same namespace."
+mechanism: "Matching a document by `kind` without its API group makes a foreign kind of the same name answer for the Kubernetes one, so the namespace reads as covered by a policy the rules never evaluated; matching with the group and then dropping the document silently makes it read as a namespace with no policy at all."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "NetworkPolicy/app/deny-all"
