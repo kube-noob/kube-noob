@@ -146,17 +146,17 @@ source, `readOnlyNextSteps`, and what it `skipped` and why. Lead with the first 
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `insight` | always 0, even with denials found | `findings`, `kinds`, `ran` | `skipped` |
-| `incidents list` | always 0 | `incidents` | `note` |
-| `diagnose` | always 0, even with denials found | `diagnoses`, `knownIssues` | `notes` |
-| `signals` | always 0 | `signals`, `playbooks` | |
-| `known-issues` | always 0 | `matches` | `note`, `knowledge` |
-| `ticket` | 1 = not in the local copy, which is not "no such issue" | `found` | `note` |
-| `corpus jira-changes` | always 0 | `changes`, `counts` | `note`, `lastSync` |
-| `policy explain` | always 0, even when it explains a denial | `denials`, `summary` | |
-| `policy reach` | 1 = denied or `undetermined`, 0 = allowed | `verdict`, `summary`, `ingress`, `egress` | `notEvaluated`, `undeterminedBy?` |
-| `protocol` | 0 ready, 1 blocked, 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
-| `config` | always 0 | `posture`, `config` | |
+| `insight` | always `0`, even with denials found | `findings`, `kinds`, `ran` | `skipped` |
+| `incidents list` | always `0` | `incidents` | `note` |
+| `diagnose` | always `0`, even with denials found | `diagnoses`, `knownIssues` | `notes` |
+| `signals` | always `0` | `signals`, `playbooks` | |
+| `known-issues` | always `0` | `matches` | `note`, `knowledge` |
+| `ticket` | `0`, or `1` when it is not in the local copy, which is not "no such issue" | `found` | `note` |
+| `corpus jira-changes` | always `0` | `changes`, `counts` | `note`, `lastSync` |
+| `policy explain` | always `0`, even when it explains a denial | `denials`, `summary` | |
+| `policy reach` | `1` = denied or `undetermined`, `0` = allowed | `verdict`, `summary`, `ingress`, `egress` | `notEvaluated`, `undeterminedBy?` |
+| `protocol` | `0` ready, `1` blocked, `3` needs clarification | `status`, `auditValidationBrief` | `steps` |
+| `config` | always `0` | `posture`, `config` | |
 
 ```bash
 kube-noob insight -f "$KN/input.txt" --platform openshift --version 4.20.8 --format json

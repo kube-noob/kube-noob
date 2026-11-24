@@ -3836,8 +3836,12 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             # The lint issues are already in the document as `chartLint`. Printing them after it as well made the
             # JSON output two things, and no JSON parser reads that (G276).
             _emit(d, fmt)
-        top = chart_report.max_severity()
-        return 1 if top is not None and top >= 3 else 0
+        # The one place the arithmetic lives (`receipt.audit_exit_code`), as `audit` and the MCP verifier use it.
+        # This branch derived the code from `max_severity()` alone, so a chart whose verdict is `undetermined`
+        # exited 0 while `audit` on the same objects exits 1 -- G370's own class 25, in a fourth caller that kept
+        # its copy of the arithmetic. `helm-audit` has no `--fail-on`, so its threshold is `high`, as before
+        # (G384).
+        return receipt_module.audit_exit_code(d, "high")
 
     if a.cmd == "insight":
         from kube_noob import insight as insight_mod

@@ -137,10 +137,10 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `helm-chart` | always 0 | `files`, `assumptions`, `prerequisites` | |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `helm-audit` | 1 = a HIGH or CRITICAL finding; 4 when `helm` is not installed, or is only on a PATH entry inside the tree under review (never run from there) | `summary`, `findings`, `chartLint` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `diagnose` | always 0 | `diagnoses`, `knownIssues` | `notes` |
+| `helm-chart` | always `0` | `files`, `assumptions`, `prerequisites` | |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `helm-audit` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict; `4` when `helm` is not installed, or is only on a PATH entry inside the tree under review (never run from there) | `summary`, `findings`, `chartLint` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `diagnose` | always `0` | `diagnoses`, `knownIssues` | `notes` |
 
 Create a chart from a blueprint you write to `$KN/blueprint.yaml` (name, namespace, image, platform, storage,
 exposure). It writes templates, `values.yaml` and `values.schema.json` into a folder named after the app inside

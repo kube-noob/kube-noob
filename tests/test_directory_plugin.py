@@ -718,15 +718,18 @@ def _rows() -> list[_Row]:
     return rows
 
 
-#: Where a code may stand: the column's opening, or the opening of one of its clauses.
-_CODE_LEAD = r"(?:^|(?<=; )|(?<=, )|(?<=or )|(?<=and )|(?<=always ))"
-#: What may follow one: the column's end, a clause break, or a connective the tables already use.
-_CODE_TAIL = r"(?=$|[,;]| =| when| unless| on| ready| blocked| needs| only| otherwise)"
-#: An exit code in a documented column, matched by POSITION rather than by looking like a small number. Scanning
-#: for a bare digit admitted every count and duration a maintainer might write into the prose -- "times out after
-#: 5 seconds" admitted 5, "even for 3 replicas" admitted 3 -- each one widening the set the command is allowed to
-#: return, which is the defect this test exists to catch, inside the test (G383, second pass).
-_EXIT_CODE = re.compile(_CODE_LEAD + r"(141|[0-5])" + _CODE_TAIL)
+#: An exit code in a documented column, read rather than inferred: the tables spell every code they commit to as
+#: a backticked token, and nothing else in a column is a code.
+#:
+#: Two earlier versions tried to recognise a code by its shape. Scanning for any bare digit admitted every count
+#: and duration in the prose beside the codes -- `0; times out after 5 seconds` admitted 5, `always 0, even for 3
+#: replicas` admitted 3 -- each one widening the set the command is allowed to return, which is an unknown read as
+#: a pass inside the test written to stop that. Matching a digit by its position in the clause narrowed it but
+#: could not be made sound: `(?<=or )` also matches the tail of `"for "`, so `even for 2 on one node` read 2 as a
+#: code, while `, 2 on a slow disk` and `, 4 on refused input` are the same shape and only the words tell them
+#: apart. A column is prose and this test is not a reader of prose. The codes are marked now, by the tables, and a
+#: column that marks none fails the row (G384).
+_EXIT_CODE = re.compile(r"`(141|[0-5])`")
 
 #: The floor below which the tables have not been found. `_rows()` feeds a `parametrize`, and pytest reports a
 #: parametrize over an empty list as one SKIPPED test and exits 0 -- so renaming the `## Which command` heading
@@ -739,9 +742,8 @@ def _documented_exits(column: str) -> frozenset[int]:
     """The exit codes a table's exit column commits the command to, on an input the column says nothing special
     about.
 
-    A code is matched by its POSITION in the column, not by looking like a small number: the first version of
-    this scanned for any bare digit, which admitted every count and duration in the prose beside the codes and so
-    widened the set the command may return -- an unknown digit read as a pass, in the test written to stop that.
+    Every code is read from a backticked token the table wrote on purpose; see `_EXIT_CODE` for the two
+    shape-guessing versions this replaced and why neither could be made sound.
 
     Only the `always 0` rows were ever checked (G276), which is every row whose code cannot be wrong and no row
     whose code decides a CI gate -- `audit`, `validate`, `protocol`, `policy reach`, `posture scan` and
@@ -752,10 +754,11 @@ def _documented_exits(column: str) -> frozenset[int]:
     0 stays admissible unless the column pins the command to 0 alone. A column naming no code at all returns the
     empty set and the caller fails: a contract this test cannot read is not one it may call satisfied.
     """
-    codes = {int(m) for m in _EXIT_CODE.findall(column)}
-    if not codes:
-        return frozenset()
-    return frozenset(codes | {0})
+    # Exactly the codes the column marks. 0 is NOT added: it was, on the reasoning that a nonzero code says what
+    # that code means rather than that the command always returns it -- which admitted 0 on every row in the
+    # repository, so a build where every command returned 0 passed all 52 of them. Every column that can return 0
+    # now says `0`, and a column is free to pin a contract that excludes it.
+    return frozenset(int(m) for m in _EXIT_CODE.findall(column))
 
 
 def _fixture_argv(command: str, tmp: Path) -> list[str]:
