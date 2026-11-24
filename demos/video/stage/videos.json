@@ -193,6 +193,90 @@
           "min": 4.5
         }
       ]
+    },
+    "scan": {
+      "title": "kube-noob: a zero that is not a pass",
+      "cta": "uv tool install kube-noob",
+      "scenes": [
+        {
+          "kind": "alarm",
+          "min": 5.5,
+          "caption": "privileged: true, in production.",
+          "vo": "A privileged container, {scan.replicas} replicas, shipping to production.",
+          "say": "A privileged container. {scan.replicas:words} replicas. Shipping to production.",
+          "term": [
+            "apiVersion: argoproj.io/v1alpha1",
+            "kind: Rollout",
+            "        securityContext:",
+            "          privileged: true"
+          ]
+        },
+        {
+          "kind": "arrive",
+          "min": 4.5,
+          "caption": "Now scan it.",
+          "vo": "So scan it. Here is what kube-noob says.",
+          "say": "So scan it. Here's what kube noob says."
+        },
+        {
+          "kind": "dust",
+          "min": 7.5,
+          "caption": "{scan.findings} findings. Every severity, zero.",
+          "captionPos": "top",
+          "vo": "{scan.findings} findings. Critical, high, medium, low: every count is zero.",
+          "say": "{scan.findings:words} findings. Critical, high, medium, low. Every count is zero.",
+          "term": [
+            "@scan:table"
+          ]
+        },
+        {
+          "kind": "alarm",
+          "min": 8.5,
+          "caption": "It names what it did not read.",
+          "captionPos": "top",
+          "vo": "But the gate does not pass. It names the object nothing read, and exits {scan.exit}.",
+          "say": "But the gate doesn't pass. It names the object nothing read, and exits {scan.exit:words}.",
+          "term": [
+            "@scan:verdict"
+          ]
+        },
+        {
+          "kind": "explain",
+          "min": 9.0,
+          "caption": "A zero can mean nothing was read.",
+          "vo": "The container is still privileged. The kind holding it is one kube-noob has no reader for, so its pods were never read.",
+          "say": "The container is still privileged. The kind holding it is one kube noob has no reader for, so its pods were never read.",
+          "answer": [
+            "Why every count is zero",
+            "{scan.object}: {scan.why}",
+            "{scan.evaluated} rules reached a verdict on this input",
+            "{scan.unevaluated} reached none, so they are neither clean nor findings"
+          ]
+        },
+        {
+          "kind": "split",
+          "min": 7.5,
+          "caption": "An absence is not a pass.",
+          "vo": "That is the whole rule. An absence, an unknown, or a shape it does not recognise never reads as a pass, a zero, or complete.",
+          "say": "That's the whole rule. An absence, an unknown, or a shape it doesn't recognise never reads as a pass, a zero, or complete."
+        },
+        {
+          "kind": "cta",
+          "min": 6.0,
+          "caption": "Find out what your gate did not read",
+          "captionPos": "lower",
+          "vo": "Find out what your own gate did not read. Get it at kube-noob dot com.",
+          "say": "Find out what your own gate didn't read. Get it at kube noob dot com.",
+          "term": [
+            "uv tool install kube-noob",
+            "kube-noob gate -f ./manifests"
+          ]
+        },
+        {
+          "kind": "end",
+          "min": 4.5
+        }
+      ]
     }
   }
 }

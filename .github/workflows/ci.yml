@@ -167,7 +167,7 @@ jobs:
           KN_SIDECAR_TRANSCRIPT: ${{ github.workspace }}/tests/fixtures/video-sidecar-transcript.txt
         run: |
           set -euo pipefail
-          for v in teaser sidecar mcp; do
+          for v in teaser sidecar mcp scan; do
             python demos/video/stage/voiceover.py "$v" "out/$v" --engine silent
             node demos/video/stage/capture.js "out/$v" --check
             stills="$(python -c "import json; t = json.load(open('out/$v/timeline.json')); print(','.join(str(round(s['start'] + s['dur'] * 0.8, 2)) for s in t['scenes']))")"
