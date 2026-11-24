@@ -205,11 +205,11 @@ row is `read: 1, unread: 0` and its state is `findings`. **Every invariant above
 rule's subject is not the evidence it needs: it needs the SET of NetworkPolicies in the namespace, and the thing it
 could not read is not one of its subjects.
 
-Eight rules in `src/kube_noob/audit/rules.py` declare that second dependency already, as `context=(...)`, and ten
-declare an overlapping version of it as `_PARTNER_KINDS`; the first is never checked against unreadability at all,
-and the second only against a malformed shape, never against a refused apiVersion. One question, two declarations,
-each checked against a different half of the answer -- class 9, and the reason the ledger must be keyed by the
-obligation rather than by the object:
+Eight rules in `src/kube_noob/audit/rules.py` declared that second dependency already, as `context=(...)`, and ten
+declared an overlapping version of it as `_PARTNER_KINDS`; the first was never checked against unreadability at
+all, and the second only against a malformed shape, never against a refused apiVersion. One question, two
+declarations, each checked against a different half of the answer -- class 9, and the reason the ledger must be
+keyed by the obligation rather than by the object:
 
 - **Obligations are the primary entity, not objects.** An obligation's evidence is a QUERY over the input ("the
   NetworkPolicies of namespace N", "a PodDisruptionBudget selecting these labels"), declared by the rule and
@@ -232,6 +232,12 @@ What landed for G368 is the join at the granularity the current code has: one `c
 asks whether the input holds an object of a `context` kind that nothing read, per namespace, and makes the rule
 undecided with the refusal phrase instead of letting it state an absence. That is the per-rule form of the law
 above, and it is the evidence that the declaration belongs in the IR rather than in eight rule bodies.
+
+G369 joined the two declarations themselves: `evidence_kinds` in `src/kube_noob/audit/evidence.py` is the one
+answer to what a rule's verdict rests on besides its subject, and `cannot_judge_absence` the one check of it
+against both predicates, with the reason following the document rather than the declaration it came from. That is
+still a map beside the rules rather than a resolved query in an IR, and it still cannot say which kind of
+obligation a rule is -- so the asymmetric composition law above remains unexpressed and unchecked.
 
 ## Reproducing the measurement
 
