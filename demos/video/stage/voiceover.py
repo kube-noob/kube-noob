@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Voice-over, music and timing for one animated video in videos.json, made locally and for free.
 
-Usage: python voiceover.py <teaser|sidecar|mcp> <out-dir> [--engine kokoro|piper] [--voice af_heart] [--speed 1.0]
+Usage: python voiceover.py <video> <out-dir> [--engine kokoro|piper] [--voice af_heart] [--speed 1.0]
                            [--speaker N] [--music-db -12] [--sidecar <transcript.txt>]
 
 videos.json is checked against videos.schema.json first, and every number and terminal recording in it is filled from
@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE.parent))
 import audio_kit as ak  # noqa: E402
 import captions  # noqa: E402
 import facts as vfacts  # noqa: E402
-from video_script import load  # noqa: E402
+from video_script import load, names  # noqa: E402
 
 RATE = ak.RATE
 VO_LEAD = 0.45
@@ -181,7 +181,9 @@ def build(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("video", choices=["teaser", "sidecar", "mcp"])
+    # The video set lives in videos.json. A second copy here meant adding a video left a renderer that could
+    # not render it, and `videos.json` is the file the workflow matrix and the tests already read.
+    ap.add_argument("video", choices=sorted(names()))
     ap.add_argument("out", type=Path)
     ap.add_argument("--engine", choices=sorted(ak.CREDITS), default="kokoro")
     ap.add_argument("--voice", default=ak.DEFAULT_VOICE, help="Kokoro voice, e.g. af_heart, af_bella, am_michael")
