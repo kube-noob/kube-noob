@@ -1,7 +1,11 @@
 # The report needs a coverage ledger, and the renderers should project it
 
-Status: a finding and a proposal, 2026-11-23. Nothing here is implemented. The measurement is reproducible with the
-commands in the last section; the proposal is for the maintainer to accept, change or refuse.
+Status: a finding and a proposal, 2026-11-23. The measurement is reproducible with the commands in the last
+section; the proposal is for the maintainer to accept, change or refuse. **The DATA MODEL below is superseded**:
+"The ledger as specified above cannot carry this" records the object-keyed shape's own counterexample, measured in
+this repository, and the obligation-keyed correction. The finding, the measurement and the landing order still
+stand; read the minimal shape as the smallest thing that would have caught the defects of G343, G363 and G366, and
+not as the schema to build.
 
 ## The finding in one paragraph
 
@@ -181,6 +185,53 @@ Until step 2 lands, G363 is the right patch to keep: it makes the two compliance
   or a Tekton Task with a privileged step (listed under `notRead`), and 5 beside a refused Deployment or Service
   (listed under `refused` as well).
 - **Not fixed: `validate` exits 0 with `summary.verdict: undetermined`** on the mixed input, where `audit` exits 1.
+
+## The ledger as specified above cannot carry this, and that is why it is keyed wrong (G368)
+
+The shape in "The minimal shape" keys coverage by OBJECT, and each rule's row counts the objects of its own
+SUBJECT kinds that it read and did not read. That is enough for every defect measured above, and it is not enough
+for the one measured next, which is in this repository today:
+
+```
+Deployment/prod/web          apps/v1, replicas: 1
+NetworkPolicy/prod/dd        projectcalico.org/v3
+```
+
+`notAudited` names `NetworkPolicy/prod/dd`, the verdict is undetermined and the exit code is 1. All correct. In the
+same report, **KN-N001 fired a MEDIUM finding reading "No NetworkPolicy for namespace prod in this bundle."**, and
+five rules recorded `evaluated without networking.k8s.io NetworkPolicy`. Now score those against the ledger:
+KN-N001's subject is the workload kinds, it read the one Deployment, it refused nothing of its own subject, so its
+row is `read: 1, unread: 0` and its state is `findings`. **Every invariant above holds and the row is a lie.** The
+rule's subject is not the evidence it needs: it needs the SET of NetworkPolicies in the namespace, and the thing it
+could not read is not one of its subjects.
+
+Eight rules in `src/kube_noob/audit/rules.py` declare that second dependency already, as `context=(...)`, and ten
+declare an overlapping version of it as `_PARTNER_KINDS`; the first is never checked against unreadability at all,
+and the second only against a malformed shape, never against a refused apiVersion. One question, two declarations,
+each checked against a different half of the answer -- class 9, and the reason the ledger must be keyed by the
+obligation rather than by the object:
+
+- **Obligations are the primary entity, not objects.** An obligation's evidence is a QUERY over the input ("the
+  NetworkPolicies of namespace N", "a PodDisruptionBudget selecting these labels"), declared by the rule and
+  resolved by the engine. A row keyed by object has nowhere to record that a query came back incomplete, and a
+  namespace with ten Deployments and zero NetworkPolicies produces no candidate object row at all -- so a
+  naive aggregation over object rows reports it 100% passing, which is the product's own defect reintroduced by
+  its own fix.
+- **Coverage, evaluation and verdict stay three dimensions, not one word.** Coverage answers whether the declared
+  evidence was read; evaluation whether the rule ran over what was read; verdict what it concluded. Collapsing
+  them is what every two-valued scanner does.
+- **The composition law is asymmetric, and the asymmetry is the whole point.** For an obligation whose VIOLATION
+  is witnessed by one object ("no container runs privileged"), reading more input can only add violations, so
+  `violated` is sound on partial coverage and `satisfied` requires complete coverage. For one whose SATISFACTION
+  is witnessed by one object ("some NetworkPolicy isolates this namespace"), reading more can only add
+  satisfactions, so `satisfied` is sound on partial coverage and `violated` requires complete coverage. KN-N001 is
+  the second kind and was being treated as the first. An object-keyed ledger cannot express which kind an
+  obligation is, so it cannot check either rule.
+
+What landed for G368 is the join at the granularity the current code has: one `cannot_judge_absence` predicate that
+asks whether the input holds an object of a `context` kind that nothing read, per namespace, and makes the rule
+undecided with the refusal phrase instead of letting it state an absence. That is the per-rule form of the law
+above, and it is the evidence that the declaration belongs in the IR rather than in eight rule bodies.
 
 ## Reproducing the measurement
 
