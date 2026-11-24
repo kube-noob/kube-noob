@@ -13,6 +13,8 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    # Slowest successful run of this job in the last ten: 1.1 min.
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write

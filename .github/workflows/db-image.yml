@@ -131,6 +131,8 @@ jobs:
     needs: db
     if: vars.DB_IMAGE_PUBLISH == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Slowest successful run of this job in the last ten: never run: DB_IMAGE_PUBLISH has not been true min.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
