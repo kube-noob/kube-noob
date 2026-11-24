@@ -12,6 +12,8 @@ permissions: read-all
 jobs:
   analysis:
     runs-on: ubuntu-latest
+    # Slowest successful run of this job in the last ten: 0.7 min.
+    timeout-minutes: 15
     permissions:
       security-events: write
       id-token: write
