@@ -84,8 +84,34 @@ A finding whose shape is neither of those is a real leak: fix the anonymiser, do
 Tags must be pushed by a person or the scheduled agent: tags pushed with the workflow `GITHUB_TOKEN` do not trigger
 other workflows.
 
-The Claude plugin directory reads the plugin (`.claude-plugin/marketplace.json` and `plugin/kube-noob/`) from `main`,
-and its review shows the commit it last checked. Work done on another branch reaches it only after that branch is
+## Which plugin the directory can publish
+
+**Submit the folder `plugin/kube-noob-skills`. Not the repository root, and not `plugin/kube-noob`.**
+
+`plugin/kube-noob` cannot be published by an organization the directory has not Verified, and no edit to it changes
+that. Every one of its distinguishing parts is Verified-only by policy, not by defect: a `command` hook
+(`hooks/hooks.json`), an MCP server that runs on the user's computer (`.mcp.json`, stdio), and files that are not
+Markdown, text, JSON, YAML or an allowed image -- its 118 `.py` files, `uv.lock`, `pyproject.toml`, the `.svg` and the
+`.tmpl` files. Its `uv run` launcher can be held by directory policy even pinned to an exact version. Submitting it
+earns one refusal per category and the findings cannot be cleared by fixing anything, which is what repeated
+rejections of that folder mean.
+
+`plugin/kube-noob-skills` is the same seven skills driving the CLI the user installs themselves, and it is eleven
+files: seven `SKILL.md`, `README.md`, `LICENSE`, `.claude-plugin/plugin.json` and a 512x512 `icon.png`. It carries no
+hook, no MCP server, no package-manager file, no lockfile and no code. `claude plugin validate` passes on it with
+nothing to report. What that command does not check, and what was checked by hand (G380): every text file is ASCII or
+UTF-8 with no NUL byte, no file begins `#!`, the icon is a real PNG and not an archive wearing the name, the largest
+file is 15,678 bytes against the 256 KiB limit and there are 11 files against the 512 limit, no file is named
+`CLAUDE.md` or `AGENTS.md`, and nothing reads an environment variable or a path on the user's machine for a
+credential. Example commands in fenced blocks use `NAME`, `NS` and `POD` rather than angle-bracket placeholders, so
+no extracted command can trip the rule that a command holds fewer than three `<` characters.
+
+Keep both folders. `plugin/kube-noob` is what ships once the organization is Verified, and it is the plugin the
+`marketplace.json` at the repository root offers first to anyone who adds this repository as a marketplace directly --
+a path that has no directory policy in it at all. Submitting the root is what pulls `plugin/kube-noob` into the scan;
+submitting the subfolder is what the directory's own finding tells you to do.
+
+The directory reads the submitted folder from `main`, and its review shows the commit it last checked. Work done on another branch reaches it only after that branch is
 merged to `main` and someone presses "Check for new commits" (or sets up push updates) in the plugin portal. A version
 that is bumped on `main` but never tagged never reaches PyPI, the image or the MCP Registry: 0.5.0 (073fe80) was
 bumped on `main` and not tagged, so PyPI stopped at 0.4.0.
