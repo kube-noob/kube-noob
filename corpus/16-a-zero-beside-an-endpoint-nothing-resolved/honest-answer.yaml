@@ -1,0 +1,18 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 16-a-zero-beside-an-endpoint-nothing-resolved
+object: "A LoadBalancer Service with no selector, and in the same namespace a privileged pod that sets hostPID, mounts the host root and listens on the Service's target port -- the pod a hand-written EndpointSlice for that Service would name."
+mechanism: "An exposure analysis resolves a Service to pods through its selector, so a Service that has none yields no pods and the path count comes out at zero -- a zero that is the absence of a resolution standing where the absence of a path would stand, with a pod that holds the host in the same input."
+honest:
+  command: ["--format", "json", "posture", "scan", "-f", "manifests", "--require-complete"]
+  verdict: incomplete
+  exit_code: 5
+  must_name:
+    - "Service/app/web has no selector: the endpoints written for it may be any pod"
+open_defect:
+  # Measured, not honest, and NOT asserted by the harness: a fix must be free to change it. Recorded so that a
+  # stranger running the corpus is told rather than left to notice.
+  guidance: G377
+  command: ["posture", "scan", "-f", "manifests"]
+  measured: "exit 0, and the headline reads `0 attack paths from 1 exposures; top: no path from an exposure to a node or to API rights` -- the Service is named on the next line and in notRead, and the `summary` field keeps that sentence even at --require-complete."

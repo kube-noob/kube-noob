@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 05-a-refused-object-beside-a-readable-one
+object: "A hardened v1 Pod that every rule reads clean, beside a Deployment under apps.example.invalid/v1 whose container is privileged and which the rules refuse."
+mechanism: "When one object is refused and another is read, every rule runs clean on the one that was read, and a report whose figures are computed over what was read lets the readable object answer for the refused one: the counts, the score and the control summary are the clean object's, and the refusal appears, if at all, somewhere other than the headline."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "Deployment/app/shipper"
