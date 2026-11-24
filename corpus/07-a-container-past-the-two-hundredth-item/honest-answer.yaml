@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 07-a-container-past-the-two-hundredth-item
+object: "An argoproj.io/v1alpha1 Workflow with 201 templates; the first 200 carry an ordinary container and the 201st carries a privileged one."
+mechanism: "A per-list cap applied inside a walk that is already bounded cuts in arrival order, so a container past the cap is never looked at and contributes nothing to the answer, while the objects before it supply a complete-looking score."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "Workflow/app/nightly"

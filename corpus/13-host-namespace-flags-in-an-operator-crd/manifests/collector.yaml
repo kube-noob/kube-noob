@@ -1,0 +1,21 @@
+apiVersion: observability.example.invalid/v1
+kind: Collector
+metadata:
+  name: node-collector
+  namespace: app
+spec:
+  mode: daemonset
+  podTemplate:
+    hostNetwork: true
+    hostPID: true
+    containers:
+      - name: collector
+        image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: root
+            mountPath: /host
+    volumes:
+      - name: root
+        hostPath: {path: /}

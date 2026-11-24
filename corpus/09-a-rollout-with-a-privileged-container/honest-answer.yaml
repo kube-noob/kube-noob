@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 09-a-rollout-with-a-privileged-container
+object: "An argoproj.io/v1alpha1 Rollout -- a workload kind with a pod template but not a built-in one -- whose single container is privileged."
+mechanism: "A workload whose kind is not in the built-in set carries its pod template at a path the built-in readers do not walk, so an input made only of such objects yields no findings at all, and no findings reads as nothing wrong rather than as nothing read."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "Rollout/app/web"

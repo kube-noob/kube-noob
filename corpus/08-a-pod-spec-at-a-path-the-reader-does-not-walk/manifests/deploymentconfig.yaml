@@ -1,0 +1,16 @@
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: legacy
+  namespace: app
+spec:
+  replicas: 1
+  selector: {app: legacy}
+  template:
+    metadata: {labels: {app: legacy}}
+    Spec:
+      containers:
+        - name: legacy
+          image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            privileged: true

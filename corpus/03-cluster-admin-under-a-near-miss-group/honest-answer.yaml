@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 03-cluster-admin-under-a-near-miss-group
+object: "A ClusterRoleBinding under apiVersion rbac.k8s.io/v1 -- one segment short of rbac.authorization.k8s.io/v1 -- binding the ClusterRole cluster-admin to the group system:authenticated."
+mechanism: "A group string that differs from the real one by a single segment is accepted as a typo by nothing and read as a known kind by anything that matches on `kind` alone; a reader that instead requires the exact group and then says nothing about what it dropped reports no RBAC findings for an input whose only object grants cluster-admin to every authenticated principal."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "ClusterRoleBinding/everyone-is-admin"

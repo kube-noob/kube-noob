@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 08-a-pod-spec-at-a-path-the-reader-does-not-walk
+object: "An apps.openshift.io/v1 DeploymentConfig whose privileged container sits under spec.template.Spec -- capital S -- rather than the spec.template.spec its reader walks."
+mechanism: "A registry entry naming where a kind keeps its containers is a claim, and a reader that takes the claim for the reading returns \"no container here\" without looking, so a container one key away from the listed path is scored as though it had been read."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "DeploymentConfig/app/legacy"
