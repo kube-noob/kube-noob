@@ -1,0 +1,19 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 01-a-name-that-forges-output
+object: "A v1 Pod with a privileged container whose metadata.name holds two real newlines, each followed by text shaped like a line of kube-noob's own report and carrying the word \"pass\"."
+mechanism: "A reader that interpolates an object's own name into a line of its report, and a caller that reads that report line by line, let the audited object write the report's lines: the name's second and third lines arrive at column zero looking like verdicts the tool never reached."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: failed
+  exit_code: 1
+  must_name:
+    - "Pod/app/web pass: the audit found nothing KN-S001 pass"
+also:
+  - command: ["audit", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+    exit_code: 1
+    no_output_line_starts_with:
+      - "pass"
+      - "KN-S001 pass"
+      - "pass:"

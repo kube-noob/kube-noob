@@ -1,0 +1,16 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: web
+  namespace: app
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: web
+          image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            privileged: true

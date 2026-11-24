@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 14-a-service-with-no-selector
+object: "A LoadBalancer Service with no selector at all, beside a hand-written EndpointSlice labelled for it whose only endpoint is an address outside the input."
+mechanism: "An exposure analysis that resolves a Service to pods through its selector finds no pods behind a Service that has none, so the path count comes out at zero for an entry point whose endpoints are written by hand and may name any pod -- a zero that is the absence of a resolution, not the absence of a path."
+honest:
+  command: ["--format", "json", "posture", "scan", "-f", "manifests", "--require-complete"]
+  verdict: incomplete
+  exit_code: 5
+  must_name:
+    - "Service/app/web has no selector: the endpoints written for it may be any pod"

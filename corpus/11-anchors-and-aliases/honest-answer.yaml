@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 11-anchors-and-aliases
+object: "A v1 Pod with two YAML anchors in its annotations -- one hardened securityContext, one setting privileged: true -- aliased into two containers, the privileged alias into the second."
+mechanism: "An anchor's value is defined far from the container that uses it, so a reader that looks at the text around a container, or that resolves only the first alias it meets, attributes the hardened settings to both containers and never sees the raised one."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: failed
+  exit_code: 1
+  must_name:
+    - "Pod/app/anchored"
