@@ -3723,7 +3723,9 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             # one to rewrite last-wins, and a wrapper that merged or lost an `items` occurrence is not one to
             # write back as if it had been read whole (G272, seventh review).
             print(f"error: {exc}", file=sys.stderr)
-            return 1
+            # Refused input is 4, not 1: 1 means findings at or above `--fail-on`, and a caller that reads 1 as
+            # "the manifest has problems" was told a false thing about a file nothing could read (G382).
+            return 4
         if len(sources) > 1:
             # One stream out of several files in, and the file boundaries are gone: a caller who redirected
             # this over their directory would have one file where they had five. Said on stderr, where the
@@ -3735,13 +3737,25 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 file=sys.stderr,
             )
         log = {"changes": res["changes"], "manualFollowUps": res["manualFollowUps"], "after": res["after"]}
+        # The third command to re-derive a verdict the report it had just printed already carried, and the one
+        # that writes a file for a pipeline to apply. `fix` ended both its branches with an unconditional
+        # `return 0` while `after` said `verdict: undetermined` with `1 Rollout not audited`, and while
+        # `after.maxSeverity` was `critical` with `privileged: true` still in the bytes it wrote. `audit` on the
+        # very file `fix` wrote exits 1 in both cases. `audit_undetermined` reads `summary.verdict` and nothing
+        # else, so the summary `kit.fix` already returns is the report it wants -- the same predicate the
+        # `validate` branch above calls, not a second copy of the arithmetic (G370, G382; classes 9, 13, 21, 25).
+        after = res["after"]
+        fix_exit = 1 if receipt_module.audit_undetermined({"summary": after}) else 0
+        if not fix_exit:
+            counts = after.get("counts") or {}
+            fix_exit = 1 if (counts.get("high") or 0) + (counts.get("critical") or 0) else 0
         if a.output:
             Path(a.output).write_text(res["manifests"], encoding="utf-8")
             if a.format == "json":
                 # The YAML went to the file, so stdout is free for the document `--format json` asked for: the change
                 # log as JSON, where it used to go to stderr as YAML and leave stdout empty (G276).
                 _emit({"output": a.output, **log}, "json")
-                return 0
+                return fix_exit
         else:  # the document itself, byte for byte what -o writes (its dumper keeps it terminal-safe)
             _write_document(res["manifests"])
         # The summary in the format asked for: `--format json` printed YAML before (G272, seventh review). G276
@@ -3751,7 +3765,7 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             json.dumps(log, indent=2, default=str) if fmt == "json" else yaml.safe_dump(log, sort_keys=False),
             file=sys.stderr,
         )
-        return 0
+        return fix_exit
 
     if a.cmd == "protocol":
         bp = yaml.safe_load(_read(a.blueprint)) if a.blueprint else None
