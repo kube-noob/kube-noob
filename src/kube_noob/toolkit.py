@@ -2652,7 +2652,7 @@ class Toolkit:
                 "Full deterministic audit: security, network exposure, storage access modes, reliability and "
                 "red-team scenarios. Findings carry rule ids, line numbers, fixes, citations and matching RHACS "
                 "policy names. Read what was NOT decided as part of the answer: `assumptions`, `declined` (per rule, "
-                "the objects it could not read and why), controlSummary.notEvaluatedRules (rules that reached no "
+                "the objects it could not read and why), controlSummary.rulesNotEvaluated (rules that reached no "
                 "verdict: neither clean nor findings) and controlSummary.partlyEvaluatedRules (rules that found "
                 "something and declined on other objects). On a large manifest set pass compact=true: the same report, "
                 "with each rule's constants hoisted once into ruleInfo instead of repeated on every finding, which "

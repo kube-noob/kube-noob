@@ -194,7 +194,7 @@ kube-noob learning profile --platform openshift --openshift 4.20 --format json
 1. **Brief** — platform, versions, every assumption, the severity counts before and after, and plainly what was
    checked against what. When the user pastes a `kube-noob audit --format json` report, what it did not decide is
    part of the answer: `assumptions`, `declined` (per rule, the objects it could not read and why) and
-   `controlSummary.notEvaluatedRules` (rules that reached no verdict). A rule listed there is neither clean nor a
+   `controlSummary.rulesNotEvaluated` (rules that reached no verdict). A rule listed there is neither clean nor a
    finding; never report it as passed. `controlSummary.partlyEvaluatedRules` found something and declined on other
    objects: report the findings, and never the declined objects as covered.
 2. **The manifest** — the final YAML kube-noob wrote or fixed.
