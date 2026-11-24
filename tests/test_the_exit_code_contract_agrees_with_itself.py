@@ -147,6 +147,72 @@ def test_validate_and_audit_now_agree_about_this_directory(mixed: Path) -> None:
     )
 
 
+def _charted(tmp_path_factory: pytest.TempPathFactory, rendered: str) -> tuple[Path, dict[str, str]]:
+    """A chart whose `helm template` output is `rendered`, and an env that finds the stub.
+
+    The stub sits OUTSIDE the chart, because `helm_binary` refuses a binary on a PATH entry inside the tree under
+    review -- the rule G280 added, and the rule G376's fixture fell foul of by planting its fake inside it.
+    """
+    root = tmp_path_factory.mktemp("helmaudit")
+    chart = root / "chart"
+    chart.mkdir()
+    (chart / "Chart.yaml").write_text("apiVersion: v2\nname: web\nversion: 0.1.0\n")
+    out = root / "rendered.yaml"
+    out.write_text(rendered)
+    bindir = tmp_path_factory.mktemp("helmbin")
+    stub = bindir / "helm"
+    stub.write_text(f"#!/bin/sh\ncat '{out}'\n")
+    stub.chmod(0o755)
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+    return chart, env
+
+
+def _run_env(args: list[str], cwd: Path, extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), **extra}
+    return subprocess.run(
+        [sys.executable, "-m", "kube_noob", *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+
+def test_helm_audit_says_undetermined_in_the_report_it_prints(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The premise, as for `validate`: the report was honest and only the exit code was not."""
+    import json
+
+    chart, env = _charted(tmp_path_factory, HARDENED_POD + "---\n" + MISGROUPED_CRB)
+    out = _run_env(["helm-audit", str(chart), "--format", "json"], ROOT, env)
+    rep = json.loads(out.stdout)
+    assert rep["summary"]["verdict"] == "undetermined", rep["summary"]
+    assert rep["summary"]["counts"]["high"] + rep["summary"]["counts"]["critical"] == 0, rep["summary"]["counts"]
+
+
+def test_helm_audit_does_not_pass_an_undetermined_chart(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """The headline, in the fourth caller. `helm-audit` derived its code from `max_severity()` alone, so it exited
+    0 over a chart binding cluster-admin to `system:authenticated` under an apiGroup no rule reads -- the command
+    the published `helm-charts` skill hands users, going green where `audit` on the same objects exits 1 (G384)."""
+    chart, env = _charted(tmp_path_factory, HARDENED_POD + "---\n" + MISGROUPED_CRB)
+    assert _run_env(["helm-audit", str(chart)], ROOT, env).returncode == 1
+
+
+def test_helm_audit_still_exits_zero_on_a_chart_it_could_read(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """The negative control. The fix must not turn every chart into a failure."""
+    chart, env = _charted(tmp_path_factory, HARDENED_POD)
+    assert _run_env(["helm-audit", str(chart)], ROOT, env).returncode == 0
+
+
+def test_helm_audit_still_exits_four_when_helm_is_not_there(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """4 is a kube-noob error, and no Helm is one. The table row promises it, so the fix must keep it."""
+    chart, _ = _charted(tmp_path_factory, HARDENED_POD)
+    assert _run_env(["helm-audit", str(chart)], ROOT, {"PATH": "/nonexistent"}).returncode == 4
+
+
 def test_posture_scan_reports_the_misgrouped_binding_under_refused(mixed: Path) -> None:
     """`--help` promises a refused object is "listed under `refused`". It was only ever in `notRead`."""
     import json

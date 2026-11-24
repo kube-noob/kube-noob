@@ -139,19 +139,19 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `diagnose` | always 0, even with denials found | `diagnoses`, `knownIssues` | `notes` |
-| `policy generate` | always 0 | `generated`, `documents` | `skipped` |
-| `posture scan` | 0; with `--fail-above`, 1 when a path scores above it and 5 when an object or a read was refused | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
-| `posture reach` | 0; 2 when the workload matches nothing in the files; with `--require-complete`, 5 unless every leg is determined and nothing is under `notRead` | `summary`, `legs`, `complete`, `nodes`, `edges` | `notDetermined`, `notRead`, `refused`, `limitations` |
-| `rhacs compare` | always 0 | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
-| `build diagnose` | always 0 | `cause`, `fix`, `failingStep` | |
-| `build audit` | 1 = a finding at or above `--fail-on` (default high), so a medium finding exits 0 | `findings`, `counts` | `notChecked`, `notes` |
-| `vuln report` | always 0 unless `--fail-on` is given | `ranking`, `findings`, `counts`, `kev`, `vex` | `excluded`, `notes` |
-| `vuln threat` | always 0 | `applications`, `statuses` | `secretsIgnored` |
-| `code report` | always 0 unless `--fail-on` is given | `ranking`, `counts`, `quality` | `excluded`, `notShipped`, `notes` |
-| `must-gather analyze` | 0 unless `--fail-on` or `--require-complete` is given; 5 = incomplete evidence | `findings`, `counts` | `unparsed`, `coverage`, `skipped` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `diagnose` | always `0`, even with denials found | `diagnoses`, `knownIssues` | `notes` |
+| `policy generate` | always `0` | `generated`, `documents` | `skipped` |
+| `posture scan` | `0`; with `--fail-above`, `1` when a path scores above it and `5` when an object or a read was refused | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
+| `posture reach` | `0`; `2` when the workload matches nothing in the files; with `--require-complete`, `5` unless every leg is determined and nothing is under `notRead` | `summary`, `legs`, `complete`, `nodes`, `edges` | `notDetermined`, `notRead`, `refused`, `limitations` |
+| `rhacs compare` | `0`, or `1` when a policy is unexplained | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
+| `build diagnose` | always `0` | `cause`, `fix`, `failingStep` | |
+| `build audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict, so a medium finding exits `0` | `findings`, `counts` | `notChecked`, `notes` |
+| `vuln report` | always `0` unless `--fail-on` is given | `ranking`, `findings`, `counts`, `kev`, `vex` | `excluded`, `notes` |
+| `vuln threat` | always `0` | `applications`, `statuses` | `secretsIgnored` |
+| `code report` | always `0` unless `--fail-on` is given | `ranking`, `counts`, `quality` | `excluded`, `notShipped`, `notes` |
+| `must-gather analyze` | `0` unless `--fail-on` or `--require-complete` is given; `5` = incomplete evidence | `findings`, `counts` | `unparsed`, `coverage`, `skipped` |
 
 Audit for the platform and version, and diagnose a pasted error. For "is this API removed in 4.x?", validate the
 manifest against that version:
