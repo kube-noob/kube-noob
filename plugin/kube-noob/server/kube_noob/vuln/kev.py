@@ -57,14 +57,38 @@ class Kev:
     catalog_version: str = ""
     date_released: str = ""
     origin: str = ""
+    #: True once `parse` has read a catalog. A catalog that was READ and holds nothing is not one that was never
+    #: given, and only this field can tell the two apart -- `entries` is empty in both (G381).
+    given: bool = False
+    #: The entry count the catalog declares for itself, when it declares one as a non-negative integer.
+    declared_count: int | None = None
+    #: Entries `parse` walked past: not a mapping, or no well-formed CVE id. Each one is a row that cannot match.
+    skipped: int = 0
 
     def get(self, cve: str) -> KevEntry | None:
         return self.entries.get(cve.upper())
 
+    def shortfall(self) -> int:
+        """How many entries the catalog declares and `parse` did not read. 0 when it declares none (G381)."""
+        if self.declared_count is None:
+            return 0
+        return max(0, self.declared_count - len(self.entries))
+
     def describe(self) -> str:
-        if not self.entries:
+        """Three states, because a catalog that was read and holds nothing is not an absent one (G381).
+
+        `assess.py` prints "no KEV catalog given (--kev)" itself when no catalog was loaded at all, so the first
+        branch here is reached only by a `Kev()` built by hand; it must still not claim a read.
+        """
+        if not self.given:
             return "no KEV catalog given"
-        return f"CISA KEV {self.catalog_version or '?'} ({self.date_released[:10] or '?'}), {len(self.entries)} CVEs"
+        where = f"CISA KEV {self.catalog_version or '?'} ({self.date_released[:10] or '?'})"
+        if not self.entries:
+            return f"{where}: read and holds no entries, so no finding here can match it"
+        said = ""
+        if self.shortfall():
+            said = f"; the catalog declares {self.declared_count} and {self.skipped} row(s) were not read"
+        return f"{where}, {len(self.entries)} CVEs{said}"
 
 
 def _s(v: Any, n: int = 300) -> str:
@@ -86,11 +110,17 @@ def parse(data: str | bytes, origin: str = "KEV catalog", max_depth: int = sanit
         raise KevError(f"{origin}: more than {MAX_ENTRIES} entries")
     kev = Kev(catalog_version=_s(doc.get("catalogVersion"), 40), date_released=_s(doc.get("dateReleased"), 40))
     kev.origin = origin
+    kev.given = True
+    declared = doc.get("count")
+    if isinstance(declared, int) and not isinstance(declared, bool) and 0 <= declared <= MAX_ENTRIES:
+        kev.declared_count = declared
     for v in vulns:
         if not isinstance(v, dict):
+            kev.skipped += 1
             continue
         cve = _s(v.get("cveID"), 40).strip().upper()
         if not _CVE.match(cve):
+            kev.skipped += 1
             continue
         kev.entries[cve] = KevEntry(
             cve,
