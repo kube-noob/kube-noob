@@ -137,12 +137,45 @@ and `kube-noob receipt verify PATH` re-runs those inputs. It is **not** a signat
 
 ## Verifying releases
 
+**Both commands below need a network, and this section used to say nothing about that.** `gh attestation verify
+--repo` asks GitHub's attestations API for the bundle; keyless `cosign verify` needs Sigstore's trust root
+(Fulcio and Rekor). kube-noob is offline-first, its airgap job proves the install and four workflows run with no
+interface and no route, and the operators it is built for are behind an air gap -- so the one instruction this
+file gives them could not be carried out where they are, and nothing here said so. That is the product's own
+rule turned on its own supply chain: a precondition that is absent, presented as though it holds.
+
+On a machine with a network:
+
 ```bash
 gh attestation verify dist/kube_noob-*.whl --repo kube-noob/kube-noob
 cosign verify ghcr.io/kube-noob/kube-noob:<version> \
   --certificate-identity-regexp 'https://github.com/kube-noob/kube-noob/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Across an air gap, carry the material in and verify against it. `gh attestation verify` takes `--bundle` for
+"offline verification using attestations stored on disk", and `cosign verify` takes `--offline` with the bundle
+beside the image. Fetch both on a connected machine:
+
+```bash
+gh attestation download dist/kube_noob-*.whl --repo kube-noob/kube-noob
+cosign download signature ghcr.io/kube-noob/kube-noob:<version> > cosign.sig
+```
+
+then carry the artefact and its bundle across and verify with `--bundle`. **What is missing today, and is the
+reason this is written as a limitation rather than a recipe: the release publishes no bundle as an asset.** Its
+assets are the wheel, the sdist, the chart, the krew archive, the skill zip, `sbom.spdx.json` and the demo GIFs
+-- measured on v0.10.0, where a query for any asset whose name contains `bundle`, `sigstore`, `intoto` or `att`
+returns zero. So an operator with no network has the artefact, the SBOM and no way to check either, and the
+offline commands above depend on someone having run the download on a connected machine first. Publishing the
+bundles as release assets is the fix and is owed; until it lands, the honest statement is that **an air-gapped
+operator cannot verify a kube-noob release from the release alone**, and the digests in `sbom.spdx.json` plus
+`sha256sum` are what they have.
+
+Two things this does not say. The evidence receipts are a different claim and are unaffected: they are
+digest-bound and replayable, they are not signatures, and `receipt verify` needs no network (see above). And
+nothing here is a reason to skip verification where a network exists -- the commands work, they are the right
+ones, and the gap is the air-gapped case they never mentioned.
 
 Those commands verify what was built after the project moved into the `kube-noob` organisation: the image for
 0.9.0 and later, and the wheel for 0.9.1 and later. There is no 0.8.0 or 0.9.0 wheel: neither release reached
