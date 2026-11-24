@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: web
+  namespace: app
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: web}}
+  strategy:
+    canary:
+      steps:
+        - setWeight: 20
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      containers:
+        - name: web
+          image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            privileged: true
