@@ -736,6 +736,14 @@ NOT_DRIVEN: dict[str, str] = {
         ],
         "prints kube-noob's own bundled text, not text from the input",
     ),
+    "learn mechanism": (
+        "names the object a hop could not be judged on, so it MUST be driven with a hostile name -- but the "
+        "hostile manifest holds no Ingress, so the walk honestly stops at the first hop and the answer is exit 5, "
+        "which the 0/1/3 rule above does not fit (the same reason as `receipt verify`). Driven with a hostile "
+        "`metadata.name` on the refused object in "
+        "tests/test_a_hop_nobody_read_is_not_a_hop_that_works.py::"
+        "test_a_hostile_name_on_the_unread_object_reaches_the_reader_through_the_boundary"
+    ),
     "receipt verify": "takes a receipt document this table has no hostile fixture for, and the answer it must be "
     "driven for is exit 5 (cannot be checked), which the 0/1/3 rule above does not fit: its text view is driven "
     "with a hostile input path in "

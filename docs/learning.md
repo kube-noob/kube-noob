@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 5 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 16 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 17 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -35,6 +35,41 @@ kube-noob learn progress --learner alice
   learner's progress is ever silently shared with another's.
 
 Start with `kube-noob demo learn` to see a full lesson-and-grade cycle in seconds.
+
+## Mechanism walks: what happens, in order, and where it stops
+
+Every other track teaches what to write and what passes. The `mechanisms` track teaches what *happens*, in
+order, along one path -- and grades it against your own manifests, offline:
+
+```
+kube-noob learn mechanism mech-net-request-to-pod -f ./manifests
+```
+
+Each hop gets one of three answers, and the third is why this exists:
+
+- **holds** -- the objects the hop needs are here, and the rules that read them found nothing. The step names
+  those rules, so you can check the claim.
+- **BROKEN** -- a rule on this hop produced a finding, reported with its id and severity. The walk carries on to
+  the end, because a finding is a verdict.
+- **cannot judge** -- an object the hop needs is absent, or it is here and nothing could read it. **The walk
+  stops.** The hops after it are not drawn and are counted as not walked.
+
+That last rule is the whole point. A `projectcalico.org/v3 NetworkPolicy` in the middle of the path is an object
+kube-noob has no reader for; a walk that continued past it would report the readiness hop as working on a path
+whose policy hop nobody looked at. So the path's verdict is that no verdict was reached:
+
+| what the walk did | verdict | exit |
+|---|---|---|
+| every observable hop holds | `complete` | `0` |
+| reached the end, a hop is broken | `broken` | `1` |
+| stopped at a hop it could not judge | `stopped` | `5` |
+
+`5` and `1` are not two answers to the same question: `1` says the path was walked and something on it is wrong,
+`5` says the path was not walked.
+
+A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
+false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
+holds. kube-noob does not claim to have checked something it cannot see, in a lesson any more than in an audit.
 
 ## What kube-noob remembers
 

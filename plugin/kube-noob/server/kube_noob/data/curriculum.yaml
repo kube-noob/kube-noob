@@ -3,6 +3,60 @@
 # `reference` blueprints are rendered by the generator to produce reference solutions (used by tests and SFT export).
 version: 1
 tracks:
+  - id: mechanisms
+    title: How a cluster works, step by step
+    summary: >-
+      Ordered walks along one path each, graded against your own manifests. Every other track teaches what to
+      write and what passes; these teach what happens, in order, and where it breaks. A step whose evidence is
+      not in the input says it cannot be judged and the walk stops there, rather than drawing the rest of the
+      arrow.
+    lessons:
+      - id: mech-net-request-to-pod
+        title: A request finds your Pod
+        layer: network
+        docs: [kubernetes]
+        objectives:
+          - Follow one request from the edge to a container, hop by hop
+          - See which hop your own manifests cannot answer for
+        keyPoints:
+          - Each hop is a separate question, and a hop nothing read is not a hop that works.
+          - The walk stops at the first hop it cannot judge; the hops after it are not reported as fine.
+        steps:
+          - id: edge-admits
+            title: The edge admits the request
+            needs: [Ingress]
+            holds: an Ingress is here and the rules that read it found nothing wrong
+            rules: [KN-N003, KN-N009, KN-N011, KN-V019]
+          - id: service-selects-pods
+            title: The Service finds pods to send it to
+            needs: [Service]
+            holds: the Service selects at least one pod in this bundle, on a port the containers declare
+            rules: [KN-V011, KN-V012, KN-N008]
+          - id: workload-selects-its-own-pods
+            title: The workload owns the pods it selects
+            needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
+            holds: the workload's selector matches the labels on its own pod template
+            rules: [KN-V010]
+          - id: policy-admits-the-packet
+            title: Network policy lets the packet in
+            # No `needs`: a namespace with NO NetworkPolicy is judged, because KN-N001 is the rule that fires on
+            # exactly that absence. `reads` is what stops the walk here -- a policy that IS here and that nothing
+            # could read leaves the hop unjudged, which is not the same thing at all.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: the namespace has a NetworkPolicy, and none of them is an allow-all or selects nothing
+            rules: [KN-N001, KN-N007, KN-N012]
+          - id: pod-reports-ready
+            title: The pod says it is ready to receive it
+            needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
+            holds: the containers declare a readiness probe, so the endpoint appears only when they can serve
+            rules: [KN-C001]
+          - id: packet-reaches-the-container
+            title: The packet crosses the node to the container
+            observable: false
+            holds: >-
+              the veth pair, the bridge and the overlay carry it the last hop. Nothing in a manifest records
+              this, so kube-noob does not check it and does not count it as passed.
   - id: kubernetes
     title: Kubernetes foundations
     summary: Workloads, services, storage, security context, probes, resources, RBAC, NetworkPolicy, debugging.
