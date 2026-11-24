@@ -189,7 +189,10 @@ def test_a_fix_that_cannot_read_a_document_leaves_it_untouched_and_says_so(tmp_p
     )
     rc, out, _ = _run(["fix", "-f", str(f), "-o", str(tmp_path / "out.yaml"), "--format", "json"])
     report = json.loads(out)
-    assert rc == 0 and not report["changes"], report["changes"]
+    # The subject is that nothing was changed and the reason was given; `rc == 0` stood in for "did not
+    # crash". Since G382 the exit comes from the `after` block, so it reports what is still wrong with the
+    # manifest rather than whether this command ran. 4 is the code that would mean the subject failed.
+    assert rc != 4 and not report["changes"], report["changes"]
     assert any("not fixed, because" in m and "egress rule to is list" in m for m in report["manualFollowUps"])
     assert yaml.safe_load((tmp_path / "out.yaml").read_text())["spec"]["egress"][0]["to"] == [1]
 
@@ -254,7 +257,14 @@ def test_fix_leaves_a_document_it_cannot_read_as_it_was(mutation: tuple[str, str
     f.write_text(text)
     rc, out, err = _run(["fix", "-f", str(f), "-o", str(tmp_path / "out.yaml"), "--format", "json"])
     report = json.loads(out)
-    assert rc == 0 and "internal error" not in err
+    # This test is about not crashing on a document `fix` cannot read, and about saying why. It asserted
+    # `rc == 0` as a stand-in for that, and G382 gave `fix` an exit derived from its own `after` block, so a
+    # manifest with findings left in it is now 1. 4 is the code that would mean this test's real subject
+    # failed -- an internal error or a refusal -- so that is what it checks now. These inputs reach 1 through
+    # their remaining high findings, NOT through an undetermined verdict: an object whose `metadata` is not a
+    # mapping is still audited and reported, under the name `Deployment/<unnamed>`, so a determined
+    # verdict with findings in it is the honest answer here.
+    assert rc != 4 and "internal error" not in err
     assert any(why in m for m in report["manualFollowUps"]), report["manualFollowUps"]
 
 

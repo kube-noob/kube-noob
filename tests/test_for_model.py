@@ -118,7 +118,9 @@ def test_writing_to_a_file_with_json_asked_prints_the_report_as_json(argv: list[
     target = tmp_path / "out.yaml"
     rc, out = _run([*argv, "-o", str(target), "--format", "json"])
     doc = json.loads(out)
-    assert rc == 0 and doc["output"] == str(target) and target.read_text().startswith(("---", "apiVersion"))
+    # The subject is that stdout carries the report as JSON. `fix` exits 1 on this input because what it wrote
+    # still holds high findings, and `generate` exits 0; neither code is what this test is about (G382).
+    assert rc in (0, 1) and doc["output"] == str(target) and target.read_text().startswith(("---", "apiVersion"))
     rc, out = _run([*argv, "-o", str(target)])
     assert out == "", "without --format json the report stays on stderr, as it was"
 

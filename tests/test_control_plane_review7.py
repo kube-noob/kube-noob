@@ -248,7 +248,9 @@ def test_fix_refuses_to_write_a_wrapper_that_merged_or_lost_an_items_occurrence(
 ) -> None:
     out = tmp_path / "out.yaml"
     code, stdout, err = _cli(["fix", "-f", str(FX / fixture), "-o", str(out)], capsys)
-    assert code == 1 and not out.exists() and stdout == ""
+    # 4, not 1: refused input is a kube-noob error, and 1 means findings at or above `--fail-on`. A caller that
+    # read 1 here was told the manifest has problems, about a file nothing could read (G382).
+    assert code == 4 and not out.exists() and stdout == ""
     assert (
         "List has the key 'items' twice" in err
         and "the API server refuses this file" in err
@@ -272,7 +274,8 @@ def test_fix_refuses_a_document_the_api_server_refuses_for_a_duplicate_key(
         fix_manifests(inner)
     out = tmp_path / "out.yaml"
     code, _, err = _cli(["fix", "-f", str(FX6 / "q1-08-dup-items.yaml"), "-o", str(out)], capsys)
-    assert code == 1 and not out.exists() and "second occurrence on line 15" in err
+    # 4 for the same reason as above: this file was refused, not audited (G382).
+    assert code == 4 and not out.exists() and "second occurrence on line 15" in err
 
 
 def test_fix_format_json_prints_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -286,13 +289,16 @@ def test_fix_format_json_prints_json(tmp_path: Path, capsys: pytest.CaptureFixtu
 
     out = tmp_path / "fixed.yaml"
     code, stdout, err = _cli(["fix", "-f", src, "--format", "json", "-o", str(out)], capsys)
-    assert code == 0 and out.exists()
+    # The subject here is the JSON stream, not the verdict. The code is 1 because the written file's own audit
+    # verdict is `undetermined`, and `fix` no longer exits 0 over an undetermined after-verdict (G382).
+    assert code == 1 and out.exists()
     log = json.loads(stdout)
     assert set(log) == {"output", "changes", "manualFollowUps", "after"}
     assert err == "" or not err.strip().startswith("{")
 
     code, stdout, err = _cli(["fix", "-f", src, "--format", "json"], capsys)
-    assert code == 0
+    # 1 for the same reason as the half above: the stream, not the verdict, is this test's subject (G382).
+    assert code == 1
     summary = json.loads(err)
     assert set(summary) == {"changes", "manualFollowUps", "after"}
     assert stdout.lstrip().startswith(("apiVersion:", "---")), "the document itself still goes to stdout"
