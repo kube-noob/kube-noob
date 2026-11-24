@@ -36,7 +36,16 @@ false explanation, which is the G368 defect one layer down.
 from __future__ import annotations
 
 from kube_noob.audit.podspec import EMBEDDED_POD_SPEC_PATHS, POD_SPEC_PATHS
-from kube_noob.audit.rules import ANY_OBJECT, RULES, WORKLOAD_SUBJECT, AuditContext, object_unreadable
+from kube_noob.audit.rules import (
+    ANY_OBJECT,
+    RULES,
+    WORKLOAD_SUBJECT,
+    AuditContext,
+    object_unreadable,
+    refusal,
+    refused_summary,
+)
+from kube_noob.yamlio import Document
 
 _WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
 # The kinds a rule reads as evidence BESIDE the ones its `context=` declares -- the PDB that selects a workload,
@@ -95,3 +104,83 @@ def check_evidence(ctx: AuditContext, rule_id: str) -> None:
         note = f"an object it depends on could not be read: {', '.join(names[:10])}{more}"
         prior = ctx.unreadable_shapes.get(rule_id)
         ctx.unreadable_shapes[rule_id] = f"{prior}; {note}" if prior else note
+
+
+def unreadable_evidence(
+    ctx: AuditContext, *kinds: str, namespace: str | None = None, name: str | None = None
+) -> list[Document]:
+    """The objects of these kinds the input HOLDS and nothing read, optionally narrowed to one namespace.
+
+    A rule that reasons from the absence of a kind asks `by_kind` or `has_subject`, and both are
+    group-matched (G231, G365): a `projectcalico.org/v3 NetworkPolicy` is correctly not a Kubernetes
+    NetworkPolicy, and is therefore indistinguishable there from no NetworkPolicy at all. It is not the
+    same thing -- the bundle holds one and the audit refused it, and the report names it under
+    `notAudited` -- so the two answers are separated here (G368).
+
+    Matched on the kind NAME, not through a group, because the group is exactly what is wrong. Both
+    unreadability predicates count: `refusal` for an apiVersion the rules do not know the kind under, and
+    `object_unreadable` for a document whose identity or spec cannot be read at all.
+
+    ``name`` narrows it to the object a finding names, that finding's own granularity (G369). Identity is
+    the line: a refused object's name is a fact (`notAudited` prints it) where its spec is not, and an
+    unreadable identity matches every name, because the rule cannot then tell it apart.
+    """
+    out: list[Document] = []
+    for d in ctx.docs:
+        if not isinstance(d.data, dict) or not isinstance(d.data.get("kind"), str):
+            continue
+        if d.kind not in kinds:
+            continue
+        if refusal(d) is None and object_unreadable(d.data) is None:
+            continue
+        if namespace is not None and ctx.ns(d) != namespace:
+            continue
+        if name is not None and d.name and d.name != name:
+            continue
+        out.append(d)
+    return out
+
+
+def cannot_judge_absence(
+    ctx: AuditContext,
+    rule_id: str,
+    *kinds: str,
+    namespace: str | None = None,
+    name: str | None = None,
+    suppresses_finding: bool = False,
+) -> bool:
+    """Whether ``rule_id`` may state that no object of ``kinds`` is here; records the refusal when it may not.
+
+    True means the input holds such an object and nothing read it, so an absence is not a fact the rule
+    has: the rule is undecided, the object is named, and the score is withheld. A namespace narrows it,
+    because a refusal in one namespace must not blind the rule in another (G366: the guard has to be at
+    the granularity of the thing it guards).
+
+    Through `cannot_decide` with `refused_summary`, NOT through `partner_unreadable`: that path composes
+    its reason into `unreadable_shapes`, whose published prose is "a field in the input has the wrong type
+    for what the rule reads ... Fix the field (the schema findings name it)". A refused apiVersion group is
+    not a field of the wrong type and the fix is not a field, so borrowing that channel would have printed
+    a true verdict under a false explanation -- the defect this method exists to remove, one layer down.
+    `refused_summary` is the phrase a refused SUBJECT already produces ("1 NetworkPolicy not audited
+    (apiVersion names a group ...)"), built from the rule's kinds and the fixed refusal reasons and never
+    from the input's own text (class 7).
+
+    A MALFORMED object takes the other channel, and this is the ONE place that chooses (G369): the reason
+    follows the DOCUMENT, not the declaration it came from, so each is explained by the predicate that
+    caught it and neither borrows the other's words.
+
+    ``suppresses_finding`` is True where a RULE calls this instead of yielding, False where the engine only
+    records the gap. It decides whether an acceptance may restore the score (G379).
+    """
+    blind = ctx.unreadable_evidence(*kinds, namespace=namespace, name=name)
+    if blind and suppresses_finding:
+        ctx.finding_suppressed.add(rule_id)
+    for d in blind:
+        if refusal(d) is not None:
+            ctx.cannot_decide(rule_id, refused_summary([d]), d.ref())
+        else:
+            # By position when its own metadata cannot be read, as `check_evidence` does: the same ref,
+            # so the two callers cannot record one object twice under two names.
+            meta_ok = isinstance(d.data, dict) and object_unreadable({**d.data, "spec": None}) is None
+            ctx.partner_unreadable(rule_id, d.ref() if meta_ok else f"document {d.index + 1}")
+    return bool(blind)
