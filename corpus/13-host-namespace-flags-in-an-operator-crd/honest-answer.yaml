@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 13-host-namespace-flags-in-an-operator-crd
+object: "An observability.example.invalid/v1 Collector whose spec.podTemplate sets hostNetwork and hostPID, mounts the host root by hostPath and runs a privileged container."
+mechanism: "An operator's own CRD holds a pod template under a field name of its own choosing, so the host-namespace flags and the hostPath mount are present in the input and in no place a reader of built-in kinds looks; nothing in the output distinguishes that from an input with no host access in it."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "Collector/app/node-collector"
