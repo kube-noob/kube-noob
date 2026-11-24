@@ -17,6 +17,11 @@ import facts as vfacts  # noqa: E402
 TEXT_FIELDS = ("caption", "vo", "say", "bubble")
 
 
+def names() -> list[str]:
+    """The videos videos.json defines, in its own order. The one list; see `voiceover.py` for why."""
+    return list(json.loads((HERE / "videos.json").read_text(encoding="utf-8"))["videos"])
+
+
 def load(video: str, facts: vfacts.Facts) -> dict[str, Any]:
     """One video from videos.json, checked against videos.schema.json, with every {fact} and @recording filled in."""
     spec = json.loads((HERE / "videos.json").read_text(encoding="utf-8"))

@@ -17,6 +17,9 @@ Facts:
                                                  examples/insecure-deployment.yaml for OpenShift 4.22, through the
                                                  same audit tool Claude calls
   fix.changes, fix.manual, fix.score             the same file through the fix tool (score after the fixes)
+  scan.findings, scan.unevaluated, scan.evaluated, scan.replicas, scan.exit, scan.verdict,
+  scan.object, scan.why                          the adversarial corpus case whose every severity count is
+                                                 honestly zero (demos/video/facts.py SCAN)
   protocol.steps, protocol.score                 `kube-noob demo protocol` (the walkthrough's chapter 3)
   sidecar.version, sidecar.tools, sidecar.peak, sidecar.limit
                                                  the transcript scripts/demo_sidecar_kind.sh records on a kind cluster
@@ -44,6 +47,10 @@ ROOT = Path(__file__).resolve().parents[2]
 PRODUCT = Path(os.environ.get("KN_PRODUCT_ROOT") or ROOT).resolve()
 EXAMPLE = "examples/insecure-deployment.yaml"
 SIDECAR_MANIFEST = "deploy/sidecar/app-with-kube-noob-sidecar.yaml"
+#: The adversarial corpus case the scan video is about: a privileged container inside a kind no rule reads,
+#: so every severity count is honestly zero and the honest answer is still not a pass. `honest-answer.yaml`
+#: beside it pins the verdict word and the exit code, and `scripts/corpus_run.py` reproduces it.
+SCAN = "corpus/09-a-rollout-with-a-privileged-container/manifests/rollout.yaml"
 PLATFORM, VERSION = "openshift", "4.22"
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*)(?::(words))?\}")
 RECORDING = re.compile(r"^@([a-z]+:[a-z]+)$")
@@ -241,6 +248,7 @@ class Facts:
             "sidecar": self._sidecar,
             "cli": self._cli_audit,
             "tool": self._audit,
+            "scan": self._scan,
         }
         self._done: set[str] = set()
 
@@ -318,6 +326,60 @@ class Facts:
         if rest:
             lines.append(f"… {rest} medium and low findings, and the fix, RHACS and red-team lines, left out")
         self._recordings["cli:audit"] = lines
+
+    def _scan(self) -> None:
+        """The zero that is not a pass, through the same audit tool Claude calls and the same gate CI runs.
+
+        Nothing here is typed. The counts come from the audit, the object's name and the reason it was not read
+        come from `notAudited`, and the exit code comes from `receipt.audit_exit_code` -- the one place that
+        arithmetic lives -- so the video cannot claim an exit code the command does not return.
+        """
+        import yaml
+
+        from kube_noob import receipt
+        from kube_noob.audit.engine import list_rules
+        from kube_noob.toolkit import AuditIn
+
+        manifests = _product(SCAN).read_text(encoding="utf-8")
+        a = _kit().audit(AuditIn(manifests=manifests, platform=PLATFORM, partial_bundle=True))
+        summary = a["summary"]
+        counts = summary["counts"]
+        not_audited = a.get("notAudited") or []
+        if not not_audited:
+            raise FactError(f"{SCAN} is audited in full, so the scan video would be about nothing")
+        if sum(counts.values()) or a.get("findings"):
+            raise FactError(f"{SCAN} now produces findings, so its zero is no longer the point")
+        unevaluated = (a.get("controlSummary") or {}).get("rulesNotEvaluated") or {}
+        doc = yaml.safe_load(manifests)
+        self._values.update(
+            {
+                "scan.findings": sum(counts.values()),
+                "scan.unevaluated": len(unevaluated),
+                "scan.evaluated": len(list_rules()) - len(unevaluated),
+                "scan.replicas": int(doc["spec"]["replicas"]),
+                "scan.exit": receipt.audit_exit_code(a, "high"),
+                "scan.verdict": str(summary.get("verdict")),
+                "scan.object": str(not_audited[0]["object"]),
+                "scan.why": str(not_audited[0].get("why") or not_audited[0].get("reason") or ""),
+            }
+        )
+        args = ["gate", "-f", str(Path(SCAN).parent)]
+        out = _cli(*args).splitlines()
+        # Two recordings, not one: the terminal holds about a dozen lines, and a single scene showed the end of
+        # the severity table with its own heading scrolled off -- a caption saying every severity is zero over a
+        # frame showing two of them.
+        table = [ln for ln in out if ln.startswith("| ")]
+        if len(table) < 2:
+            raise FactError("the gate no longer prints a severity table for this input")
+        self._recordings["scan:table"] = [f"$ kube-noob {' '.join(args)}", out[0], "", *table]
+        for i, line in enumerate(out):
+            if line.startswith("### Not passed"):
+                verdict = [line, "", out[i + 2], "", out[i + 4]]
+                break
+        else:
+            raise FactError("the gate no longer prints a `### Not passed` section for this input")
+        verdict += ["", f"$ echo $?  -> {self._values['scan.exit']}"]
+        self._recordings["scan:verdict"] = verdict
 
     def _protocol(self) -> None:
         text = _cli("demo", "protocol")
