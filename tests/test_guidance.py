@@ -8,19 +8,9 @@ from pathlib import Path
 
 import yaml
 
+from tests.guidance_table import GUIDANCE, Row, id_lines, parse, rows
+
 ROOT = Path(__file__).resolve().parents[1]
-ROW = re.compile(r"^\| (G\d{2,3}) \| (.+?) \| (.+) \|$")
-REF = re.compile(r"`([^`]+)`")
-
-
-def _rows() -> list[tuple[str, str, list[str]]]:
-    rows = []
-    for line in (ROOT / "docs/guidance.md").read_text().splitlines():
-        m = ROW.match(line)
-        if m:
-            refs = [r for r in REF.findall(m.group(3)) if r.startswith(("tests/", "ci:"))]
-            rows.append((m.group(1), m.group(2), refs))
-    return rows
 
 
 def _tests_in(path: Path) -> set[str]:
@@ -38,25 +28,73 @@ def _ci_names() -> set[str]:
     return names
 
 
+def _unresolved(row: Row, ci: set[str]) -> list[str]:
+    """Every check `row` cites that does not exist. A citation without `::` names a file, and the file must ship."""
+    missing = []
+    for ref in row.refs:
+        if ref.startswith("ci:"):
+            if ref[3:] not in ci:
+                missing.append(f"{row.id}: CI step/job {ref[3:]!r}")
+            continue
+        file, sep, name = ref.partition("::")
+        path = ROOT / file
+        if not path.is_file():
+            missing.append(f"{row.id}: {file} does not ship")
+        elif sep and name not in _tests_in(path):
+            missing.append(f"{row.id}: {ref}")
+    return missing
+
+
 def test_every_rule_has_existing_checks() -> None:
-    rows = _rows()
-    assert len(rows) >= 20
-    ids = [r[0] for r in rows]
+    table = rows()
+    assert len(table) >= 20
+    ids = [r.id for r in table]
     assert len(ids) == len(set(ids)), "duplicate guidance ids"
     ci = _ci_names()
     missing = []
-    for gid, _, refs in rows:
-        assert refs, f"{gid} has no enforcing check"
-        for ref in refs:
-            if ref.startswith("ci:"):
-                if ref[3:] not in ci:
-                    missing.append(f"{gid}: CI step/job {ref[3:]!r}")
-                continue
-            file, _, name = ref.partition("::")
-            path = ROOT / file
-            if not path.is_file() or name not in _tests_in(path):
-                missing.append(f"{gid}: {ref}")
+    for row in table:
+        assert row.refs, f"{row.id} has no enforcing check"
+        missing += _unresolved(row, ci)
     assert missing == []
+
+
+def test_every_row_in_the_table_is_read_by_the_citation_check() -> None:
+    """A row the reader's shape does not recognise is a rule whose checks nobody resolved (G372).
+
+    The reader was a three-column expression over ids of two or three digits. Six rows are written in two
+    columns (G279, G319, G320, G321, G322, G325), so 329 of 335 rows had their citations resolved and the table
+    went on passing: an unrecognised shape reading as complete, which is the one thing this product refuses to
+    do anywhere else. The hole was recorded under G347 and left open.
+
+    This compares the rows the citation check reads against the loosest count of rows there are. The two agreeing
+    is the only evidence that the table's coverage claim covers the table.
+    """
+    text = GUIDANCE.read_text(encoding="utf-8")
+    read = {row.id for row in parse(text)}
+    present = [re.match(r"^\|\s*(G\d+)", line).group(1) for line in id_lines(text)]  # type: ignore[union-attr]
+    assert set(present) - read == set(), (
+        f"these rows are in docs/guidance.md and the citation check never reads them: "
+        f"{sorted(set(present) - read)}. A rule whose row is skipped can lose its checks silently."
+    )
+    assert len(read) == len(set(present)) >= 335, f"{len(read)} rows read of {len(set(present))} present"
+    for gid in ("G279", "G319", "G320", "G321", "G322", "G325"):
+        row = next(r for r in parse(text) if r.id == gid)
+        assert row.refs, f"{gid} is read now but cites nothing, so reading it proves nothing"
+
+
+def test_a_guidance_id_longer_than_three_digits_is_read_and_its_checks_resolved() -> None:
+    r"""`G\d{2,3}` skipped a four-digit id, so the table would stop covering new rows at G1000 without saying so.
+
+    Latent today -- the table is at G372 -- and the same defect as the two-column rows arriving later, which is
+    why it is tested rather than noted. The row below is synthetic: the table's own content is not touched.
+    """
+    row = "| G1000 | **A four-digit rule is a rule.** | `tests/test_guidance.py::test_every_rule_has_existing_checks` |"
+    table = parse(f"| ID | Rule | Enforced by |\n|---|---|---|\n{row}\n")
+    assert [r.id for r in table] == ["G1000"], "a four-digit guidance id is skipped by the row reader"
+    assert _unresolved(table[0], _ci_names()) == []
+    cited = "tests/test_guidance.py::test_every_rule_has_existing_checks"
+    two_column = f"| G1001 | **A rule written in one cell is a rule.** `{cited}` |"
+    assert [r.refs for r in parse(two_column)] == [(cited,)]
 
 
 def test_docs_are_concise_and_linked() -> None:
