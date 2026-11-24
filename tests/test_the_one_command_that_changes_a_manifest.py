@@ -10,6 +10,10 @@ shape and not its neighbours, and class 25, moving arithmetic to one place while
 The predicate here is `receipt.audit_undetermined`, the one the `validate` branch above calls, reading
 `summary.verdict` and nothing else, so there is no second copy to drift (class 9).
 
+These inputs reach 1 through their remaining high findings rather than through an undetermined
+verdict, which is correct: an object whose `metadata` is not a mapping is still audited, carried as
+`Deployment/<unnamed>`, and reported with two findings MORE than a readable one, not fewer.
+
 Refused input moved 1 -> 4 in the same change: `AGENTS.md` gives 1 to "findings at or above `--fail-on`"
 and 4 to "a kube-noob error, or refused input", and a caller that read 1 was told the manifest had
 problems when the truth is that nothing could read it at all.

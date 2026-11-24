@@ -262,7 +262,8 @@ def test_fix_leaves_a_document_it_cannot_read_as_it_was(mutation: tuple[str, str
     # manifest with findings left in it is now 1. 4 is the code that would mean this test's real subject
     # failed -- an internal error or a refusal -- so that is what it checks now. These inputs reach 1 through
     # their remaining high findings, NOT through an undetermined verdict: an object whose `metadata` is not a
-    # mapping does not make the after-verdict undetermined, which is its own gap and not this row's.
+    # mapping is still audited and reported, under the name `Deployment/<unnamed>`, so a determined
+    # verdict with findings in it is the honest answer here.
     assert rc != 4 and "internal error" not in err
     assert any(why in m for m in report["manualFollowUps"]), report["manualFollowUps"]
 
