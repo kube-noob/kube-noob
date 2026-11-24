@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from kube_noob.audit.argv import _quoted, _shown
 from kube_noob.debug.steps import classify_step, split_comment
 from kube_noob.yamlio import Document, load_documents
 
@@ -112,6 +113,72 @@ _LABEL_VALUE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
 _DNS = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?\Z")
 _PORT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 _LABEL_KEY = re.compile(r"^([a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?\Z")
+#: A `kind` as the API server would accept one. A kind is matched exactly before it is read, so this is only
+#: about how an unexpected one is PRINTED.
+_KIND_SHOWN = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,62}\Z")
+
+
+def shown_name(value: Any) -> str:
+    """A name read out of the input, as a reason may print it (class 7).
+
+    A well-formed Kubernetes name is printed as it is, because a reason that cannot say WHICH object is wrong is
+    worse than one that names it. Anything else -- a name carrying a newline, a terminal escape, kube-noob's own
+    phrases, or four kilobytes of text -- is made printable, collapsed to one line, cut at
+    `kube_noob.audit.argv.SHOWN_LIMIT` and wrapped in `<>`, which no valid name contains. So the value is still
+    there and still identifies the object, and it can no longer pose as a line of kube-noob's own output.
+    """
+    text = "" if value is None else str(value)
+    # `_DNS` has no length bound (a port name and a namespace are checked against it elsewhere); 253 is the API's.
+    return text if len(text) <= 253 and _DNS.match(text) else f"<{_shown(text) or 'unnamed'}>"
+
+
+def shown_kind(value: Any) -> str:
+    """The same for a `kind`, which is UpperCamelCase and so fails `shown_name`'s own shape."""
+    text = "" if value is None else str(value)
+    return text if _KIND_SHOWN.match(text) else f"<{_shown(text) or 'unnamed'}>"
+
+
+def shown_ref(kind: Any, name: Any, namespace: Any = None) -> str:
+    """`Kind/name`, or `Kind/namespace/name`, with every part as `shown_kind`/`shown_name` print it."""
+    parts = [shown_kind(kind)]
+    if namespace is not None:
+        parts.append(shown_name(namespace))
+    parts.append(shown_name(name))
+    return "/".join(parts)
+
+
+def shown_field(value: Any) -> str:
+    """One field value a reason quotes: `null`, YAML's `true`/`false`, else the cleaned text inside single quotes.
+
+    Never a Python repr. `repr` does quote and does escape a newline, so it was not forgeable -- but it bounds
+    nothing (a 4 KiB value printed in full), and a mapping, a list or a float `nan` came out as Python source
+    rather than as what the document says.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float) and len(str(value)) <= 40:
+        return str(value)  # a number carries no text, so quoting it only makes the sentence read worse
+    return _quoted(value, 80)
+
+
+def shown_label_key(value: Any) -> str:
+    """A selector's label key, printed as it is when it is valid label syntax and marked when it is not. A
+    selector is echoed in the reason for every denial, so it is the most-printed input text there is."""
+    text = str(value)
+    return text if _LABEL_KEY.match(text) else f"<{_shown(text, 60) or 'unnamed'}>"
+
+
+def shown_label_value(value: Any) -> str:
+    """The other side of the same pair. The empty string is a valid label value, and prints as nothing."""
+    text = _labelstr(value)
+    return text if text == "" or _LABEL_VALUE.match(text) else f"<{_shown(text, 60) or 'empty'}>"
+
+
+def shown_label(key: Any, value: Any) -> str:
+    """`k=v` as a selector's description prints it, each side bounded and marked (class 7)."""
+    return f"{shown_label_key(key)}={shown_label_value(value)}"
 
 
 def _shell_safe_selector(labels: dict[str, str]) -> str | None:
@@ -254,10 +321,11 @@ def policy_problem(pol: dict[str, Any]) -> str | None:
 def describe_selector(sel: Any) -> str:
     if not isinstance(sel, dict):
         return "nothing"
-    parts = [f"{k}={_labelstr(v)}" for k, v in sorted((sel.get("matchLabels") or {}).items())]
+    parts = [shown_label(k, v) for k, v in sorted((sel.get("matchLabels") or {}).items())]
     for e in sel.get("matchExpressions") or []:
-        vals = ",".join(_labelstr(v) for v in e.get("values") or [])
-        parts.append(f"{e.get('key')} {e.get('operator')}" + (f" ({vals})" if vals else ""))
+        vals = ",".join(shown_label_value(v) for v in e.get("values") or [])
+        key, op = shown_label_key(e.get("key")), shown_kind(e.get("operator"))
+        parts.append(f"{key} {op}" + (f" ({vals})" if vals else ""))
     return ", ".join(parts) or "all"
 
 
@@ -374,7 +442,7 @@ class Inventory:
                 why = refused_why or policy_problem(pol)
                 if why:
                     # Not evaluated and not treated as absent: an unreadable policy only ever widens the answer.
-                    self.invalid_policies.append(f"NetworkPolicy/{pol_ns}/{name} ({why})")
+                    self.invalid_policies.append(f"{shown_ref('NetworkPolicy', name, pol_ns)} ({why})")
                 else:
                     self.policies.append(pol)
             elif kind == "Namespace":
@@ -400,7 +468,7 @@ class Inventory:
                 self.invalid_policies.append(f"{kind}/{name} ({refused_why})")
             elif kind in OTHER_POLICY_KINDS:
                 ns = meta.get("namespace")
-                self.other_policies.append(f"{kind}/{ns + '/' if ns else ''}{name}")
+                self.other_policies.append(shown_ref(kind, name, ns) if ns else shown_ref(kind, name))
         from kube_noob.debug.anp import collect
         from kube_noob.debug.cnp import KIND as CNP_KIND
         from kube_noob.debug.cnp import collect as collect_cnp
@@ -458,7 +526,7 @@ class Inventory:
             return
         reason = admin_tier_reason(name, version, support)
         refs = [
-            f"{kind}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            shown_ref(kind, (pol.get("metadata") or {}).get("name", ""))
             for kind, tier in ((ANP_KIND, self.admin), (BANP_KIND, self.baseline))
             for pol in tier
         ]
@@ -483,11 +551,11 @@ class Inventory:
         OVN-Kubernetes assumption, which on a Calico 3.32 cluster is a deny that is not happening (roadmap P7).
         """
         refs = [
-            f"{kind}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            shown_ref(kind, (pol.get("metadata") or {}).get("name", ""))
             for kind, tier in ((ANP_KIND, self.admin), (BANP_KIND, self.baseline))
             for pol in tier
         ] + [
-            f"{_CNP_KIND}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            shown_ref(_CNP_KIND, (pol.get("metadata") or {}).get("name", ""))
             for tier in (self.cnp_admin, self.cnp_baseline)
             for pol in tier.policies
         ]
@@ -521,7 +589,7 @@ class Inventory:
         if support == "enforced":
             return
         refs = [
-            f"{_CNP_KIND}/{(pol.get('metadata') or {}).get('name', '')!s}"
+            shown_ref(_CNP_KIND, (pol.get("metadata") or {}).get("name", ""))
             for tier in (self.cnp_admin, self.cnp_baseline)
             for pol in tier.policies
         ]
@@ -671,7 +739,7 @@ def _peer_matches(peer: dict[str, Any], policy_ns: str, other: Endpoint, inv: In
             cidr = ipaddress.ip_network(str(block.get("cidr")), strict=False)
             excepts = [ipaddress.ip_network(str(x), strict=False) for x in block.get("except") or []]
         except ValueError:
-            return False, f"ipBlock {block.get('cidr')} (not a valid CIDR)"
+            return False, f"ipBlock {shown_field(block.get('cidr'))} (not a valid CIDR)"
         label = f"ipBlock {cidr}" + (f" except {', '.join(str(x) for x in excepts)}" if excepts else "")
         if other.net is None:
             return False, f"{label} (matches addresses outside the cluster, not pods)"
@@ -684,7 +752,7 @@ def _peer_matches(peer: dict[str, Any], policy_ns: str, other: Endpoint, inv: In
     if ns_sel is not None:
         where = f"namespaces {describe_selector(ns_sel)}"
     else:
-        where = f"namespace {policy_ns}"
+        where = f"namespace {shown_name(policy_ns)}"
     who = f"pods {describe_selector(pod_sel)}" if pod_sel is not None else "all pods"
     label = f"{who} in {where}"
     if other.net is not None:
@@ -893,7 +961,7 @@ def _networkpolicy_tier(
     for pol in selecting:
         spec = pol.get("spec") or {}
         rules = spec.get("ingress" if direction == "Ingress" else "egress") or []
-        name = f"{pol['metadata']['namespace']}/{pol['metadata'].get('name')}"
+        name = f"{shown_name(pol['metadata']['namespace'])}/{shown_name(pol['metadata'].get('name'))}"
         verdicts = []
         allowing = None
         for i, raw in enumerate(rules, 1):

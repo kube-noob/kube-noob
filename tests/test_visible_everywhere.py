@@ -113,7 +113,11 @@ def test_netpol_policy_names_in_the_text_view(tmp_path: Path, capsys: pytest.Cap
     f.write_text(NETPOL % written, encoding="utf-8")
     rc = main(["policy", "reach", "--from", "shop/web", "--to", "shop/orders", "--port", "8080", "-f", str(f)])
     out = capsys.readouterr().out
-    assert rc == 1 and "shop/deny" in out and _clean(out), out
+    # `shop/<deny...>`, not `shop/deny...`: a name this hostile is not a name the API server would accept, and
+    # since G373 one that is not well formed is wrapped in angle brackets -- which no valid name contains -- so
+    # it cannot be read as a name, or as a line of kube-noob's own output. It is still NAMED, which is what this
+    # assertion is for: the policy that decided has to be identifiable whatever its name carries.
+    assert rc == 1 and "shop/<deny" in out and _clean(out), out
     assert not any(0xD800 <= ord(ch) <= 0xDFFF for ch in out)
 
 
