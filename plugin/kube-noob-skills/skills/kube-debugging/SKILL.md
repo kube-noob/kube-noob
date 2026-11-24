@@ -214,16 +214,16 @@ kube-noob incidents confirm INCIDENT_ID --cause='memory limit below the working 
 If there is nothing to analyse yet, ask for read-only evidence and run kube-noob on what comes back:
 
 ```
-oc describe pod <name> -n <ns>
-oc get events -n <ns> --sort-by=.lastTimestamp
-oc logs <pod> -n <ns> --previous
+oc describe pod NAME -n NS
+oc get events -n NS --sort-by=.lastTimestamp
+oc logs POD -n NS --previous
 ```
 
 A redacted bundle from the live cluster is the user's decision, because it turns on cluster access (read-only, and it
 never reads Secrets):
 
 ```
-kube-noob bundle deployment/<name> -n <ns> --cluster-enabled
+kube-noob bundle deployment/NAME -n NS --cluster-enabled
 ```
 
 ## What each symptom usually means
