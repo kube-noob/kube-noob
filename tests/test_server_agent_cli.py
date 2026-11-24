@@ -265,7 +265,9 @@ def test_cli_generate_fix_diagnose_learn(tmp_path: Path, capsys: pytest.CaptureF
     bad = tmp_path / "bad.yaml"
     bad.write_text(BAD)
     fixed = tmp_path / "fixed.yaml"
-    assert main(["fix", "-f", str(bad), "--platform", "rosa-hcp", "-o", str(fixed)]) == 0
+    # 1, not 0: what `fix` writes from this bundle still holds 3 critical and 6 high findings, and the command
+    # used to exit 0 beside them -- G370's defect in the branch directly below G370's own fix (G382).
+    assert main(["fix", "-f", str(bad), "--platform", "rosa-hcp", "-o", str(fixed)]) == 1
     assert "route.openshift.io/v1" in fixed.read_text()
     ev = tmp_path / "ev.txt"
     ev.write_text("Warning FailedMount Multi-Attach error for volume pvc-1")

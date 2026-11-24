@@ -1528,13 +1528,13 @@ OpenShift family the API server is operator-managed, and off OpenShift the OpenS
 reason names `--platform openshift`). In each case the rule is left out of the evaluated list and the report states why -- naming every declined
 object, up to a cap -- in the text view, the JSON (`declined`), the SARIF notifications, the MCP result and the
 gate's JSON, SARIF, Markdown and HTML. When the rule found nothing anywhere, its controls count it as not
-evaluated and `controlSummary.notEvaluatedRules` names it. When it found something on one object and declined on
+evaluated and `controlSummary.rulesNotEvaluated` names it. When it found something on one object and declined on
 another, the finding is reported and counted under its controls as a finding, the decline is still stated in
 `assumptions` and `declined`, and `controlSummary.partlyEvaluatedRules` names it (as do the KSI rows, the OSCAL
-control remarks, the text view, the SARIF and the gate); it is not in `notEvaluatedRules`, which lists rules that
+control remarks, the text view, the SARIF and the gate); it is not in `controlSummary.rulesNotEvaluated`, which lists rules that
 reached no verdict at all, so every rule not evaluated in full is in exactly one of the two. `declined[rule].decided`
 says how many objects the rule read in full beside the ones it declined. An
-input with nothing of the rule's kind declines quietly; `controlSummary.notEvaluatedRules` and the text view's
+input with nothing of the rule's kind declines quietly; `controlSummary.rulesNotEvaluated` and the text view's
 "not evaluated:" line still name it. An exception whose rule did not reach a verdict is listed under
 `exceptions.unusedNotEvaluated` as well as `unused`, and the text view does not call it stale. While anything was
 not audited -- a rule declined on an object, a pod spec in a kind kube-noob has no reader for, a container whose

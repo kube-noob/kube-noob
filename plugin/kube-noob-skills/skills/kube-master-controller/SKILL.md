@@ -143,15 +143,15 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `protocol` | 0 ready, 1 blocked (a HIGH or CRITICAL finding remains), 3 needs clarification | `status`, `auditValidationBrief` | `steps` |
-| `validate` | 1 = a HIGH or CRITICAL finding | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `audit` | 1 = a finding at or above `--fail-on` (default high) | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `redteam` | always 0 | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
-| `fix` | always 0 | `changes`, `manualFollowUps`, `after` | |
-| `generate` | 0, or 3 needs clarification | `audit`, `assumptions`, `prerequisites` | |
-| `helm-chart` | always 0 | `files`, `assumptions`, `prerequisites` | |
-| `search` | always 0 | `results`, `howToCite` | |
-| `learning show` | always 0 | `profile`, `notes` | |
+| `protocol` | `0` ready, `1` blocked (a HIGH or CRITICAL finding remains), `3` needs clarification | `status`, `auditValidationBrief` | `steps` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `redteam` | always `0` | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
+| `fix` | `0` only when what it wrote audits clean; `1` on a high or critical finding or an undetermined after-verdict; `4` on refused input | `changes`, `manualFollowUps`, `after` | |
+| `generate` | `0`, or `3` needs clarification | `audit`, `assumptions`, `prerequisites` | |
+| `helm-chart` | always `0` | `files`, `assumptions`, `prerequisites` | |
+| `search` | always `0` | `results`, `howToCite` | |
+| `learning show` | always `0` | `profile`, `notes` | |
 
 `protocol` runs all seven steps in one call. Prefer it, then drill down with the step commands. A status of
 `needs-clarification` comes with the blocking questions and the assumptions it made: ask the questions, do not answer
@@ -194,7 +194,7 @@ kube-noob learning profile --platform openshift --openshift 4.20 --format json
 1. **Brief** — platform, versions, every assumption, the severity counts before and after, and plainly what was
    checked against what. When the user pastes a `kube-noob audit --format json` report, what it did not decide is
    part of the answer: `assumptions`, `declined` (per rule, the objects it could not read and why) and
-   `controlSummary.notEvaluatedRules` (rules that reached no verdict). A rule listed there is neither clean nor a
+   `controlSummary.rulesNotEvaluated` (rules that reached no verdict). A rule listed there is neither clean nor a
    finding; never report it as passed. `controlSummary.partlyEvaluatedRules` found something and declined on other
    objects: report the findings, and never the declined objects as covered.
 2. **The manifest** — the final YAML kube-noob wrote or fixed.
