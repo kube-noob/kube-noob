@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kube_noob.debug.anp import Decision, outside_peer, peer_matches, rules_of, subject_matches
-from kube_noob.debug.netpol import Endpoint, Inventory, selector_problem
+from kube_noob.debug.netpol import Endpoint, Inventory, selector_problem, shown_field, shown_name, shown_ref
 
 KIND = "ClusterNetworkPolicy"
 API_VERSION = "policy.networking.k8s.io/v1alpha2"
@@ -230,7 +230,9 @@ def _policy_decision(
 ) -> Decision | None:
     """This one policy's answer: its first rule whose peers and protocols both match."""
     meta = _dict(pol.get("metadata"))
-    name = f"{KIND}/{meta.get('name')}"
+    # Printed in every sentence below and in `unreadable_cluster_scoped`, which the summary and the
+    # `unknown because:` line both read: a raw `metadata.name` forged a line of output (G373, class 7).
+    name = shown_ref(KIND, meta.get("name"))
     spec = _dict(pol.get("spec"))
     tier = _str(spec.get("tier"))
     subject = spec.get("subject")
@@ -240,7 +242,13 @@ def _policy_decision(
     # the policy so the verdict can be undetermined rather than allowed.
     if not isinstance(subject, dict) or not (set(subject) & {"namespaces", "pods"}):
         inv.unreadable_cluster_scoped.append(name)
-        shape = sorted(subject) if isinstance(subject, dict) else type(subject).__name__
+        # `map(str, ...)` before `sorted`: a mapping with keys of two types (`{1: x, "a": y}`) made `sorted`
+        # raise TypeError, which ended the whole command instead of reporting one unreadable policy.
+        shape = (
+            ", ".join(shown_field(k) for k in sorted(map(str, subject)))
+            if isinstance(subject, dict)
+            else type(subject).__name__
+        )
         notes.append(
             f"{name}: its subject names no field kube-noob reads ({shape}); that is a newer CRD than this "
             "version understands, so the policy is not evaluated and the answer below cannot be trusted "
@@ -268,10 +276,11 @@ def _policy_decision(
     for i, raw in enumerate(rules_of(spec, direction), 1):
         rule = raw if isinstance(raw, dict) else {}
         action = _str(rule.get("action"))
-        label = _str(rule.get("name")) or f"rule {i}"
+        label = shown_name(rule.get("name")) if _str(rule.get("name")) else f"rule {i}"
         if action not in ACTIONS:
             notes.append(
-                f"{name} {direction.lower()} {label}: action {action or '(empty)'!r} is not one of "
+                f"{name} {direction.lower()} {label}: action "
+                f"{shown_field(action) if action else '(empty)'} is not one of "
                 f"{', '.join(ACTIONS)}; the rule is skipped rather than read as the nearest valid action "
                 "(v1alpha2 renamed Allow to Accept, so an Allow here is a v1alpha1 rule in a v1alpha2 document)"
             )
@@ -393,38 +402,42 @@ def collect(inv: Inventory, objects: list[dict[str, Any]]) -> tuple[Tier, Tier]:
         if not isinstance(obj, dict) or _str(obj.get("kind")) != KIND:
             continue
         meta = _dict(obj.get("metadata"))
-        name = _str(meta.get("name"))
+        ref = shown_ref(KIND, meta.get("name"))
         spec = _dict(obj.get("spec"))
         version = _str(obj.get("apiVersion"))
-        if version and not version.endswith("/v1alpha2"):
-            inv.unreadable_cluster_scoped.append(f"{KIND}/{name}")
+        # The whole version, not its suffix. `endswith("/v1alpha2")` was correct only because `rules.refusal`
+        # checks the group first; a second version of this group (`policy.networking.k8s.io/v1alpha3`) would
+        # then have been refused by neither, and read with v1alpha2 semantics it does not have. Comparing the
+        # string this module declares needs no second reader to be right (G373).
+        if version and version != API_VERSION:
+            inv.unreadable_cluster_scoped.append(ref)
             inv.notes.append(
-                f"{KIND}/{name}: apiVersion {version!r} is not {API_VERSION}; kube-noob reads the v1alpha2 "
+                f"{ref}: apiVersion {shown_field(version)} is not {API_VERSION}; kube-noob reads the v1alpha2 "
                 "shape only, so this document is not evaluated"
             )
             continue
         tier = _str(spec.get("tier"))
         if tier not in TIERS:
-            inv.unreadable_cluster_scoped.append(f"{KIND}/{name}")
+            inv.unreadable_cluster_scoped.append(ref)
             inv.notes.append(
-                f"{KIND}/{name}: tier {tier or '(missing)'!r} is not one of {', '.join(TIERS)}, which the API "
-                "server refuses, so this policy is not evaluated"
+                f"{ref}: tier {shown_field(spec.get('tier')) if tier else '(missing)'} is not one of "
+                f"{', '.join(TIERS)}, which the API server refuses, so this policy is not evaluated"
             )
             continue
         priority = spec.get("priority")
         if not isinstance(priority, int) or isinstance(priority, bool) or not 0 <= priority <= PRIORITY_MAX:
-            inv.unreadable_cluster_scoped.append(f"{KIND}/{name}")
+            inv.unreadable_cluster_scoped.append(ref)
             inv.notes.append(
-                f"{KIND}/{name}: priority {priority!r} is outside 0-{PRIORITY_MAX}, which the API server "
+                f"{ref}: priority {shown_field(priority)} is outside 0-{PRIORITY_MAX}, which the API server "
                 "refuses, so this policy is not evaluated"
             )
             continue
         for direction in ("ingress", "egress"):
             got = spec.get(direction)
             if isinstance(got, list) and len(got) > MAX_ITEMS:
-                inv.unreadable_cluster_scoped.append(f"{KIND}/{name}")
+                inv.unreadable_cluster_scoped.append(ref)
                 inv.notes.append(
-                    f"{KIND}/{name}: {len(got)} {direction} rules, above the API's limit of {MAX_ITEMS}; the "
+                    f"{ref}: {len(got)} {direction} rules, above the API's limit of {MAX_ITEMS}; the "
                     "API server refuses the document, so this policy is not evaluated"
                 )
                 break
@@ -436,7 +449,7 @@ def collect(inv: Inventory, objects: list[dict[str, Any]]) -> tuple[Tier, Tier]:
         rows = sorted(buckets[tier], key=lambda t: (t[0], t[1]))
         by_priority: dict[int, list[str]] = {}
         for priority, _, obj in rows:
-            by_priority.setdefault(priority, []).append(_str(_dict(obj.get("metadata")).get("name")))
+            by_priority.setdefault(priority, []).append(shown_name(_dict(obj.get("metadata")).get("name")))
         for priority, names in by_priority.items():
             if len(names) > 1:
                 inv.notes.append(
