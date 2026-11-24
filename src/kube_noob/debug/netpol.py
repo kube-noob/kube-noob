@@ -87,6 +87,10 @@ _RESOLVING_GET = {
     "CiliumClusterwideNetworkPolicy": "ciliumclusterwidenetworkpolicies",
     "GlobalNetworkPolicy": "globalnetworkpolicies",
 }
+#: The three cluster-scoped tiers this evaluator READS, and that `rules.refusal` can refuse: a document of one
+#: of these kinds under a group kube-noob does not know the kind under is a kind of somebody else, with somebody
+#: else's schema, and is not evaluated as this one (G371, class 3).
+REFUSABLE_TIER_KINDS = frozenset({ANP_KIND, BANP_KIND, _CNP_KIND})
 OTHER_POLICY_KINDS = {
     ANP_KIND,
     BANP_KIND,
@@ -345,7 +349,9 @@ class Inventory:
 
         # A workload the audit refuses (`rules.refusal`), by (namespace, kind, name), with the audit's own reason.
         self.refused_workloads: dict[tuple[str, str, str], str] = {}
-        for obj in objects:
+        # Documents of a tier kind that `refusal` refuses: kept out of the collectors below, and named instead.
+        refused_tiers: set[int] = set()
+        for position, obj in enumerate(objects):
             if not isinstance(obj, dict):
                 continue
             kind = str(obj.get("kind", ""))
@@ -381,6 +387,17 @@ class Inventory:
             elif kind in WORKLOAD_KINDS:
                 ep = _endpoint_from(kind, obj, default_namespace)
                 self.workloads[(str(ep.namespace), kind.lower(), name)] = ep
+            elif kind in REFUSABLE_TIER_KINDS and refused_why is not None:
+                # G365 fixed this for `NetworkPolicy` and recorded the gap: `anp.collect` matched `kind` alone and
+                # `cnp.collect` only that the apiVersion ended `/v1alpha2`, so an `evil.example.com/v1alpha2`
+                # AdminNetworkPolicy, BaselineAdminNetworkPolicy or ClusterNetworkPolicy was evaluated as the
+                # Kubernetes kind of that name and answered DENIED about traffic nothing in the input isolates,
+                # while `audit` on the same file refused the object (G371). Listed under `invalid_policies`, as a
+                # refused NetworkPolicy is, so the reason reaches the summary and the verdict is undetermined
+                # rather than a deny nobody read. `kind` is one of the constants by this branch's own test and
+                # `refused_why` is `refusal`'s fixed phrase, so neither is the input's own text (class 7).
+                refused_tiers.add(position)
+                self.invalid_policies.append(f"{kind}/{name} ({refused_why})")
             elif kind in OTHER_POLICY_KINDS:
                 ns = meta.get("namespace")
                 self.other_policies.append(f"{kind}/{ns + '/' if ns else ''}{name}")
@@ -388,10 +405,11 @@ class Inventory:
         from kube_noob.debug.cnp import KIND as CNP_KIND
         from kube_noob.debug.cnp import collect as collect_cnp
 
-        self.admin, self.baseline = collect(self, objects)
+        tier_objects = [obj for position, obj in enumerate(objects) if position not in refused_tiers]
+        self.admin, self.baseline = collect(self, tier_objects)
         # The v1alpha2 ClusterNetworkPolicy tiers, which Calico 3.32 enforces in place of the two above.
         # Imported here rather than at module scope: `cnp` imports this module for Endpoint and Inventory.
-        self.cnp_admin, self.cnp_baseline = collect_cnp(self, objects)
+        self.cnp_admin, self.cnp_baseline = collect_cnp(self, tier_objects)
         evaluated_kinds = {ANP_KIND, BANP_KIND}
         if self.admin or self.baseline:
             # Evaluated now, so they must not also be listed as policies that were only found.
