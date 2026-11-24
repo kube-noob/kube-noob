@@ -91,7 +91,12 @@ def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
     return subprocess.run(
         [sys.executable, "-m", "kube_noob", *args],
-        cwd=cwd, env=env, capture_output=True, text=True, timeout=300, check=False,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
     )
 
 
@@ -136,9 +141,10 @@ def test_validate_still_exits_zero_on_an_input_it_could_read(tmp_path: Path) -> 
 
 def test_validate_and_audit_now_agree_about_this_directory(mixed: Path) -> None:
     """Three commands giving three answers about one directory was the shape of the finding."""
-    assert _run(["validate", "-f", str(mixed)], ROOT).returncode == _run(
-        ["audit", "-f", str(mixed), "--fail-on", "never"], ROOT
-    ).returncode
+    assert (
+        _run(["validate", "-f", str(mixed)], ROOT).returncode
+        == _run(["audit", "-f", str(mixed), "--fail-on", "never"], ROOT).returncode
+    )
 
 
 def test_posture_scan_reports_the_misgrouped_binding_under_refused(mixed: Path) -> None:
@@ -220,12 +226,17 @@ def test_the_audit_refuses_the_two_shapes_that_look_like_they_should_not_gate() 
     from kube_noob.audit.rules import refusal
     from kube_noob.yamlio import Document
 
-    for api, kind in (("serving.knative.dev/v1", "Route"), ("example.com/v1", "Role"),
-                      ("rbac.k8s.io/v1", "ClusterRoleBinding")):
+    for api, kind in (
+        ("serving.knative.dev/v1", "Route"),
+        ("example.com/v1", "Role"),
+        ("rbac.k8s.io/v1", "ClusterRoleBinding"),
+    ):
         doc = Document(index=0, data={"apiVersion": api, "kind": kind, "metadata": {"name": "x"}})
         assert refusal(doc), f"the audit reads {api} {kind}, so the scan gating on it would be wrong"
-    ok = Document(index=0, data={"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
-                                 "metadata": {"name": "x"}})
+    ok = Document(
+        index=0,
+        data={"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "x"}},
+    )
     assert refusal(ok) is None, "the correctly grouped binding must still be read"
 
 
