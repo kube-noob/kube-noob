@@ -709,17 +709,39 @@ def _rows() -> list[_Row]:
                 continue
             fields = tuple(re.findall(r"`([A-Za-z]+\??)`", cells[2] + " " + cells[3]))
             rows.append(_Row(p.parent.name, cells[0].strip("`"), cells[1], fields))
+    if len(rows) < _MIN_ROWS:
+        raise AssertionError(
+            f"found {len(rows)} table rows under '## Which command' across "
+            f"{len(list(LITE.glob('skills/*/SKILL.md')))} skill files, below the floor of {_MIN_ROWS}: the tables "
+            "were not found, so every check built on them is measuring nothing"
+        )
     return rows
 
 
-#: An exit code as a documented table column spells one: a bare single digit, or 141 for a closed pipe. A digit
-#: inside a version or a flag is not one, so the match is on whole words only.
-_EXIT_CODE = re.compile(r"(?<![\w.-])(141|[0-5])(?![\w.-])")
+#: Where a code may stand: the column's opening, or the opening of one of its clauses.
+_CODE_LEAD = r"(?:^|(?<=; )|(?<=, )|(?<=or )|(?<=and )|(?<=always ))"
+#: What may follow one: the column's end, a clause break, or a connective the tables already use.
+_CODE_TAIL = r"(?=$|[,;]| =| when| unless| on| ready| blocked| needs| only| otherwise)"
+#: An exit code in a documented column, matched by POSITION rather than by looking like a small number. Scanning
+#: for a bare digit admitted every count and duration a maintainer might write into the prose -- "times out after
+#: 5 seconds" admitted 5, "even for 3 replicas" admitted 3 -- each one widening the set the command is allowed to
+#: return, which is the defect this test exists to catch, inside the test (G383, second pass).
+_EXIT_CODE = re.compile(_CODE_LEAD + r"(141|[0-5])" + _CODE_TAIL)
+
+#: The floor below which the tables have not been found. `_rows()` feeds a `parametrize`, and pytest reports a
+#: parametrize over an empty list as one SKIPPED test and exits 0 -- so renaming the `## Which command` heading
+#: would delete every exit-contract check in the repository and go green. Measured: a test whose body is
+#: `assert False`, parametrized over `[]`, reports "1 skipped" and exits 0 (G383, second pass).
+_MIN_ROWS = 30
 
 
 def _documented_exits(column: str) -> frozenset[int]:
     """The exit codes a table's exit column commits the command to, on an input the column says nothing special
     about.
+
+    A code is matched by its POSITION in the column, not by looking like a small number: the first version of
+    this scanned for any bare digit, which admitted every count and duration in the prose beside the codes and so
+    widened the set the command may return -- an unknown digit read as a pass, in the test written to stop that.
 
     Only the `always 0` rows were ever checked (G276), which is every row whose code cannot be wrong and no row
     whose code decides a CI gate -- `audit`, `validate`, `protocol`, `policy reach`, `posture scan` and
@@ -797,7 +819,7 @@ def _fixture_argv(command: str, tmp: Path) -> list[str]:
 
 def test_every_command_a_skill_runs_has_a_table_row_and_every_row_a_command() -> None:
     rows = {(r.where, r.command) for r in _rows()}
-    assert len(rows) >= 30, "the tables were not found; this test is measuring nothing"
+    assert len(rows) >= _MIN_ROWS, "the tables were not found; this test is measuring nothing"
     untabled = {"learning profile", "incidents confirm"}  # writes the user asked for, explained in the prose
     runs = {(c.skill, " ".join(_parse(c.line)[0])) for c in _commands() if c.runs and c.skill}
     runs = {(s, c) for s, c in runs if c and c not in untabled}
