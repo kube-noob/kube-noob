@@ -356,14 +356,27 @@ spec:
 def test_a_foreign_group_ending_in_the_same_version_is_not_read_as_the_upstream_kind() -> None:
     """`version.endswith("/v1alpha2")` read `example.com/v1alpha2 ClusterNetworkPolicy` -- a vendor's CRD that
     shares only the kind NAME -- with the upstream v1alpha2 semantics, and answered DENIED with a fix addressed
-    to a cluster administrator. `rules.refusal` does not cover this kind in this tree, and comparing the whole
-    string against the version this module declares is correct whether or not it comes to."""
+    to a cluster administrator.
+
+    What this holds is the OUTCOME, not which of two correct mechanisms reaches it. When this was written
+    `rules.refusal` knew no group for `ClusterNetworkPolicy`, so the exact-version check in `cnp` was the only
+    thing standing between a vendor CRD and an upstream verdict. G371 then gave the kind a group, so `refusal`
+    now declines the object first and the reason carries the audit's own fixed phrase -- built from the kind
+    name, never from the input (class 7) -- instead of this module's. That is the better of the two: one
+    detector, one phrase, consistent with every other refused kind. Pinning this module's wording would make a
+    test of the product's one refusal path fail the moment that path improved, so the assertions below say what
+    must be true of the answer and leave the route open. The exact-version check stays and keeps its own test
+    (`test_a_later_version_of_the_same_group_is_still_refused`), because it is what answers if `refusal` ever
+    stops covering the kind."""
     body = _cnp(name="future-deny").replace(
         "apiVersion: policy.networking.k8s.io/v1alpha2", "apiVersion: example.com/v1alpha2"
     )
     out = _reach(WORKLOADS + body)
-    assert out["verdict"] == "undetermined", out.get("summary")
-    assert any("example.com/v1alpha2" in n and "is not policy.networking.k8s.io/v1alpha2" in n for n in out["_notes"])
+    said = " ".join([*out["_notes"], str(out.get("summary") or "")])
+    assert out["verdict"] == "undetermined", said
+    assert "DENIED" not in said and "Denied by" not in said, said
+    assert "ClusterNetworkPolicy/future-deny" in said, said
+    assert "could not be read" in said or "not audited" in said or "is not evaluated" in said, said
 
 
 def test_a_later_version_of_the_same_group_is_still_refused() -> None:
