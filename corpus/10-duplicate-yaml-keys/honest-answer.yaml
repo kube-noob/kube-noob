@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 10-duplicate-yaml-keys
+object: "A v1 Pod whose container carries two `securityContext` keys: the first sets privileged: true, the second is fully hardened."
+mechanism: "YAML parsers resolve a duplicate key by keeping one of the two values, usually the last, so the document means one thing to the parser and another to the reader of the file, and a scanner that reports on the parsed value states a verdict about a document whose meaning is not determined."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: failed
+  exit_code: 1
+  must_name:
+    - "Pod/app/twice"

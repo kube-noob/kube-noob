@@ -1,0 +1,13 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 15-a-duplicate-key-on-the-wrapper-around-a-refused-object
+object: "A v1 List carrying two `items` keys: the first holds a privileged Deployment under apps.example.invalid/v1, which the rules refuse; the second holds an ordinary ConfigMap."
+mechanism: "A reader that unwraps a container object and then checks only what came out of it never looks at the wrapper, so a duplicate key on the List decides which items exist at all -- and whichever list the parser kept, the items it discarded are gone without a word."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "Deployment/app/shipper"
+    - "ConfigMap/app/settings"

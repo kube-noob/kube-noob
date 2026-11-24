@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: apps.example.invalid/v1
+    kind: Deployment
+    metadata: {name: shipper, namespace: app}
+    spec:
+      replicas: 1
+      selector: {matchLabels: {app: shipper}}
+      template:
+        metadata: {labels: {app: shipper}}
+        spec:
+          containers:
+            - name: shipper
+              image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+              securityContext: {privileged: true}
+items:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata: {name: settings, namespace: app}
+    data: {retries: "3"}
