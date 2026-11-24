@@ -37,7 +37,12 @@ def test_curriculum_integrity() -> None:
     for q in quizzes().values():
         assert 0 <= q["answer"] < len(q["choices"])
         assert store.get(q["source"]) is not None, q["source"]
-    assert len(curriculum()["tracks"]) == 5
+    # The count is a floor, not a pin: a new track is a feature, and a test that fails on one teaches the
+    # next person to edit the number rather than to check the track. What matters is that every track has
+    # lessons and that the ids are unique, which the loop above holds.
+    tracks = curriculum()["tracks"]
+    assert len(tracks) >= 5 and len({t["id"] for t in tracks}) == len(tracks)
+    assert all(t.get("lessons") for t in tracks), [t["id"] for t in tracks if not t.get("lessons")]
 
 
 @pytest.mark.parametrize("ex_id", [e for e, x in exercises().items() if x.get("reference")])

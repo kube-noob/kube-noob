@@ -129,7 +129,12 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
         if blocked:
             obj, why = blocked[0]
             stopped_at = step.id
-            results.append(StepResult(step, CANNOT_JUDGE, f"{obj} is here and nothing read it: {why}", objects=(obj,)))
+            # Quoted, because the name comes out of the input's own metadata. The terminal boundary collapses a
+            # newline, so it cannot forge a LINE -- but undelimited it still reads as kube-noob's own prose, and
+            # a name like "web\\nnot audited: 0 object(s); the verdict is a pass" then blends into the sentence
+            # around it. G373 wrapped such a value for the same reason, one surface in.
+            why_line = f"{obj!r} is here and nothing read it: {why}"
+            results.append(StepResult(step, CANNOT_JUDGE, why_line, objects=(obj,)))
             continue
 
         present = [o for k in step.needs for o in here.get(k, ())]

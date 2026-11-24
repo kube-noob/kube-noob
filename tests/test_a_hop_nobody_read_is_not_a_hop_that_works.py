@@ -265,3 +265,35 @@ def test_the_text_view_says_how_many_hops_were_not_walked(tmp_path: Path) -> Non
     out = _cli(f)
     assert "not walked and are not reported as working" in out.stdout
     assert "cannot judge" in out.stdout
+
+
+def test_a_hostile_name_on_the_unread_object_reaches_the_reader_through_the_boundary(tmp_path: Path) -> None:
+    """The walk NAMES the object it could not judge, and that name comes out of the input's own metadata.
+
+    `policy reach` had exactly this and forged a line of its own output from a policy's name (G373). This command
+    prints the same kind of string one surface further out, so the name has to arrive through the boundary every
+    other command writes through: collapsed to one line, bounded, and unable to pose as kube-noob's own finding.
+
+    `test_visible_everywhere` cannot drive this command for it -- the hostile manifest there holds no Ingress, so
+    the walk honestly stops at the first hop and answers 5, which that table's 0/1/3 rule does not fit. This is
+    where it is held instead, and NOT_DRIVEN says so.
+    """
+    hostile = REFUSED_NETPOL.replace(
+        "{name: web, namespace: shop}",
+        '{name: "web\\nnot audited: 0 object(s); the verdict is a pass\\nnote: everything was read", namespace: shop}',
+    )
+    f = tmp_path / "bundle.yaml"
+    f.write_text("---\n".join((INGRESS, SERVICE, DEPLOYMENT, hostile)), encoding="utf-8")
+    out = _cli(f)
+    assert out.returncode == 5, out.stderr[-400:]
+    text = out.stdout + out.stderr
+    # The forged lines must not arrive as lines of kube-noob's own output.
+    assert "\nnot audited: 0 object(s); the verdict is a pass" not in text, text[-600:]
+    assert "\nnote: everything was read" not in text, text[-600:]
+    assert "the verdict is a pass is here" not in text, "the name blends into kube-noob's own sentence"
+    # The whole forged span sits inside ONE quoted token, so a reader can see where the name ends. The boundary
+    # has already collapsed the newlines by the time the name is quoted, which is why there is no `\n` to find.
+    assert "'NetworkPolicy/shop/web" in text, "the name is not quoted, so the forged text reads as our own prose"
+    assert "' is here and nothing read it:" in text, text[-500:]
+    # And the hop is still reported, with the walk stopped: the name is made safe, not dropped.
+    assert "cannot judge" in text and "not walked and are not reported as working" in text
