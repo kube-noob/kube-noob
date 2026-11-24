@@ -59,6 +59,7 @@ from kube_noob.catalog import (
     parse_minor,
     removed_api,
 )
+from kube_noob.debug.cnp import KIND as CNP_KIND
 from kube_noob.debug.netpol import ANP_KIND, BANP_KIND, policy_types
 from kube_noob.yamlio import Document, PathT, fmt_path, get_path, locator
 
@@ -95,6 +96,12 @@ _EXTRA_GROUPS: dict[str, frozenset[str]] = {
     "OAuth": frozenset({OAUTH_GROUP}),
     ANP_KIND: frozenset({"policy.networking.k8s.io"}),
     BANP_KIND: frozenset({"policy.networking.k8s.io"}),
+    # The v1alpha2 kind that replaces the two above, and that `kube_noob.debug.cnp` evaluates. No rule reads it
+    # yet, and it is here so that `refusal` CAN refuse it: without a group of its own, `SUBJECT_GROUPS.get` gave
+    # `None`, `refusal` returned `None`, and a `ClusterNetworkPolicy` under somebody else's group was neither
+    # refused nor read -- no `notAudited` row, verdict complete, exit 0, so an unrecognised shape read as an
+    # absent one. A kind in this table need not have a rule; it needs a group, or it cannot be refused (G371).
+    CNP_KIND: frozenset({"policy.networking.k8s.io"}),
     "ReplicationController": frozenset({""}),
     "ResourceClaim": frozenset({"resource.k8s.io"}),
     "ResourceClaimTemplate": frozenset({"resource.k8s.io"}),
