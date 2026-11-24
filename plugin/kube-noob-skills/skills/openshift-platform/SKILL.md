@@ -183,7 +183,7 @@ with the reason in `notDetermined`: it means the files lacked that object, not t
 never `complete` from files unless `--whole-bundle` asserts the files are everything that applies:
 
 ```bash
-kube-noob posture reach deployment/<name> -n <ns> -f "$KN/app.yaml" --format json
+kube-noob posture reach deployment/NAME -n NS -f "$KN/app.yaml" --format json
 ```
 
 With an RHACS policy export: which policies kube-noob's rules also check, which differ, and what kube-noob has no rule
