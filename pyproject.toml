@@ -103,6 +103,9 @@ include = [
   "scripts",
   "examples",
   "demos",
+  # The adversarial corpus and its runner: the sdist carries scripts/, so an sdist without corpus/ would ship a
+  # runner with nothing to run (G377).
+  "corpus",
 ]
 
 [tool.ruff]

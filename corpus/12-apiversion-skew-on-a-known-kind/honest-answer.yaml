@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 12-apiversion-skew-on-a-known-kind
+object: "A Deployment under extensions/v1beta1 -- a group and version the API server removed in 1.16 -- with a privileged container."
+mechanism: "A reader keyed to the current group of a known kind either drops the old-but-real apiVersion, losing the privileged container with it, or reads it and says nothing about the apiVersion, so an object that no current cluster would admit is reported as an ordinary workload."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: failed
+  exit_code: 1
+  must_name:
+    - "Deployment/app/web"

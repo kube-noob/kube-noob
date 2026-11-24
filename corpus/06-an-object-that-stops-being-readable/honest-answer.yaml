@@ -1,0 +1,15 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 06-an-object-that-stops-being-readable
+object: "Two snapshots of one namespace: in `before` a privileged, host-networked apps/v1 Deployment beside a hardened one; in `after` the same Deployment moved to apps.example.invalid/v1, which the rules refuse, with the hardened neighbour unchanged."
+mechanism: "A delta that asks only whether a finding is still present will call every finding on an object that stopped being readable \"fixed\", because absence from the new report is indistinguishable from remediation unless the delta first asks whether the object was read at all -- and a guard written as a set of KINDS does not fire while another object of the same kind is still readable."
+setup:
+  - ["posture", "snapshot", "-f", "before", "--platform", "kubernetes", "--version", "1.31", "-o", "{tmp}/before.json"]
+  - ["posture", "snapshot", "-f", "after", "--platform", "kubernetes", "--version", "1.31", "-o", "{tmp}/after.json"]
+honest:
+  command: ["--format", "json", "posture", "diff", "{tmp}/before.json", "{tmp}/after.json"]
+  verdict: undetermined
+  exit_code: 1
+  must_name:
+    - "Deployment/app/shipper"

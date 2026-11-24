@@ -1,0 +1,12 @@
+# This file is the recorded honest answer for the fixture beside it. It was MEASURED by running the
+# command below; it is not reasoned about. If kube-noob and this file disagree, kube-noob is what is
+# wrong until proven otherwise. See ../README.md.
+id: 04-a-misgrouped-cluster-network-policy
+object: "A cluster-scoped ClusterNetworkPolicy under policy.example.invalid/v1alpha2 whose only rule allows all ingress from all namespaces."
+mechanism: "A cluster-scoped policy tier collected by its own loop rather than by the namespaced NetworkPolicy loop can be matched on `kind` alone, or on an apiVersion whose version part merely ends in the expected string, so a document under any group at all is evaluated as the upstream kind and reported as the policy that decided the traffic."
+honest:
+  command: ["--format", "json", "gate", "-f", "manifests", "--platform", "kubernetes", "--version", "1.31", "--fail-on", "high"]
+  verdict: incomplete
+  exit_code: 1
+  must_name:
+    - "ClusterNetworkPolicy/tier-allow-all"

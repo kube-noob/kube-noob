@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: runner
+  namespace: app
+  labels: {app: web}
+spec:
+  hostPID: true
+  containers:
+    - name: runner
+      image: registry.example.com/app@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      ports: [{containerPort: 8080}]
+      securityContext:
+        privileged: true
+      volumeMounts: [{name: root, mountPath: /host}]
+  volumes: [{name: root, hostPath: {path: /}}]

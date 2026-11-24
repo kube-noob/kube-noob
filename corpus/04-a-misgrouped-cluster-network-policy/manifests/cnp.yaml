@@ -1,0 +1,12 @@
+apiVersion: policy.example.invalid/v1alpha2
+kind: ClusterNetworkPolicy
+metadata:
+  name: tier-allow-all
+spec:
+  priority: 10
+  subject:
+    namespaces: {}
+  ingress:
+    - action: Allow
+      from:
+        - namespaces: {}
