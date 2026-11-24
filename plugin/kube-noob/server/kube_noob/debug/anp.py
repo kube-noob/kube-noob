@@ -52,7 +52,7 @@ import ipaddress
 from dataclasses import dataclass
 from typing import Any
 
-from kube_noob.debug.netpol import Endpoint, Inventory, selector_matches
+from kube_noob.debug.netpol import Endpoint, Inventory, selector_matches, shown_field, shown_name, shown_ref
 
 ANP_KIND = "AdminNetworkPolicy"
 BANP_KIND = "BaselineAdminNetworkPolicy"
@@ -243,17 +243,20 @@ def _policy_decision(
     """This one policy's answer for this traffic: its first rule whose peer and ports both match, or ``None`` when
     the policy does not select the subject or no rule matches."""
     meta = pol.get("metadata") or {}
-    name = f"{pol.get('kind')}/{meta.get('name')}"
+    # Every sentence below names this policy and this rule, and both names came out of the document: printed raw,
+    # a `metadata.name` holding a newline forged a line of kube-noob's own output (G373, class 7).
+    name = shown_ref(pol.get("kind"), meta.get("name") if isinstance(meta, dict) else None)
     spec = pol.get("spec") or {}
     if not subject_matches(spec.get("subject") if isinstance(spec, dict) else None, subject_ep, inv):
         return None
     for i, raw in enumerate(rules_of(spec, direction), 1):
         rule = raw if isinstance(raw, dict) else {}
         action = _str(rule.get("action"))
-        label = _str(rule.get("name")) or f"rule {i}"
+        label = shown_name(rule.get("name")) if _str(rule.get("name")) else f"rule {i}"
         if action not in actions:
             notes.append(
-                f"{name} {direction.lower()} {label}: action {action or '(empty)'!r} is not one of "
+                f"{name} {direction.lower()} {label}: action "
+                f"{shown_field(action) if action else '(empty)'} is not one of "
                 f"{', '.join(actions)}; the rule is skipped rather than read as the nearest valid action"
             )
             continue
@@ -369,18 +372,19 @@ def collect(inv: Inventory, objects: list[dict[str, Any]]) -> tuple[list[dict[st
         kind = _str(obj.get("kind"))
         meta = obj.get("metadata") or {}
         name = _str(meta.get("name") if isinstance(meta, dict) else "")
+        ref = shown_ref(kind, name)
         if kind == ANP_KIND:
             spec = obj.get("spec") or {}
             priority = spec.get("priority") if isinstance(spec, dict) else None
             if not isinstance(priority, int) or isinstance(priority, bool) or not 0 <= priority <= PRIORITY_MAX:
                 inv.notes.append(
-                    f"{kind}/{name}: priority {priority!r} is outside 0-{PRIORITY_MAX}, which the API server "
+                    f"{ref}: priority {shown_field(priority)} is outside 0-{PRIORITY_MAX}, which the API server "
                     "refuses, so this policy is not evaluated"
                 )
                 continue
             if priority > OVN_PRIORITY_MAX:
                 inv.notes.append(
-                    f"{kind}/{name}: priority {priority} is above {OVN_PRIORITY_MAX}, which OVN-Kubernetes does not "
+                    f"{ref}: priority {priority} is above {OVN_PRIORITY_MAX}, which OVN-Kubernetes does not "
                     "implement (it raises ANPWithUnsupportedPriority and the policy has no effect on the cluster); "
                     "it is not evaluated, so it does not decide this traffic"
                 )
@@ -389,7 +393,7 @@ def collect(inv: Inventory, objects: list[dict[str, Any]]) -> tuple[list[dict[st
         elif kind == BANP_KIND:
             if name != "default":
                 inv.notes.append(
-                    f"{kind}/{name}: a BaselineAdminNetworkPolicy is a singleton that must be named 'default'; the "
+                    f"{ref}: a BaselineAdminNetworkPolicy is a singleton that must be named 'default'; the "
                     "API server refuses any other name, so this one is not evaluated"
                 )
                 continue
@@ -399,7 +403,7 @@ def collect(inv: Inventory, objects: list[dict[str, Any]]) -> tuple[list[dict[st
     # fragile even in the runs where the tied policies happen to agree. Say it once, naming them.
     by_priority: dict[int, list[str]] = {}
     for priority, _, obj in anps:
-        by_priority.setdefault(priority, []).append(str((obj.get("metadata") or {}).get("name")))
+        by_priority.setdefault(priority, []).append(shown_name((obj.get("metadata") or {}).get("name")))
     for priority, names in by_priority.items():
         if len(names) > 1:
             inv.notes.append(
