@@ -849,7 +849,9 @@ def history(state_dir: Path, limit: int = MAX_HISTORY) -> dict[str, Any]:
       carries no ``notRead`` key at all, which is every report kube-noob wrote before 0.8: the format string did
       not change when the key was added, so a two-week-old folder survives an upgrade full of reports whose
       completeness is simply unknown. Reading a missing key as "nothing was unread" would draw an undercount as
-      a measurement, which is the defect this project keeps finding.
+      a measurement, which is the defect this project keeps finding. It is ``False`` for a report whose own
+      verdict is ``undetermined``, which is the half this read lost: ``notRead`` is what a CLUSTER refused, and
+      an OBJECT the rules refused leaves the report undetermined without putting anything in it (G374).
     * ``open`` and ``excepted`` are ``None`` when the report does not carry an integer for them.
     * ``source`` is what was snapshotted, so the caller can refuse to draw one line across two populations.
 
@@ -879,12 +881,22 @@ def history(state_dir: Path, limit: int = MAX_HISTORY) -> dict[str, Any]:
             if not isinstance(findings, dict):
                 raise ValueError("no findings")
             unread = data.get("notRead")
+            complete = (not unread) if isinstance(unread, list) else None
+            # `notRead` alone is half the question. It holds the resources a CLUSTER refused; an object the
+            # RULES refused puts nothing in it and leaves `verdict` undetermined instead, so the day a critical
+            # finding stopped being provable drew a point reading `open: 0, complete: true` beside the previous
+            # day's `open: 10` -- the lie G366 took out of `findings.fixed`, redrawn one surface over (review
+            # class 25). `verdict` is THE predicate `diff` derives from the unaccepted `notAudited` rows, and
+            # reading it is deliberately not a second local list of what incomplete means (class 9); a report
+            # written before that key existed carries neither and keeps its old answer.
+            if data.get("verdict") == "undetermined":
+                complete = False
             rows.append(
                 {
                     "at": data["to"] if isinstance(data.get("to"), str) else None,
                     "open": _count(findings.get("open")),
                     "excepted": _count(findings.get("excepted")),
-                    "complete": (not unread) if isinstance(unread, list) else None,
+                    "complete": complete,
                     "source": data["source"] if isinstance(data.get("source"), str) else None,
                 }
             )
