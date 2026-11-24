@@ -281,6 +281,10 @@ def analyze(
             "entries": [{"resource": res, "reason": reason} for res, reason in entries[:MAX_DECLINED_ENTRIES]],
             "withheld": max(0, len(entries) - MAX_DECLINED_ENTRIES),
             "decided": decided,
+            # Whether this decline stood in for a finding the rule was about to make, which decides whether an
+            # exception accepting the object may restore the score (G379). Written only when true, so a report
+            # from before this key existed reads as "no", which is what every decline meant then.
+            **({"suppressedFinding": True} if rid in ctx.finding_suppressed else {}),
         }
     if ctx.unreadable_shapes:
         # A field of the wrong type (`resources: 1`) used to crash the whole audit, exit 1 (G276). Now each rule that
