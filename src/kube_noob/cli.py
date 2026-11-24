@@ -3115,6 +3115,11 @@ def build_parser() -> argparse.ArgumentParser:
     lsu = lsub.add_parser("submit")
     lsu.add_argument("exercise_id")
     lsu.add_argument("-f", "--file", required=True)
+    lme = lsub.add_parser("mechanism")
+    lme.add_argument("mechanism_id")
+    lme.add_argument("-f", "--file", required=True, help="A manifest file or directory to walk the path against")
+    lme.add_argument("--platform", choices=PLATFORMS, default=None)
+    lme.add_argument("--version", dest="pversion", help="OpenShift (4.22) or Kubernetes (1.35) version")
     lq = lsub.add_parser("quiz")
     lq.add_argument("question_id")
     lq.add_argument("--choice", type=int)
@@ -4174,6 +4179,30 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             res = kit.submit(tk.SubmitIn(exercise_id=a.exercise_id, answer=_read(a.file), learner=a.learner))
             _emit(res, fmt)
             return 0 if res["passed"] else 1
+        elif lc == "mechanism":
+            from kube_noob.audit.engine import analyze as _analyze
+            from kube_noob.learn import mechanism as _mech
+            from kube_noob.learn.tutor import curriculum as _curriculum
+
+            steps_by_id = {
+                lsn["id"]: lsn
+                for trk in _curriculum().get("tracks") or ()
+                for lsn in trk.get("lessons") or ()
+                if lsn.get("steps")
+            }
+            lesson = steps_by_id.get(a.mechanism_id)
+            if lesson is None:
+                known = ", ".join(sorted(steps_by_id)) or "none"
+                print(f"error: no mechanism {a.mechanism_id!r}; this build has: {known}", file=sys.stderr)
+                return 2
+            walked = _mech.walk(lesson, _analyze(_read(a.file), a.platform or s.default_platform, a.pversion).as_dict())
+            if a.format == "text":
+                print(_mech.render(walked))
+            else:
+                _emit(walked, fmt)
+            # The walk's own verdict decides, in one place, as everywhere else: 5 when it stopped and reached no
+            # verdict about the path, 1 when it finished and a hop is broken, 0 when every observable hop holds.
+            return int(walked["exitCode"])
         elif lc == "quiz":
             _emit(kit.quiz(tk.QuizIn(question_id=a.question_id, choice=a.choice, learner=a.learner)), fmt)
         elif lc == "progress":
