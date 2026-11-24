@@ -55,14 +55,23 @@ output was computed over a denominator that excludes it -- `clean: 12` on a cont
 indicator's `clean` count, a snapshot's `evaluatedRules`. On every mixed fixture here those figures are
 byte-identical to the clean fixture's. `docs/report-ir.md` records the measurement and why the fix is one
 coverage ledger the renderers project, not a ninth and tenth patch to a renderer.
+
+`drift` is the one renderer here that is a DELTA over two snapshots rather than a projection of one report, and
+it was outside this matrix while the worst measured lie of the series happened in it (G366). `_drift_pair`
+states what "the same fixture" means for a delta and why; `_drift_clean` states the one place the predicates
+above do not translate as written and the smallest honest translation of them, because `verdict` is set from the
+`notAudited` rows whether or not the join that stops a lost finding reading as `fixed` exists (G374).
 """
 
 from __future__ import annotations
 
 import ast
 import contextlib
+import copy
+import datetime as dt
 import io
 import json
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +80,7 @@ from typing import Any, Literal
 import pytest
 import yaml
 
-from kube_noob import admission, cli, gate, oscal, report_html
+from kube_noob import admission, cli, drift, gate, oscal, report_html
 from kube_noob import toolkit as tk
 from kube_noob.audit.model import SKIP_UNREADABLE
 from kube_noob.gate import NOT_AUDITED_RULE, NOT_EVALUATED_RULE, NOT_READ_RULE
@@ -511,12 +520,13 @@ class Adapter:
     which reads `status.state` and not the prose beside it (G335).
 
     `reads` is what this renderer is given. `report` renderers are handed the whole report, so a file that could
-    not be read is in their input; `manifests` and `object` renderers are handed text and have no such file to
-    report, which is a gap in the surface and not a defect in the renderer.
+    not be read is in their input; `manifests`, `object` and `snapshots` renderers are handed text, one object or
+    two snapshots of objects, and have no such file to report, which is a gap in the surface and not a defect in
+    the renderer.
     """
 
     consumer: str
-    reads: Literal["report", "manifests", "object"]
+    reads: Literal["report", "manifests", "object", "snapshots"]
     render: Callable[[Bundle], Any]
     carries_withheld: Callable[[Any], bool]
     presents_as_clean: Callable[[Any], bool]
@@ -748,6 +758,163 @@ def _receipt_clean(doc: Any) -> bool:
     return verdict["exitCode"] == 0 and not verdict["undetermined"]
 
 
+#: The groups the refused fixtures above put a kind under, mapped back to the one an API server serves it
+#: under. The fixtures were BUILT by that substitution (`_REFUSED_DEPLOYMENT = _PRIVILEGED_DEPLOYMENT.replace(
+#: "apps/v1", "apps.k8s.io/v1")`), so undoing it is how "the same object, back when the rules still read it" is
+#: spelled.
+_SERVED_GROUP = {
+    "apps.k8s.io/v1": "apps/v1",
+    "core.k8s.io/v1": "v1",
+    "rbac.k8s.io/v1": "rbac.authorization.k8s.io/v1",
+}
+_DAY_ONE = dt.datetime(2026, 11, 1, tzinfo=dt.UTC)
+_DAY_TWO = dt.datetime(2026, 11, 2, tzinfo=dt.UTC)
+#: Per fixture, not per cell. Four adapters read the same pair and `bundles` is function-scoped, so without this
+#: the matrix would run two full audits per cell for each of them. `taken_at` is explicit and `snapshot` is
+#: deterministic over the same objects, which is what makes the cache a cache and not a second answer.
+_DRIFT_PAIRS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+_DRIFT_HISTORIES: dict[str, Any] = {}
+
+
+def _drift_snapshot(objects: list[dict[str, Any]], when: dt.datetime) -> dict[str, Any]:
+    """One `posture snapshot` of these objects, as `cli._snapshot_from_args` takes it from `-f`."""
+    return drift.snapshot(objects, source="manifests", platform="kubernetes", taken_at=when)
+
+
+def _drift_pair(b: Bundle) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The two snapshots `posture diff` is handed for this fixture -- and what "the same fixture" means here.
+
+    `drift` is the one renderer in this file that is a DELTA over two snapshots rather than a projection of one
+    report, so the matrix's "one fixture, one input" has to be given a meaning rather than assumed. Three
+    readings were weighed:
+
+    1. `old` readable, `new` withheld -- the evidence disappears;
+    2. `old` withheld, `new` readable -- the evidence appears;
+    3. both withheld -- nothing moved, and coverage is incomplete throughout.
+
+    (3) translates to every fixture uniformly and holds nothing: with identical snapshots no finding and no
+    object moves, so the one guard a delta has -- `_unreadable`, G366's join -- never runs, and an adapter built
+    on it passes with that join deleted. (2) is the same for the same reason. (1) is the only pairing in which
+    the report has something to LOSE, and the loss is the measured lie: 15 findings reported `fixed`, the
+    critical KN-S001 among them, from a one-line `apps/v1` -> `apps.k8s.io/v1` change.
+
+    So `new` is always the fixture exactly as the matrix holds it, and `old` is the state that same input was in
+    when the rules still read the object it now withholds. Where the withholding is a GROUP the rules refuse,
+    that state is the same object under the group an API server serves it under. Where nothing could ever have
+    read it -- a Tekton `Task` has no reader, a `DeploymentConfig` with its containers under `template.Spec` has
+    no pod spec to find, an `InferenceService`'s `explainer.alibi` is a field the reader does not read inside a
+    pod spec it does -- there is no such state, and the object is absent from `old` instead, so the fixture
+    still conforms on the half that is about saying so. One rule, two shapes, and what makes the object
+    unreadable decides which -- never the fixture's name, so a fixture added later gets its pairing too.
+    """
+    if b.fixture.name not in _DRIFT_PAIRS:
+        new = _drift_snapshot(b.objects, _DAY_TWO)
+        unread = _drift_unread({"notAudited": (new.get("coverage") or {}).get("notAudited") or []})
+        before: list[dict[str, Any]] = []
+        for obj in b.objects:
+            if _label(obj) not in unread:
+                before.append(obj)
+            elif (served := _SERVED_GROUP.get(str(obj.get("apiVersion")))) is not None:
+                before.append({**copy.deepcopy(obj), "apiVersion": served})
+        _DRIFT_PAIRS[b.fixture.name] = (_drift_snapshot(before, _DAY_ONE), new)
+    return _DRIFT_PAIRS[b.fixture.name]
+
+
+def _drift_history(b: Bundle) -> Any:
+    """The trend `posture report` attaches to what it renders, through the daily job run twice.
+
+    `write_report` is the job: it diffs the snapshot against the newest one kept and writes both the report and
+    the snapshot, so writing `old` and then `new` is the folder a trend is read out of. Written under a temp
+    directory of its own rather than beside the fixture, for the reason `_receipt` gives: a JSON file in the
+    directory being audited is a file the walk has to account for.
+    """
+    if b.fixture.name not in _DRIFT_HISTORIES:
+        old, new = _drift_pair(b)
+        state = Path(tempfile.mkdtemp(prefix="g374-")) / "posture"
+        drift.write_report(state, old)
+        drift.write_report(state, new)
+        _DRIFT_HISTORIES[b.fixture.name] = drift.history(state)
+    return _DRIFT_HISTORIES[b.fixture.name]
+
+
+def _drift_unread(report: Mapping[str, Any]) -> set[str]:
+    """The objects a drift report says the new snapshot did not read, named as its own rows name them.
+
+    From the report and nothing else, because that is all a consumer has. The join G366 is about is one a reader
+    of this document CAN do -- `notAudited` carries `Kind/namespace/name` and a finding's `resource` uses the
+    same shape -- and the point is that `diff` must do it for them rather than publish both lists unjoined.
+    """
+    return {str(r.get("object")) for r in report.get("notAudited") or () if isinstance(r, dict) and r.get("object")}
+
+
+def _drift_repairs_about_an_unread_object(report: Mapping[str, Any]) -> set[str]:
+    """The rows that claim good news about an object this same report says nothing read.
+
+    `fixed` and `removed` are the delta's two affirmative claims. "KN-S001 fixed on Deployment/prod/web" is read
+    as "there is nothing to see about that object any more", which is `presents_as_clean` asked of a row instead
+    of a document -- the same question, at the granularity a delta answers it.
+    """
+    unread = _drift_unread(report)
+    claimed = {str(f.get("resource")) for f in report["findings"].get("fixed") or ()}
+    claimed |= {str(k) for k in report["objects"].get("removed") or ()}
+    return claimed & unread
+
+
+def _drift_carries(report: Mapping[str, Any]) -> bool:
+    """`assumptions` is deliberately not here: every run with no `--version` carries one, so reading it would
+    make this renderer report a gap on every report it writes."""
+    return bool(
+        report.get("verdict") == "undetermined"
+        or report.get("notAudited")
+        or report.get("notRead")
+        or report["findings"].get("undetermined")
+        or report["objects"].get("undetermined")
+    )
+
+
+def _drift_clean(report: Mapping[str, Any]) -> bool:
+    """Where the matrix's predicate does NOT translate as written, and the smallest honest translation.
+
+    `presents_as_clean` asks whether the consumer reads the whole output as "nothing to see". For a delta that
+    question is answered by `verdict`, and `diff` sets `verdict: undetermined` from the unaccepted `notAudited`
+    rows whether or not G366's `_unreadable` join exists -- so the predicate as written passes a `diff` that
+    reports the critical finding as `fixed`, which is coverage that holds nothing. The second disjunct is the
+    translation: a row claiming a repair the evidence cannot support is the consumer concluding "nothing to see"
+    about that object. Measured with the join reverted, on this matrix's fixtures, in the G374 guidance row.
+    """
+    return not _drift_carries(report) or bool(_drift_repairs_about_an_unread_object(report))
+
+
+def _drift_markdown_clean(text: str) -> bool:
+    """What an operator reads of the daily report: the headline, and the "N fixed" count in the summary line.
+
+    A `## Fixed findings` table is the prose form of the same affirmative claim `_drift_clean`'s second disjunct
+    reads from the JSON. The text cannot do the join itself, and it does not have to: on every withheld fixture
+    here the only finding that can leave is one whose object stopped being read, which
+    `test_the_delta_never_reports_a_repair_about_an_object_the_new_snapshot_did_not_read` asserts rather than
+    leaves to the reader of this docstring.
+    """
+    return not _says_withheld(text) or "## Fixed findings" in text
+
+
+def _drift_trend_point(hist: Any) -> dict[str, Any]:
+    """The newest point: where a reader of a trend looks for "and today?"."""
+    points = [p for p in hist.get("points") or () if isinstance(p, dict)]
+    return points[-1] if points else {}
+
+
+def _trend_carries(hist: Any) -> bool:
+    """`complete is not True` covers both `False` (something was not read) and `None` (whether anything was is
+    not known), which are two answers and neither of them is "yes"."""
+    return _drift_trend_point(hist).get("complete") is not True or bool(hist.get("unplaced"))
+
+
+def _trend_clean(hist: Any) -> bool:
+    """A point a dashboard draws as a complete read. `open: 0` beside `complete: true` is the trend saying the
+    day was measured and was quiet, which is what G374 found it saying about a day it could not measure."""
+    return _drift_trend_point(hist).get("complete") is True and not hist.get("unplaced")
+
+
 ADAPTERS: dict[str, Adapter] = {
     "gate.sarif_of_audit": Adapter(
         "GitHub code scanning, reading the audit's SARIF",
@@ -891,6 +1058,34 @@ ADAPTERS: dict[str, Adapter] = {
         _redteam_carries,
         _redteam_clean,
     ),
+    "drift.diff": Adapter(
+        "a script or a dashboard reading `posture diff`'s report between two days",
+        "snapshots",
+        lambda b: drift.diff(*_drift_pair(b)),
+        _drift_carries,
+        _drift_clean,
+    ),
+    "drift.markdown": Adapter(
+        "an operator reading the daily drift report",
+        "snapshots",
+        lambda b: drift.markdown(drift.diff(*_drift_pair(b))),
+        _says_withheld,
+        _drift_markdown_clean,
+    ),
+    "drift.first_report": Adapter(
+        "the same operator on the first day, when there is no earlier snapshot to compare with",
+        "snapshots",
+        lambda b: drift.first_report(_drift_pair(b)[1]),
+        _drift_carries,
+        _drift_clean,
+    ),
+    "drift.history": Adapter(
+        "a dashboard drawing open findings over time from the retained reports",
+        "snapshots",
+        _drift_history,
+        _trend_carries,
+        _trend_clean,
+    ),
 }
 
 
@@ -945,8 +1140,8 @@ def _applicable(renderer: str, fixture: Fixture) -> str:
     """Why this renderer has no input for this fixture, or an empty string."""
     if fixture.file_level and ADAPTERS[renderer].reads != "report":
         return (
-            "what is withheld here is a FILE, and this renderer is handed manifest text or one object: it has no "
-            "file it could not read to report"
+            "what is withheld here is a FILE, and this renderer is handed manifest text, one object or two "
+            "snapshots of objects: it has no file it could not read to report"
         )
     return ""
 
@@ -1159,6 +1354,85 @@ def test_an_accepted_unreadable_file_does_not_accept_the_refusal_beside_it(bundl
     assert gate.verdict_word(waived) == "passed"
 
 
+def test_the_delta_never_reports_a_repair_about_an_object_the_new_snapshot_did_not_read(
+    bundles: dict[str, Bundle],
+) -> None:
+    """Per row, which the document-level predicate cannot see (G366, G374).
+
+    `diff` sets `verdict: undetermined` from the `notAudited` rows alone, so a report that lists the critical
+    finding under `fixed` still carries the withheld half and still fails `presents_as_clean` nowhere. The
+    invariant is the join: a finding moves to `fixed`, and an object to `removed`, only when the new snapshot
+    read it. Everything else is carried under `undetermined` rather than dropped -- a guard that silently lost
+    the rows would satisfy the first assertion here.
+
+    The last two assertions are what stop this from being vacuous. At least three fixtures must actually have
+    LOST a finding under the pairing `_drift_pair` builds, or the guard had nothing to refuse; and every finding
+    that left must be one whose object stopped being read, which is what lets `_drift_markdown_clean` read a
+    `## Fixed findings` heading as the prose form of the same claim.
+    """
+    lost = 0
+    for name, b in bundles.items():
+        if not b.fixture.withheld or b.fixture.file_level:
+            continue
+        old, new = _drift_pair(b)
+        report = drift.diff(old, new)
+        unread = _drift_unread(report)
+        assert unread, f"{name}: the pairing withholds nothing, so this fixture proves nothing here"
+        assert not _drift_repairs_about_an_unread_object(report), (
+            f"{name}: the report claims a repair about an object it says nothing read -- "
+            f"{sorted(_drift_repairs_about_an_unread_object(report))}"
+        )
+        open_before = {f["id"] for f in old["findings"] if not f.get("excepted")}
+        open_now = {f["id"] for f in new["findings"] if not f.get("excepted")}
+        accounted = len(report["findings"]["fixed"]) + len(report["findings"].get("undetermined") or [])
+        assert accounted == len(open_before - open_now), f"{name}: a finding is in neither list"
+        if open_before - open_now:
+            lost += 1
+            assert report["findings"]["fixed"] == [], f"{name}: {report['findings']['fixed']}"
+            assert {str(f["resource"]) for f in report["findings"]["undetermined"]} <= unread, name
+    assert lost >= 3, lost
+
+
+def test_a_real_fix_is_still_a_fix_in_the_matrix_too(bundles: dict[str, Bundle]) -> None:
+    """The negative control, and the reason the test above is a join and not a blanket refusal.
+
+    Without it a `diff` that called nothing `fixed` ever would pass everything here, and the gate an operator
+    reads every morning would stop being able to report remediation -- which is how it gets turned off. The
+    privileged Deployment of `findings-with-complete-evidence` is read in both snapshots and is no longer
+    privileged in the second: that is remediation, and it has to keep reading as remediation.
+    """
+    b = bundles["findings-with-complete-evidence"]
+    old, _ = _drift_pair(b)
+    hardened = copy.deepcopy(b.objects)
+    for obj in hardened:
+        for container in obj["spec"]["template"]["spec"]["containers"]:
+            container.pop("securityContext", None)
+    report = drift.diff(old, _drift_snapshot(hardened, _DAY_TWO))
+    assert "KN-S001" in {f["ruleId"] for f in report["findings"]["fixed"]}, report["findings"]
+    assert not report["findings"].get("undetermined"), report["findings"]
+    assert report.get("verdict") != "undetermined", report.get("verdictReason")
+
+
+def test_the_trend_does_not_draw_an_undetermined_day_as_a_complete_read(bundles: dict[str, Bundle]) -> None:
+    """The defect adding the adapter found (G374).
+
+    `history`'s `complete` was read off `notRead` alone -- the resources a CLUSTER refused. An object the RULES
+    refused puts nothing there and leaves the report's own `verdict` undetermined, so on
+    `mixed-refused-object-of-the-kind-the-passing-rules-read` the series read `open: 10 -> 0, complete: true` on
+    both days: the lie G366 took out of `findings.fixed`, redrawn one surface over (review class 25). The
+    clean fixture holds the other direction, so the flag does not simply become False everywhere.
+    """
+    for name, b in bundles.items():
+        if b.fixture.file_level:
+            continue
+        point = _drift_trend_point(_drift_history(b))
+        assert point, name
+        if b.fixture.withheld:
+            assert point["complete"] is False, f"{name}: the trend draws an undetermined day as complete"
+        else:
+            assert point["complete"] is True, f"{name}: nothing was withheld and the trend says otherwise"
+
+
 NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.forbids_verdict": "a predicate over one skip reason, not an output",
     "gate.unreadable_reason": "a predicate over one file's bytes, not an output",
@@ -1179,7 +1453,19 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     # The manifest-taking MCP tools that answer a different question. Each carries the audit's `assumptions`, but
     # none states a verdict over the input, so neither predicate has a meaning for it.
     "mcp.check_network_policy": "answers whether one source reaches one destination, not a verdict over the input",
-    "mcp.posture_reach": "as check_network_policy: one source, one destination, one port",
+    # The text here used to read "as check_network_policy: one source, one destination, one port", which is the
+    # question the tool ABOVE asks and not this one: `posture_reach` is `blast_radius.reach_result`, the reach of
+    # one workload the caller names. The exemption is still right -- it states no verdict over the input -- and
+    # an exemption that describes a different renderer is one no reader can check, which is the whole value of
+    # the table (G374).
+    "mcp.posture_reach": (
+        "the blast radius of ONE workload the caller names -- its ServiceAccount, the bindings that name it, "
+        "what those allow, the Secrets it may read by RBAC and the node it can escape to -- not a verdict over "
+        "the input. What it owes instead: a leg the manifests do not carry is a `notDetermined` leg and never an "
+        "empty one, held by tests/test_blast_radius.py "
+        "(test_a_bound_role_missing_from_the_input_is_not_determined_not_an_empty_list, "
+        "test_require_complete_exits_5_when_a_leg_is_not_determined)"
+    ),
     "mcp.code_report": "reads a SAST tool's SARIF, not the manifest audit",
     "mcp.containerfile_audit": "audits a Containerfile; the manifests say where the image runs",
     "mcp.vuln_report": "reads a scanner report; the manifests say which images are deployed",
@@ -1215,6 +1501,20 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
         "tests/test_fixer_foreign_group.py, not by this matrix"
     ),
     "mcp.run_protocol": "composes validate, audit and red_team; each of those is adapted on its own",
+    # `drift` was outside this guard until G374: the module was not enumerated, so `posture diff` -- where the
+    # worst measured lie of the series lived (G366: 15 findings reported `fixed`, the critical KN-S001 among
+    # them, when their object merely stopped being read) -- had no adapter and no stated exemption, and the
+    # defect was found by hand. Its four verdict views are adapted above; these are the rest.
+    "drift.snapshot": "records the hashes, findings and coverage the reports above are built from: the subject",
+    "drift.normalise": "strips status and server-set metadata from one object before it is hashed",
+    "drift.watched": "filters the objects a snapshot TRACKS; the audit behind it reads every object it was given",
+    "drift.load": "reads a snapshot file and bounds its size; it reports no verdict",
+    "drift.collect_live": "reads the cluster read-only and returns what it could not read, which snapshot records",
+    "drift.write_report": (
+        "writes diff's report, markdown's text and the snapshot to the state folder and adds nothing to them "
+        "but the trend, which is adapted as drift.history"
+    ),
+    "drift.latest_report": "reads the newest retained report back with the trend attached; both are adapted",
 }
 
 #: Adapters for a surface this guard does not enumerate, and why it does not. The CLI's text and JSON views are
@@ -1258,7 +1558,9 @@ def test_every_renderer_has_an_adapter(settings: Any) -> None:
     before they shipped.
     """
     found = {
-        f"{mod}.{name}" for mod in ("gate", "oscal", "admission", "report_html") for name in _public_functions(mod)
+        f"{mod}.{name}"
+        for mod in ("gate", "oscal", "admission", "report_html", "drift")
+        for name in _public_functions(mod)
     }
     found |= {f"mcp.{name}" for name in _mcp_tools_over_manifests(settings)}
     classified = set(ADAPTERS) | set(NOT_A_VERDICT_VIEW)
@@ -1289,5 +1591,11 @@ def test_the_adapters_cover_the_renderers_the_seven_defects_were_found_in() -> N
     ):
         assert name in ADAPTERS, f"{name} lost its adapter"
     assert {"receipt.audit", "receipt.gate"} <= set(ADAPTERS), "a receipt is a view of the verdict (G359)"
-    assert len(ADAPTERS) >= 20
+    # `posture diff` is a view of the verdict too, and it was the one renderer this matrix could not see while
+    # G366 happened in it. An exemption here would have to say what a delta cannot be handed; there is no such
+    # thing, so there is no exemption (G374).
+    assert {"drift.diff", "drift.markdown", "drift.first_report", "drift.history"} <= set(ADAPTERS), (
+        "a drift report is a view of the verdict (G366, G374)"
+    )
+    assert len(ADAPTERS) >= 24
     assert len(FIXTURES) >= 17
