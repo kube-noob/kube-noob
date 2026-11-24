@@ -3700,6 +3700,16 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             rep = kit.validate(tk.ManifestsIn(manifests=text, platform=platform, version=a.pversion))
             _locate(rep, sources)
             _print_report(rep) if a.format == "text" else _emit(rep, fmt)
+            # The same predicate `audit` uses eleven lines above, and for the same reason: this command wrote
+            # `summary.verdict: undetermined` into the report it had just printed and then derived its exit code
+            # from the severity counts alone, which are 0 when the only thing wrong is that an object was not
+            # read. Measured on a hardened Pod beside an `rbac.k8s.io/v1 ClusterRoleBinding`: `validate` printed
+            # `verdict: undetermined`, `verdictReason: "1 ClusterRoleBinding not audited ..."` and exited 0,
+            # where `audit` on the same directory exited 1. Two sources of truth for one question in adjacent
+            # branches of one `if` -- class 9, and class 25: the arithmetic was moved to one place and this
+            # caller kept its copy (G370).
+            if receipt_module.audit_undetermined(rep):
+                return 1
             return 1 if rep["summary"]["counts"]["high"] + rep["summary"]["counts"]["critical"] else 0
         if a.cmd == "redteam":
             _emit(kit.red_team(tk.ManifestsIn(manifests=text, platform=platform, version=a.pversion)), fmt)

@@ -821,6 +821,13 @@ def test_every_not_read_site_goes_through_the_rule() -> None:
         m = literal.match(arg)
         assert m and m.group(1) in ap.UNREAD_CAUSES, arg
         named.add(m.group(1))
-    assert frozenset({"refused"}) == ap.GATED_CAUSES
+    # The gating set, pinned here so it cannot change without a review. It was `{"refused"}` until G370 measured
+    # the three `unmodelled` call sites against the audit: on each one `audit` exits 1 with the object under
+    # `notAudited` while `posture scan --fail-above 1` exited 0 -- a `projectcalico`-style misgrouped
+    # ClusterRoleBinding granting cluster-admin to `system:authenticated`, an Argo `Rollout` with a privileged
+    # container, a Knative `Route` and a CRD called `Role` (`refusal` returns a reason for both of the last two).
+    # The rule is agreement with the audit: the scan withholds a pass for exactly what the audit does not audit.
+    # `absent` -- "is not in the input" -- stays out, and is the one cause the ungated reasoning was written for.
+    assert frozenset({"refused", "unmodelled"}) == ap.GATED_CAUSES
     assert named == set(ap.UNREAD_CAUSES), named
     assert {cause for _, _, _, cause in NOT_READ_SITES} == set(ap.UNREAD_CAUSES)
