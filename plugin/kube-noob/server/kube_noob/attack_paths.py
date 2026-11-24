@@ -228,7 +228,31 @@ _POD_SPEC_KINDS = (
 #: - ``ambiguous``: a name carried by two different objects, or a role aggregated from what the input does not show.
 UnreadCause = Literal["refused", "absent", "unmodelled", "unplaced", "ambiguous"]
 UNREAD_CAUSES: tuple[UnreadCause, ...] = ("refused", "absent", "unmodelled", "unplaced", "ambiguous")
-GATED_CAUSES: frozenset[str] = frozenset({"refused"})
+#: What a gate fails on, and the rule is agreement with the AUDIT: this scan withholds a pass for exactly the
+#: objects the audit does not audit. `refused` is a shape the scan rejected. `unmodelled` is an object the input
+#: HOLDS that the scan could not read -- a kind it models under an apiVersion group it does not know that kind
+#: under, or one carrying a pod spec it does not rank -- and it was not gated, so `posture scan --fail-above 1`
+#: exited 0 on all three of its call sites while `audit` exited 1 undetermined on the same input (G370):
+#:
+#:   rbac.k8s.io/v1 ClusterRoleBinding, cluster-admin to system:authenticated
+#:                       audit exit 1, notAudited; scan exit 0, paths [], refused []
+#:   argoproj.io/v1alpha1 Rollout with a privileged container
+#:                       audit exit 1, notAudited; scan exit 0, refused []
+#:   serving.knative.dev/v1 Route, example.com/v1 Role
+#:                       audit refuses both outright (`refusal` returns a reason for each)
+#:
+#: The reason given for leaving `unmodelled` ungated -- "a CRD the cluster does not serve or a built-in role the
+#: bundle does not carry is normal" -- describes `absent`, whose single call site is "is not in the input", and
+#: which stays ungated. All three `unmodelled` sites already said in their own comments that the object mattered
+#: ("It still opens the RBAC leg: an RBAC-shaped object this scan could not read"; "its namespace's exposure is
+#: not determined rather than none"; "dropping them unmentioned reported '0 workloads' for a file full of Argo
+#: Rollouts") and then chose the cause the gate ignores. A user whose bundle holds a Knative Route or an Argo
+#: Rollout cannot pass `audit` today either; the escape hatch for both is a `notAudited` exception, not a
+#: quieter scan.
+#:
+#: Still ungated: `unplaced` and `ambiguous` name an object whose identity is not settled rather than unread,
+#: and both already record a `gap` the caller can read.
+GATED_CAUSES: frozenset[str] = frozenset({"refused", "unmodelled"})
 
 
 class ScanError(ValueError):
