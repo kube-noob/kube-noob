@@ -411,6 +411,54 @@ class AuditContext:
         self.cannot_decide(rule_id)
         self.unreadable_partners.setdefault(rule_id, set()).add(ref)
 
+    def unreadable_evidence(self, *kinds: str, namespace: str | None = None) -> list[Document]:
+        """The objects of these kinds the input HOLDS and nothing read, optionally narrowed to one namespace.
+
+        A rule that reasons from the absence of a kind asks `by_kind` or `has_subject`, and both are
+        group-matched (G231, G365): a `projectcalico.org/v3 NetworkPolicy` is correctly not a Kubernetes
+        NetworkPolicy, and is therefore indistinguishable there from no NetworkPolicy at all. It is not the
+        same thing -- the bundle holds one and the audit refused it, and the report names it under
+        `notAudited` -- so the two answers are separated here (G368).
+
+        Matched on the kind NAME, not through a group, because the group is exactly what is wrong. Both
+        unreadability predicates count: `refusal` for an apiVersion the rules do not know the kind under, and
+        `object_unreadable` for a document whose identity or spec cannot be read at all.
+        """
+        out: list[Document] = []
+        for d in self.docs:
+            if not isinstance(d.data, dict) or not isinstance(d.data.get("kind"), str):
+                continue
+            if d.kind not in kinds:
+                continue
+            if refusal(d) is None and object_unreadable(d.data) is None:
+                continue
+            if namespace is not None and self.ns(d) != namespace:
+                continue
+            out.append(d)
+        return out
+
+    def cannot_judge_absence(self, rule_id: str, *kinds: str, namespace: str | None = None) -> bool:
+        """Whether ``rule_id`` may state that no object of ``kinds`` is here; records the refusal when it may not.
+
+        True means the input holds such an object and nothing read it, so an absence is not a fact the rule
+        has: the rule is undecided, the object is named, and the score is withheld. A namespace narrows it,
+        because a refusal in one namespace must not blind the rule in another (G366: the guard has to be at
+        the granularity of the thing it guards).
+
+        Through `cannot_decide` with `refused_summary`, NOT through `partner_unreadable`: that path composes
+        its reason into `unreadable_shapes`, whose published prose is "a field in the input has the wrong type
+        for what the rule reads ... Fix the field (the schema findings name it)". A refused apiVersion group is
+        not a field of the wrong type and the fix is not a field, so borrowing that channel would have printed
+        a true verdict under a false explanation -- the defect this method exists to remove, one layer down.
+        `refused_summary` is the phrase a refused SUBJECT already produces ("1 NetworkPolicy not audited
+        (apiVersion names a group ...)"), built from the rule's kinds and the fixed refusal reasons and never
+        from the input's own text (class 7).
+        """
+        blind = self.unreadable_evidence(*kinds, namespace=namespace)
+        for d in blind:
+            self.cannot_decide(rule_id, refused_summary([d]), d.ref())
+        return bool(blind)
+
     @property
     def is_openshift(self) -> bool:
         return self.platform in OPENSHIFT_FAMILY
@@ -3482,6 +3530,13 @@ def _n001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         ns = ctx.ns(d)
         if d.kind in _N001_KINDS and ns not in netpol_ns and ns not in flagged:
             flagged.add(ns)
+            # The namespace may be isolated by a NetworkPolicy the rules refused. This finding's own text --
+            # "No NetworkPolicy for namespace prod in this bundle" -- was then a false statement about a
+            # bundle that holds one, which the same report names under `notAudited` eleven lines above it,
+            # and the remediation told the reader to add a policy they may already have (G368, class 24).
+            # Per namespace, not per bundle: a refusal in `prod` must not blind the rule in `staging`.
+            if ctx.cannot_judge_absence(r.rule_id, "NetworkPolicy", namespace=ns):
+                continue
             yield r.finding(d, ("metadata",), f"No NetworkPolicy for namespace {ns} in this bundle.")
 
 
@@ -5173,11 +5228,27 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
                 ctx.unreadable_shapes[r.rule_id] = (
                     f"{type(exc).__name__}; evaluated without {', '.join(names[:10])}{more}"
                 )
-        _check_partners(ctx, r.rule_id)
-        findings.extend(produced)
-        missing = [subject_label((k,)) for k in r.context if not ctx.has_subject((k,))]
+        # Before `_check_partners`, which composes the note from what this loop records.
+        #
+        # `absent_subjects` is `rulesEvaluatedWithout` in the control summary, the FedRAMP KSI record, OSCAL,
+        # `drift`, `gate` and the MCP toolkit, and it is read as "the input held no X". `has_subject` is
+        # group-matched, so a REFUSED object of that kind answers False there exactly as an absent one does:
+        # on a bundle holding one `projectcalico.org/v3 NetworkPolicy`, five rules recorded "evaluated
+        # without networking.k8s.io NetworkPolicy" -- KN-C007, KN-C008, KN-C015, KN-N001 and KN-S014 -- about
+        # a bundle whose own `notAudited` block names a NetworkPolicy the audit refused. Class 9: the
+        # red-team section of the same report already says "1 object(s) in this input were not audited" and
+        # calls the scenario UNDECIDED, so the honest phrase existed twelve lines below the wrong one (G368).
+        missing: list[str] = []
+        for k in r.context:
+            if ctx.has_subject((k,)):
+                continue
+            if ctx.cannot_judge_absence(r.rule_id, k):
+                continue
+            missing.append(subject_label((k,)))
         if missing:
             ctx.absent_subjects[r.rule_id] = missing
+        _check_partners(ctx, r.rule_id)
+        findings.extend(produced)
         if produced and r.rule_id in ctx.undecided:
             # It declined on one object and reported on another: it RAN. A rule in both `firedRules` and
             # `notEvaluated` was two records of one run (D4). The decline is kept as a note, not as a verdict.
