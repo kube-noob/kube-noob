@@ -404,7 +404,7 @@ class AuditContext:
         self.cannot_decide(rule_id)
         self.unreadable_partners.setdefault(rule_id, set()).add(ref)
 
-    def unreadable_evidence(self, *kinds: str, namespace: str | None = None) -> list[Document]:
+    def unreadable_evidence(self, *kinds: str, namespace: str | None = None, name: str | None = None) -> list[Document]:
         """The objects of these kinds the input HOLDS and nothing read, optionally narrowed to one namespace.
 
         A rule that reasons from the absence of a kind asks `by_kind` or `has_subject`, and both are
@@ -416,6 +416,10 @@ class AuditContext:
         Matched on the kind NAME, not through a group, because the group is exactly what is wrong. Both
         unreadability predicates count: `refusal` for an apiVersion the rules do not know the kind under, and
         `object_unreadable` for a document whose identity or spec cannot be read at all.
+
+        ``name`` narrows it to the object a finding names, that finding's own granularity (G369). Identity is
+        the line: a refused object's name is a fact (`notAudited` prints it) where its spec is not, and an
+        unreadable identity matches every name, because the rule cannot then tell it apart.
         """
         out: list[Document] = []
         for d in self.docs:
@@ -427,10 +431,14 @@ class AuditContext:
                 continue
             if namespace is not None and self.ns(d) != namespace:
                 continue
+            if name is not None and d.name and d.name != name:
+                continue
             out.append(d)
         return out
 
-    def cannot_judge_absence(self, rule_id: str, *kinds: str, namespace: str | None = None) -> bool:
+    def cannot_judge_absence(
+        self, rule_id: str, *kinds: str, namespace: str | None = None, name: str | None = None
+    ) -> bool:
         """Whether ``rule_id`` may state that no object of ``kinds`` is here; records the refusal when it may not.
 
         True means the input holds such an object and nothing read it, so an absence is not a fact the rule
@@ -446,10 +454,20 @@ class AuditContext:
         `refused_summary` is the phrase a refused SUBJECT already produces ("1 NetworkPolicy not audited
         (apiVersion names a group ...)"), built from the rule's kinds and the fixed refusal reasons and never
         from the input's own text (class 7).
+
+        A MALFORMED object takes the other channel, and this is the ONE place that chooses (G369): the reason
+        follows the DOCUMENT, not the declaration it came from, so each is explained by the predicate that
+        caught it and neither borrows the other's words.
         """
-        blind = self.unreadable_evidence(*kinds, namespace=namespace)
+        blind = self.unreadable_evidence(*kinds, namespace=namespace, name=name)
         for d in blind:
-            self.cannot_decide(rule_id, refused_summary([d]), d.ref())
+            if refusal(d) is not None:
+                self.cannot_decide(rule_id, refused_summary([d]), d.ref())
+            else:
+                # By position when its own metadata cannot be read, as `check_evidence` does: the same ref,
+                # so the two callers cannot record one object twice under two names.
+                meta_ok = isinstance(d.data, dict) and object_unreadable({**d.data, "spec": None}) is None
+                self.partner_unreadable(rule_id, d.ref() if meta_ok else f"document {d.index + 1}")
         return bool(blind)
 
     @property
@@ -1782,6 +1800,11 @@ def _c015(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     continue
                 if target in present.get((kind, ns), set()):
                     continue
+                # "no document in this bundle defines" is a statement about the input that a refused
+                # ResourceClaim of that name makes false (G369, class 24). By name and namespace: the
+                # granularity of this text's own claim, and no wider.
+                if ctx.cannot_judge_absence(r.rule_id, kind, namespace=ns, name=target):
+                    continue
                 yield r.finding(
                     d,
                     (*pt.path, "resourceClaims", i, field_name),
@@ -1836,6 +1859,11 @@ def _s031(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 if holder is None or holder.get("adminAccess") is not True:
                     continue
                 ns = ctx.ns(d)
+                # Which message below is right depends on the Namespace, and `by_kind` is group-matched, so a
+                # refused one put the claim on the second branch, as a namespace managed elsewhere would
+                # (G369). NOT withheld: adminAccess is HIGH on either branch and silencing it would be the
+                # worse defect. Recorded instead -- the rule is partly declined with the object named.
+                ctx.cannot_judge_absence(r.rule_id, "Namespace", name=ns)
                 where = f"request '{req.get('name')}'" if isinstance(req.get("name"), str) else f"request {i}"
                 path: PathT = (*base, "devices", "requests", i, *tail, "adminAccess")
                 if ns in in_bundle and ns not in labelled:
@@ -1946,6 +1974,14 @@ def _c016(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             if ns not in have and not blanket
         ]
         if not missing:
+            continue
+        # This text states an absence the same report's `notAudited` block contradicts when the quota or the
+        # range was REFUSED (G369, class 24). Three scopes, three questions: the namespace's own; one with no
+        # `metadata.namespace`, the blanket `any_quota`/`any_limit` read; and ClusterResourceQuota, whose scope
+        # IS the bundle, so a refused one does blind every namespace.
+        if any(
+            ctx.cannot_judge_absence(r.rule_id, "ResourceQuota", "LimitRange", namespace=n) for n in (ns, "<default>")
+        ) or ctx.cannot_judge_absence(r.rule_id, "ClusterResourceQuota"):
             continue
         flagged.add(ns)
         yield r.finding(
@@ -2799,6 +2835,11 @@ def _s014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             continue
         sa = str(pt.spec.get("serviceAccountName") or "default")
         if (ctx.ns(d), sa) in sa_opt_out and pt.spec.get("automountServiceAccountToken") is not True:
+            continue
+        # `sa_opt_out` comes from `by_kind`, which is group-matched, so a refused ServiceAccount carrying
+        # `automountServiceAccountToken: false` failed to opt the pod out as no ServiceAccount would, and the
+        # pod was reported for mounting a token the input says it does not (G369). By `sa_opt_out`'s own key.
+        if ctx.cannot_judge_absence(r.rule_id, "ServiceAccount", namespace=ctx.ns(d), name=sa):
             continue
         yield r.finding(d, pt.path, f"Pod automounts the token of ServiceAccount '{sa}'.")
 
@@ -4277,6 +4318,11 @@ def _st001(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                         r.rule_id, "part of a namespace was passed, so the StorageClass the claim names was not passed"
                     )
                     continue
+                # "neither defined in this bundle" is a statement about the input, and `_provisioner_for`
+                # reads `by_kind`, which is group-matched, so a refused StorageClass of that name made it
+                # false (G369, class 24). By name; the kind is cluster-scoped.
+                if ctx.cannot_judge_absence(r.rule_id, "StorageClass", name=str(sc)):
+                    continue
                 yield r.finding(
                     d,
                     (*path, "storageClassName"),
@@ -4627,6 +4673,12 @@ def _c007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind(*REPLICATED_KINDS):
         reps = replicas(d)
         if reps is not None and reps < 2 and not _has_hpa(ctx, d):
+            # `_has_hpa` is group-matched, so a refused HPA scaling this workload to 2..5 failed to excuse the
+            # finding exactly as no HPA would (G369). The text is true, so this is not class 24; what was wrong
+            # is deciding the question the refused object was the answer to. Per namespace, as fine as this can
+            # honestly be: `scaleTargetRef` is a spec field, and a refused object's spec is not read.
+            if ctx.cannot_judge_absence(r.rule_id, "HorizontalPodAutoscaler", namespace=ctx.ns(d)):
+                continue
             yield r.finding(d, ("spec", "replicas"), f"{d.kind} runs {reps} replica(s).")
 
 
@@ -4709,6 +4761,11 @@ def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             continue
         pdbs, unread = _pdbs_for(ctx, d, pt.labels(), r.rule_id)
         if not pdbs and not unread:
+            # `_pdbs_for` declines on a PDB whose selector it cannot read, but it walks `by_kind`, which is
+            # group-matched, so a REFUSED PodDisruptionBudget was never a candidate and this text spoke about a
+            # bundle whose `notAudited` block names one (G369, class 24). Per namespace, as `_pdbs_for` does.
+            if ctx.cannot_judge_absence(r.rule_id, "PodDisruptionBudget", namespace=ctx.ns(d)):
+                continue
             yield r.finding(d, ("spec",), "No PodDisruptionBudget selects this workload.")
 
 
@@ -5065,26 +5122,6 @@ def _without_unreadable(ctx: AuditContext, r: Rule) -> tuple[list[Finding], list
     return found, [d.ref() for d in bad]
 
 
-_WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
-# Rules whose verdict on one object rests on other objects -- the PDB that selects a workload, the HPA that scales
-# it, the Service in front of it -- and the kinds they read. When one of those objects cannot be read at all, the
-# rule cannot tell "there is none" from "there is one I could not read", so it is undecided and names the object
-# (G276). A field of the wrong type deeper inside a readable object is the rule's own business (KN-C009 reads a PDB's
-# selector and budget through `_pdb_spec`).
-_PARTNER_KINDS: dict[str, frozenset[str]] = {
-    "KN-C008": frozenset({"PodDisruptionBudget"}) | _WORKLOAD_KINDS,
-    "KN-C009": frozenset({"PodDisruptionBudget"}) | _WORKLOAD_KINDS,
-    "KN-C012": frozenset({"HorizontalPodAutoscaler"}) | _WORKLOAD_KINDS,
-    "KN-C014": frozenset({"HorizontalPodAutoscaler"}) | _WORKLOAD_KINDS,
-    "KN-C013": frozenset({"Secret", "ServiceAccount"}) | _WORKLOAD_KINDS,
-    "KN-V011": frozenset({"Service"}) | _WORKLOAD_KINDS,
-    "KN-V012": frozenset({"Service"}) | _WORKLOAD_KINDS,
-    "KN-V023": frozenset({"Service"}) | _WORKLOAD_KINDS,
-    "KN-N012": frozenset({"NetworkPolicy"}) | _WORKLOAD_KINDS,
-    "KN-ST002": frozenset({"PersistentVolumeClaim"}) | _WORKLOAD_KINDS,
-}
-
-
 def object_unreadable(data: object) -> str | None:
     """Why this document cannot be read as an object at all -- its identity or its spec -- or None."""
     if not isinstance(data, dict):
@@ -5139,23 +5176,6 @@ def _get_mapping(data: dict[str, Any], path: tuple[Any, ...]) -> dict[str, Any] 
     for key in path:
         node = node.get(key) if isinstance(node, dict) else None
     return node if isinstance(node, dict) else None
-
-
-def _check_partners(ctx: AuditContext, rule_id: str) -> None:
-    kinds = _PARTNER_KINDS.get(rule_id)
-    if kinds is not None:
-        for d in ctx.docs:
-            known = isinstance(d.data, dict) and isinstance(d.data.get("kind"), str)
-            if (not known or d.kind in kinds) and object_unreadable(d.data):
-                meta_ok = isinstance(d.data, dict) and object_unreadable({**d.data, "spec": None}) is None
-                ctx.partner_unreadable(rule_id, d.ref() if meta_ok else f"document {d.index + 1}")
-    refs = ctx.unreadable_partners.get(rule_id)
-    if refs:
-        names = sorted(refs)
-        more = f" and {len(names) - 10} more" if len(names) > 10 else ""
-        note = f"an object it depends on could not be read: {', '.join(names[:10])}{more}"
-        prior = ctx.unreadable_shapes.get(rule_id)
-        ctx.unreadable_shapes[rule_id] = f"{prior}; {note}" if prior else note
 
 
 def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: list[str] | None = None) -> list[Finding]:
@@ -5240,7 +5260,7 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             missing.append(subject_label((k,)))
         if missing:
             ctx.absent_subjects[r.rule_id] = missing
-        _check_partners(ctx, r.rule_id)
+        _evidence.check_evidence(ctx, r.rule_id)
         findings.extend(produced)
         if produced and r.rule_id in ctx.undecided:
             # It declined on one object and reported on another: it RAN. A rule in both `firedRules` and
@@ -5268,3 +5288,8 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
 # decorator and the helpers above, so the import resolves only once this module is fully built. Importing it
 # here, rather than leaving it to a caller, keeps `RULES` the same whatever path reached this module.
 from kube_noob.audit import cprules as _cprules  # noqa: E402,F401  (registration import; see cprules.py)
+
+# The one declaration of each rule's evidence dependency and the one check of it (G369), in their own module so
+# the generated plugin copy of this one stays under the directory's 256 KiB per-file limit. Last lines, with
+# `cprules` and for the same reason: this module is what `evidence` reads, and it is fully built by this line.
+from kube_noob.audit import evidence as _evidence  # noqa: E402  (circular by construction; see evidence.py)
