@@ -5246,8 +5246,12 @@ def run_rules(ctx: AuditContext, stages: set[Stage] | None = None, evaluated: li
             # out of `notEvaluated` by `analyze` skipping what is in `evaluated_rules`, not by emptying the store.
             ctx.undecided.discard(r.rule_id)
             entries = ctx.declined.get(r.rule_id) or []
-            ctx.partly_declined[r.rule_id] = (entries[0][1] if entries else "") or ctx.unreadable_shapes.get(
-                r.rule_id, "a field in this input has a type it cannot read"
+            # A rule that judged part and had nothing to judge in the rest gives its own reason, not the
+            # unreadable-shape fallback, which was then a false sentence about the input (G396).
+            ctx.partly_declined[r.rule_id] = (
+                (entries[0][1] if entries else "")
+                or ctx.no_verdict_reasons.get(r.rule_id)
+                or ctx.unreadable_shapes.get(r.rule_id, "a field in this input has a type it cannot read")
             )
         if evaluated is not None and r.rule_id not in ctx.undecided:
             evaluated.append(r.rule_id)
