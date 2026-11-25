@@ -122,6 +122,7 @@ _LEARN = frozenset(
         "learn_exercise",
         "learn_submit",
         "learn_quiz",
+        "learn_mechanism",
         "learn_progress",
         "grade_answer",
         "learning_summary",

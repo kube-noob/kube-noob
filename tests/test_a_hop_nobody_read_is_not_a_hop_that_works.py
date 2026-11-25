@@ -228,9 +228,17 @@ def _mechanism_lessons() -> list[dict]:
     ids=["holds", "broken", "stopped"],
 )
 def test_the_command_returns_the_code_its_walk_means(docs: tuple[str, ...], code: int, tmp_path: Path) -> None:
-    f = tmp_path / "bundle.yaml"
-    f.write_text("---\n".join(docs), encoding="utf-8")
-    assert _cli(f).returncode == code
+    """A DIRECTORY, because the three codes are only distinguishable over a whole namespace.
+
+    `cli._partial_input` reads one file as a fragment, and a fragment cannot answer the policy hop: KN-N001,
+    KN-N007 and KN-N012 all abstain because they cannot tell a namespace with no NetworkPolicy from one whose
+    policy you did not pass. Over a file these three cases were all 5. The walk and the audit now agree about
+    what an absence means, which is the point (G394).
+    """
+    where = tmp_path / "namespace"
+    where.mkdir()
+    (where / "bundle.yaml").write_text("---\n".join(docs), encoding="utf-8")
+    assert _cli(where).returncode == code
 
 
 def test_the_json_document_carries_the_same_verdict_and_code_as_the_exit(tmp_path: Path) -> None:
