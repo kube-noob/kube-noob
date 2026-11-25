@@ -106,6 +106,19 @@ class StepResult:
         return out
 
 
+def lessons() -> dict[str, dict[str, Any]]:
+    """Every lesson in the curriculum that declares a path, by id: the one lookup the command, the tool and the
+    HTML view share, so none of them can walk or draw a lesson the others do not know."""
+    from kube_noob.learn.tutor import curriculum
+
+    return {
+        str(lsn["id"]): lsn
+        for trk in curriculum().get("tracks") or ()
+        for lsn in trk.get("lessons") or ()
+        if lsn.get("steps")
+    }
+
+
 def _kind_of(resource: str) -> str:
     """`Deployment/shop/orders-api` -> `Deployment`. The report writes every resource in this one shape."""
     return resource.split("/", 1)[0]

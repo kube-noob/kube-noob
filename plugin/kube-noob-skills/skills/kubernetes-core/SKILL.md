@@ -180,7 +180,10 @@ never two: `0` at least one hop was judged and every observable hop holds, `1` a
 then stopped at a later one, `5` the walk STOPPED before finding anything broken because nothing in this build reads that hop, it judged no hop at all, or a file
 beside the input could not be read. A `5` is not a pass and not a failure -- read `stoppedAt` and say which hop
 went unanswered, and where it is null read `verdictReason`, which is the walk that judged nothing. `learn progress` reports the credits and
-lessons recorded so far, and never writes.
+lessons recorded so far, and never writes. When the user wants to *watch* the path rather than read it, the same
+command with `--format html` writes one self-contained offline page of the same walk -- the hops drawn in order,
+an event that travels them, each hop's rules, objects and findings -- with the same exit code; read the answer
+yourself from `--format json`, never from the page.
 
 ```bash
 kube-noob learn mechanism mech-net-request-to-pod -f "$KN/app.yaml" --format json
