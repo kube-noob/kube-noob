@@ -1523,6 +1523,11 @@ def _build_cmd(a: argparse.Namespace, kit: Any, fmt: str) -> int:
 
             if ki_line := coverage_line(out.get("knownIssuesCoverage"), listed=bool(out.get("knownIssues"))):
                 _tprint(ki_line)
+            if note := out.get("knownIssuesNote"):
+                # The release notes are searched only when the text says it is OpenShift. Without that, the
+                # search did not happen -- and printing nothing said it found nothing. Same wording as the
+                # must-gather report, which already carried this (G390).
+                _tprint(f"known issues: not determined: {_one_line(note)}")
             for m in out.get("memory", []):
                 _tprint(f"team memory {m.get('citation') or m.get('id')}: {m.get('symptom')}")
             for f in out["fix"]:

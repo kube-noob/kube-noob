@@ -113,7 +113,7 @@ Extract signals. Read the canonical names in an error: Alertmanager alert names 
 
 ## fedramp_ksi
 
-FedRAMP 20x KSI evidence. Which FedRAMP 20x Key Security Indicators an audit's findings are evidence for, by inverting the NIST control list each indicator carries in FedRAMP's own consolidated dataset (vendored with its version and hash). Without manifests it returns the crosswalk itself. Every indicator is listed: the ones no kube-noob rule can see carry evidenced=false and no counts, and two carry a warning because their rules reach them only through a shared control and not a shared subject. A mapping is evidence, never a claim of compliance -- an assessment decides whether an indicator is met.
+FedRAMP 20x KSI evidence. Which FedRAMP 20x Key Security Indicators an audit's findings are evidence for, by inverting the NIST control list each indicator carries in FedRAMP's own consolidated dataset (vendored with its version and hash). Without manifests it returns the crosswalk itself. Every indicator is listed: the ones no kube-noob rule can see carry evidenced=false and no counts, and 4 carry a warning because their rules reach them only through a shared control and not a shared subject. A mapping is evidence, never a claim of compliance -- an assessment decides whether an indicator is met.
 
 - `cni` (null/string): The cluster's CNI as NAME or NAME:VERSION (calico:3.32, ovn-kubernetes, cilium:1.18). Without it the rule that decides whether an AdminNetworkPolicy is inert cannot decide, and the row says so instead of counting it clean.
 - `control` (null/string): Only the indicators citing this NIST control, in kube-noob's spelling: 'AC-6', 'AC-6(10)'.
