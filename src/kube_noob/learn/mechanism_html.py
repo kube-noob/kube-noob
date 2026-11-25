@@ -268,6 +268,9 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
     # The one check this view makes of its input, and it only ever lowers: a `complete` that its own hops do not
     # bear out is not drawn in the colour of a pass. `walk()` never produces one; a hand-built dict can.
     if verdict == "complete":
+        # `all()` over no hops is True; `judged > 0` is what refuses that, and the `steps: []` case of
+        # test_a_complete_its_own_hops_do_not_bear_out_is_not_drawn_as_a_pass holds it. Recorded in
+        # tests/fixtures/empty_verdict_baseline.json for that reason.
         sound = exit_code == 0 and judged > 0 and all(s in (HOLDS, NOT_OBSERVABLE) for s in states)
         tone, word = ("ok", "complete") if sound else ("warn", "unrecognised: the verdict and the hops disagree")
     elif verdict == "broken":
