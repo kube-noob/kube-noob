@@ -1,7 +1,7 @@
 name: videos
 
 # The demo videos of a release, rendered from its own code and attached to its GitHub release: 4K masters
-# (3840x2160, 30 fps) and 1080p web copies of the walkthrough and the three animated videos, WebVTT captions, poster
+# (3840x2160, 30 fps) and 1080p web copies of the walkthrough and the four animated videos, WebVTT captions, poster
 # frames, the YouTube thumbnail and the YouTube description. Every number in them comes from the released code and
 # from the sidecar transcript its CI run recorded on a kind cluster (demos/video/facts.py); every file's sound is
 # measured against the brand spec before it is attached (demos/video/loudness.py). release.yml calls this after the
@@ -248,7 +248,17 @@ jobs:
           for f in dist/*.mp4; do
             ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$f" | sed "s|^|$f |"
           done
-          test "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "dist/kube-noob-$VIDEO-4k.mp4")" = "3840,2160"
+          # Compare the two numbers, not the string ffprobe happens to print them in. `-of csv=p=0` emits a
+          # trailing separator on some ffprobe builds and not on others -- `3840,2160,` on the runner, `3840,2160`
+          # on ffprobe 6.1.1 -- so an equality test against one spelling passes on one machine and fails on the
+          # other. It failed on every render of v0.10.0: four 4K masters at the right size, the right loudness and
+          # the right duration, all rejected by a comma, so that release carries no video at all.
+          read -r W H <<<"$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+            -of default=nw=1:nk=1 "dist/kube-noob-$VIDEO-4k.mp4" | tr '\n' ' ')"
+          test "$W" = 3840 && test "$H" = 2160 || {
+            echo "::error title=master::expected 3840x2160, got ${W}x${H}" >&2
+            exit 1
+          }
           ls -l dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
