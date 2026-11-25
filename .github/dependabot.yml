@@ -19,6 +19,11 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # v4.39.4 breaks the two-language upload in codeql.yml; see the note there. Ignore this one release only, so
+      # the next one is still proposed and its pull request shows whether analyze is green again.
+      - dependency-name: github/codeql-action
+        versions: ["4.39.4"]
   - package-ecosystem: docker
     directory: /
     schedule: {interval: weekly}
