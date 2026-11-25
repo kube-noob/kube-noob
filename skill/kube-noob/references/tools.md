@@ -220,6 +220,7 @@ Walk a mechanism over these manifests. Follow one path -- a request reaching a P
 
 - `manifests`* (string)
 - `mechanism_id`* (string)
+- `partial_bundle` (boolean): These documents are only part of a namespace. Default true, as for the other tool that takes pasted manifests: a pasted bundle is usually a fragment, and a rule that fires because another object is absent cannot tell a real gap from an object the caller did not paste. On a walk the difference is not a count but a VERDICT -- with a fragment such a rule reaches no verdict, so the hop it judges says `cannot judge` and the walk stops there; with this false the same hop would be reported BROKEN, which claims the object is missing from the namespace on evidence that cannot say so. Set it false only when the manifests really are every object of the namespace.
 - `platform` (null/string)
 - `version` (null/string)
 

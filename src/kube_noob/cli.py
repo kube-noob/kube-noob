@@ -4209,6 +4209,10 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                         manifests=_read(a.file),
                         platform=a.platform,
                         version=a.pversion,
+                        # The command already knows: a directory is a whole namespace, one file is a fragment.
+                        # `_partial_input` is the same decision `audit` makes, so the walk and the audit of the
+                        # same input agree about what the absence of an object means.
+                        partial_bundle=_partial_input(a),
                     )
                 )
             except KeyError as exc:
