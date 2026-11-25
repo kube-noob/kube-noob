@@ -49,10 +49,10 @@ def _synthetic() -> dict:
         "title": "Precedence",
         "layer": "test",
         "steps": [
-            {"id": "a", "title": "A", "kinds": ["Deployment"], "rules": ["KN-C001"], "holds": "a holds"},
-            {"id": "b", "title": "B", "kinds": ["Deployment"], "rules": ["KN-C010"], "holds": "b holds"},
-            {"id": "c", "title": "C", "kinds": ["PodDisruptionBudget"], "rules": ["KN-C009"], "holds": "c holds"},
-            {"id": "d", "title": "D", "kinds": ["Deployment"], "rules": ["KN-C007"], "holds": "d holds"},
+            {"id": "a", "title": "A", "needs": ["Deployment"], "rules": ["KN-C001"], "holds": "a holds"},
+            {"id": "b", "title": "B", "needs": ["Deployment"], "rules": ["KN-C010"], "holds": "b holds"},
+            {"id": "c", "title": "C", "needs": ["PodDisruptionBudget"], "rules": ["KN-C009"], "holds": "c holds"},
+            {"id": "d", "title": "D", "needs": ["Deployment"], "rules": ["KN-C007"], "holds": "d holds"},
         ],
     }
 
@@ -98,7 +98,7 @@ def test_the_precedence_in_the_walker_itself() -> None:
     """Driven through `walk` with a report built by hand, so no rule's behaviour can make this pass by accident."""
     lesson = _synthetic()
     report = {
-        "resources": [{"kind": "Deployment", "name": "web", "namespace": "shop"}],
+        "resources": ["Deployment/shop/web"],
         "findings": [
             {"ruleId": "KN-C010", "severity": "low", "resource": "Deployment/shop/web", "title": "not spread"}
         ],
