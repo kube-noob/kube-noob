@@ -138,7 +138,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `generate` | `0`, or `3` needs clarification | `audit`, `assumptions`, `prerequisites` | |
-| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
 | `search` | always `0`; no results is "not in the local knowledge" | `results`, `howToCite` | |
 
 Write a blueprint to `$KN/blueprint.yaml` with `platform: rosa-hcp` (name, namespace, image, storage, exposure),
