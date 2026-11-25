@@ -143,11 +143,11 @@ YAML you write to `$KN/blueprint.yaml` from what the user told you.
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `protocol` | `0` ready, `1` blocked (a HIGH or CRITICAL finding remains), `3` needs clarification | `status`, `auditValidationBrief` | `steps` |
-| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
-| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `protocol` | `0` ready, `1` blocked (a HIGH or CRITICAL finding remains), `3` needs clarification; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `status`, `auditValidationBrief` | `steps` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
 | `redteam` | always `0` | `scenarios`, each exposed, mitigated or undecided | `assumptions` |
-| `fix` | `0` only when what it wrote audits clean; `1` on a high or critical finding or an undetermined after-verdict; `4` on refused input | `changes`, `manualFollowUps`, `after` | |
+| `fix` | `0` only when what it wrote audits clean; `1` on a high or critical finding or an undetermined after-verdict; `4` on refused input; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `changes`, `manualFollowUps`, `after` | |
 | `generate` | `0`, or `3` needs clarification | `audit`, `assumptions`, `prerequisites` | |
 | `helm-chart` | always `0` | `files`, `assumptions`, `prerequisites` | |
 | `search` | always `0` | `results`, `howToCite` | |
