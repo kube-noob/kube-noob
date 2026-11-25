@@ -61,7 +61,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
 
-## The 98 audit rules and their controls
+## The 99 audit rules and their controls
 
 | Rule | What it checks | NIST SP 800-53 Rev. 5 controls |
 |---|---|---|
@@ -81,6 +81,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 | KN-C014 | Workload scaled by an HPA also sets spec.replicas | CM-6, SC-6 |
 | KN-C015 | Pod names a resource claim that is not in this bundle | CM-6 |
 | KN-C016 | Namespace has workloads but no ResourceQuota or LimitRange | SC-5, SC-6 |
+| KN-C017 | Pod names an object that is not in this namespace | CM-6 |
 | KN-N001 | Namespace has workloads but no NetworkPolicy | SC-7, SC-7(5), AC-4 |
 | KN-N002 | Route without TLS | SC-8, SC-8(1) |
 | KN-N003 | Ingress without TLS | SC-8, SC-8(1) |
