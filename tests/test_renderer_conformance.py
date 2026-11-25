@@ -1473,7 +1473,10 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
         "tests/test_the_walk_an_agent_can_run.py "
         "(test_a_stopped_walk_says_stopped_and_names_the_hop pins `declared == len(steps) + notReached`), and "
         "the command and the tool are compared whole so one path cannot have two answers "
-        "(test_the_command_and_the_tool_give_the_same_answer)"
+        "(test_the_command_and_the_tool_give_the_same_answer). The command's `--format html` page "
+        "(learn/mechanism_html.py, G402) is a view of this same walk and is exempt for the same reason; what it "
+        "owes is held by tests/test_a_walk_you_can_watch.py: it embeds the walk `--format json` prints, exits "
+        "with the walk's code, draws every declared hop, and shows nothing that was not judged as passing"
     ),
     "mcp.posture_reach": (
         "the blast radius of ONE workload the caller names -- its ServiceAccount, the bindings that name it, "

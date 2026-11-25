@@ -81,6 +81,34 @@ that checked nothing (G395). A hop's **title** is also held to what its rules de
 policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
 an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
 
+### Watching the walk
+
+```
+kube-noob learn mechanism mech-net-request-to-pod -f ./manifests --format html > walk.html
+```
+
+`--format html` writes the same walk as one page you open in a browser: the components the lesson's hops touch,
+drawn in hop order and labelled with the objects from your own manifests; an event that travels from hop to hop
+with a caption such as `02/06  Ingress/shop/shop -> Service/shop/orders-api`; and, for the selected hop, its
+verdict, the rules it rests on, the objects it read and the findings on it. Play and pause, previous and next,
+the left and right arrow keys and space all step it, and the address ends in `#step-N` so a hop can be linked.
+
+It is a third view of the dict `--format json` prints, not a second opinion, and it keeps the walk's rules:
+
+- The exit code is the walk's, `0`, `1` or `5`, exactly as for the text and JSON views.
+- The event is drawn only for a hop a rule read. At a BROKEN hop it arrives and fails. At a hop that could not be
+  judged it stops short and the page says why. For a hop marked **not observable**, and for a hop that was **not
+  walked** because the walk stopped first, no event is drawn at all, and the page says so in those words -- the
+  state is text, not only a colour, and neither is ever shown as passing.
+- Every declared hop is on the page, including the ones after a stop, which the text view only counts.
+- The page is complete without playing it and without its script: every hop's detail is in the HTML.
+- It fetches nothing. There is no URL in the file -- no font, no image, no library -- and its
+  Content-Security-Policy forbids the browser from loading one. Names from your manifests are text on the page,
+  never markup, and the same input gives the same bytes, so the file can be attached to a review or diffed.
+
+`--format html` belongs to `learn mechanism` alone; any other command refuses it with exit `2` rather than print
+something else under that name.
+
 ## What kube-noob remembers
 
 kube-noob keeps a small local file, `<dataDir>/learning.json`. By default that is
