@@ -9,7 +9,9 @@ cannot:
 - **fails** -- a rule on this hop produced a finding, which is reported with its id.
 - **cannot be judged** -- an object the hop needs is absent, refused or unreadable. The walk STOPS here. The hops
   after it are not drawn, because a hop nobody looked at is not a hop that works, and the verdict for the path is
-  that no verdict was reached (exit 5), not that the path is fine.
+  that no verdict was reached (exit 5), not that the path is fine -- unless a hop before it was already broken.
+  Then the path's verdict was reached before the stop, and it is `broken` (exit 1) with the stop named beside it
+  (G400).
 
 This module adds no judgement of its own. It reads a report `analyze()` already produced: `resources` for what is
 here, `notAudited` for what was refused, `findings` for what is wrong, and `notEvaluated` for the rules that
@@ -37,9 +39,11 @@ HOLDS = "holds"
 FAILS = "fails"
 CANNOT_JUDGE = "cannot-judge"
 
-#: The exit code each path verdict means, by the rule AGENTS.md publishes. A walk that stopped reached no verdict
-#: about the path, which is 5 (evidence incomplete) and never 1; a walk that finished and found a broken hop
-#: reached one, and it is not a pass, which is 1.
+#: The exit code each path verdict means, by the rule AGENTS.md publishes (G272): 1 is "a verdict was reached and it
+#: is not a pass", 5 is "no verdict was reached". A broken hop IS a verdict about the path -- no hop after it can
+#: make the path work -- so a walk that found one is `broken` at 1 whether or not it later stopped; the stop is
+#: named beside it, never instead of it (G400). Only a walk that stopped before finding anything broken reached no
+#: verdict, which is 5.
 EXIT = {"complete": 0, "broken": 1, "stopped": 5}
 
 
@@ -197,7 +201,20 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
         results.append(StepResult(step, HOLDS, f"{step.holds} ({', '.join(step.rules)})", objects=tuple(present)))
 
     judged = sum(1 for r in results if r.verdict in (HOLDS, FAILS))
-    if stopped_at is not None:
+    broken = ", ".join(r.step.id for r in results if r.verdict == FAILS)
+    if broken and stopped_at is not None:
+        # A broken hop followed by one nothing could judge. This was `stopped` at exit 5 with a reason naming only
+        # the stop, so the one thing the walk had established -- this path does not work -- was in neither the
+        # verdict, the exit code nor the sentence a reader acts on. Measured on the node-dark lesson against the
+        # shipped fixtures: KN-C010 BROKEN at hop 2, KN-C009 unable to judge hop 3, and the walk said only that it
+        # stopped. No hop after a broken one can make the path work, so the path verdict is reached and it is
+        # `broken`; the stop still names its hop in `stoppedAt` and the hops after it are still not walked (G400).
+        verdict = "broken"
+        reason = (
+            f"these hops are broken: {broken}; the walk then stopped at `{stopped_at}`: that hop could not be "
+            f"judged, so {len(steps) - len(results)} hop(s) after it were not walked"
+        )
+    elif stopped_at is not None:
         verdict, reason = "stopped", f"the walk stopped at `{stopped_at}`: that hop could not be judged"
     elif judged == 0:
         # Nothing on this path was judged, so there is no verdict about the path -- and the sentence that used to
@@ -219,8 +236,7 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
             f"{sum(1 for r in results if r.verdict == NOT_OBSERVABLE)} are not observable and none was read by a "
             "rule in this build, so this walk reached no verdict about the path"
         )
-    elif any(r.verdict == FAILS for r in results):
-        broken = ", ".join(r.step.id for r in results if r.verdict == FAILS)
+    elif broken:
         verdict, reason = "broken", f"the walk reached the end; these hops are broken: {broken}"
     else:
         verdict, reason = "complete", "every observable hop on this path holds"

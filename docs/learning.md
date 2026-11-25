@@ -62,11 +62,13 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 |---|---|---|
 | every observable hop holds, and at least one hop was judged | `complete` | `0` |
 | reached the end, a hop is broken | `broken` | `1` |
-| stopped at a hop it could not judge | `stopped` | `5` |
+| found a broken hop, then stopped at a hop it could not judge | `broken`, with `stoppedAt` set | `1` |
+| stopped at a hop it could not judge, nothing broken before it | `stopped` | `5` |
 | judged no hop at all | `stopped` | `5` |
 
-`5` and `1` are not two answers to the same question: `1` says the path was walked and something on it is wrong,
-`5` says the path was not walked.
+`5` and `1` are not two answers to the same question: `1` says something on the path is wrong, `5` says the path
+was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
+work -- so a walk that finds one and then stops is `1`, with the stop named beside it, not `5` (G400).
 
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
