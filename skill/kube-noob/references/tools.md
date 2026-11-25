@@ -214,6 +214,15 @@ Open a lesson. Lesson content with objectives, key points and citations. A share
 - `learner` (null/string)
 - `lesson_id`* (string)
 
+## learn_mechanism
+
+Walk a mechanism over these manifests. Follow one path -- a request reaching a Pod, a node going dark -- hop by hop over the user's own YAML, and STOP at the first hop this build cannot judge. Three answers per hop and never two: `holds`, `BROKEN`, or `cannot judge`, plus `not checked` for a hop no manifest records. The hops after a stop are reported as not checked, never as fine. Read `verdict` (`complete`, `broken` or `stopped`) and `stoppedAt`: a `stopped` walk reached no verdict about the path, so it is neither a pass nor a failure, and saying the path works because nothing was reported is the one mistake this tool exists to prevent. Writes nothing.
+
+- `manifests`* (string)
+- `mechanism_id`* (string)
+- `platform` (null/string)
+- `version` (null/string)
+
 ## learn_progress
 
 Learner progress. Credits earned and completed items.
