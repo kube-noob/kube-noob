@@ -69,7 +69,7 @@ def _embedded(page: str) -> dict[str, Any]:
 def _body_text(page: str) -> str:
     """What a reader sees: the page with the style, both scripts and every tag removed."""
     page = re.sub(r"<style>.*?</style>", "", page, flags=re.S)
-    page = re.sub(r"<script.*?</script>", "", page, flags=re.S)
+    page = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
     return re.sub(r"<[^>]+>", " ", page)
 
 
@@ -125,7 +125,8 @@ def test_an_address_inside_a_name_does_not_become_one_on_the_page() -> None:
     page = H.render_html(_hostile("https://evil.example/x?y=1 http://evil.example //evil.example"))
     assert "http://" not in page and "https://" not in page and "://" not in page
     assert "evil.example" in page  # shown, as text
-    assert _embedded(page)["walk"]["title"].startswith("https://evil.example")  # and the data is not altered
+    hostile = "https://evil.example/x?y=1 http://evil.example //evil.example"
+    assert hostile in _embedded(page)["walk"]["title"]  # and the data is not altered
 
 
 # -- 2. deterministic ----------------------------------------------------------------------------------------
@@ -163,7 +164,7 @@ def test_a_name_that_closes_the_script_element_closes_nothing() -> None:
     walked = _hostile(SCRIPT)
     page = H.render_html(walked)
     # Exactly the two elements this module writes; a third would be the payload's.
-    assert page.count("<script") == 2 and page.count("</script>") == 2
+    assert page.lower().count("<script") == 2 and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
     assert "alert(1)</script>" not in page and "<script>alert" not in page
     assert "&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in page
     data = _embedded(page)
@@ -191,9 +192,10 @@ def test_no_string_from_the_walk_becomes_markup_or_a_command(payload: str) -> No
     walked = _hostile(payload)
     page = H.render_html(walked)
     assert page.isascii()
-    assert page.count("<script") == 2 and page.count("</script>") == 2
+    assert page.lower().count("<script") == 2 and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
     # No tag on the page but the ones the module writes.
-    tags = set(re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", re.sub(r"<script>.*?</script>", "", page, flags=re.S)))
+    unscripted = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
+    tags = set(re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", unscripted))
     assert tags <= {
         *("html", "head", "meta", "title", "style", "body", "main", "header", "h1", "h2", "p", "section", "div"),
         *("span", "dl", "dt", "dd", "svg", "path", "g", "circle", "ol", "ul", "li", "a", "code", "button"),
@@ -242,7 +244,11 @@ def test_a_hostile_manifest_through_the_command_is_text_on_the_page(
     code, page = _run("html", REQUEST, d, capsys)
     json_code, _ = _run("json", REQUEST, d, capsys)
     assert code == json_code
-    assert page.count("<script") == 2 and page.count("</script>") == 2 and "<script>alert" not in page
+    assert (
+        page.lower().count("<script") == 2
+        and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
+        and "<script>alert" not in page
+    )
     assert "alert(1)" in page, "the hostile name never reached the page, so this test did not test the escaping"
 
 
@@ -447,7 +453,7 @@ def test_the_page_is_complete_at_rest_and_usable_without_the_script(capsys: pyte
     """Every hop's decoder is in the HTML itself, and the script only chooses which one to show: with no script
     the page is the whole walk, top to bottom, and each node links to its hop."""
     _, page = _run("html", REQUEST, FIXTURES / "broken", capsys)
-    static = re.sub(r"<script.*?</script>", "", page, flags=re.S)
+    static = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
     for n in range(1, 7):
         assert f'href="#step-{n}"' in static and f'id="step-{n}"' in static
     assert "KN-V019" in static and "Ingress targets the retired ingress-nginx" in static
