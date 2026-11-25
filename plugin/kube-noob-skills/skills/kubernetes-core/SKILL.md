@@ -139,13 +139,15 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `search` | always `0`; no results is "not in the local knowledge" | `results`, `howToCite` | |
-| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `learn tracks` | always `0` | `tracks` | |
 | `learn lesson` | always `0` | `content`, `keyPoints` | |
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
+| `learn mechanism` | `0` when every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, or a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1` | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
 audit it before commenting and quote the rule ids and line numbers. For "is this API removed in version X?", validate
@@ -169,6 +171,19 @@ kube-noob learn exercise k8s-ex-hardened-deployment --format json
 kube-noob learn submit k8s-ex-hardened-deployment -f "$KN/answer.yaml" --format json
 kube-noob learn quiz k8s-q-exit137 --format json
 kube-noob learn quiz k8s-q-exit137 --choice 1 --format json
+```
+
+When the user asks how something *works* rather than whether it is safe -- how a request reaches their Pod, why
+their Service has no endpoints -- walk the mechanism over their own manifests. It answers hop by hop and stops at
+the first hop it cannot judge, so the hops after it are reported as not checked, never as fine. Three answers,
+never two: `0` every observable hop holds, `1` the walk reached the end and a hop is BROKEN, `5` the walk STOPPED
+because nothing in this build reads that hop, or a file beside the input could not be read. A `5` is not a pass
+and not a failure -- read `stoppedAt` and say which hop went unanswered. `learn progress` reports the credits and
+lessons recorded so far, and never writes.
+
+```bash
+kube-noob learn mechanism mech-net-request-to-pod -f "$KN/app.yaml" --format json
+kube-noob learn progress --format json
 ```
 
 ## API versions and removals
