@@ -190,3 +190,180 @@ def test_a_namespace_full_of_newlines_cannot_write_a_line_of_its_own() -> None:
     assert walked["exitCode"] == 5
     for line in M.render(walked).splitlines():
         assert not line.startswith("every observable hop"), line
+
+
+def test_a_slash_in_a_namespace_cannot_make_two_namespaces_read_as_one() -> None:
+    """`Kind/ns/name` is one string, so `shop/a` and `shop/b` both began with `shop`. Neither is `shop`."""
+    d = _docs()
+    a = [d[k].replace("namespace: shop", "namespace: shop/a") for k in ("Ingress", "Service")]
+    b = [d[k].replace("namespace: shop", "namespace: shop/b") for k in ("Deployment", "NetworkPolicy")]
+    walked = _walk("\n---\n".join(a + b))
+    assert len(walked["namespaces"]) > 1, walked["namespaces"]
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+
+
+# --- G406 (M3, M5): the walk exits 0 where the audit of the same bytes is not clean about the same objects ------
+
+HOLLOW = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: hollow, namespace: shop}
+spec: {replicas: 2, selector: {matchLabels: {app: hollow}}}
+"""
+DUPLICATE_KEY = FIXTURE.replace(SELECTOR, "  selector:\n    app: nope\n" + SELECTOR)
+
+#: Every hop of the node-dark lesson holding: two replicas, spread, behind a budget that lets one go.
+NODE_OK = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: shop}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector: {matchLabels: {app: api}}
+      containers:
+        - name: api
+          image: registry.example.com/api@sha256:3333333333333333333333333333333333333333333333333333333333333333
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: api, namespace: shop}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: api}}}
+"""
+#: The workload a lost node takes down, in a kind no hop lists and no rule reads.
+ROLLOUT = (
+    NODE_OK.split("---", maxsplit=1)[0]
+    .replace("apiVersion: apps/v1", "apiVersion: argoproj.io/v1alpha1")
+    .replace("kind: Deployment", "kind: Rollout")
+    .replace("name: api, namespace", "name: real-api, namespace")
+    .replace("replicas: 2", "replicas: 1")
+)
+REFUSED_POLICY = """\
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata: {name: np, namespace: shop}
+spec: {selector: all()}
+"""
+
+
+def _audit_exit(tmp_path: Path, manifests: str) -> int:
+    folder = tmp_path / "audit"
+    folder.mkdir()
+    (folder / "b.yaml").write_text(manifests, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    done = subprocess.run(
+        [sys.executable, "-m", "kube_noob", "audit", "-f", str(folder)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    return done.returncode
+
+
+def test_a_hop_does_not_hold_on_a_workload_with_no_pod_template_beside_a_healthy_one(tmp_path: Path) -> None:
+    """G389 fixed this where the hollow Deployment is the ONLY one. Beside a healthy one the rules ran, said
+    nothing about it, and two hops listed it among the objects they held on."""
+    manifests = FIXTURE + "\n---\n" + HOLLOW
+    assert _audit_exit(tmp_path, manifests) == 1
+    walked = _walk(manifests)
+    hop = _by_id(walked)["workload-selects-its-own-pods"]
+    assert hop["verdict"] == M.CANNOT_JUDGE and "KN-V007" in hop["why"], hop
+    assert [(f["ruleId"], f["resource"]) for f in hop["findings"]] == [("KN-V007", "Deployment/shop/hollow")]
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+    assert "pod-reports-ready" not in _by_id(walked), "the readiness hop was drawn over zero containers"
+
+
+def test_a_hop_does_not_hold_on_an_object_with_a_duplicate_key(tmp_path: Path) -> None:
+    assert DUPLICATE_KEY.count("  selector:") == 3, "the edit did not apply"
+    assert _audit_exit(tmp_path, DUPLICATE_KEY) == 1
+    walked = _walk(DUPLICATE_KEY)
+    hop = _by_id(walked)["service-selects-pods"]
+    assert hop["verdict"] == M.CANNOT_JUDGE and "KN-V018" in hop["why"], hop
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+
+
+def test_a_schema_finding_from_the_hops_own_rule_is_still_a_verdict() -> None:
+    """The neighbouring input: KN-V010 is a schema rule too, and on its own hop it is BROKEN, not a stop."""
+    mismatched = FIXTURE.replace("      labels:\n        app: orders-api", "      labels:\n        app: other")
+    walked = _walk(mismatched)
+    assert _by_id(walked)["workload-selects-its-own-pods"]["verdict"] == M.FAILS
+    assert walked["verdict"] == "broken" and walked["exitCode"] == 1
+
+
+def test_a_finding_about_something_other_than_the_path_does_not_stop_it() -> None:
+    """What the claim does NOT say: a security finding on the Deployment is the audit's, not this path's."""
+    unprobed = FIXTURE.replace("        seccompProfile:\n          type: RuntimeDefault\n", "")
+    report = _report(unprobed)
+    assert report["findings"], "the control needs a finding outside every hop"
+    walked = M.walk(_lesson(NET), report)
+    assert (walked["verdict"], walked["exitCode"]) == ("complete", 0)
+
+
+def test_a_workload_in_a_kind_nothing_reads_stops_the_hops_about_workloads(tmp_path: Path) -> None:
+    manifests = NODE_OK + "---\n" + ROLLOUT
+    assert _walk(NODE_OK, NODE)["exitCode"] == 0, "the control: without the Rollout every hop holds"
+    assert _audit_exit(tmp_path, manifests) == 1
+    assert _report(manifests)["summary"]["verdict"] == "undetermined"
+    walked = _walk(manifests, NODE)
+    first = walked["steps"][0]
+    assert first["step"] == "more-than-one-replica" and first["verdict"] == M.CANNOT_JUDGE, first
+    assert "'Rollout/shop/real-api'" in first["why"]
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+    assert not [s for s in walked["steps"] if s["verdict"] == M.HOLDS]
+
+
+def test_a_walk_is_never_complete_where_the_audit_of_the_same_input_is_undetermined() -> None:
+    """The backstop, for what no hop names: a refused NetworkPolicy is in no hop of the node-dark lesson."""
+    manifests = NODE_OK + "---\n" + REFUSED_POLICY
+    assert _report(manifests)["summary"]["verdict"] == "undetermined"
+    walked = _walk(manifests, NODE)
+    assert (walked["verdict"], walked["exitCode"], walked["stoppedAt"]) == ("stopped", 5, None)
+    assert "undetermined" in walked["verdictReason"] and "'NetworkPolicy/shop/np'" in walked["verdictReason"]
+    assert "every observable hop on this path holds" not in M.render(walked)
+
+
+def test_the_backstop_in_the_walker_itself_and_what_it_leaves_alone() -> None:
+    """Over reports built by hand, so no rule's behaviour today can make these pass."""
+    lesson = {
+        "id": "x",
+        "title": "t",
+        "layer": "l",
+        "steps": [
+            {"id": "a", "title": "a", "needs": ["Deployment"], "rules": ["KN-C001"], "holds": "h"},
+            {"id": "b", "title": "b", "needs": ["Service"], "rules": ["KN-V011"], "holds": "h"},
+        ],
+    }
+    resources = ["Deployment/shop/web", "Service/shop/web"]
+    clean = {"resources": resources, "summary": {}}
+    assert M.walk(lesson, clean)["verdict"] == "complete"
+
+    undetermined = {"resources": resources, "summary": {"verdict": "undetermined"}}
+    walked = M.walk(lesson, undetermined)
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+    assert "a rule declined" in walked["verdictReason"]
+
+    # A broken hop is a verdict more evidence cannot reverse, so it stays 1 (G400).
+    finding = {"ruleId": "KN-V011", "severity": "medium", "resource": "Service/shop/web", "title": "t"}
+    broken = M.walk(lesson, {**undetermined, "findings": [finding]})
+    assert (broken["verdict"], broken["exitCode"]) == ("broken", 1)
+
+    # A malformed object under a hop that does not list the rule: the hop is not judged, and the finding shows.
+    schema = {**finding, "ruleId": "KN-V018", "stage": "validate", "category": "schema"}
+    odd = M.walk(lesson, {**clean, "findings": [schema]})
+    assert _by_id(odd)["b"]["verdict"] == M.CANNOT_JUDGE and odd["exitCode"] == 5
+    # The same finding on an object no hop reads says nothing about this path.
+    elsewhere = M.walk(lesson, {**clean, "findings": [{**schema, "resource": "ConfigMap/shop/c"}]})
+    assert elsewhere["verdict"] == "complete"
+    # And a finding that is not about the object's shape is the audit's business, not a hop's.
+    other = M.walk(lesson, {**clean, "findings": [{**schema, "category": "wiring", "ruleId": "KN-V023"}]})
+    assert other["verdict"] == "complete"

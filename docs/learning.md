@@ -65,6 +65,7 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 | found a broken hop, then stopped at a hop it could not judge | `broken`, with `stoppedAt` set | `1` |
 | stopped at a hop it could not judge, nothing broken before it | `stopped` | `5` |
 | judged no hop at all | `stopped` | `5` |
+| every hop it read holds, and the audit of the same input is undetermined | `stopped`, `stoppedAt` null | `5` |
 
 `5` and `1` are not two answers to the same question: `1` says something on the path is wrong, `5` says the path
 was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
@@ -76,6 +77,20 @@ its own namespace, and a Service selects pods of its own. The second line of the
 one namespace the walk does not pick one: the first hop says **cannot judge**, the namespaces are named, and the
 exit is `5`. Pass the manifests of one namespace. An object that states no namespace counts as a namespace of its
 own, because nothing in the manifest says where `kubectl apply -n` will put it (G404).
+
+**The walk does not say more than the audit of the same files.** Three things stop a hop, or the path, that no
+rule on the hop reports (G406):
+
+- an object the hop reads carries a *schema* finding from the validation stage -- a required field missing, a
+  duplicate key, a duplicate object. The hop says **cannot judge** and shows the finding, because the object is
+  not what the API server would accept as written;
+- the input holds a pod spec nothing read (an Argo Rollout, a kind with no reader). Every hop about workloads
+  says **cannot judge** and names it, because it may be the workload the hop is about;
+- `kube-noob audit` on the same input is `undetermined` for any other reason. The walk is then `stopped` at `5`
+  with `stoppedAt` null, never `complete`.
+
+A walk can still be `complete` where `audit` exits `1` on a finding that is not about this path -- an image tag,
+a missing `seccompProfile`. The walk answers for one path.
 
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
