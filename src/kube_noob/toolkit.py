@@ -3152,7 +3152,9 @@ class Toolkit:
                 "after a stop are reported as not checked, never as fine. Read `verdict` (`complete`, `broken` or "
                 "`stopped`) and `stoppedAt`: a `stopped` walk reached no verdict about the path, so it is neither "
                 "a pass nor a failure, and saying the path works because nothing was reported is the one mistake "
-                "this tool exists to prevent. Writes nothing.",
+                "this tool exists to prevent. Leave `partial_bundle` true for a pasted fragment and the hops judged by "
+                "a rule that fires on an absent object say `cannot judge` rather than BROKEN; set it false only "
+                "when the manifests really are every object of the namespace. Writes nothing.",
                 MechanismIn,
                 self.mechanism,
             ),
