@@ -94,20 +94,27 @@ def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
         "no release run exists for ${tag}",
         "whether it finishes shipping is NOT KNOWN yet",
         "so what it did not ship is NOT KNOWN",
+        # G403: shape, not only transport.
+        "has no line that is exactly '## Unreleased'",
+        "how long the website has stated it is NOT KNOWN",
+        "which checks to read is NOT KNOWN",
+        "came back in a shape that is not a list of check runs",
+        "no check on main concluded success",
     ):
         assert phrase in script, f"missing refusal: {phrase!r}"
     assert "This is not 'nothing to release'." in script
     assert "it is an unanswered question" in script
     head = script[: script.index("existing=$(gh issue list")]
-    assert head.count("exit 1") == 8, head.count("exit 1")
-    assert "exit 0" not in head, "nothing may pass before all eight readings are in"
+    assert head.count("exit 1") == 13, head.count("exit 1")
+    assert "exit 0" not in head, "nothing may pass before all thirteen readings are in"
 
 
 def test_nothing_to_release_closes_the_issue_instead_of_nagging() -> None:
     script = _script()
     tail = script[script.index('if [ "${bullets}" = "0" ]') :]
     assert "gh issue close" in tail.split("exit 0")[0]
-    assert "in step with" in tail, "the close comment should say why it is closing"
+    assert "nothing is waiting to be released after" in tail, "the close comment should say why it is closing"
+    assert "in step with" not in tail, "the workflow never reads the site, so it must not say the site is in step"
 
 
 def test_the_ready_answer_carries_the_command_and_the_not_ready_answer_carries_the_reason() -> None:

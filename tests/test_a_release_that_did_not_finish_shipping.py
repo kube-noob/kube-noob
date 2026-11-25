@@ -62,7 +62,8 @@ else:
 if answer is None:
     sys.stderr.write("stub gh: refused " + line + "\n")
     sys.exit(1)
-text = json.dumps(answer)
+paged = isinstance(answer, dict) and "__pages__" in answer
+text = "\n".join(json.dumps(x) for x in answer["__pages__"]) if paged else json.dumps(answer)
 if "--jq" in args:
     expr = args[args.index("--jq") + 1]
     text = subprocess.run(["jq", "-r", expr], input=text, capture_output=True, text=True, check=True).stdout
@@ -76,9 +77,15 @@ def _script() -> str:
 
 
 def _run(
-    tmp_path: Path, *, changelog: str, runs: Any, jobs: Any = V0100_JOBS, existing: Any = ()
+    tmp_path: Path,
+    *,
+    changelog: str,
+    runs: Any,
+    jobs: Any = V0100_JOBS,
+    existing: Any = (),
+    answers: Any = (),
 ) -> tuple[int, str, list[list[str]]]:
-    for tool in ("jq", "awk", "paste", "date"):
+    for tool in ("jq", "awk", "paste", "date", "grep"):
         assert shutil.which(tool), f"{tool} is not on PATH, so the workflow's script could not be executed"
     bash = shutil.which("bash")
     assert bash, "bash is not on PATH, so the workflow's script could not be executed"
@@ -92,9 +99,10 @@ def _run(
     gh.write_text(f"#!{sys.executable}\n{STUB}", encoding="utf-8")
     gh.chmod(0o755)
     scenario = [
+        *[list(a) for a in answers],
         ["release list", [{"tagName": "v0.10.0"}]],
         ["release view", {"publishedAt": "2026-11-23T05:30:00Z"}],
-        ["commits/main", {"sha": "340d243b"}],
+        ["commits/main", {"sha": "340d243b2f0c0c1d6a7e4f5b8a9c0d1e2f3a4b5c"}],
         ["check-runs", GREEN],
         ["workflows/release.yml/runs", runs],
         ["/jobs", jobs],
@@ -157,7 +165,7 @@ def test_an_empty_changelog_over_a_release_that_shipped_still_closes(tmp_path: P
     assert code == 0, out
     assert len(writes) == 1 and writes[0][:3] == ["issue", "close", "7"], writes
     comment = writes[0][writes[0].index("--comment") + 1]
-    assert "release run concluded success" in comment and "in step with v0.10.0" in comment
+    assert "release run concluded success" in comment and "nothing is waiting to be released after v0.10.0" in comment
 
 
 def test_ready_still_says_ready_and_carries_the_unfinished_release(tmp_path: Path) -> None:
@@ -204,3 +212,78 @@ def test_a_failed_run_whose_jobs_all_read_green_still_names_itself(tmp_path: Pat
     code, out, writes = _run(tmp_path, changelog=EMPTY_CHANGELOG, runs=UNSHIPPED, jobs=jobs)
     assert code == 0, out
     assert "no job names itself; the run concluded failure" in _body(writes)
+
+
+# G403: a reading that came back in the wrong SHAPE is a reading that was not taken. Every case below used to reach
+# an answer -- most of them "Ready" or a closed issue -- because the script runs without `-e` and only checked that
+# `gh` exited 0. Each must now exit 1, say NOT KNOWN or name the unanswered question, and write nothing.
+@pytest.mark.parametrize(
+    ("answers", "changelog", "said"),
+    [
+        ([["check-runs", {}]], WAITING_CHANGELOG, "not a list of check runs"),
+        ([["check-runs", []]], WAITING_CHANGELOG, "not a list of check runs"),
+        ([["check-runs", {"message": "Not Found"}]], WAITING_CHANGELOG, "not a list of check runs"),
+        ([["check-runs", {"check_runs": None}]], WAITING_CHANGELOG, "not a list of check runs"),
+        (
+            [["check-runs", {"check_runs": [{"name": "x", "status": "completed", "conclusion": "skipped"}]}]],
+            WAITING_CHANGELOG,
+            "no check on main concluded success",
+        ),
+        ([["release view", None]], WAITING_CHANGELOG, "when v0.10.0 was published could not be read"),
+        ([["release view", {"publishedAt": None}]], WAITING_CHANGELOG, "when v0.10.0 was published could not be read"),
+        ([["commits/main", {}]], WAITING_CHANGELOG, "main's head commit could not be read"),
+        ([["issue list", None]], WAITING_CHANGELOG, "could duplicate it"),
+        ([], "# Changelog\n\n## [Unreleased]\n\n## 0.10.0 - 2026-11-23\n", "no line that is exactly '## Unreleased'"),
+        ([], EMPTY_CHANGELOG.replace("\n", "\r\n"), "no line that is exactly '## Unreleased'"),
+        ([], "# Changelog\n\n## 0.10.0 - 2026-11-23\n\n- old (G1)\n", "no line that is exactly '## Unreleased'"),
+    ],
+    ids=[
+        "checks-empty-object",
+        "checks-empty-list",
+        "checks-not-found-body",
+        "checks-null",
+        "checks-all-skipped",
+        "release-view-fails",
+        "release-view-null-date",
+        "head-sha-missing",
+        "issue-lookup-fails",
+        "heading-bracketed",
+        "heading-crlf",
+        "heading-missing",
+    ],
+)
+def test_a_malformed_reading_is_not_known_and_writes_nothing(
+    tmp_path: Path, answers: Any, changelog: str, said: str
+) -> None:
+    code, out, writes = _run(tmp_path, changelog=changelog, runs=SHIPPED, answers=answers, existing=(7,))
+    assert code == 1, out
+    assert said in out, out
+    assert writes == [], f"a reading that was not taken still wrote to the issue: {writes}"
+
+
+def test_every_page_of_check_runs_is_read(tmp_path: Path) -> None:
+    """`--paginate` writes one JSON document per page. A failure on the second page must be named, and the count
+    must be one number -- it printed `1\n1` before every page was slurped (G403)."""
+    pages = {
+        "__pages__": [
+            {"check_runs": [{"name": "lint", "status": "completed", "conclusion": "success", "details_url": "u/1/"}]},
+            {
+                "check_runs": [
+                    {"name": "gate-ci", "status": "completed", "conclusion": "failure", "details_url": "u/2/"}
+                ]
+            },
+        ]
+    }
+    code, out, writes = _run(tmp_path, changelog=WAITING_CHANGELOG, runs=SHIPPED, answers=[["check-runs", pages]])
+    assert code == 0, out
+    body = _body(writes)
+    assert body.startswith("**Not ready.**") and "failure gate-ci" in body, body
+
+    green = {
+        "__pages__": [pages["__pages__"][0], {"check_runs": [dict(pages["__pages__"][0]["check_runs"][0], name="t")]}]
+    }
+    sub = tmp_path / "green"
+    sub.mkdir()
+    code, out, writes = _run(sub, changelog=WAITING_CHANGELOG, runs=SHIPPED, answers=[["check-runs", green]])
+    assert code == 0, out
+    assert "all **2** checks on" in _body(writes), "two pages of one check each are two checks, counted once"

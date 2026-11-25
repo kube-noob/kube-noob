@@ -52,6 +52,12 @@ jobs:
             echo "::error title=release-ready::CHANGELOG.md could not be read, so whether there is anything to release is NOT KNOWN. This is not 'nothing to release'."
             exit 1
           fi
+          # An empty section and a missing heading both count 0 bullets, and only the first is "nothing to cut".
+          # `## [Unreleased]`, CRLF line endings or a renamed heading closed the issue as in step (G403).
+          if ! grep -qx '## Unreleased' CHANGELOG.md; then
+            echo "::error title=release-ready::CHANGELOG.md has no line that is exactly '## Unreleased', so whether there is anything to release is NOT KNOWN. This is not 'nothing to release'."
+            exit 1
+          fi
           bullets=$(awk '/^## Unreleased$/{f=1;next} /^## /{f=0} f && /^- /{n++} END{print n+0}' CHANGELOG.md)
 
           tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // ""')
@@ -59,9 +65,21 @@ jobs:
             echo "::error title=release-ready::no release exists in ${GITHUB_REPOSITORY}, so nothing can be compared and kube-noob.com has nothing to build from."
             exit 1
           fi
-          published=$(gh release view "${tag}" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq .publishedAt)
-          days=$(( ( $(date -u +%s) - $(date -u -d "${published}" +%s) ) / 86400 ))
-          sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          # Each reading below is checked for its SHAPE as well as its transport. This script runs without `-e`,
+          # and a reading that came back empty or malformed used to flow on as an empty string: a failed
+          # `release view` printed "published 0 day(s) ago", and a null date emptied the body the issue was then
+          # edited to (G403).
+          published=$(gh release view "${tag}" --repo "$GITHUB_REPOSITORY" --json publishedAt --jq '.publishedAt // ""') || published=""
+          if [ -z "${published}" ] || ! published_s=$(date -u -d "${published}" +%s 2>/dev/null); then
+            echo "::error title=release-ready::when ${tag} was published could not be read, so how long the website has stated it is NOT KNOWN."
+            exit 1
+          fi
+          days=$(( ( $(date -u +%s) - published_s ) / 86400 ))
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha) || sha=""
+          if ! printf '%s' "${sha}" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error title=release-ready::main's head commit could not be read, so which checks to read is NOT KNOWN."
+            exit 1
+          fi
 
           # Whether the latest release finished shipping. A tag publishes to PyPI, the image, the chart, the MCP
           # Registry, Homebrew and the videos, each its own job, and the release run concludes success only if every
@@ -115,15 +133,32 @@ jobs:
           # also hide a real failure of another job that shares the name, and would break the moment this
           # workflow is renamed.
           mine="/actions/runs/${GITHUB_RUN_ID}/"
-          others=$(jq --arg mine "${mine}" '[.check_runs[] | select(((.details_url // "") | contains($mine)) | not)]' /tmp/checks.json)
+          # `--paginate` writes one JSON document per page, so every page is slurped and each must carry a
+          # `check_runs` array. An answer of `{}`, `[]`, `{"message": "Not Found"}` or nothing made jq fail, left
+          # `total` and `notgreen` empty, and an empty `notgreen` is the Ready branch: "all  checks on main are
+          # green" over a reading that was never taken (G403).
+          if ! jq -se 'length > 0 and all(.[]; (.check_runs | type) == "array")' /tmp/checks.json > /dev/null 2>&1; then
+            echo "::error title=release-ready::the checks on main came back in a shape that is not a list of check runs, so whether a release would be safe is NOT KNOWN."
+            exit 1
+          fi
+          others=$(jq -s --arg mine "${mine}" '[.[].check_runs[] | select(((.details_url // "") | contains($mine)) | not)]' /tmp/checks.json)
           total=$(printf '%s' "${others}" | jq -r 'length')
           if [ "${total}" = "0" ]; then
             echo "::error title=release-ready::main has no check runs other than this workflow's own, which is not a green main -- it is an unanswered question."
             exit 1
           fi
+          # Checks that were all skipped are not a green main either: nothing that ran said success (G403).
+          ran=$(printf '%s' "${others}" | jq -r '[.[] | select(.conclusion == "success")] | length')
+          if [ "${ran}" = "0" ]; then
+            echo "::error title=release-ready::no check on main concluded success -- every one was skipped or unfinished -- which is not a green main; it is an unanswered question."
+            exit 1
+          fi
           notgreen=$(printf '%s' "${others}" | jq -r '[.[] | select((.conclusion // .status) != "success" and .conclusion != "skipped") | "\(.conclusion // .status) \(.name)"] | join(", ")')
 
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label release-ready --state open --limit 1 --json number,title --jq '.[0].number // ""')
+          if ! existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label release-ready --state open --limit 1 --json number,title --jq '.[0].number // ""'); then
+            echo "::error title=release-ready::the open release-ready issue could not be looked up, so writing one now could duplicate it. NOT KNOWN which issue to update."
+            exit 1
+          fi
 
           unfinished=""
           if [ -n "${unshipped}" ]; then
@@ -139,7 +174,7 @@ jobs:
           if [ "${bullets}" = "0" ] && [ -z "${unfinished}" ]; then
             echo "nothing under ## Unreleased; ${tag} took everything (${days} days ago) and its release run concluded success"
             if [ -n "${existing}" ]; then
-              gh issue close "${existing}" --repo "$GITHUB_REPOSITORY" --comment "Closed by release-ready: \`## Unreleased\` is empty, so there is nothing to cut, and ${tag}'s release run concluded success. The website is in step with ${tag}."
+              gh issue close "${existing}" --repo "$GITHUB_REPOSITORY" --comment "Closed by release-ready: \`## Unreleased\` is empty, so nothing is waiting to be released after ${tag}, and ${tag}'s release run concluded success. kube-noob.com builds from the latest release, so it states ${tag}; this workflow does not read the site itself."
             fi
             exit 0
           fi
