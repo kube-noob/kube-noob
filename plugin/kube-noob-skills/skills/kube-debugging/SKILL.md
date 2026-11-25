@@ -154,8 +154,8 @@ source, `readOnlyNextSteps`, and what it `skipped` and why. Lead with the first 
 | `ticket` | `0`, or `1` when it is not in the local copy, which is not "no such issue" | `found` | `note` |
 | `corpus jira-changes` | always `0` | `changes`, `counts` | `note`, `lastSync` |
 | `policy explain` | always `0`, even when it explains a denial | `denials`, `summary` | |
-| `policy reach` | `1` = denied or `undetermined`, `0` = allowed | `verdict`, `summary`, `ingress`, `egress` | `notEvaluated`, `undeterminedBy?` |
-| `protocol` | `0` ready, `1` blocked, `3` needs clarification | `status`, `auditValidationBrief` | `steps` |
+| `policy reach` | `1` = denied or `undetermined`, `0` = allowed; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `verdict`, `summary`, `ingress`, `egress` | `notEvaluated`, `undeterminedBy?` |
+| `protocol` | `0` ready, `1` blocked, `3` needs clarification; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `status`, `auditValidationBrief` | `steps` |
 | `config` | always `0` | `posture`, `config` | |
 
 ```bash

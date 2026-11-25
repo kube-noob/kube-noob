@@ -139,12 +139,12 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
-| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `diagnose` | always `0`, even with denials found | `diagnoses`, `knownIssues` | `notes` |
 | `policy generate` | always `0` | `generated`, `documents` | `skipped` |
-| `posture scan` | `0`; with `--fail-above`, `1` when a path scores above it and `5` when an object or a read was refused | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
-| `posture reach` | `0`; `2` when the workload matches nothing in the files; with `--require-complete`, `5` unless every leg is determined and nothing is under `notRead` | `summary`, `legs`, `complete`, `nodes`, `edges` | `notDetermined`, `notRead`, `refused`, `limitations` |
+| `posture scan` | `0`; with `--fail-above`, `1` when a path scores above it and `5` when an object or a read was refused; `4` when a named input could not be read; and `5` with no flag at all when a directory input held a file that could not be read, so nothing was answered about the rest | `paths`, `summary` | `refused`, `notRead`, `limitations`, `secretsIgnored` |
+| `posture reach` | `0`; `2` when the workload matches nothing in the files; with `--require-complete`, `5` unless every leg is determined and nothing is under `notRead`; `4` when a named input could not be read; and `5` with no flag at all when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `legs`, `complete`, `nodes`, `edges` | `notDetermined`, `notRead`, `refused`, `limitations` |
 | `rhacs compare` | `0`, or `1` when a policy is unexplained | `counts`, `policies`, `disagreements`, `kubeNoobOnly` | `unexplained` |
 | `build diagnose` | always `0` | `cause`, `fix`, `failingStep` | |
 | `build audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict, so a medium finding exits `0` | `findings`, `counts` | `notChecked`, `notes` |

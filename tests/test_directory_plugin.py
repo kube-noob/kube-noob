@@ -815,6 +815,13 @@ def _fixture_argv(command: str, tmp: Path) -> list[str]:
             *("--repo", str(tmp / "code" / "repo"), "-m", str(fx / "code" / "shop.yaml")),
         ],
         "must-gather analyze": ["must-gather", "analyze", str(tmp / "must-gather")],
+        # The bundle every observable hop of this mechanism is answerable from, so the row's fields are the
+        # fields a walk that reaches the end really prints -- not the ones a stopped walk prints.
+        "learn mechanism": [
+            *("learn", "mechanism", "mech-net-request-to-pod"),
+            *("-f", str(fx / "mechanism" / "complete.yaml")),
+        ],
+        "learn progress": ["learn", "progress"],
     }
     assert command in table, f"no fixture for `{command}`; add one to _fixture_argv"
     return table[command]
