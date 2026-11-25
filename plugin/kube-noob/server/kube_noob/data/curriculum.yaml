@@ -11,6 +11,43 @@ tracks:
       not in the input says it cannot be judged and the walk stops there, rather than drawing the rest of the
       arrow.
     lessons:
+      - id: mech-cp-a-node-goes-dark
+        title: A node goes dark
+        layer: control-plane
+        docs: [kubernetes]
+        objectives:
+          - Follow what has to be true, in order, for a workload to survive losing a node
+          - See which of those your own manifests answer for, and which nothing here reads
+        keyPoints:
+          - Surviving a lost node is four separate questions, and three of them are in your manifests.
+          - The fourth is the scheduler's, and no manifest records it, so kube-noob does not claim to check it.
+        steps:
+          - id: more-than-one-replica
+            title: There is more than one of it
+            needs: [Deployment, StatefulSet, ReplicaSet]
+            holds: the workload runs more than a single replica, so losing one is not losing all of it
+            rules: [KN-C007]
+          - id: replicas-can-land-apart
+            title: They are allowed to land on different nodes
+            needs: [Deployment, StatefulSet, ReplicaSet]
+            holds: the pod template spreads its replicas, so they are not all on the node that went dark
+            rules: [KN-C010]
+          - id: the-budget-lets-one-go
+            title: The disruption budget lets one of them go
+            # No `needs`: a namespace with no PodDisruptionBudget blocks nothing, which KN-C009 is the rule for.
+            # `reads` is what stops the walk -- a budget that IS here and that no rule could read leaves the hop
+            # unjudged, which is a different answer from there being no budget at all.
+            needs: []
+            reads: [PodDisruptionBudget]
+            holds: no budget here demands every replica stay up, so a drain can evict one
+            rules: [KN-C009]
+          - id: the-scheduler-places-the-replacement
+            title: The scheduler finds somewhere to put the replacement
+            observable: false
+            holds: >-
+              filter, score, bind: the remaining nodes have the room, the taints tolerate it and the affinity
+              allows it. That decision belongs to a running scheduler and no manifest records it, so kube-noob
+              does not check it and does not count it as passed.
       - id: mech-net-request-to-pod
         title: A request finds your Pod
         layer: network

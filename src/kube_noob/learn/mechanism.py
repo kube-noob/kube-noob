@@ -150,8 +150,20 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
             results.append(StepResult(step, FAILS, f"{ids} found something on this hop", tuple(hits), tuple(present)))
             continue
 
-        proved = ", ".join(step.rules) if step.rules else "no rule reads this hop"
-        results.append(StepResult(step, HOLDS, f"{step.holds} ({proved})", objects=tuple(present)))
+        if not step.rules:
+            # An observable hop with no rule is a hop nothing READ, and the whole point of this walk is that
+            # such a hop is not a hop that works. It reported `holds` with the words "no rule reads this hop"
+            # beside it, and the path came out `complete` at exit 0 -- this product's one rule, broken inside
+            # the feature built to show it. It did not bite on the shipped lesson, whose every observable step
+            # names a rule, and it would have bitten on the first control-plane lesson, where the rules do not
+            # exist (G387).
+            stopped_at = step.id
+            results.append(
+                StepResult(step, CANNOT_JUDGE, "no rule in this build reads this hop", objects=tuple(present))
+            )
+            continue
+
+        results.append(StepResult(step, HOLDS, f"{step.holds} ({', '.join(step.rules)})", objects=tuple(present)))
 
     if stopped_at is not None:
         verdict, reason = "stopped", f"the walk stopped at `{stopped_at}`: that hop could not be judged"
