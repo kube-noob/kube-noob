@@ -4203,22 +4203,26 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
             _emit(res, fmt)
             return 0 if res["passed"] else 1
         elif lc == "mechanism":
-            from kube_noob.audit.engine import analyze as _analyze
             from kube_noob.learn import mechanism as _mech
-            from kube_noob.learn.tutor import curriculum as _curriculum
 
-            steps_by_id = {
-                lsn["id"]: lsn
-                for trk in _curriculum().get("tracks") or ()
-                for lsn in trk.get("lessons") or ()
-                if lsn.get("steps")
-            }
-            lesson = steps_by_id.get(a.mechanism_id)
-            if lesson is None:
-                known = ", ".join(sorted(steps_by_id)) or "none"
-                print(f"error: no mechanism {a.mechanism_id!r}; this build has: {known}", file=sys.stderr)
+            # The lookup, the audit and the walk live in `Toolkit.mechanism`, which `learn_mechanism` calls too,
+            # so the command and the MCP tool cannot drift into two answers about the same path (class 9).
+            try:
+                walked = kit.mechanism(
+                    tk.MechanismIn(
+                        mechanism_id=a.mechanism_id,
+                        manifests=_read(a.file),
+                        platform=a.platform,
+                        version=a.pversion,
+                        # The command already knows: a directory is a whole namespace, one file is a fragment.
+                        # `_partial_input` is the same decision `audit` makes, so the walk and the audit of the
+                        # same input agree about what the absence of an object means.
+                        partial_bundle=_partial_input(a),
+                    )
+                )
+            except KeyError as exc:
+                print(f"error: {exc.args[0]}", file=sys.stderr)
                 return 2
-            walked = _mech.walk(lesson, _analyze(_read(a.file), a.platform or s.default_platform, a.pversion).as_dict())
             if a.format == "text":
                 print(_mech.render(walked))
             else:

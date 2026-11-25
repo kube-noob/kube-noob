@@ -1088,6 +1088,23 @@ class LearnerIn(_In):
     learner: str = Field("local", max_length=64)
 
 
+class MechanismIn(_In):
+    mechanism_id: str = Field(..., max_length=100)
+    manifests: str = Field(..., min_length=1, max_length=MAX_MANIFEST_CHARS)
+    platform: str | None = Field(None, max_length=32)
+    version: str | None = Field(None, max_length=32)
+    partial_bundle: bool = Field(
+        True,
+        description="These documents are only part of a namespace. Default true, as for the other tool that "
+        "takes pasted manifests: a pasted bundle is usually a fragment, and a rule that fires because another "
+        "object is absent cannot tell a real gap from an object the caller did not paste. On a walk the "
+        "difference is not a count but a VERDICT -- with a fragment such a rule reaches no verdict, so the hop "
+        "it judges says `cannot judge` and the walk stops there; with this false the same hop would be reported "
+        "BROKEN, which claims the object is missing from the namespace on evidence that cannot say so. Set it "
+        "false only when the manifests really are every object of the namespace.",
+    )
+
+
 class GradeIn(_In):
     completion: str = Field(..., min_length=1, max_length=200_000)
     task_id: str | None = Field(None, max_length=100, description="Benchmark task id; or pass `task` inline.")
@@ -2545,6 +2562,35 @@ class Toolkit:
     def progress(self, p: LearnerIn) -> dict[str, Any]:
         return self.tutor.progress(p.learner)
 
+    def mechanism(self, p: MechanismIn) -> dict[str, Any]:
+        """Walk one mechanism's hops over these manifests.
+
+        The lookup, the audit and the walk live here and nowhere else: `cli.py` calls this method, so the
+        command and the tool cannot drift into two answers about the same path (class 9). The walk writes
+        nothing -- no progress, no credits -- so this is read-only even on a shared server.
+        """
+        from kube_noob.audit.engine import analyze
+        from kube_noob.learn import mechanism as mech
+        from kube_noob.learn.tutor import curriculum
+
+        known = {
+            str(lsn["id"]): lsn
+            for trk in curriculum().get("tracks") or ()
+            for lsn in trk.get("lessons") or ()
+            if lsn.get("steps")
+        }
+        lesson = known.get(p.mechanism_id)
+        if lesson is None:
+            names = ", ".join(sorted(known)) or "none"
+            raise KeyError(f"no mechanism {p.mechanism_id!r}; this build has: {names}")
+        report = analyze(
+            p.manifests,
+            p.platform or self.settings.default_platform,
+            p.version,
+            partial_bundle=p.partial_bundle,
+        ).as_dict()
+        return mech.walk(lesson, report)
+
     # -- training enforcer -----------------------------------------------------------------------------------
     def grade(self, p: GradeIn) -> dict[str, Any]:
         if p.task is not None:
@@ -3116,6 +3162,21 @@ class Toolkit:
             ),
             ToolSpec(
                 "learn_progress", "Learner progress", "Credits earned and completed items.", LearnerIn, self.progress
+            ),
+            ToolSpec(
+                "learn_mechanism",
+                "Walk a mechanism over these manifests",
+                "Follow one path -- a request reaching a Pod, a node going dark -- hop by hop over the user's own "
+                "YAML, and STOP at the first hop this build cannot judge. Three answers per hop and never two: "
+                "`holds`, `BROKEN`, or `cannot judge`, plus `not checked` for a hop no manifest records. The hops "
+                "after a stop are reported as not checked, never as fine. Read `verdict` (`complete`, `broken` or "
+                "`stopped`) and `stoppedAt`: a `stopped` walk reached no verdict about the path, so it is neither "
+                "a pass nor a failure, and saying the path works because nothing was reported is the one mistake "
+                "this tool exists to prevent. Leave `partial_bundle` true for a pasted fragment and the hops judged by "
+                "a rule that fires on an absent object say `cannot judge` rather than BROKEN; set it false only "
+                "when the manifests really are every object of the namespace. Writes nothing.",
+                MechanismIn,
+                self.mechanism,
             ),
             ToolSpec(
                 "grade_answer",

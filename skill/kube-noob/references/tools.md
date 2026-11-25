@@ -214,6 +214,16 @@ Open a lesson. Lesson content with objectives, key points and citations. A share
 - `learner` (null/string)
 - `lesson_id`* (string)
 
+## learn_mechanism
+
+Walk a mechanism over these manifests. Follow one path -- a request reaching a Pod, a node going dark -- hop by hop over the user's own YAML, and STOP at the first hop this build cannot judge. Three answers per hop and never two: `holds`, `BROKEN`, or `cannot judge`, plus `not checked` for a hop no manifest records. The hops after a stop are reported as not checked, never as fine. Read `verdict` (`complete`, `broken` or `stopped`) and `stoppedAt`: a `stopped` walk reached no verdict about the path, so it is neither a pass nor a failure, and saying the path works because nothing was reported is the one mistake this tool exists to prevent. Leave `partial_bundle` true for a pasted fragment and the hops judged by a rule that fires on an absent object say `cannot judge` rather than BROKEN; set it false only when the manifests really are every object of the namespace. Writes nothing.
+
+- `manifests`* (string)
+- `mechanism_id`* (string)
+- `partial_bundle` (boolean): These documents are only part of a namespace. Default true, as for the other tool that takes pasted manifests: a pasted bundle is usually a fragment, and a rule that fires because another object is absent cannot tell a real gap from an object the caller did not paste. On a walk the difference is not a count but a VERDICT -- with a fragment such a rule reaches no verdict, so the hop it judges says `cannot judge` and the walk stops there; with this false the same hop would be reported BROKEN, which claims the object is missing from the namespace on evidence that cannot say so. Set it false only when the manifests really are every object of the namespace.
+- `platform` (null/string)
+- `version` (null/string)
+
 ## learn_progress
 
 Learner progress. Credits earned and completed items.

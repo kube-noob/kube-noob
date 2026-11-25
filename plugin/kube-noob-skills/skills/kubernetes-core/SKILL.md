@@ -146,7 +146,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
-| `learn mechanism` | `0` when every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, or a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1` | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn mechanism` | `0` when every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, or a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
 | `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
