@@ -309,8 +309,11 @@ def _inputs(d: Path) -> dict[tuple[str, int], tuple[list[str], dict[str, str]]]:
     netpol = ["policy", "reach", "-f", str(ROOT / "examples" / "netpol-shop.yaml"), "--from", "web/frontend"]
     mg = str(_generated(d, "must-gather"))
     unreadable = _unreadable(d)
+    # Directories, not files. `cli._partial_input` reads a directory as the whole namespace, and only a whole
+    # namespace lets the policy hop be judged -- from one file it is `cannot judge` and every walk is a 5, so a
+    # single-file fixture could never drive the 0 or the 1 (G394).
     mech = ROOT / "tests" / "fixtures" / "mechanism"
-    mech_refused = _refused_dir(d, "refused-mechanism", (mech / "complete.yaml").read_text("utf-8"))
+    mech_refused = _refused_dir(d, "refused-mechanism", (mech / "complete" / "bundle.yaml").read_text("utf-8"))
     refused_dir = _refused_dir(d, "refused-manifests", HARDENED)
     refused_netpol = _refused_dir(d, "refused-netpol", (ROOT / "examples" / "netpol-shop.yaml").read_text("utf-8"))
     jira_copy, in_copy = _seeded_jira(d)
@@ -409,11 +412,11 @@ def _inputs(d: Path) -> dict[tuple[str, int], tuple[list[str], dict[str, str]]]:
         ),
         ("rhacs compare", 1): (["rhacs", "compare", "-f", _rhacs_unexplained(d)], none),
         ("learn mechanism", 0): (
-            ["learn", "mechanism", "mech-net-request-to-pod", "-f", str(mech / "complete.yaml")],
+            ["learn", "mechanism", "mech-net-request-to-pod", "-f", str(mech / "complete")],
             none,
         ),
         ("learn mechanism", 1): (
-            ["learn", "mechanism", "mech-net-request-to-pod", "-f", str(mech / "broken.yaml")],
+            ["learn", "mechanism", "mech-net-request-to-pod", "-f", str(mech / "broken")],
             none,
         ),
         ("learn mechanism", 4): (

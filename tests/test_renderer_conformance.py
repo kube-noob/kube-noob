@@ -1458,6 +1458,23 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     # one workload the caller names. The exemption is still right -- it states no verdict over the input -- and
     # an exemption that describes a different renderer is one no reader can check, which is the whole value of
     # the table (G374).
+    # Adapted first, and that was wrong. The walk does state a verdict -- `complete`, `broken`, `stopped` -- but
+    # over ONE named path, not over the input, and the two predicates here are about the input's coverage. On the
+    # `fully-evaluated-and-clean` fixture, which carries no Ingress, no Service and no NetworkPolicy, the walk
+    # stops because that path is genuinely not knowable from those objects: `carries_withheld` read true and
+    # `test_a_complete_report_is_not_reported_as_withheld` failed, correctly. "Nothing was withheld about the
+    # input" and "this path is not walkable here" are different claims, so neither predicate has a meaning for
+    # it -- the same reason `posture_reach` below is exempt.
+    "mcp.learn_mechanism": (
+        "the verdict on ONE path the caller names -- a request reaching a Pod, a node going dark -- hop by hop, "
+        "and not a verdict over the input: a bundle carrying none of a path's objects makes that path unknowable "
+        "without anything being withheld about the bundle. What it owes instead: the hops after a stop are NOT "
+        "in `steps`, so the absence has to be counted rather than noticed, held by "
+        "tests/test_the_walk_an_agent_can_run.py "
+        "(test_a_stopped_walk_says_stopped_and_names_the_hop pins `declared == len(steps) + notReached`), and "
+        "the command and the tool are compared whole so one path cannot have two answers "
+        "(test_the_command_and_the_tool_give_the_same_answer)"
+    ),
     "mcp.posture_reach": (
         "the blast radius of ONE workload the caller names -- its ServiceAccount, the bindings that name it, "
         "what those allow, the Secrets it may read by RBAC and the node it can escape to -- not a verdict over "

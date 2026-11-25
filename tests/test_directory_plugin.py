@@ -815,11 +815,12 @@ def _fixture_argv(command: str, tmp: Path) -> list[str]:
             *("--repo", str(tmp / "code" / "repo"), "-m", str(fx / "code" / "shop.yaml")),
         ],
         "must-gather analyze": ["must-gather", "analyze", str(tmp / "must-gather")],
-        # The bundle every observable hop of this mechanism is answerable from, so the row's fields are the
-        # fields a walk that reaches the end really prints -- not the ones a stopped walk prints.
+        # The DIRECTORY every observable hop of this mechanism is answerable from, so the row's fields are the
+        # fields a walk that reaches the end really prints -- not the ones a stopped walk prints. A single file
+        # is a fragment and stops at the policy hop, which prints a different, shorter set (G394).
         "learn mechanism": [
             *("learn", "mechanism", "mech-net-request-to-pod"),
-            *("-f", str(fx / "mechanism" / "complete.yaml")),
+            *("-f", str(fx / "mechanism" / "complete")),
         ],
         "learn progress": ["learn", "progress"],
     }
