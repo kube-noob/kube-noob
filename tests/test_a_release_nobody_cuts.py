@@ -77,7 +77,9 @@ def test_every_check_counts_not_only_the_required_eight() -> None:
 
 
 def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
-    """Four separate refusals, each its own non-zero exit, before any verdict is reported."""
+    """Eight separate refusals, each its own non-zero exit, before any verdict is reported. The last four are
+    G399's: whether the latest release finished shipping is a reading too, and one that cannot be taken is not
+    "it did"."""
     script = _script()
     for phrase in (
         "whether there is anything to release is NOT KNOWN",
@@ -88,13 +90,17 @@ def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
         # check runs OTHER than this workflow's own". The refusal is the same refusal; only the count it is
         # honest about changed.
         "no check runs other than this workflow's own",
+        "whether ${tag} finished shipping is NOT KNOWN",
+        "no release run exists for ${tag}",
+        "whether it finishes shipping is NOT KNOWN yet",
+        "so what it did not ship is NOT KNOWN",
     ):
         assert phrase in script, f"missing refusal: {phrase!r}"
     assert "This is not 'nothing to release'." in script
     assert "it is an unanswered question" in script
     head = script[: script.index("existing=$(gh issue list")]
-    assert head.count("exit 1") == 4, head.count("exit 1")
-    assert "exit 0" not in head, "nothing may pass before all four readings are in"
+    assert head.count("exit 1") == 8, head.count("exit 1")
+    assert "exit 0" not in head, "nothing may pass before all eight readings are in"
 
 
 def test_nothing_to_release_closes_the_issue_instead_of_nagging() -> None:
@@ -117,7 +123,7 @@ def test_it_cannot_write_to_the_repository_itself() -> None:
     spec = _spec()
     assert spec["permissions"] == {"contents": "read"}
     job = spec["jobs"]["ready"]["permissions"]
-    assert job == {"contents": "read", "issues": "write", "checks": "read"}, job
+    assert job == {"contents": "read", "issues": "write", "checks": "read", "actions": "read"}, job
     script = _script()
     for forbidden in ("git push", "git commit", "git tag", "refs/heads"):
         assert forbidden not in script, f"this workflow reports; it must not {forbidden}"
