@@ -146,7 +146,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
-| `learn mechanism` | `0` when every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, or a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn mechanism` | `0` when at least one hop was judged and every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, when it judged no hop at all, or when a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
 | `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
@@ -176,9 +176,10 @@ kube-noob learn quiz k8s-q-exit137 --choice 1 --format json
 When the user asks how something *works* rather than whether it is safe -- how a request reaches their Pod, why
 their Service has no endpoints -- walk the mechanism over their own manifests. It answers hop by hop and stops at
 the first hop it cannot judge, so the hops after it are reported as not checked, never as fine. Three answers,
-never two: `0` every observable hop holds, `1` the walk reached the end and a hop is BROKEN, `5` the walk STOPPED
-because nothing in this build reads that hop, or a file beside the input could not be read. A `5` is not a pass
-and not a failure -- read `stoppedAt` and say which hop went unanswered. `learn progress` reports the credits and
+never two: `0` at least one hop was judged and every observable hop holds, `1` the walk reached the end and a hop
+is BROKEN, `5` the walk STOPPED because nothing in this build reads that hop, it judged no hop at all, or a file
+beside the input could not be read. A `5` is not a pass and not a failure -- read `stoppedAt` and say which hop
+went unanswered, and where it is null read `verdictReason`, which is the walk that judged nothing. `learn progress` reports the credits and
 lessons recorded so far, and never writes.
 
 ```bash
