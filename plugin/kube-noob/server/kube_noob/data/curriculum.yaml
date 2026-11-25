@@ -23,7 +23,7 @@ tracks:
           - The fourth is the scheduler's, and no manifest records it, so kube-noob does not claim to check it.
         steps:
           - id: more-than-one-replica
-            title: Nothing here is left at a single replica
+            title: Nothing here is left at a single replica without an autoscaler
             needs: [Deployment, StatefulSet, ReplicaSet]
             holds: no replicated workload here declares fewer than two replicas, unless a HorizontalPodAutoscaler
               scales it -- and KN-C007 does not read that autoscaler's own minimum
