@@ -173,6 +173,19 @@ kube-noob learn quiz k8s-q-exit137 --format json
 kube-noob learn quiz k8s-q-exit137 --choice 1 --format json
 ```
 
+When the user asks how something *works* rather than whether it is safe -- how a request reaches their Pod, why
+their Service has no endpoints -- walk the mechanism over their own manifests. It answers hop by hop and stops at
+the first hop it cannot judge, so the hops after it are reported as not checked, never as fine. Three answers,
+never two: `0` every observable hop holds, `1` the walk reached the end and a hop is BROKEN, `5` the walk STOPPED
+because nothing in this build reads that hop, or a file beside the input could not be read. A `5` is not a pass
+and not a failure -- read `stoppedAt` and say which hop went unanswered. `learn progress` reports the credits and
+lessons recorded so far, and never writes.
+
+```bash
+kube-noob learn mechanism mech-net-request-to-pod -f "$KN/app.yaml" --format json
+kube-noob learn progress --format json
+```
+
 ## API versions and removals
 
 - The upstream deprecation guide lists **no removals after 1.32**. Do not invent later ones.
