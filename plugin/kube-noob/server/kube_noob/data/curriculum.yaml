@@ -34,9 +34,11 @@ tracks:
             rules: [KN-C010]
           - id: the-budget-lets-one-go
             title: The disruption budget lets one of them go
-            # No `needs`: a namespace with no PodDisruptionBudget blocks nothing, which KN-C009 is the rule for.
-            # `reads` is what stops the walk -- a budget that IS here and that no rule could read leaves the hop
-            # unjudged, which is a different answer from there being no budget at all.
+            # Measured, not assumed: with no PodDisruptionBudget in the input KN-C009 ABSTAINS -- it lands in
+            # `notEvaluated` as "no policy PodDisruptionBudget in the input" -- so nothing judges this hop and
+            # the walk stops. That is the opposite of the network lesson's policy hop, where KN-N001 FIRES on
+            # the absence and so judges it. Two rules about a missing object, two different answers; the first
+            # version of this comment claimed the KN-N001 behaviour for KN-C009 from its title alone (G389).
             needs: []
             reads: [PodDisruptionBudget]
             holds: no budget here demands every replica stay up, so a drain can evict one

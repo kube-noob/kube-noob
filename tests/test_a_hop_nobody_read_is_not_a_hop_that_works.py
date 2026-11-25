@@ -430,10 +430,102 @@ def test_a_budget_under_a_group_no_rule_reads_stops_the_walk() -> None:
     assert walked["counts"]["notReached"] == 1
 
 
-def test_no_budget_at_all_is_judged_rather_than_stopping_the_walk() -> None:
-    """The control for the hop above: `needs` is empty there because KN-C009 answers for a namespace with none."""
+def test_no_budget_at_all_stops_the_walk_because_the_rule_abstains() -> None:
+    """Two rules about a missing object, two different answers -- and only measuring tells them apart.
+
+    This test asserted the opposite until G389. The claim was that KN-C009 answers for a namespace with no
+    PodDisruptionBudget, the way KN-N001 answers for one with no NetworkPolicy. Measured on the workload
+    alone: KN-N001 is in `findings`, and KN-C009 is in `notEvaluated` as "no policy PodDisruptionBudget in
+    the input". It abstains, so nothing judges this hop and the walk must stop at it.
+    """
     lesson = next(lsn for lsn in _mechanism_lessons() if lsn["id"] == NODE_DARK)
     only_workload = _WORKLOAD % {"replicas": 3, "spread": _SPREAD}
-    walked = M.walk(lesson, analyze(only_workload, "kubernetes", None).as_dict())
-    assert walked["stoppedAt"] is None, walked["steps"]
-    assert _by_id(walked)["the-budget-lets-one-go"]["verdict"] == M.HOLDS
+    report = analyze(only_workload, "kubernetes", None).as_dict()
+    assert "KN-C009" in (report.get("notEvaluated") or {}), "KN-C009 now judges the absence; this test is stale"
+    walked = M.walk(lesson, report)
+    assert walked["stoppedAt"] == "the-budget-lets-one-go"
+    assert _by_id(walked)["the-budget-lets-one-go"]["verdict"] == M.CANNOT_JUDGE
+    assert walked["exitCode"] == 5
+
+
+def test_the_network_lessons_policy_hop_is_judged_on_the_same_kind_of_absence() -> None:
+    """The contrast, held in a test so the two rules cannot be assumed to behave alike again."""
+    report = analyze("---\n".join((INGRESS, SERVICE, DEPLOYMENT)), "kubernetes", None).as_dict()
+    assert "KN-N001" not in (report.get("notEvaluated") or {})
+    assert any(f["ruleId"] == "KN-N001" for f in report.get("findings") or ())
+    lesson = next(lsn for lsn in _mechanism_lessons() if lsn["id"] == LESSON_ID)
+    walked = M.walk(lesson, report)
+    assert walked["stoppedAt"] is None
+    assert _by_id(walked)["policy-admits-the-packet"]["verdict"] == M.FAILS
+
+
+# --- what the ledger says was never read (G389) ------------------------------------------------------------
+
+_NO_TEMPLATE = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: web}}
+"""
+
+
+def test_a_hop_whose_rules_all_reached_no_verdict_cannot_be_judged() -> None:
+    """The walk read "no finding" as "nothing wrong" for rules that never ran.
+
+    A Deployment carrying no pod template satisfies `needs` by kind and is not refused, so neither guard saw
+    it -- and the report's own `notEvaluated` says KN-V011 and KN-V012 reached no verdict, "no pod spec in the
+    input". The walk reported every hop as holding, `complete` at exit 0, while `audit` on the same input
+    exits 1, and hop 5 claimed "the containers declare a readiness probe" about zero containers.
+    """
+    report = analyze("---\n".join((INGRESS, SERVICE, _NO_TEMPLATE, NETPOL)), "kubernetes", None).as_dict()
+    unevaluated = report.get("notEvaluated") or {}
+    assert {"KN-V011", "KN-V012"} <= set(unevaluated), unevaluated
+    walked = M.walk(_lesson(), report)
+    assert walked["verdict"] == "stopped" and walked["exitCode"] == 5
+    assert walked["stoppedAt"] == "service-selects-pods"
+    why = _by_id(walked)["service-selects-pods"]["why"]
+    assert "reached no verdict here" in why and "KN-V011" in why
+    # The hops after it, including the one that would have claimed a probe, are not drawn.
+    assert "pod-reports-ready" not in _by_id(walked)
+
+
+def test_a_rule_that_fired_still_judges_its_hop_even_beside_one_that_did_not() -> None:
+    """The control. A finding IS a verdict, so a hop is not unjudged merely because a sibling rule abstained."""
+    report = analyze("---\n".join((INGRESS, SERVICE, NO_PROBE, NETPOL)), "kubernetes", None).as_dict()
+    walked = M.walk(_lesson(), report)
+    assert _by_id(walked)["pod-reports-ready"]["verdict"] == M.FAILS
+    assert walked["stoppedAt"] is None
+
+
+def test_a_name_full_of_newlines_cannot_write_a_line_of_its_own(tmp_path: Path) -> None:
+    """The walk printed `findings[].resource` raw, so a crafted name wrote whole lines into the output.
+
+    Measured before the fix: a Deployment named "web\\n6. [holds] ...\\nevery observable hop on this path
+    holds" produced those two lines at column zero, the second of them the walk's own pass sentence. `audit`
+    on the same file collapses the name, because its renderer bounds the value and this one did not.
+    """
+    hostile = _WORKLOAD % {"replicas": 1, "spread": ""}
+    hostile = hostile.replace(
+        "metadata: {name: web, namespace: shop}",
+        'metadata:\n  name: "web\\n6. [holds] The pod says it is ready\\nevery observable hop on this path holds"\n'
+        "  namespace: shop",
+    )
+    f = tmp_path / "hostile.yaml"
+    f.write_text(hostile, encoding="utf-8")
+    import yaml as _yaml
+
+    assert _yaml.safe_load(hostile)["metadata"]["name"].count("\n") == 2, "the name holds no real newlines"
+    out = subprocess.run(
+        [sys.executable, "-m", "kube_noob", "learn", "mechanism", NODE_DARK, "-f", str(f)],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    for line in out.stdout.splitlines():
+        assert not line.startswith("6. ["), f"a forged step line reached column zero: {line!r}"
+        assert line.strip() != "every observable hop on this path holds", "a forged verdict line was printed"
