@@ -5,10 +5,14 @@ from the release's own code and the sidecar transcript its CI recorded, measured
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,16 +121,7 @@ def test_every_release_renders_and_attaches_measured_4k_masters() -> None:
     assert set(jobs["render"]["strategy"]["matrix"]["video"]) == {"walkthrough", *spec["videos"]}
     render = _run(jobs["render"])
     assert "KN_VIDEO_SCALE=2" in render and "KN_SCALE=2" in render  # 3840x2160 masters
-    # The master is checked against 3840x2160, without pinning the spelling of the check. The old assertion was
-    # `'= "3840,2160"' in render`, which held the exact string of a comparison that was WRONG: `-of csv=p=0`
-    # prints a trailing separator on some ffprobe builds, so the equality failed every render of v0.10.0 on four
-    # masters that were the right size. A test that guards how a check is written cannot notice that it does not
-    # work; this one names the file and the two numbers and leaves the form to the workflow.
-    joined = render.replace("\\\n", " ")
-    probes = [ln for ln in joined.splitlines() if "-4k.mp4" in ln and "ffprobe" in ln]
-    assert probes, "no ffprobe call reads the 4k master, so nothing checks the master's size"
-    assert all("width,height" in ln for ln in probes), probes
-    assert "3840" in render and "2160" in render and "scale=1920:1080" in render
+    assert "scale=1920:1080" in render
     assert "loudness.py --verify dist/*.mp4" in render and ".vtt" in render and "youtube-description.txt" in render
     install = next(s for s in jobs["render"]["steps"] if "pip install" in str(s.get("run", "")))
     assert "./product" in install["run"] and "kube_noob.__version__" in install["run"]  # the tag's own code
@@ -204,3 +199,65 @@ def test_no_workflow_checks_out_a_ref_typed_into_its_inputs() -> None:
                     ref = str((step.get("with") or {}).get("ref", ""))
                     assert "inputs." not in ref.replace("inputs.default_branch", ""), (path.name, ref)
     assert _wf("release.yml")["jobs"]["brew"]["with"] == {"default_branch": True}
+
+
+#: An ffprobe that answers honestly for whichever `-of` format the script asks for. Both spellings are real:
+#: `default=nw=1:nk=1` prints one value per line, `csv=p=0` prints them comma-joined -- with a trailing comma on
+#: some builds, which was the whole of G388's cause. A size check worth having gets the same answer from either.
+_FFPROBE_STUB = r"""#!/bin/sh
+w=3840; h=2160
+for a in "$@"; do case "$a" in *1080p*) w=1920; h=1080 ;; esac; done
+case " $* " in
+  *default=nw=1:nk=1*) printf '%s\n%s\n' "$w" "$h" ;;
+  *csv=p=0*)           printf '%s,%s,\n' "$w" "$h" ;;
+  *)                   printf '%s,%s\n' "$w" "$h" ;;
+esac
+"""
+
+
+def _size_check_script() -> str:
+    """The lines of the render step that decide whether the master is 4K, as a runnable script."""
+    lines = _run(_wf("videos.yml")["jobs"]["render"]).splitlines()
+    start = next(
+        (i for i, ln in enumerate(lines) if "ffprobe" in ln and "-4k.mp4" in "".join(lines[i : i + 2])),
+        None,
+    )
+    assert start is not None, "no ffprobe call reads the 4k master, so nothing checks the master's size"
+    # To the end of the block, not to a closing brace: the check's SHAPE is the workflow's business, and an
+    # extractor tied to one shape crashes on another instead of running it (which is how a reverted check
+    # would have escaped with a StopIteration rather than a verdict).
+    end = next((i for i in range(start, len(lines)) if lines[i].lstrip().startswith("ls -l")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+@pytest.mark.parametrize(
+    ("size", "code"), [("4k", 0), ("1080p", 1)], ids=["a-4k-master-passes", "a-1080p-file-is-rejected"]
+)
+def test_the_size_check_is_run_not_read(size: str, code: int, tmp_path: Path) -> None:
+    """Execute the check; do not look at how it is spelled.
+
+    The version that shipped with G388 asserted `"3840" in render and "2160" in render`. Both numbers appear in
+    the COMMENT that commit added to the step, so deleting the comparison itself left the test green -- measured
+    as `1 passed`. It replaced one spelling assertion with another and was called proved on the single mutation
+    it happened to survive.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "ffprobe").write_text(_FFPROBE_STUB, encoding="utf-8")
+    (bindir / "ffprobe").chmod(0o755)
+    (tmp_path / "dist").mkdir()
+    body = _size_check_script()
+    if size != "4k":
+        body = body.replace("-4k.mp4", "-1080p.mp4")  # the stub answers 1080p for that name
+    script = tmp_path / "check.sh"
+    script.write_text(body, encoding="utf-8")
+    out = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", str(script)],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "VIDEO": "teaser"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert out.returncode == code, f"stdout={out.stdout!r} stderr={out.stderr!r}"
