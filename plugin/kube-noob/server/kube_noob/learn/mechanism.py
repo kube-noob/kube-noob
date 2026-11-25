@@ -20,6 +20,19 @@ audit" was simply false: a Deployment with no pod template walked `complete` at 
 and each hop cited as its proof the very rules the ledger lists as unevaluated (G389). The walk is a second
 renderer over the same coverage ledger, and it has to read all of it.
 
+**Which namespace a walk judges (G404).** One. A path runs inside a namespace -- an Ingress routes to a Service
+of its own namespace, a Service selects pods of its own, a NetworkPolicy and a PodDisruptionBudget govern pods of
+theirs -- and a hop used to look only for "an object of this KIND, anywhere in the report". So an Ingress and a
+Service in `shop` beside a Deployment and a NetworkPolicy in `other` walked `complete` at exit 0, every hop
+holding on objects the hop before it cannot reach. The walk now collects the namespace of every object of a kind
+any observable hop names (`needs` or `reads`), reports them as `namespaces`, and prints them. Exactly one: that
+is the namespace judged, and every hop's objects are in it by construction. More than one: the first hop says
+`cannot judge`, names the namespaces, and the walk stops at exit 5 -- it does not pick one, because nothing in
+the input says which the reader meant, and it does not judge each, because a hop's rules answer for the whole
+report and not for one namespace of it. An object that states no namespace is counted as its own
+(`(none stated)`), exactly as the rules count it: `kubectl apply -n` decides where it lands, and no manifest
+records that.
+
 The verdict obeys the same rule one level up: a walk that judged NO hop reached no verdict about the path, so it
 is `stopped` at exit 5 however many hops it drew. "Every observable hop on this path holds" is vacuously true of
 a path with no observable hops, and a lesson whose every hop was `observable: false` printed it at exit 0 (G395).
@@ -110,6 +123,20 @@ def _kind_of(resource: str) -> str:
     return resource.split("/", 1)[0]
 
 
+#: How the walk shows an object that states no namespace. Not `default`: the manifest does not say so.
+NO_NAMESPACE = "(none stated)"
+
+
+def _namespace_of(resource: str) -> str:
+    """`Deployment/shop/orders-api` -> `shop`; `Deployment/orders-api` -> the object states none.
+
+    A name holding a `/` would shift the fields, and no such name is a valid one: KN-V009 reports it, and a hop
+    does not hold on an object carrying a schema finding (G406).
+    """
+    parts = resource.split("/")
+    return parts[1] if len(parts) >= 3 else NO_NAMESPACE
+
+
 def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     """The lesson's path against one report, stopping at the first hop that cannot be judged."""
     steps = [Step.load(s) for s in lesson.get("steps") or ()]
@@ -134,6 +161,11 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
     # (G389).
     unevaluated = {str(k): str(v) for k, v in (report.get("notEvaluated") or {}).items()}
 
+    # The namespaces this path's objects are in: every object of a kind an observable hop names. `resources`
+    # lists a refused object too, so one the rules could not read still counts towards where the path is.
+    path_kinds = {k for s in steps if s.observable for k in (*s.needs, *s.reads)}
+    namespaces = sorted({_namespace_of(o) for k in path_kinds for o in here.get(k, ())})
+
     results: list[StepResult] = []
     stopped_at: str | None = None
     for step in steps:
@@ -141,6 +173,24 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
             break
         if not step.observable:
             results.append(StepResult(step, NOT_OBSERVABLE, step.holds))
+            continue
+
+        if len(namespaces) > 1:
+            # Before anything else about the first observable hop, because every later question -- is the
+            # object here, did a rule read it -- is asked of the whole report, and the whole report is more
+            # than one path. Quoted for the reason given below: a namespace is the input's own text.
+            stopped_at = step.id
+            named = ", ".join(repr(n) for n in namespaces)
+            scattered = tuple(o for k in dict.fromkeys((*step.needs, *step.reads)) for o in here.get(k, ()))
+            results.append(
+                StepResult(
+                    step,
+                    CANNOT_JUDGE,
+                    f"the objects this path reads are in {len(namespaces)} namespaces ({named}); a path runs in "
+                    "one and a walk judges one, so no hop was judged -- pass the manifests of one namespace",
+                    objects=scattered,
+                )
+            )
             continue
 
         # A hop whose object was READ but refused is the sharpest case: it is here, and nothing judged it.
@@ -248,6 +298,9 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
         "verdict": verdict,
         "verdictReason": reason,
         "stoppedAt": stopped_at,
+        # Every namespace holding an object this path reads. One entry is the namespace that was judged; more
+        # than one is why nothing was (G404). Empty when the input holds no object of the path at all.
+        "namespaces": namespaces,
         "steps": [r.as_dict() for r in results],
         "counts": {
             "declared": len(steps),
@@ -275,7 +328,13 @@ def _line(value: object) -> str:
 def render(walked: dict[str, Any]) -> str:
     """The same walk as text. The marks are words, not colour: a log keeps them and a pipe does not eat them."""
     mark = {HOLDS: "holds", FAILS: "BROKEN", CANNOT_JUDGE: "cannot judge", NOT_OBSERVABLE: "not checked"}
-    out = [f"{_line(walked['title'])}  ({_line(walked['layer'])})", ""]
+    out = [f"{_line(walked['title'])}  ({_line(walked['layer'])})"]
+    spaces = walked.get("namespaces") or ()
+    if spaces:
+        # Which namespace the hops below are about, in the reader's first three lines and not only in JSON.
+        word = "namespace judged" if len(spaces) == 1 else "namespaces in the input (none judged)"
+        out.append(f"{word}: {_line(', '.join(repr(n) for n in spaces))}")
+    out.append("")
     for i, s in enumerate(walked["steps"], 1):
         out.append(f"{i}. [{mark[s['verdict']]}] {_line(s['title'])}")
         out.append(f"      {_line(s['why'])}")

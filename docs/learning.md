@@ -70,6 +70,13 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
 work -- so a walk that finds one and then stops is `1`, with the stop named beside it, not `5` (G400).
 
+**A walk judges one namespace, and names it.** A path runs inside a namespace: an Ingress routes to a Service of
+its own namespace, and a Service selects pods of its own. The second line of the text view says
+`namespace judged: 'shop'`, and the JSON carries `namespaces`. When the objects the path reads are in more than
+one namespace the walk does not pick one: the first hop says **cannot judge**, the namespaces are named, and the
+exit is `5`. Pass the manifests of one namespace. An object that states no namespace counts as a namespace of its
+own, because nothing in the manifest says where `kubectl apply -n` will put it (G404).
+
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
 holds. kube-noob does not claim to have checked something it cannot see, in a lesson any more than in an audit.

@@ -47,6 +47,26 @@ from kube_noob.audit.rules import (
 )
 from kube_noob.yamlio import Document
 
+# Why KN-V011 and KN-V012 reached no verdict about a Service they were GIVEN (G404). Both rules walked past three
+# kinds of Service with a bare `continue` -- one with no selector (ExternalName, hand-made Endpoints), one whose
+# namespace holds no pod template in the input, one that selects none of the templates there -- and a rule that
+# skips its subject records nothing, so the report counted it evaluated and clean and the mechanism walk printed
+# "the Service selects at least one pod in this bundle" about a Service that selects nothing by construction.
+# Each is legitimate and none is a finding; what was wrong is that the skip was indistinguishable from a verdict.
+# Recorded through `nothing_to_judge`, so the score stands (nothing went unread) and the rule is `notEvaluated`
+# with these words. Fixed phrases, never the input's own text (class 7). Here and not in `rules.py` only because
+# that module is 2 KiB under the plugin directory's per-file limit.
+NO_SELECTOR = (
+    "a Service here has no selector (ExternalName, or Endpoints made by hand), so which pods it sends to is not "
+    "in these manifests"
+)
+NO_PODS_IN_NAMESPACE = (
+    "a Service's namespace holds no pod template in this input, so whether its selector finds a pod was not judged"
+)
+NO_PODS_SELECTED = (
+    "a Service here selects no pod template in this input, so there are no containers to read its targetPort against"
+)
+
 _WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
 # The kinds a rule reads as evidence BESIDE the ones its `context=` declares -- the PDB that selects a workload,
 # the HPA that scales it. With `context=`, read through `evidence_kinds`, this is ONE declaration of one question,

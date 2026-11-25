@@ -1223,10 +1223,13 @@ def _v011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for svc in ctx.by_kind("Service"):
         sel = get_path(svc.data, ("spec", "selector"))
         if not isinstance(sel, dict) or not sel:
-            continue  # headless/external services without selectors are legitimate
+            # Legitimate (ExternalName, hand-made Endpoints), and not judged: silence here read as clean (G404).
+            ctx.nothing_to_judge(r.rule_id, _evidence.NO_SELECTOR)
+            continue
         ns = ctx.ns(svc)
         same_ns = [pt for d, pt in workloads if ctx.ns(d) == ns]
         if not same_ns:
+            ctx.nothing_to_judge(r.rule_id, _evidence.NO_PODS_IN_NAMESPACE)
             continue
         verdicts = [selector_decides({"matchLabels": sel}, pt) for pt in same_ns]
         if any(v is True for v in verdicts):
@@ -1268,6 +1271,7 @@ def _v012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for svc in ctx.by_kind("Service"):
         sel = get_path(svc.data, ("spec", "selector"))
         if not isinstance(sel, dict) or not sel:
+            ctx.nothing_to_judge(r.rule_id, _evidence.NO_SELECTOR)
             continue
         pods = [
             pt
@@ -1275,6 +1279,7 @@ def _v012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             if ctx.ns(d) == ctx.ns(svc) and selector_matches({"matchLabels": sel}, pt.labels())
         ]
         if not pods:
+            ctx.nothing_to_judge(r.rule_id, _evidence.NO_PODS_SELECTED)
             continue
         names = {
             str(p.get("name"))
