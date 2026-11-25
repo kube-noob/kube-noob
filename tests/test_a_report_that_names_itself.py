@@ -113,7 +113,7 @@ def test_a_list_holding_only_this_workflow_is_not_known(tmp_path: Path) -> None:
     """Nothing left after the exclusion is an unanswered question, not a green main."""
     code, _total, _notgreen, said = _run([_SELF], tmp_path)
     assert code == 1, f"a list with no other check run exited {code}, so the report would have gone on"
-    assert "NOT KNOWN" in said, f"it stopped without saying the answer is not known: {said!r}"
+    assert "unanswered question" in said, f"it stopped without saying the answer is not known: {said!r}"
     assert "not a green main" in said, f"it did not refuse to call this green: {said!r}"
 
 

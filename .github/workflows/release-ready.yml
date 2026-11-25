@@ -78,7 +78,7 @@ jobs:
           others=$(jq --arg mine "${mine}" '[.check_runs[] | select(((.details_url // "") | contains($mine)) | not)]' /tmp/checks.json)
           total=$(printf '%s' "${others}" | jq -r 'length')
           if [ "${total}" = "0" ]; then
-            echo "::error title=release-ready::main has no check runs other than this workflow's own, so whether a release would be safe is NOT KNOWN. This is not a green main."
+            echo "::error title=release-ready::main has no check runs other than this workflow's own, which is not a green main -- it is an unanswered question."
             exit 1
           fi
           notgreen=$(printf '%s' "${others}" | jq -r '[.[] | select((.conclusion // .status) != "success" and .conclusion != "skipped") | "\(.conclusion // .status) \(.name)"] | join(", ")')

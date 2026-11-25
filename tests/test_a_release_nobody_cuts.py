@@ -83,7 +83,11 @@ def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
         "whether there is anything to release is NOT KNOWN",
         "no release exists",
         "whether a release would be safe is NOT KNOWN",
-        "no check runs at all",
+        # Was "no check runs at all", which this workflow can no longer truthfully say: it is ITSELF a check run
+        # on main's head while it runs (G393), so after excluding its own run the list it refuses over is "no
+        # check runs OTHER than this workflow's own". The refusal is the same refusal; only the count it is
+        # honest about changed.
+        "no check runs other than this workflow's own",
     ):
         assert phrase in script, f"missing refusal: {phrase!r}"
     assert "This is not 'nothing to release'." in script
