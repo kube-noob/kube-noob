@@ -117,7 +117,16 @@ def test_every_release_renders_and_attaches_measured_4k_masters() -> None:
     assert set(jobs["render"]["strategy"]["matrix"]["video"]) == {"walkthrough", *spec["videos"]}
     render = _run(jobs["render"])
     assert "KN_VIDEO_SCALE=2" in render and "KN_SCALE=2" in render  # 3840x2160 masters
-    assert '= "3840,2160"' in render and "scale=1920:1080" in render
+    # The master is checked against 3840x2160, without pinning the spelling of the check. The old assertion was
+    # `'= "3840,2160"' in render`, which held the exact string of a comparison that was WRONG: `-of csv=p=0`
+    # prints a trailing separator on some ffprobe builds, so the equality failed every render of v0.10.0 on four
+    # masters that were the right size. A test that guards how a check is written cannot notice that it does not
+    # work; this one names the file and the two numbers and leaves the form to the workflow.
+    joined = render.replace("\\\n", " ")
+    probes = [ln for ln in joined.splitlines() if "-4k.mp4" in ln and "ffprobe" in ln]
+    assert probes, "no ffprobe call reads the 4k master, so nothing checks the master's size"
+    assert all("width,height" in ln for ln in probes), probes
+    assert "3840" in render and "2160" in render and "scale=1920:1080" in render
     assert "loudness.py --verify dist/*.mp4" in render and ".vtt" in render and "youtube-description.txt" in render
     install = next(s for s in jobs["render"]["steps"] if "pip install" in str(s.get("run", "")))
     assert "./product" in install["run"] and "kube_noob.__version__" in install["run"]  # the tag's own code
