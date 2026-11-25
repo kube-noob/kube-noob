@@ -424,6 +424,8 @@ NOT_GENERATED: dict[str, str] = {
     "Subscriptions normally live, so a policy would not see the objects this rule is about",
     "KN-C015": "needs the namespace's ResourceClaims and templates (other objects); `kube-noob audit` checks "
     "the bundle",
+    "KN-C017": "needs the namespace's ConfigMaps, Secrets, PersistentVolumeClaims and ServiceAccounts (other "
+    "objects), and a policy cannot read Secrets; `kube-noob audit` checks the bundle",
     "KN-S031": "the API server's own gate is the namespace label resource.kubernetes.io/admin-access, so it "
     "already refuses adminAccess where that label is absent and permits it where a cluster admin set it; a policy "
     "here would restrict a grant the admin made, which is a decision to ask for rather than to generate",

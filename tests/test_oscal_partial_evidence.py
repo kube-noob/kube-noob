@@ -87,8 +87,8 @@ def test_the_excluded_partial_controls_are_named_with_their_counts() -> None:
     remarks = res["reviewed-controls"]["control-selections"][0].get("remarks") or ""
     assert "had rules run clean and others reach no verdict" in remarks
     # The counts come from the report, not from this test's arithmetic: CM-6 is the clearest case, six rules
-    # clean against twenty-seven that reached no verdict.
-    assert "CM-6 (6 clean, 27 not evaluated)" in remarks
+    # clean against twenty-eight that reached no verdict.
+    assert "CM-6 (6 clean, 28 not evaluated)" in remarks
     assert "CM-3(2) (7 clean, 9 not evaluated)" in remarks
 
 
