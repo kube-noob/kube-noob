@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 17 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 18 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
