@@ -396,3 +396,321 @@ def test_the_cli_names_the_unjudged_kinds_on_the_reproduction_rather_than_passin
     report = json.loads(proc.stdout)
     assert not any(f["ruleId"] == RULE for f in report["findings"])
     assert "Secret" in report["notEvaluated"][RULE], report["notEvaluated"].get(RULE)
+
+
+# --- G409: `optional` is an escape hatch only where the API defines the field --------------------------------
+
+
+def _pod(spec: str = "", container: str = "", extra: str = "", managed: str = MANAGED) -> str:
+    return (
+        f"""
+apiVersion: v1
+kind: Pod
+metadata: {{name: p, namespace: shop}}
+spec:
+  {spec}
+  containers:
+    - name: c
+      image: registry.example.com/c:1
+      {container}
+"""
+        + managed
+        + extra
+    )
+
+
+def test_optional_on_a_claim_is_not_an_escape_hatch() -> None:
+    """PersistentVolumeClaimVolumeSource is `claimName` and `readOnly`: there is no `optional`, the API server
+    drops or refuses the key and the Pod stays Pending. One unknown key silenced the finding."""
+    text = _pod("volumes: [{name: v, persistentVolumeClaim: {claimName: ghost, optional: true}}]")
+    found = _messages(text)
+    assert len(found) == 1 and "PersistentVolumeClaim 'ghost'" in found[0], found
+
+
+@pytest.mark.parametrize("plugin", ["cephfs", "flexVolume", "iscsi", "rbd"])
+def test_a_volume_plugins_secret_is_read_and_has_no_optional_either(plugin: str) -> None:
+    """`secretRef` there is a LocalObjectReference -- `name` and nothing else -- in the Pod's own namespace."""
+    for ref in ("{name: ghost}", "{name: ghost, optional: true}"):
+        found = _messages(_pod(f"volumes: [{{name: v, {plugin}: {{secretRef: {ref}}}}}]"))
+        assert len(found) == 1 and "Secret 'ghost'" in found[0], (plugin, ref, found)
+    assert _rule_findings(_pod(f"volumes: [{{name: v, {plugin}: {{secretRef: {{name: other-secret}}}}}}]")) == []
+
+
+def test_a_csi_volumes_publish_secret_is_read() -> None:
+    spec = "volumes: [{name: v, csi: {driver: d.example.com, nodePublishSecretRef: {name: %s}}}]"
+    found = _messages(_pod(spec % "ghost, optional: true"))
+    assert len(found) == 1 and "Secret 'ghost'" in found[0], found
+    assert _rule_findings(_pod(spec % "other-secret")) == []
+
+
+# --- G410: names that exist without the bundle defining them -------------------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["kubernetes", "openshift"])
+def test_the_root_ca_configmap_is_in_every_namespace(platform: str) -> None:
+    """Published by the root-ca-cert-publisher since 1.20: the `default` ServiceAccount's case exactly."""
+    text = _pod("volumes: [{name: v, configMap: {name: kube-root-ca.crt}}]")
+    rep = analyze(text, platform)
+    assert [f.message for f in rep.findings if f.rule_id == RULE] == []
+    assert RULE in rep.evaluated_rules and RULE not in rep.not_evaluated
+
+
+def test_the_root_ca_configmap_does_not_leave_the_kind_unjudged_where_the_namespace_defines_none() -> None:
+    """A name that is always there needs no evidence, so it must not turn the rule into "not evaluated"."""
+    rep = analyze(_pod("volumes: [{name: v, configMap: {name: kube-root-ca.crt}}]", managed=""), "kubernetes")
+    assert RULE in rep.evaluated_rules and RULE not in rep.not_evaluated, rep.not_evaluated.get(RULE)
+
+
+OPENSHIFT_NAMES = {
+    "builder": "serviceAccountName: builder",
+    "deployer": "serviceAccountName: deployer",
+    "openshift-service-ca.crt": "volumes: [{name: v, configMap: {name: openshift-service-ca.crt}}]",
+}
+
+
+@pytest.mark.parametrize("name", sorted(OPENSHIFT_NAMES))
+def test_what_openshift_puts_in_every_project_exists_on_openshift_and_only_there(name: str) -> None:
+    text = _pod(OPENSHIFT_NAMES[name])
+    assert [f.message for f in analyze(text, "openshift").findings if f.rule_id == RULE] == []
+    found = _messages(text)  # kubernetes: nothing creates it
+    assert len(found) == 1 and repr(name) in found[0], found
+
+
+# --- G410: an object IN the bundle creates it ----------------------------------------------------------------
+
+PRODUCERS = {
+    "certificate": """
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: api, namespace: shop}
+spec: {secretName: made, issuerRef: {name: ca}}
+""",
+    "sealed-secret": """
+---
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata: {name: made, namespace: shop}
+spec: {encryptedData: {password: AgB}}
+""",
+    "external-secret-own-name": """
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata: {name: made, namespace: shop}
+spec: {secretStoreRef: {name: vault}, data: []}
+""",
+    "external-secret-target": """
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata: {name: es, namespace: shop}
+spec: {secretStoreRef: {name: vault}, target: {name: made, creationPolicy: Owner}}
+""",
+}
+MADE_SECRET = "volumes: [{name: v, secret: {secretName: made}}]"
+
+
+@pytest.mark.parametrize("producer", sorted(PRODUCERS))
+def test_a_secret_an_object_in_the_bundle_creates_is_not_dangling(producer: str) -> None:
+    rep = analyze(_pod(MADE_SECRET, extra=PRODUCERS[producer]), "kubernetes")
+    assert [f.message for f in rep.findings if f.rule_id == RULE] == []
+    assert RULE not in rep.not_evaluated and RULE not in rep.partly_evaluated
+
+
+@pytest.mark.parametrize("producer", sorted(PRODUCERS))
+def test_a_producer_in_another_namespace_or_of_another_name_creates_nothing_here(producer: str) -> None:
+    """The neighbouring input: the same producer one namespace over, and one that makes a different name."""
+    elsewhere = PRODUCERS[producer].replace("namespace: shop", "namespace: other")
+    assert len(_messages(_pod(MADE_SECRET, extra=elsewhere))) == 1
+    other_name = _pod("volumes: [{name: v, secret: {secretName: mad}}]", extra=PRODUCERS[producer])
+    assert len(_messages(other_name)) == 1, _messages(other_name)
+
+
+def test_a_kind_of_that_name_in_another_group_is_not_the_producer() -> None:
+    other = PRODUCERS["certificate"].replace("cert-manager.io/v1", "certs.example.com/v1")
+    assert len(_messages(_pod(MADE_SECRET, extra=other))) == 1
+
+
+def test_a_producer_that_does_not_state_its_secret_is_not_judged_and_never_fired() -> None:
+    """A Certificate is there and what it writes cannot be read: neither "defined" nor "missing" is known."""
+    blind = PRODUCERS["certificate"].replace("secretName: made, ", "")
+    rep = analyze(_pod(MADE_SECRET, extra=blind), "kubernetes")
+    assert [f for f in rep.findings if f.rule_id == RULE] == []
+    assert RULE not in rep.evaluated_rules
+    why = rep.not_evaluated[RULE]
+    assert "Secret 'made'" in why and "Certificate" in why and "does not state" in why, why
+
+
+def test_an_external_secret_that_merges_or_creates_nothing_is_read_as_what_it_says() -> None:
+    merge = PRODUCERS["external-secret-target"].replace("creationPolicy: Owner", "creationPolicy: Merge")
+    rep = analyze(_pod(MADE_SECRET, extra=merge), "kubernetes")
+    assert [f for f in rep.findings if f.rule_id == RULE] == []
+    assert "merges into it" in rep.not_evaluated[RULE], rep.not_evaluated[RULE]
+    none = PRODUCERS["external-secret-target"].replace("creationPolicy: Owner", "creationPolicy: None")
+    assert len(_messages(_pod(MADE_SECRET, extra=none))) == 1, "creationPolicy: None creates no Secret"
+
+
+SERVING_CERT = """
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {service.beta.openshift.io/serving-cert-secret-name: made}
+spec: {ports: [{port: 443}]}
+"""
+
+
+def test_a_serving_cert_secret_is_created_on_openshift_and_not_judged_anywhere_else() -> None:
+    text = _pod(MADE_SECRET, extra=SERVING_CERT)
+    rep = analyze(text, "openshift")
+    assert [f for f in rep.findings if f.rule_id == RULE] == [] and RULE in rep.evaluated_rules
+    # On Kubernetes nothing honours the annotation -- and nothing in the input shows the Secret missing either.
+    rep = analyze(text, "kubernetes")
+    assert [f for f in rep.findings if f.rule_id == RULE] == []
+    assert "service CA" in rep.not_evaluated[RULE] and "not OpenShift" in rep.not_evaluated[RULE]
+
+
+STS_CLAIM = """
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: shop}
+spec:
+  serviceName: db
+  selector: {matchLabels: {app: db}}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 1Gi}}}
+  template:
+    metadata: {labels: {app: db}}
+    spec:
+      containers:
+        - {name: c, image: registry.example.com/c:1}
+"""
+
+
+def test_another_workload_may_mount_the_claim_a_statefulset_creates() -> None:
+    """The controller creates `<template>-<statefulset>-<ordinal>`; a backup Job mounting it is correct."""
+
+    def claim(name: str) -> list[str]:
+        spec = f"volumes: [{{name: v, persistentVolumeClaim: {{claimName: {name}}}}}]"
+        return _messages(_pod(spec, extra=STS_CLAIM))
+
+    assert claim("data-db-0") == [] and claim("data-db-12") == []
+    for wrong in ("data-db-x", "data-db-", "data-db-01", "data-other-0", "logs-db-0", "data"):
+        assert len(claim(wrong)) == 1, wrong
+    other_ns = STS_CLAIM.replace("namespace: shop", "namespace: other")
+    spec = "volumes: [{name: v, persistentVolumeClaim: {claimName: data-db-0}}]"
+    assert len(_messages(_pod(spec, extra=other_ns))) == 1
+
+
+KUSTOMIZATION = """
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: shop
+resources: [pod.yaml]
+configMapGenerator:
+  - name: made-cm
+    literals: [A=b]
+secretGenerator:
+  - name: made
+    literals: [A=b]
+"""
+MADE_BY_KUSTOMIZE = "volumes: [{name: v, secret: {secretName: made}}, {name: w, configMap: {name: made-cm}}]"
+
+
+def test_a_kustomize_generator_in_the_pods_namespace_creates_the_name() -> None:
+    rep = analyze(_pod(MADE_BY_KUSTOMIZE, extra="\n---" + KUSTOMIZATION), "kubernetes")
+    assert [f.message for f in rep.findings if f.rule_id == RULE] == []
+    assert RULE in rep.evaluated_rules and RULE not in rep.not_evaluated
+
+
+def test_a_kustomize_generator_whose_namespace_is_not_the_pods_is_not_judged() -> None:
+    """The namespace transformer may still put both in one place, and may not: not a finding, not a pass."""
+    for change in ("namespace: shop\n", "namespace: shop\n|namespace: other\n"):
+        old, _, new = change.partition("|")
+        rep = analyze(_pod(MADE_BY_KUSTOMIZE, extra="\n---" + KUSTOMIZATION.replace(old, new)), "kubernetes")
+        assert [f for f in rep.findings if f.rule_id == RULE] == []
+        why = rep.not_evaluated[RULE]
+        assert "Secret 'made'" in why and "ConfigMap 'made-cm'" in why and "kustomization" in why, why
+
+
+def test_a_name_no_generator_makes_still_fires_beside_one_that_is_not_judged() -> None:
+    spec = "volumes: [{name: v, secret: {secretName: made}}, {name: w, configMap: {name: typo}}]"
+    rep = analyze(_pod(spec, extra="\n---" + KUSTOMIZATION.replace("namespace: shop\n", "")), "kubernetes")
+    found = [f.message for f in rep.findings if f.rule_id == RULE]
+    assert len(found) == 1 and "ConfigMap 'typo'" in found[0], found
+    assert "Secret 'made'" in rep.partly_evaluated[RULE], rep.partly_evaluated.get(RULE)
+
+
+def test_the_directory_reader_sees_kustomization_yaml(tmp_path: Path) -> None:
+    """The claim "kustomization.yaml is read like any other file" is only true if the CLI's walk hands it over."""
+    (tmp_path / "pod.yaml").write_text(_pod(MADE_BY_KUSTOMIZE), encoding="utf-8")
+    (tmp_path / "kustomization.yaml").write_text(KUSTOMIZATION, encoding="utf-8")
+    report = json.loads(_cli(tmp_path).stdout)
+    assert not any(f["ruleId"] == RULE for f in report["findings"]), report["findings"]
+    assert RULE not in report["notEvaluated"]
+    (tmp_path / "kustomization.yaml").write_text(KUSTOMIZATION.replace("made", "unrelated"), encoding="utf-8")
+    assert sum(f["ruleId"] == RULE for f in json.loads(_cli(tmp_path).stdout)["findings"]) == 2
+
+
+# --- G410: the object is there and the key is not ------------------------------------------------------------
+
+KEYED = """
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: settings, namespace: shop}
+data: {LOG_LEVEL: info}
+binaryData: {blob: AAAA}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: creds, namespace: shop}
+data: {password: cHc=}
+stringData: {username: u}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: injected, namespace: shop}
+"""
+
+
+def _env(kind_ref: str, name: str, key: str, more: str = "") -> str:
+    return _pod(
+        container=f"env: [{{name: A, valueFrom: {{{kind_ref}: {{name: {name}, key: {key}{more}}}}}}}]", extra=KEYED
+    )
+
+
+@pytest.mark.parametrize(
+    ("ref", "name", "key", "kind"),
+    [("configMapKeyRef", "settings", "LOG_LEVE", "ConfigMap"), ("secretKeyRef", "creds", "pasword", "Secret")],
+)
+def test_a_key_the_bundles_own_object_does_not_carry_fires(ref: str, name: str, key: str, kind: str) -> None:
+    found = _rule_findings(_env(ref, name, key))
+    assert len(found) == 1, found
+    assert f"key {key!r}" in found[0].message and f"{kind} {name!r}" in found[0].message, found[0].message
+    assert found[0].path.endswith("key"), found[0].path
+
+
+@pytest.mark.parametrize(
+    ("ref", "name", "key"),
+    [
+        ("configMapKeyRef", "settings", "LOG_LEVEL"),
+        ("configMapKeyRef", "settings", "blob"),
+        ("secretKeyRef", "creds", "password"),
+        ("secretKeyRef", "creds", "username"),
+    ],
+)
+def test_a_key_in_any_of_the_objects_key_fields_is_there(ref: str, name: str, key: str) -> None:
+    assert _rule_findings(_env(ref, name, key)) == []
+
+
+def test_a_missing_key_is_not_a_finding_where_the_api_or_the_bundle_says_it_need_not_be_there() -> None:
+    # `optional: true` covers the key as well as the object.
+    assert _rule_findings(_env("configMapKeyRef", "settings", "nope", ", optional: true")) == []
+    # An object committed with no keys is the shape of one a controller fills: it shows no key to be missing.
+    assert _rule_findings(_env("configMapKeyRef", "injected", "service-ca.crt")) == []

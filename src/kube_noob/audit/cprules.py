@@ -941,38 +941,87 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 #:   spec, so not this rule's subject. KN-V011 and KN-N009 are the places for those.
 _DANGLE_KINDS: tuple[str, ...] = ("ConfigMap", "PersistentVolumeClaim", "Secret", "ServiceAccount")
 
-#: How a volume names one: the volume key, the kind, and the field inside it that carries the name. `secret`
-#: spells it `secretName` and `persistentVolumeClaim` `claimName`, which is why this is a table and not a
-#: loop over `"name"`.
-_VOLUME_REFS: tuple[tuple[str, str, str], ...] = (
-    ("configMap", "ConfigMap", "name"),
-    ("secret", "Secret", "secretName"),
-    ("persistentVolumeClaim", "PersistentVolumeClaim", "claimName"),
+#: How a volume names one: the path to the reference inside the volume, the kind, the field that carries the
+#: name, and whether THAT reference type has an `optional` field in the Kubernetes API. `secret` spells the name
+#: `secretName` and `persistentVolumeClaim` `claimName`, which is why this is a table and not a loop over `"name"`.
+#:
+#: The last column is the API's, checked type by type against core/v1 (G409): ConfigMapVolumeSource and
+#: SecretVolumeSource define `optional`; PersistentVolumeClaimVolumeSource is `claimName` and `readOnly` and
+#: nothing else, and the secret references of a CSI, CephFS, RBD, iSCSI or FlexVolume volume are a
+#: LocalObjectReference, which is `name` alone. `optional: true` written where the API has no such field is
+#: dropped (or refused, under strict field validation) and the reference stays required, so honouring it there
+#: let one unknown key silence a claim that leaves the Pod Pending.
+#:
+#: The five `secretRef` rows (G410) are the secrets kubelet needs in the POD's namespace to mount the volume;
+#: without one the mount fails and the Pod stays in ContainerCreating, the same symptom as a missing Secret
+#: volume. `cinder`, `scaleIO` and `storageos` carry one too and are not read: a stated limit, not a pass.
+_VOLUME_REFS: tuple[tuple[tuple[str, ...], str, str, bool], ...] = (
+    (("configMap",), "ConfigMap", "name", True),
+    (("secret",), "Secret", "secretName", True),
+    (("persistentVolumeClaim",), "PersistentVolumeClaim", "claimName", False),
+    (("csi", "nodePublishSecretRef"), "Secret", "name", False),
+    (("cephfs", "secretRef"), "Secret", "name", False),
+    (("rbd", "secretRef"), "Secret", "name", False),
+    (("iscsi", "secretRef"), "Secret", "name", False),
+    (("flexVolume", "secretRef"), "Secret", "name", False),
 )
-#: The same inside one source of a projected volume, where a Secret says `name` rather than `secretName`.
+#: The same inside one source of a projected volume, where a Secret says `name` rather than `secretName`. Both
+#: ConfigMapProjection and SecretProjection define `optional`.
 _PROJECTED_REFS: tuple[tuple[str, str, str], ...] = (("configMap", "ConfigMap", "name"), ("secret", "Secret", "name"))
-#: How a container names one: `envFrom[].configMapRef` / `secretRef`, then `env[].valueFrom.*KeyRef`.
+#: How a container names one: `envFrom[].configMapRef` / `secretRef`, then `env[].valueFrom.*KeyRef`. All four
+#: (ConfigMapEnvSource, SecretEnvSource, ConfigMapKeySelector, SecretKeySelector) define `optional`.
 _ENVFROM_REFS: tuple[tuple[str, str], ...] = (("configMapRef", "ConfigMap"), ("secretRef", "Secret"))
 _ENVVAR_REFS: tuple[tuple[str, str], ...] = (("configMapKeyRef", "ConfigMap"), ("secretKeyRef", "Secret"))
 
+#: Names that exist in every namespace without any bundle defining them, beside the `default` ServiceAccount
+#: (G410). Kept to what the platform's own documentation states:
+#:
+#: * `kube-root-ca.crt` -- the root-ca-cert-publisher controller publishes it into every namespace (the
+#:   RootCAConfigMap feature, on by default since Kubernetes 1.20); it is what a projected service account
+#:   token volume reads the CA from.
+_ALWAYS_THERE: frozenset[tuple[str, str]] = frozenset({("ConfigMap", "kube-root-ca.crt")})
+#: ... and on OpenShift only: `builder` and `deployer` are created in every project beside `default`
+#: ("Understanding and creating service accounts"), and the service CA operator publishes
+#: `openshift-service-ca.crt` into every namespace (it is a source of every Pod's own kube-api-access volume
+#: there). From 4.16 a cluster installed without the Build or DeploymentConfig capability has no `builder` or
+#: `deployer`; no manifest states the capability set, so that is a stated limit and they are taken to exist.
+_ALWAYS_THERE_OPENSHIFT: frozenset[tuple[str, str]] = frozenset(
+    {("ConfigMap", "openshift-service-ca.crt"), ("ServiceAccount", "builder"), ("ServiceAccount", "deployer")}
+)
 
-def _required_name(src: Any, field: str) -> str | None:
+#: The annotations a Service asks OpenShift's service CA operator for a serving-certificate Secret with.
+_SERVING_CERT_ANNOTATIONS: tuple[str, ...] = (
+    "service.beta.openshift.io/serving-cert-secret-name",
+    "service.alpha.openshift.io/serving-cert-secret-name",
+)
+_KUSTOMIZE_GENERATORS: tuple[tuple[str, str], ...] = (
+    ("configMapGenerator", "ConfigMap"),
+    ("secretGenerator", "Secret"),
+)
+_ANY_NAMESPACE = ""
+_ORDINAL = re.compile(r"(?:0|[1-9][0-9]*)\Z")
+
+
+def _ref_name(src: Any, field: str, optional_defined: bool = True) -> str | None:
     """The name this reference carries, or None when there is none to check or the manifest opted out.
 
     `optional: true` is the API's own escape hatch and the whole reason this cannot be a one-line rule:
     kubelet starts the container WITHOUT the ConfigMap or Secret instead of waiting for it, so an absent
     referent is the declared behaviour there and reporting it would be a finding on a correct manifest. It is
-    accepted only as the boolean `true`: `optional: false` and an absent key both mean required.
+    accepted only as the boolean `true`: `optional: false` and an absent key both mean required. And only
+    where the API defines the field (``optional_defined``, G409): on a claim it is not an escape hatch, it is
+    a key the API server does not know.
     """
-    if not isinstance(src, dict) or src.get("optional") is True:
+    if not isinstance(src, dict) or (optional_defined and src.get("optional") is True):
         return None
     name = src.get(field)
     return name if isinstance(name, str) and name else None
 
 
-def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
-    """Every (kind, name, path) this pod spec names in its own namespace, with the escape hatches already
-    taken out. A candidate, not a finding: whether the namespace defines it is the rule's business."""
+def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT, str | None]]:
+    """Every (kind, name, path, key) this pod spec names in its own namespace, with the escape hatches already
+    taken out. A candidate, not a finding: whether the namespace defines it is the rule's business. ``key`` is
+    the one key an `env[].valueFrom.*KeyRef` reads out of the object, and None everywhere else."""
     spec = pt.spec
     # `serviceAccount` is the pre-1.9 alias the API still serves and still honours, so a manifest using it
     # dangles exactly the same way; `serviceAccountName` wins when both are set, as the API server does.
@@ -982,17 +1031,17 @@ def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
             # The controller manager creates `default` in every namespace, so naming it is never dangling --
             # and naming nothing selects `default` too, which is why an unset field yields nothing here.
             if sa != "default":
-                yield "ServiceAccount", sa, (*pt.path, field)
+                yield "ServiceAccount", sa, (*pt.path, field), None
             break
     volumes = spec.get("volumes")
     if isinstance(volumes, list):
         for i, v in enumerate(volumes):
             if not isinstance(v, dict):
                 continue
-            for key, kind, field in _VOLUME_REFS:
-                name = _required_name(v.get(key), field)
+            for where, kind, field, optional_defined in _VOLUME_REFS:
+                name = _ref_name(get_path(v, where), field, optional_defined)
                 if name is not None:
-                    yield kind, name, (*pt.path, "volumes", i, key, field)
+                    yield kind, name, (*pt.path, "volumes", i, *where, field), None
             sources = get_path(v, ("projected", "sources"))
             if not isinstance(sources, list):
                 continue
@@ -1000,9 +1049,9 @@ def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
                 if not isinstance(src, dict):
                     continue
                 for key, kind, field in _PROJECTED_REFS:
-                    name = _required_name(src.get(key), field)
+                    name = _ref_name(src.get(key), field)
                     if name is not None:
-                        yield kind, name, (*pt.path, "volumes", i, "projected", "sources", j, key, field)
+                        yield kind, name, (*pt.path, "volumes", i, "projected", "sources", j, key, field), None
     for c in containers(pt):
         env_from = c.container.get("envFrom")
         if isinstance(env_from, list):
@@ -1010,9 +1059,9 @@ def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
                 if not isinstance(item, dict):
                     continue
                 for key, kind in _ENVFROM_REFS:
-                    name = _required_name(item.get(key), "name")
+                    name = _ref_name(item.get(key), "name")
                     if name is not None:
-                        yield kind, name, (*c.path, "envFrom", i, key, "name")
+                        yield kind, name, (*c.path, "envFrom", i, key, "name"), None
         env = c.container.get("env")
         if not isinstance(env, list):
             continue
@@ -1020,9 +1069,16 @@ def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
             if not isinstance(item, dict):
                 continue
             for key, kind in _ENVVAR_REFS:
-                name = _required_name(get_path(item, ("valueFrom", key)), "name")
+                ref = get_path(item, ("valueFrom", key))
+                name = _ref_name(ref, "name")
                 if name is not None:
-                    yield kind, name, (*c.path, "env", i, "valueFrom", key, "name")
+                    wanted = ref.get("key")
+                    yield (
+                        kind,
+                        name,
+                        (*c.path, "env", i, "valueFrom", key, "name"),
+                        wanted if isinstance(wanted, str) and wanted else None,
+                    )
 
 
 def _generated_claim_names(doc: Document) -> set[str]:
@@ -1044,20 +1100,189 @@ def _generated_claim_names(doc: Document) -> set[str]:
     return out
 
 
+class _Produced:
+    """What the INPUT ITSELF says will exist beside the objects it defines (G410).
+
+    "Nothing in this bundle defines it" was a false sentence about a bundle that holds the object which creates
+    it. Four producers are read, each by the field its own documentation gives for the name, and each only
+    under its own API group -- a `Certificate` of another group is somebody else's kind:
+
+    * cert-manager `Certificate` (`cert-manager.io`): `spec.secretName`, in the Certificate's namespace.
+    * Sealed Secrets `SealedSecret` (`bitnami.com`): the controller unseals into a Secret of the SealedSecret's
+      own name and namespace.
+    * External Secrets `ExternalSecret` (`external-secrets.io`): `spec.target.name`, defaulting to the
+      ExternalSecret's own name. `creationPolicy: None` creates nothing and is not counted; `Merge` writes into
+      a Secret that must already exist, so it is neither proof of one nor proof of none.
+    * a Service annotated for OpenShift's service CA (`service.beta.openshift.io/serving-cert-secret-name`):
+      the Secret of that name, on an OpenShift target. On any other target nothing honours the annotation, and
+      the manifest is evidence of an OpenShift author rather than of a missing Secret, so it is not judged.
+    * a StatefulSet's `volumeClaimTemplates`: `<template>-<statefulset>-<ordinal>` for any ordinal, because
+      `replicas` may be an autoscaler's and `spec.ordinals.start` moves the range.
+    * a kustomization's `configMapGenerator` / `secretGenerator` (`kustomization.yaml` is read like any other
+      file of the directory): the generator's `name`, which is the name a pod spec uses -- kustomize rewrites
+      the reference to the hashed name. Its namespace is the generator's or the kustomization's `namespace:`;
+      where neither states one, or it differs from the Pod's, the namespace transformer may still put both in
+      one place, so the name is not judged rather than reported.
+
+    ``why_not`` is the honest third answer: a producer is there and what it produces could not be read, or
+    depends on something outside the manifests. The name is then not judged, with the reason, and never fired.
+    """
+
+    def __init__(self, ctx: AuditContext) -> None:
+        self.made: dict[tuple[str, str], set[str]] = {}
+        self.claim_prefixes: dict[str, set[str]] = {}
+        #: (kind, namespace or _ANY_NAMESPACE, name or None for every name, the reason).
+        self.hedges: list[tuple[str, str, str | None, str]] = []
+        for d in ctx.docs:
+            if not isinstance(d.data, dict):
+                continue
+            group = d.api_version.rpartition("/")[0]
+            ns = ctx.ns(d)
+            if d.kind == "Certificate" and group == "cert-manager.io":
+                self._add("Secret", ns, get_path(d.data, ("spec", "secretName")), "a cert-manager Certificate")
+            elif d.kind == "SealedSecret" and group == "bitnami.com":
+                self._add("Secret", ns, d.name, "a SealedSecret")
+            elif d.kind == "ExternalSecret" and group == "external-secrets.io":
+                target = get_path(d.data, ("spec", "target"))
+                target = {} if target is None else target
+                policy = target.get("creationPolicy") if isinstance(target, dict) else None
+                name = (target.get("name") or d.name) if isinstance(target, dict) else None
+                if policy == "None":
+                    continue
+                if policy == "Merge" and isinstance(name, str) and name:
+                    self.hedges.append(
+                        ("Secret", ns, name, "an ExternalSecret there merges into it and does not create it")
+                    )
+                    continue
+                self._add("Secret", ns, name, "an ExternalSecret")
+            elif d.kind == "Kustomization" and group == "kustomize.config.k8s.io":
+                self._kustomization(d.data)
+        for d in ctx.by_kind("Service"):
+            annotations = get_path(d.data, ("metadata", "annotations"))
+            for key in _SERVING_CERT_ANNOTATIONS:
+                name = annotations.get(key) if isinstance(annotations, dict) else None
+                if not isinstance(name, str) or not name:
+                    continue
+                if ctx.is_openshift:
+                    self.made.setdefault(("Secret", ctx.ns(d)), set()).add(name)
+                else:
+                    self.hedges.append(
+                        (
+                            "Secret",
+                            ctx.ns(d),
+                            name,
+                            "a Service there asks OpenShift's service CA for it, and the target platform is not "
+                            "OpenShift",
+                        )
+                    )
+        for d in ctx.by_kind("StatefulSet"):
+            if d.name:
+                self.claim_prefixes.setdefault(ctx.ns(d), set()).update(
+                    f"{t}-{d.name}-" for t in _generated_claim_names(d)
+                )
+
+    def _add(self, kind: str, ns: str, name: Any, producer: str) -> None:
+        if isinstance(name, str) and name:
+            self.made.setdefault((kind, ns), set()).add(name)
+        else:
+            self.hedges.append((kind, ns, None, f"{producer} there does not state the name of the {kind} it creates"))
+
+    def _kustomization(self, data: dict[str, Any]) -> None:
+        shared = data.get("namespace")
+        for field, kind in _KUSTOMIZE_GENERATORS:
+            entries = data.get(field)
+            if entries is None:
+                continue
+            for item in entries if isinstance(entries, list) else [None]:
+                name = item.get("name") if isinstance(item, dict) else None
+                stated = (item.get("namespace") if isinstance(item, dict) else None) or shared
+                if not isinstance(name, str) or not name:
+                    self.hedges.append(
+                        (
+                            kind,
+                            _ANY_NAMESPACE,
+                            None,
+                            f"a kustomization's {field} could not be read for the names it makes",
+                        )
+                    )
+                    continue
+                self.made.setdefault((kind, stated if isinstance(stated, str) and stated else "<default>"), set()).add(
+                    name
+                )
+                self.hedges.append(
+                    (
+                        kind,
+                        _ANY_NAMESPACE,
+                        name,
+                        f"a kustomization's {field} generates one of that name, and the namespace it lands in is "
+                        "the kustomization's to set",
+                    )
+                )
+
+    def makes(self, kind: str, ns: str, name: str) -> bool:
+        if name in self.made.get((kind, ns), ()):
+            return True
+        if kind != "PersistentVolumeClaim":
+            return False
+        return any(
+            name.startswith(prefix) and _ORDINAL.match(name[len(prefix) :]) is not None
+            for prefix in self.claim_prefixes.get(ns, ())
+        )
+
+    def why_not(self, kind: str, ns: str, name: str) -> str | None:
+        for k, where, which, why in self.hedges:
+            if k == kind and where in (ns, _ANY_NAMESPACE) and which in (name, None):
+                return why
+        return None
+
+
+#: Where a ConfigMap and a Secret keep their keys. `stringData` is merged into `data` on write.
+_KEY_FIELDS: dict[str, tuple[str, ...]] = {"ConfigMap": ("data", "binaryData"), "Secret": ("data", "stringData")}
+
+
+def _literal_keys(kind: str, docs: list[Document]) -> set[str] | None:
+    """The keys the bundle's own object(s) of this name carry, or None where they are not the bundle's to state.
+
+    None for an object that carries no key at all: a ConfigMap committed empty is the usual shape of one a
+    controller fills (a CA bundle injected by annotation, a service account token Secret), so an empty one
+    says nothing about which keys it will have. And None for a key field that is not a mapping, which the
+    schema findings name; this rule does not guess past it.
+    """
+    keys: set[str] = set()
+    for d in docs:
+        for field in _KEY_FIELDS[kind]:
+            value = d.data.get(field) if isinstance(d.data, dict) else None
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                return None
+            keys.update(k for k in value if isinstance(k, str))
+    return keys or None
+
+
 @rule(
     "KN-C017",
     "Pod names an object that is not in this namespace",
     Stage.AUDIT,
     "wiring",
     Severity.HIGH,
-    "Add the object to this namespace, point the reference at one that is already there, or -- for a ConfigMap "
-    "or Secret the container can start without -- set optional: true on the reference.",
-    "A pod spec names a ConfigMap, Secret, PersistentVolumeClaim or ServiceAccount in its own namespace. If no "
-    "such object exists the Pod never runs: a missing ServiceAccount is refused at admission, a missing claim "
-    "leaves it Pending, and a missing ConfigMap or Secret leaves the container in CreateContainerConfigError or "
-    "the Pod in ContainerCreating. The failure arrives after the deploy rather than during it. A kind is judged "
-    "only where the bundle defines at least one object of it in that namespace: a correct repository often "
-    "carries no Secrets (an operator or a person creates them), so a namespace that defines none is not evidence.",
+    "Add the object (or the key) to this namespace, point the reference at one that is already there, or -- for "
+    "a ConfigMap or Secret the container can start without -- set optional: true on the volume, projected source "
+    "or env reference. A PersistentVolumeClaim, a ServiceAccount and a volume plugin's secretRef have no optional "
+    "field.",
+    "A pod spec names a ConfigMap, Secret, PersistentVolumeClaim or ServiceAccount in its own namespace: "
+    "serviceAccountName, configMap, secret and persistentVolumeClaim volumes, projected sources, the secret a "
+    "csi, cephfs, rbd, iscsi or flexVolume volume mounts with, envFrom, and env valueFrom key references "
+    "(with the key, when the bundle's own object carries keys). If no such object exists the Pod never runs: a "
+    "missing ServiceAccount is refused at admission, a missing claim leaves it Pending, and a missing ConfigMap "
+    "or Secret leaves the container in CreateContainerConfigError or the Pod in ContainerCreating. The failure "
+    "arrives after the deploy rather than during it. A kind is judged only where the bundle defines at least one "
+    "object of it in that namespace: a correct repository often carries no Secrets (an operator or a person "
+    "creates them), so a namespace that defines none is not evidence. A name the platform puts in every namespace "
+    "(the default ServiceAccount, kube-root-ca.crt; on OpenShift builder, deployer and openshift-service-ca.crt) "
+    "or that an object in the bundle creates (a cert-manager Certificate, a SealedSecret, an ExternalSecret, an "
+    "OpenShift serving-cert annotation, a StatefulSet's volumeClaimTemplates, a kustomize generator) is not "
+    "dangling; where what such an object creates cannot be read, the name is not judged and the record says why.",
     subjects=(WORKLOAD_SUBJECT,),
     context=_DANGLE_KINDS,
 )
@@ -1071,17 +1296,27 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             "part of a namespace was passed, so an object that lives in a file you did not pass is not an absent one",
         )
         return
-    present: dict[tuple[str, str], set[str]] = {}
+    present: dict[tuple[str, str], dict[str, list[Document]]] = {}
     for kind in _DANGLE_KINDS:
         for d in ctx.by_kind(kind):
             if d.name:
-                present.setdefault((kind, ctx.ns(d)), set()).add(d.name)
+                present.setdefault((kind, ctx.ns(d)), {}).setdefault(d.name, []).append(d)
+    always = _ALWAYS_THERE | (_ALWAYS_THERE_OPENSHIFT if ctx.is_openshift else frozenset())
+    produced = _Produced(ctx)
     #: (namespace, kind) pairs a reference needed and the bundle does not MANAGE: no object of that kind there.
     unjudged: dict[str, set[str]] = {}
+    #: Single names not judged though the kind is managed, with the reason (G410): (namespace, kind, name) -> why.
+    hedged: dict[tuple[str, str, str], str] = {}
     for d, pt in ctx.workloads():
         ns = ctx.ns(d)
         generated = _generated_claim_names(d)
-        for kind, name, path in _dangling_candidates(pt):
+        for kind, name, path, key in _dangling_candidates(pt):
+            # Names the platform puts in every namespace, and names an object IN this input creates, are not
+            # dangling whatever else the namespace defines -- asked first, so they are not left "unjudged" either.
+            if (kind, name) in always or produced.makes(kind, ns, name):
+                continue
+            if kind == "PersistentVolumeClaim" and name in generated:
+                continue
             defined = present.get((kind, ns))
             if defined is None:
                 # The first design fired here, and the full suite answered with 98 failures, every one a correct
@@ -1093,8 +1328,27 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 unjudged.setdefault(ns, set()).add(kind)
                 continue
             if name in defined:
+                # The object is there; the one thing left that the input can show wrong is the KEY an env var
+                # reads out of it (G410): a key the object does not carry is CreateContainerConfigError, the
+                # same symptom as a missing object. Judged only against keys the bundle itself writes.
+                keys = _literal_keys(kind, defined[name]) if key is not None else None
+                if keys is None or key in keys:
+                    continue
+                if ctx.cannot_judge_absence(r.rule_id, kind, namespace=ns, name=name, suppresses_finding=True):
+                    continue
+                shown = sorted(keys)
+                more = f" and {len(shown) - 3} more" if len(shown) > 3 else ""
+                yield r.finding(
+                    d,
+                    (*path[:-1], "key"),
+                    f"Pod reads the key {key!r} from the {kind} {name!r} in namespace {ns}, which this bundle "
+                    f"defines with {', '.join(repr(k) for k in shown[:3])}{more} and without that key. Unless "
+                    f"something outside this bundle writes it, the container will not start.",
+                )
                 continue
-            if kind == "PersistentVolumeClaim" and name in generated:
+            why = produced.why_not(kind, ns, name)
+            if why is not None:
+                hedged[(ns, kind, name)] = why
                 continue
             # "nothing in namespace shop defines it" is a statement about the INPUT that an object of that
             # kind and name the rules refused to read makes false (G368, class 24). By kind and name, which
@@ -1112,12 +1366,18 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 f"defines {', '.join(repr(n) for n in shown[:3])}{more} there. Unless something outside this "
                 f"bundle creates it, the Pod will not run.",
             )
+    reasons: list[str] = []
     if unjudged:
         parts = [f"no {' or '.join(sorted(kinds))} in namespace {ns}" for ns, kinds in sorted(unjudged.items())]
         more = f" and {len(parts) - 3} more namespace(s)" if len(parts) > 3 else ""
-        ctx.nothing_to_judge(
-            r.rule_id,
+        reasons.append(
             f"the bundle defines {'; '.join(parts[:3])}{more}, so a name a pod spec gives there may be an object "
             "created outside the bundle (a secrets operator, cert-manager, a provisioner, by hand) and its absence "
-            "is not evidence",
+            "is not evidence"
         )
+    if hedged:
+        named = [f"the {kind} {name!r} in namespace {ns} ({why})" for (ns, kind, name), why in sorted(hedged.items())]
+        more = f" and {len(named) - 3} more" if len(named) > 3 else ""
+        reasons.append(f"not judged: {'; '.join(named[:3])}{more}")
+    if reasons:
+        ctx.nothing_to_judge(r.rule_id, "; ".join(reasons))
