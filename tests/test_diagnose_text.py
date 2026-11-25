@@ -192,3 +192,39 @@ def test_a_cut_list_of_changes_says_how_many_there_are_in_every_text_view(capsys
     assert total > dx.MAX_TEXT_CHANGES
     out = _run(["diagnose", "-f", str(EXAMPLES / "events-scc.txt")], capsys)
     assert f"({total} proposed changes in all: --format yaml lists every one)" in out
+
+
+def test_a_release_note_search_that_did_not_happen_is_not_a_search_that_found_nothing() -> None:
+    """`diagnose` and `known_issues` disagreed on the same text and version, and only one of them said why.
+
+    `match(..., require_context=True)` searches the OpenShift release notes only when the text says it is
+    OpenShift. Without that it returns no matches AND a note saying it did not look. Every caller kept the
+    empty list and dropped the note, so:
+
+        diagnose      "etcd leader changed slow fdatasync", 4.20 -> knownIssues: []
+        known_issues  the same text and version                  -> OCPBUGS-73876
+
+    An agent reading the first reports "no known issue for 4.20". A search that did not happen is not a
+    search that found nothing (G390).
+    """
+    from kube_noob.config import load_settings
+    from kube_noob.known_issues import match
+
+    text, version = "etcd leader changed slow fdatasync", "4.20"
+    settings = load_settings(overrides={"offline": True})
+    blind = match(text, None, version, 3, settings.data_dir, require_context=True)
+    assert not blind["matches"] and blind.get("note"), blind
+    seeing = match(text, "openshift", version, 3, settings.data_dir, require_context=True)
+    assert seeing["matches"], "the fixture no longer matches; this test proves nothing"
+
+    from kube_noob.toolkit import DiagnoseIn, Toolkit
+
+    kit = Toolkit(settings)
+    out = kit.diagnose(DiagnoseIn(text=text, version=version))
+    assert not out["knownIssues"]
+    assert out.get("knownIssuesNote") == blind["note"], "the reason the notes were not searched was dropped"
+    # And it has to reach the reader, not only the payload. (The first version of this line was
+    # `rendered == "" or "not determined" in rendered`, which is true whatever happens.)
+    from kube_noob.debug.diagnose import render_text
+
+    assert "known issues: not determined:" in render_text(out)

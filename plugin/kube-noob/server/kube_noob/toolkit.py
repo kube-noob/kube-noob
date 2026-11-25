@@ -22,6 +22,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
+from kube_noob.audit import fedramp as _fedramp
 from kube_noob.audit.engine import analyze, explain_rule, list_rules
 from kube_noob.audit.fixer import fix_manifests
 from kube_noob.audit.model import Severity, Stage
@@ -1156,6 +1157,11 @@ class ToolSpec:
     tier: str | None = None  # a capability tier beyond read-only (kube_noob.tiers); offered only when it is on
 
 
+#: How many curated KSI rows reach their indicator through a shared control rather than a shared subject.
+#: Derived so the tool description cannot drift from the data the way it did at G388.
+_OFF_SUBJECT_KSI = sum(1 for _row in _fedramp.EVIDENCE.values() if not _row.get("onSubject", True))
+
+
 class Toolkit:
     def __init__(self, settings: Settings, *, shared: bool = False) -> None:
         """``shared``: served over HTTP to many callers (service or sidecar). Shared servers expose no tool that writes
@@ -1721,6 +1727,14 @@ class Toolkit:
         out["knownIssues"] = reported["matches"]
         if "versionCoverage" in reported:  # an empty list for a release the index does not hold is not "none" (G277)
             out["knownIssuesCoverage"] = reported["versionCoverage"]
+        if reported.get("note"):
+            # `require_context=True` means the OpenShift notes are searched only when the text says it is
+            # OpenShift. Without that, `match` returns no matches AND a note saying it did not look -- and this
+            # kept the empty list and dropped the note, so `diagnose` answered `knownIssues: []` where
+            # `known_issues` on the same text and version returns OCPBUGS-73876. A search that did not happen is
+            # not a search that found nothing. `mustgather/report.py` already carries this under the same key
+            # (G388).
+            out["knownIssuesNote"] = reported["note"]
         if reported["matches"]:
             self._observe([f"known-issue:{m['id']}" for m in reported["matches"]])
         self._attach_memory(out, p.text, version, p.platform)
@@ -2130,6 +2144,8 @@ class Toolkit:
         out["knownIssues"] = reported["matches"]
         if "versionCoverage" in reported:
             out["knownIssuesCoverage"] = reported["versionCoverage"]
+        if reported.get("note"):
+            out["knownIssuesNote"] = reported["note"]  # the same dropped note, in the second caller (G388)
         self._attach_memory(out, evidence[:MAX_SIGNAL_TEXT], p.version, platform)
         self._observe([f"build:{d.system}:{d.cause or 'unknown'}"])
         return out
@@ -2680,7 +2696,11 @@ class Toolkit:
                 "Which FedRAMP 20x Key Security Indicators an audit's findings are evidence for, by inverting the "
                 "NIST control list each indicator carries in FedRAMP's own consolidated dataset (vendored with its "
                 "version and hash). Without manifests it returns the crosswalk itself. Every indicator is listed: "
-                "the ones no kube-noob rule can see carry evidenced=false and no counts, and two carry a warning "
+                "the ones no kube-noob rule can see carry evidenced=false and no counts, and "
+                # Counted, not typed. It said "two" while four rows carry it -- a number in a description
+                # that no generator owns and no test checked, so an agent that stopped after two warned
+                # rows read the other two as on-subject evidence (G388).
+                f"{_OFF_SUBJECT_KSI} carry a warning "
                 "because their rules reach them only through a shared control and not a shared subject. A mapping "
                 "is evidence, never a claim of compliance -- an assessment decides whether an indicator is met.",
                 KsiIn,

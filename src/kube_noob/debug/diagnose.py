@@ -719,6 +719,11 @@ def debug_workload(
         **result.as_dict(),
         "knownIssues": reported["matches"],
         **({"knownIssuesCoverage": reported["versionCoverage"]} if "versionCoverage" in reported else {}),
+        # The release notes are searched only when the text says it is OpenShift. Without that, `match` returns
+        # no matches AND a note saying it did not look, and every caller kept the empty list and dropped the
+        # note -- so `diagnose` answered "no reported issue" where `known_issues` on the same text and version
+        # returns one. A search that did not happen is not a search that found nothing (G390).
+        **({"knownIssuesNote": reported["note"]} if reported.get("note") else {}),
         **({"policyDenials": denials} if denials else {}),
     }
 
@@ -771,6 +776,8 @@ def bundle_markdown(result: dict[str, Any]) -> str:
 
     if limit := coverage_line(result.get("knownIssuesCoverage"), listed=bool(result.get("knownIssues"))):
         lines += ["", f"Reported issues: {limit}"]
+    if note := result.get("knownIssuesNote"):
+        lines += ["", f"Reported issues: not determined. {note}"]
     for p in result.get("policyDenials", []):
         title = f"{p['engineName']} {p.get('policy') or ''}".strip() + (f" / {p['rule']}" if p.get("rule") else "")
         lines += ["", f"## Denied by {title}", "", p["meaning"], "", "Read-only next steps:"]
@@ -811,6 +818,7 @@ TEXT_RENDERED = frozenset(
         "notes",
         "knownIssues",
         "knownIssuesCoverage",
+        "knownIssuesNote",
         "memory",
         "memoryNotes",
         "policyDenials",
@@ -960,12 +968,14 @@ def _text_reported(result: dict[str, Any]) -> list[str]:
 
     known = result.get("knownIssues") or []
     limit = coverage_line(result.get("knownIssuesCoverage"), listed=bool(known))
-    lines = [""] if known or limit else []
+    note = result.get("knownIssuesNote")
+    lines = [""] if known or limit or note else []
     for m in known:
         lines += [f"reported issue {m['id']}: {m.get('status') or ''}", f"  {m.get('summary') or m.get('title') or ''}"]
         lines += [f"  workaround: {m['workaround']}"] if m.get("workaround") else []
         lines.append(f"  {m['url']}")
     lines += [limit] if limit else []
+    lines += [f"known issues: not determined: {note}"] if note else []
     memory = result.get("memory") or []
     if memory or result.get("memoryNotes"):
         lines.append("")
