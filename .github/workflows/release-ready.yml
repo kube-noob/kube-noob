@@ -67,12 +67,21 @@ jobs:
             echo "::error title=release-ready::the checks on main could not be read, so whether a release would be safe is NOT KNOWN."
             exit 1
           fi
-          total=$(jq -r '[.check_runs[]] | length' /tmp/checks.json)
+          # This workflow is ITSELF a check run on main's head while it is running. A scheduled run creates one --
+          # measured: scorecard's scheduled run 45411849676 appears as the `analysis` check run on the commit it
+          # ran against, alongside the push run's. Its own conclusion is null and its status is `in_progress`, so
+          # the filter below would select it and this report could never say ready: every Monday it would name
+          # its own job as the thing blocking the release. Excluded by RUN ID, not by name -- a name match would
+          # also hide a real failure of another job that shares the name, and would break the moment this
+          # workflow is renamed.
+          mine="/actions/runs/${GITHUB_RUN_ID}/"
+          others=$(jq --arg mine "${mine}" '[.check_runs[] | select(((.details_url // "") | contains($mine)) | not)]' /tmp/checks.json)
+          total=$(printf '%s' "${others}" | jq -r 'length')
           if [ "${total}" = "0" ]; then
-            echo "::error title=release-ready::main has no check runs at all, which is not a green main -- it is an unanswered question."
+            echo "::error title=release-ready::main has no check runs other than this workflow's own, so whether a release would be safe is NOT KNOWN. This is not a green main."
             exit 1
           fi
-          notgreen=$(jq -r '[.check_runs[] | select((.conclusion // .status) != "success" and .conclusion != "skipped") | "\(.conclusion // .status) \(.name)"] | join(", ")' /tmp/checks.json)
+          notgreen=$(printf '%s' "${others}" | jq -r '[.[] | select((.conclusion // .status) != "success" and .conclusion != "skipped") | "\(.conclusion // .status) \(.name)"] | join(", ")')
 
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label release-ready --state open --limit 1 --json number,title --jq '.[0].number // ""')
 
