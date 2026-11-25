@@ -1,9 +1,14 @@
-"""The control plane's own trust boundaries: KN-S037..KN-S041 (G272).
+"""The control plane's own trust boundaries (KN-S037..KN-S041, G272), and the rules that overflow `rules.py`.
 
 Its own module, not part of `rules.py`, for the same reason `argv.py`, `cpflags.py` and `cpconfig.py` are: the
 generated plugin copy of a module may not exceed 256 KiB (`scripts/sync_plugin_server.py`, the plugin
 directory's own limit), and merging these five rules into the branch that made every rule declare its subject
-put `rules.py` at 292 KiB. Nothing here is new; it is the G272 block moved whole.
+put `rules.py` at 292 KiB. Nothing in the G272 block is new; it is that block moved whole.
+
+Because this is where that headroom lives, it is also where a NEW rule goes once `rules.py` is close to the
+cap: KN-C017 (G396) is here and not beside KN-C015, which it is the sibling of, for no other reason than that
+`rules.py` had about 2.9 KiB left and the rule plus the comments that explain it does not fit in 2.9 KiB. A
+reader looking for a wiring rule should expect to find one here.
 
 `rules.py` imports this module at the END of its own body, which is what registers these rules in `RULES`. The
 import is circular by construction -- the rules need the `@rule` decorator and the context helpers that live
@@ -48,12 +53,13 @@ from kube_noob.audit.cpflags import (
     _unread_lists,
 )
 from kube_noob.audit.model import Finding, Severity, Stage
-from kube_noob.audit.podspec import ContainerRef
+from kube_noob.audit.podspec import ContainerRef, PodTemplate, containers
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     APISERVICE_GROUP,
     HOSTED_CONTROL_PLANE_PLATFORMS,
     OAUTH_GROUP,
+    WORKLOAD_SUBJECT,
     AuditContext,
     Rule,
     _containers,
@@ -63,7 +69,7 @@ from kube_noob.audit.rules import (
     rule,
 )
 from kube_noob.catalog import parse_minor
-from kube_noob.yamlio import Document, PathT
+from kube_noob.yamlio import Document, PathT, get_path
 
 # =====================================================================================================
 # AUDIT - the control plane and its trust boundaries (G272)
@@ -900,3 +906,190 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             "the directory in plaintext: the bind password and the password of every user who logs in cross the "
             "network unencrypted, and the directory's identity is never checked.",
         )
+
+
+# =====================================================================================================
+# AUDIT - a name with nothing behind it (G396)
+# =====================================================================================================
+# The defect this answers: a Pod naming five objects that were not in the input -- a ConfigMap volume, a
+# Secret volume, a PersistentVolumeClaim, a ServiceAccount and an `envFrom.configMapRef` -- audited at exit
+# 0, with one unrelated LOW finding and no word about any of the five. KN-C013 abstained (`no Secret in the
+# input`) because it is about a pull secret in the WRONG namespace, and KN-C015 covers only ResourceClaims,
+# so no rule decided it and five absences read as a pass.
+
+#: The kinds this rule checks, which are exactly the namespace-scoped ones a pod spec names where the name
+#: having nothing behind it stops the Pod from running:
+#:
+#:   ConfigMap, Secret              an absent one leaves the container in CreateContainerConfigError (env) or
+#:                                  the Pod in ContainerCreating for ever (volume), unless `optional: true`.
+#:   PersistentVolumeClaim          an absent one leaves the Pod Pending; the scheduler never binds it.
+#:   ServiceAccount                 the ServiceAccount admission plugin REFUSES the Pod outright, so it is
+#:                                  never created at all.
+#:
+#: What is deliberately left out, and why:
+#:
+#: * **Cluster-scoped referents** -- PriorityClass, RuntimeClass, StorageClass, IngressClass. `cli._partial_input`
+#:   takes a directory to be the whole NAMESPACE, never the whole cluster, so a directory of a namespace's
+#:   manifests is no evidence at all about a cluster-scoped object: it is normal for a namespace's repository
+#:   not to carry the cluster's StorageClasses. Flagging those would be exactly the guess this rule exists to
+#:   refuse. (KN-ST001 already reads a claim against a StorageClass that IS in the bundle, and declines
+#:   otherwise.)
+#: * **`imagePullSecrets`** -- an absent pull secret does not stop the Pod: kubelet reports
+#:   FailedToRetrieveImagePullSecret and tries the pull anonymously, which succeeds for a public image. It is
+#:   also KN-C013's subject, and two rules on one field would be two answers. KN-C013 owns it.
+#: * **A Service named by an Ingress backend, a ServiceAccount named by a RoleBinding subject** -- not a pod
+#:   spec, so not this rule's subject. KN-V011 and KN-N009 are the places for those.
+_DANGLE_KINDS: tuple[str, ...] = ("ConfigMap", "PersistentVolumeClaim", "Secret", "ServiceAccount")
+
+#: How a volume names one: the volume key, the kind, and the field inside it that carries the name. `secret`
+#: spells it `secretName` and `persistentVolumeClaim` `claimName`, which is why this is a table and not a
+#: loop over `"name"`.
+_VOLUME_REFS: tuple[tuple[str, str, str], ...] = (
+    ("configMap", "ConfigMap", "name"),
+    ("secret", "Secret", "secretName"),
+    ("persistentVolumeClaim", "PersistentVolumeClaim", "claimName"),
+)
+#: The same inside one source of a projected volume, where a Secret says `name` rather than `secretName`.
+_PROJECTED_REFS: tuple[tuple[str, str, str], ...] = (("configMap", "ConfigMap", "name"), ("secret", "Secret", "name"))
+#: How a container names one: `envFrom[].configMapRef` / `secretRef`, then `env[].valueFrom.*KeyRef`.
+_ENVFROM_REFS: tuple[tuple[str, str], ...] = (("configMapRef", "ConfigMap"), ("secretRef", "Secret"))
+_ENVVAR_REFS: tuple[tuple[str, str], ...] = (("configMapKeyRef", "ConfigMap"), ("secretKeyRef", "Secret"))
+
+
+def _required_name(src: Any, field: str) -> str | None:
+    """The name this reference carries, or None when there is none to check or the manifest opted out.
+
+    `optional: true` is the API's own escape hatch and the whole reason this cannot be a one-line rule:
+    kubelet starts the container WITHOUT the ConfigMap or Secret instead of waiting for it, so an absent
+    referent is the declared behaviour there and reporting it would be a finding on a correct manifest. It is
+    accepted only as the boolean `true`: `optional: false` and an absent key both mean required.
+    """
+    if not isinstance(src, dict) or src.get("optional") is True:
+        return None
+    name = src.get(field)
+    return name if isinstance(name, str) and name else None
+
+
+def _dangling_candidates(pt: PodTemplate) -> Iterator[tuple[str, str, PathT]]:
+    """Every (kind, name, path) this pod spec names in its own namespace, with the escape hatches already
+    taken out. A candidate, not a finding: whether the namespace defines it is the rule's business."""
+    spec = pt.spec
+    # `serviceAccount` is the pre-1.9 alias the API still serves and still honours, so a manifest using it
+    # dangles exactly the same way; `serviceAccountName` wins when both are set, as the API server does.
+    for field in ("serviceAccountName", "serviceAccount"):
+        sa = spec.get(field)
+        if isinstance(sa, str) and sa:
+            # The controller manager creates `default` in every namespace, so naming it is never dangling --
+            # and naming nothing selects `default` too, which is why an unset field yields nothing here.
+            if sa != "default":
+                yield "ServiceAccount", sa, (*pt.path, field)
+            break
+    volumes = spec.get("volumes")
+    if isinstance(volumes, list):
+        for i, v in enumerate(volumes):
+            if not isinstance(v, dict):
+                continue
+            for key, kind, field in _VOLUME_REFS:
+                name = _required_name(v.get(key), field)
+                if name is not None:
+                    yield kind, name, (*pt.path, "volumes", i, key, field)
+            sources = get_path(v, ("projected", "sources"))
+            if not isinstance(sources, list):
+                continue
+            for j, src in enumerate(sources):
+                if not isinstance(src, dict):
+                    continue
+                for key, kind, field in _PROJECTED_REFS:
+                    name = _required_name(src.get(key), field)
+                    if name is not None:
+                        yield kind, name, (*pt.path, "volumes", i, "projected", "sources", j, key, field)
+    for c in containers(pt):
+        env_from = c.container.get("envFrom")
+        if isinstance(env_from, list):
+            for i, item in enumerate(env_from):
+                if not isinstance(item, dict):
+                    continue
+                for key, kind in _ENVFROM_REFS:
+                    name = _required_name(item.get(key), "name")
+                    if name is not None:
+                        yield kind, name, (*c.path, "envFrom", i, key, "name")
+        env = c.container.get("env")
+        if not isinstance(env, list):
+            continue
+        for i, item in enumerate(env):
+            if not isinstance(item, dict):
+                continue
+            for key, kind in _ENVVAR_REFS:
+                name = _required_name(get_path(item, ("valueFrom", key)), "name")
+                if name is not None:
+                    yield kind, name, (*c.path, "env", i, "valueFrom", key, "name")
+
+
+def _generated_claim_names(doc: Document) -> set[str]:
+    """The PersistentVolumeClaim names this object's own `volumeClaimTemplates` stand for.
+
+    A StatefulSet's claims are created by the controller as `<template>-<statefulset>-<ordinal>`, so no
+    PersistentVolumeClaim of the template's bare name is ever in a bundle and never should be. A template
+    name named as a `claimName` is therefore a reference the controller satisfies, not a dangling one, and
+    reporting it would be a HIGH finding on a correct StatefulSet.
+    """
+    templates = get_path(doc.data, ("spec", "volumeClaimTemplates"))
+    if not isinstance(templates, list):
+        return set()
+    out: set[str] = set()
+    for t in templates:
+        name = get_path(t, ("metadata", "name")) if isinstance(t, dict) else None
+        if isinstance(name, str) and name:
+            out.add(name)
+    return out
+
+
+@rule(
+    "KN-C017",
+    "Pod names an object that is not in this namespace",
+    Stage.AUDIT,
+    "wiring",
+    Severity.HIGH,
+    "Add the object to this namespace, point the reference at one that is already there, or -- for a ConfigMap "
+    "or Secret the container can start without -- set optional: true on the reference.",
+    "A pod spec names a ConfigMap, Secret, PersistentVolumeClaim or ServiceAccount in its own namespace. If no "
+    "such object exists the Pod never runs: a missing ServiceAccount is refused at admission, a missing claim "
+    "leaves it Pending, and a missing ConfigMap or Secret leaves the container in CreateContainerConfigError or "
+    "the Pod in ContainerCreating. The failure arrives after the deploy rather than during it.",
+    subjects=(WORKLOAD_SUBJECT,),
+    context=_DANGLE_KINDS,
+)
+def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    if ctx.partial_bundle:
+        # A single file cannot tell "this ConfigMap does not exist" from "you did not pass it", and reporting
+        # the first would be five findings on the correct repository of every project that keeps its
+        # ConfigMaps in another file. Not evaluated, and never clean: the reason says what to pass instead.
+        ctx.nothing_to_judge(
+            r.rule_id,
+            "part of a namespace was passed, so an object that lives in a file you did not pass is not an absent one",
+        )
+        return
+    present: dict[tuple[str, str], set[str]] = {}
+    for kind in _DANGLE_KINDS:
+        for d in ctx.by_kind(kind):
+            if d.name:
+                present.setdefault((kind, ctx.ns(d)), set()).add(d.name)
+    for d, pt in ctx.workloads():
+        ns = ctx.ns(d)
+        generated = _generated_claim_names(d)
+        for kind, name, path in _dangling_candidates(pt):
+            if name in present.get((kind, ns), set()):
+                continue
+            if kind == "PersistentVolumeClaim" and name in generated:
+                continue
+            # "nothing in namespace shop defines it" is a statement about the INPUT that an object of that
+            # kind and name the rules refused to read makes false (G368, class 24). By kind and name, which
+            # is this text's own granularity and no wider.
+            if ctx.cannot_judge_absence(r.rule_id, kind, namespace=ns, name=name, suppresses_finding=True):
+                continue
+            yield r.finding(
+                d,
+                path,
+                f"Pod names the {kind} {name!r}, which nothing in this bundle defines in namespace {ns}. "
+                f"The Pod will not run.",
+            )
