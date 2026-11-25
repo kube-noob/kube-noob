@@ -75,6 +75,11 @@ SKIPPED_RULES = frozenset(
         # on every correct DRA Pod. Fetching them would need get and list on resourceclaims, a privilege the
         # chart does not grant and should not need for a warning `kube-noob audit` already gives on a directory.
         "KN-C015",
+        # The same, for the same reason: the context cache fetches no ConfigMaps, Secrets or
+        # ServiceAccounts, so with lookups this rule would warn that a ConfigMap is missing from a bundle
+        # it never looked in -- on every correct Pod. Reading them would need get and list on secrets,
+        # which the chart must never grant. `kube-noob audit` gives the warning on a directory (G396).
+        "KN-C017",
         # The kubelet runs a static Pod from a file on the node and the API server holds only its mirror, which
         # cannot stop it: denying the mirror would leave kube-apiserver or etcd running and the request retried.
         # `kube-noob audit` reads the manifest itself (G272).
