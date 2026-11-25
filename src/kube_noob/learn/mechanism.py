@@ -17,6 +17,10 @@ reached no verdict. That last one was missing, and the claim made here that the 
 audit" was simply false: a Deployment with no pod template walked `complete` at exit 0 where `audit` exits 1,
 and each hop cited as its proof the very rules the ledger lists as unevaluated (G389). The walk is a second
 renderer over the same coverage ledger, and it has to read all of it.
+
+The verdict obeys the same rule one level up: a walk that judged NO hop reached no verdict about the path, so it
+is `stopped` at exit 5 however many hops it drew. "Every observable hop on this path holds" is vacuously true of
+a path with no observable hops, and a lesson whose every hop was `observable: false` printed it at exit 0 (G395).
 """
 
 from __future__ import annotations
@@ -192,15 +196,35 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
 
         results.append(StepResult(step, HOLDS, f"{step.holds} ({', '.join(step.rules)})", objects=tuple(present)))
 
+    judged = sum(1 for r in results if r.verdict in (HOLDS, FAILS))
     if stopped_at is not None:
         verdict, reason = "stopped", f"the walk stopped at `{stopped_at}`: that hop could not be judged"
+    elif judged == 0:
+        # Nothing on this path was judged, so there is no verdict about the path -- and the sentence that used to
+        # be printed here, "every observable hop on this path holds", was VACUOUSLY true: there are no observable
+        # hops, so all of them hold. A lesson whose every hop is `observable: false` came out `complete` at exit
+        # 0, the same vacuous-truth failure this project has caught twice before (an empty `parametrize`
+        # reporting one skipped test at exit 0; an empty list reading as clean). Zero of this build's rules read
+        # the kubelet, the container runtime, cgroups, kube-proxy, iptables, conntrack, veth or the overlay, so a
+        # Node-layer lesson could be marked unobservable hop by hop and ship a full green page (G395).
+        #
+        # `stopped_at` stays None on purpose. It names the hop the walk stopped AT, and every reader of it --
+        # `render`, the published skill tables, an agent -- takes that hop to be the one that could not be judged
+        # and the hops after it to be undrawn. Here no hop was the obstacle: each was honestly reported
+        # `not-observable`, none was skipped, and naming the first would be a false statement about it. The
+        # verdict and this reason carry the truth instead.
+        verdict = "stopped"
+        reason = (
+            f"no hop on this path was judged: of {len(steps)} declared hop(s), "
+            f"{sum(1 for r in results if r.verdict == NOT_OBSERVABLE)} are not observable and none was read by a "
+            "rule in this build, so this walk reached no verdict about the path"
+        )
     elif any(r.verdict == FAILS for r in results):
         broken = ", ".join(r.step.id for r in results if r.verdict == FAILS)
         verdict, reason = "broken", f"the walk reached the end; these hops are broken: {broken}"
     else:
         verdict, reason = "complete", "every observable hop on this path holds"
 
-    judged = sum(1 for r in results if r.verdict in (HOLDS, FAILS))
     return {
         "lesson": lesson.get("id"),
         "title": lesson.get("title"),

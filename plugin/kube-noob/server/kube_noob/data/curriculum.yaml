@@ -23,14 +23,16 @@ tracks:
           - The fourth is the scheduler's, and no manifest records it, so kube-noob does not claim to check it.
         steps:
           - id: more-than-one-replica
-            title: There is more than one of it
+            title: Nothing here is left at a single replica
             needs: [Deployment, StatefulSet, ReplicaSet]
-            holds: the workload runs more than a single replica, so losing one is not losing all of it
+            holds: no replicated workload here declares fewer than two replicas, unless a HorizontalPodAutoscaler
+              scales it -- and KN-C007 does not read that autoscaler's own minimum
             rules: [KN-C007]
           - id: replicas-can-land-apart
-            title: They are allowed to land on different nodes
+            title: A workload with replicas to spread asks for them spread
             needs: [Deployment, StatefulSet, ReplicaSet]
-            holds: the pod template spreads its replicas, so they are not all on the node that went dark
+            holds: every workload here declaring two or more replicas also declares topologySpreadConstraints or
+              podAntiAffinity; KN-C010 is silent about a workload below two replicas
             rules: [KN-C010]
           - id: the-budget-lets-one-go
             title: The disruption budget lets one of them go
@@ -62,14 +64,15 @@ tracks:
           - The walk stops at the first hop it cannot judge; the hops after it are not reported as fine.
         steps:
           - id: edge-admits
-            title: The edge admits the request
+            title: There is an Ingress at the edge with nothing known-dangerous on it
             needs: [Ingress]
             holds: an Ingress is here and the rules that read it found nothing wrong
             rules: [KN-N003, KN-N009, KN-N011, KN-V019]
           - id: service-selects-pods
             title: The Service finds pods to send it to
             needs: [Service]
-            holds: the Service selects at least one pod in this bundle, on a port the containers declare
+            holds: the Service selects at least one pod in this bundle, and no named targetPort it uses is missing
+              from the selected containers
             rules: [KN-V011, KN-V012, KN-N008]
           - id: workload-selects-its-own-pods
             title: The workload owns the pods it selects
@@ -77,7 +80,7 @@ tracks:
             holds: the workload's selector matches the labels on its own pod template
             rules: [KN-V010]
           - id: policy-admits-the-packet
-            title: Network policy lets the packet in
+            title: The namespace has a network policy, and it is neither open nor inert
             # No `needs`: a namespace with NO NetworkPolicy is judged, because KN-N001 is the rule that fires on
             # exactly that absence. `reads` is what stops the walk here -- a policy that IS here and that nothing
             # could read leaves the hop unjudged, which is not the same thing at all.
@@ -86,7 +89,7 @@ tracks:
             holds: the namespace has a NetworkPolicy, and none of them is an allow-all or selects nothing
             rules: [KN-N001, KN-N007, KN-N012]
           - id: pod-reports-ready
-            title: The pod says it is ready to receive it
+            title: The containers declare a readiness probe
             needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
             holds: the containers declare a readiness probe, so the endpoint appears only when they can serve
             rules: [KN-C001]

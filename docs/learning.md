@@ -60,9 +60,10 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 
 | what the walk did | verdict | exit |
 |---|---|---|
-| every observable hop holds | `complete` | `0` |
+| every observable hop holds, and at least one hop was judged | `complete` | `0` |
 | reached the end, a hop is broken | `broken` | `1` |
 | stopped at a hop it could not judge | `stopped` | `5` |
+| judged no hop at all | `stopped` | `5` |
 
 `5` and `1` are not two answers to the same question: `1` says the path was walked and something on it is wrong,
 `5` says the path was not walked.
@@ -70,6 +71,13 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
 holds. kube-noob does not claim to have checked something it cannot see, in a lesson any more than in an audit.
+
+That applies to the path as well as to the hop. **A walk that judged no hop answers `5`, however many hops it
+drew.** "Every observable hop on this path holds" is vacuously true of a path with no observable hops, and a
+lesson marked `observable: false` hop by hop printed exactly that at exit `0` -- a page of green over a walk
+that checked nothing (G395). A hop's **title** is also held to what its rules decide: the network lesson's
+policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
+an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
 
 ## What kube-noob remembers
 
