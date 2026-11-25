@@ -23,8 +23,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+      # Held at v4.39.3. v4.39.4 merges this job's two language runs (python, actions) into one SARIF file before
+      # upload, and the upload now fails: analyze went red on main at the commit that bumped it and nowhere
+      # else, and the same v4.39.3 commit re-run on the same day stayed green. A single-run upload is unaffected,
+      # which is why scorecard.yml's upload-sarif stays on v4.39.4. Init and analyze must move together; take the
+      # next release only when this job is green on its pull request.
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: python, actions
           queries: security-extended
-      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
