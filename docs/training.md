@@ -5,7 +5,7 @@
 ```bash
 kube-noob corpus build --online
 kube-noob corpus history --online
-kube-noob corpus jira --online --project ROX --min-version 4.10 --target 1200
+kube-noob corpus jira --online --projects ROX --max-requests 1200
 kube-noob corpus verify
 kube-noob corpus stats
 ```
