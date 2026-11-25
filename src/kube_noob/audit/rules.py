@@ -4642,6 +4642,9 @@ def _c006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _c007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d in ctx.by_kind(*REPLICATED_KINDS):
+        if _evidence.replicas_unknown(d):  # not a count, so neither "one" nor "two or more" (G407)
+            ctx.cannot_decide(r.rule_id, _evidence.UNKNOWN_REPLICAS, d.ref())
+            continue
         reps = replicas(d)
         if reps is not None and reps < 2 and not _has_hpa(ctx, d):
             # `_has_hpa` is group-matched, so a refused HPA scaling this workload to 2..5 failed to excuse the
@@ -4733,6 +4736,9 @@ def _c008(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         )
         return
     for d, pt in ctx.workloads():
+        if _evidence.replicas_unknown(d):
+            ctx.cannot_decide(r.rule_id, _evidence.UNKNOWN_REPLICAS, d.ref())
+            continue
         if d.kind not in REPLICATED_KINDS or (replicas(d) or 1) < 2:
             continue
         pdbs, unread = _pdbs_for(ctx, d, pt.labels(), r.rule_id)
@@ -4761,6 +4767,9 @@ def _c009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
         if d.kind not in REPLICATED_KINDS:
             continue
+        if _evidence.replicas_unknown(d):
+            ctx.cannot_decide(r.rule_id, _evidence.UNKNOWN_REPLICAS, d.ref())
+            continue
         reps = replicas(d) or 1
         for p in _pdbs_for(ctx, d, pt.labels(), r.rule_id)[0]:
             spec = _pdb_spec(p)
@@ -4781,6 +4790,9 @@ def _c009(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _c010(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for d, pt in ctx.workloads():
+        if _evidence.replicas_unknown(d):
+            ctx.cannot_decide(r.rule_id, _evidence.UNKNOWN_REPLICAS, d.ref())
+            continue
         if d.kind not in REPLICATED_KINDS or (replicas(d) or 1) < 2:
             continue
         if pt.spec.get("topologySpreadConstraints") or get_path(pt.spec, ("affinity", "podAntiAffinity")):

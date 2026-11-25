@@ -367,3 +367,62 @@ def test_the_backstop_in_the_walker_itself_and_what_it_leaves_alone() -> None:
     # And a finding that is not about the object's shape is the audit's business, not a hop's.
     other = M.walk(lesson, {**clean, "findings": [{**schema, "category": "wiring", "ruleId": "KN-V023"}]})
     assert other["verdict"] == "complete"
+
+
+# --- G407 (M4): a replica count that is not a number is not "two or more" ---------------------------------------
+
+UNREADABLE_COUNTS = ['"1"', "'{{ .Values.replicas }}'", "true", "1.5"]
+
+
+def _with_replicas(value: str) -> str:
+    out = NODE_OK.replace("  replicas: 2\n", f"  replicas: {value}\n" if value else "")
+    assert out != NODE_OK or value == "2", "the edit did not apply"
+    return out
+
+
+@pytest.mark.parametrize("value", UNREADABLE_COUNTS)
+def test_a_replica_count_that_is_not_a_number_is_not_read_as_two_or_more(value: str) -> None:
+    report = _report(_with_replicas(value))
+    for rule in ("KN-C007", "KN-C009", "KN-C010"):
+        assert "not an integer" in report["notEvaluated"][rule], (rule, report["notEvaluated"].get(rule))
+        assert report["declined"][rule]["entries"][0]["resource"] == "Deployment/shop/api"
+    assert not [f for f in report["findings"] if f["ruleId"] in ("KN-C007", "KN-C009", "KN-C010")]
+    # The object is here and the rule could not read what it needs from it: that withholds the verdict (G272).
+    assert report["summary"]["verdict"] == "undetermined"
+
+
+@pytest.mark.parametrize("value", UNREADABLE_COUNTS)
+def test_the_node_walk_cannot_judge_a_workload_whose_replica_count_it_cannot_read(value: str) -> None:
+    walked = _walk(_with_replicas(value), NODE)
+    first = walked["steps"][0]
+    assert first["step"] == "more-than-one-replica" and first["verdict"] == M.CANNOT_JUDGE, first
+    # Named by the rule the hop rests on, not only by the schema finding beside it (G406 would stop it too).
+    assert first["why"].startswith("KN-C007 reached no verdict here: spec.replicas is not an integer"), first["why"]
+    assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+
+
+def test_one_unreadable_count_does_not_hide_a_single_replica_beside_it() -> None:
+    """The neighbouring input: the decline is on one object, and the finding on the other still fires."""
+    single = (
+        NODE_OK.split("---", maxsplit=1)[0].replace("name: api,", "name: lone,").replace("replicas: 2", "replicas: 1")
+    )
+    report = _report(_with_replicas('"1"') + "---\n" + single)
+    assert [f["resource"] for f in report["findings"] if f["ruleId"] == "KN-C007"] == ["Deployment/shop/lone"]
+    walked = M.walk(_lesson(NODE), report)
+    assert walked["steps"][0]["verdict"] == M.FAILS and walked["exitCode"] == 1
+
+
+@pytest.mark.parametrize(("value", "fires"), [("1", True), ("", True), ("0", True), ("2", False), ("3", False)])
+def test_a_count_that_is_a_number_is_judged_as_before(value: str, fires: bool) -> None:
+    """An absent `replicas` is the API's default of one, which is a count; only a non-number is unknown."""
+    report = _report(_with_replicas(value))
+    assert "KN-C007" not in (report.get("notEvaluated") or {})
+    assert bool([f for f in report["findings"] if f["ruleId"] == "KN-C007"]) is fires
+
+
+def test_a_budget_is_not_measured_against_a_replica_count_nobody_could_read() -> None:
+    """KN-C009 read the unknown count as one and reported "allows no disruptions ... (1 replicas)"."""
+    strict = _with_replicas('"3"').replace("spec: {maxUnavailable: 1,", "spec: {minAvailable: 1,")
+    report = _report(strict)
+    assert not [f for f in report["findings"] if f["ruleId"] == "KN-C009"]
+    assert "not an integer" in report["notEvaluated"]["KN-C009"]

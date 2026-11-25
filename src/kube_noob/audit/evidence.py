@@ -35,7 +35,7 @@ false explanation, which is the G368 defect one layer down.
 
 from __future__ import annotations
 
-from kube_noob.audit.podspec import EMBEDDED_POD_SPEC_PATHS, POD_SPEC_PATHS
+from kube_noob.audit.podspec import EMBEDDED_POD_SPEC_PATHS, POD_SPEC_PATHS, REPLICATED_KINDS, replicas
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     RULES,
@@ -66,6 +66,31 @@ NO_PODS_IN_NAMESPACE = (
 NO_PODS_SELECTED = (
     "a Service here selects no pod template in this input, so there are no containers to read its targetPort against"
 )
+
+UNKNOWN_REPLICAS = "spec.replicas is not an integer, so how many replicas this workload declares is not known"
+
+
+def replicas_unknown(d: Document) -> bool:
+    """Whether ``d`` is a replicated workload whose replica count cannot be read (G407).
+
+    `podspec.replicas` answers `None` for a count that is not an integer -- `replicas: "1"`, a Helm expression
+    left in a quoted string -- and the four rules that read it each turned that `None` into an answer:
+    KN-C007 into "not below two" (`reps is not None and reps < 2`), KN-C008, KN-C009 and KN-C010 into "one"
+    (`replicas(d) or 1`). So one unreadable field read as "two or more replicas" to the first rule and as "a
+    single replica, nothing to spread" to the third, and both said nothing: the node-dark walk printed "every
+    Deployment, StatefulSet and ReplicaSet here declares two or more replicas" over `replicas: "1"`, exit 0.
+
+    An unknown count is neither. Each of those rules asks this first and declines on THIS object, naming it,
+    through `cannot_decide` with `UNKNOWN_REPLICAS`: the object is here and the rule could not read what it
+    needs from it, which is G272's definition of a decline that withholds the score -- unlike a Service with no
+    selector (G404), where nothing went unread. A boolean is refused with the strings: Python counts `True` as
+    the integer 1 and the API server does not.
+
+    A predicate and not a recorder: the rule records its own decline, because the test that reads which kinds
+    a rule asks for (`tests/test_absent_kinds.py`) does not follow a call that hands `ctx` to another module.
+    """
+    return d.kind in REPLICATED_KINDS and type(replicas(d)) is not int
+
 
 _WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
 # The kinds a rule reads as evidence BESIDE the ones its `context=` declares -- the PDB that selects a workload,
