@@ -1104,7 +1104,7 @@ class _Produced:
     """What the INPUT ITSELF says will exist beside the objects it defines (G410).
 
     "Nothing in this bundle defines it" was a false sentence about a bundle that holds the object which creates
-    it. Four producers are read, each by the field its own documentation gives for the name, and each only
+    it. Six producers are read, each by the field its own documentation gives for the name, and each only
     under its own API group -- a `Certificate` of another group is somebody else's kind:
 
     * cert-manager `Certificate` (`cert-manager.io`): `spec.secretName`, in the Certificate's namespace.
@@ -1128,66 +1128,19 @@ class _Produced:
     depends on something outside the manifests. The name is then not judged, with the reason, and never fired.
     """
 
-    def __init__(self, ctx: AuditContext) -> None:
+    def __init__(self) -> None:
         self.made: dict[tuple[str, str], set[str]] = {}
         self.claim_prefixes: dict[str, set[str]] = {}
         #: (kind, namespace or _ANY_NAMESPACE, name or None for every name, the reason).
         self.hedges: list[tuple[str, str, str | None, str]] = []
-        for d in ctx.docs:
-            if not isinstance(d.data, dict):
-                continue
-            group = d.api_version.rpartition("/")[0]
-            ns = ctx.ns(d)
-            if d.kind == "Certificate" and group == "cert-manager.io":
-                self._add("Secret", ns, get_path(d.data, ("spec", "secretName")), "a cert-manager Certificate")
-            elif d.kind == "SealedSecret" and group == "bitnami.com":
-                self._add("Secret", ns, d.name, "a SealedSecret")
-            elif d.kind == "ExternalSecret" and group == "external-secrets.io":
-                target = get_path(d.data, ("spec", "target"))
-                target = {} if target is None else target
-                policy = target.get("creationPolicy") if isinstance(target, dict) else None
-                name = (target.get("name") or d.name) if isinstance(target, dict) else None
-                if policy == "None":
-                    continue
-                if policy == "Merge" and isinstance(name, str) and name:
-                    self.hedges.append(
-                        ("Secret", ns, name, "an ExternalSecret there merges into it and does not create it")
-                    )
-                    continue
-                self._add("Secret", ns, name, "an ExternalSecret")
-            elif d.kind == "Kustomization" and group == "kustomize.config.k8s.io":
-                self._kustomization(d.data)
-        for d in ctx.by_kind("Service"):
-            annotations = get_path(d.data, ("metadata", "annotations"))
-            for key in _SERVING_CERT_ANNOTATIONS:
-                name = annotations.get(key) if isinstance(annotations, dict) else None
-                if not isinstance(name, str) or not name:
-                    continue
-                if ctx.is_openshift:
-                    self.made.setdefault(("Secret", ctx.ns(d)), set()).add(name)
-                else:
-                    self.hedges.append(
-                        (
-                            "Secret",
-                            ctx.ns(d),
-                            name,
-                            "a Service there asks OpenShift's service CA for it, and the target platform is not "
-                            "OpenShift",
-                        )
-                    )
-        for d in ctx.by_kind("StatefulSet"):
-            if d.name:
-                self.claim_prefixes.setdefault(ctx.ns(d), set()).update(
-                    f"{t}-{d.name}-" for t in _generated_claim_names(d)
-                )
 
-    def _add(self, kind: str, ns: str, name: Any, producer: str) -> None:
+    def add(self, kind: str, ns: str, name: Any, producer: str) -> None:
         if isinstance(name, str) and name:
             self.made.setdefault((kind, ns), set()).add(name)
         else:
             self.hedges.append((kind, ns, None, f"{producer} there does not state the name of the {kind} it creates"))
 
-    def _kustomization(self, data: dict[str, Any]) -> None:
+    def kustomization(self, data: dict[str, Any]) -> None:
         shared = data.get("namespace")
         for field, kind in _KUSTOMIZE_GENERATORS:
             entries = data.get(field)
@@ -1234,6 +1187,97 @@ class _Produced:
             if k == kind and where in (ns, _ANY_NAMESPACE) and which in (name, None):
                 return why
         return None
+
+
+#: The kinds KN-C017 reads for what they CREATE, each with the API group(s) it is read under (G410). This is a
+#: third declaration beside a rule's `subjects=` and `context=`, and deliberately not either of them:
+#:
+#: * not a subject or a context kind, because those go through `SUBJECT_GROUPS`, and a kind in that table is a
+#:   kind `refusal` REFUSES under any other group. Putting `Certificate` there would turn an AWS ACK
+#:   `acm.services.k8s.aws` Certificate, in a bundle that has nothing to do with this rule, into a refused
+#:   object and its audit into an undetermined one;
+#: * not `context=` for `Service` and `StatefulSet` either, though the rules know both: the absence of a context
+#:   kind is recorded ("evaluated without Service"), and no Service is not something this rule went without.
+#:
+#: The absence of a producer is not a gap in the verdict: no Certificate means no Secret is created by one, which
+#: is a complete answer. A producer that is THERE and cannot be read is the gap, and `_produced` answers it per
+#: name (`why_not`). So these are matched by exact group here and nowhere else, `_producer_docs` is the one
+#: function that selects them, and `tests/test_absent_kinds.py` holds every kind a rule passes to it to this
+#: table and to `PRODUCER_KINDS_READ` -- a read the walk can name, not one it cannot see.
+#:
+#: `None` stands for "no apiVersion at all", read for the two built-in kinds as `refusal` reads it: a live
+#: cluster's list items carry none.
+_PRODUCER_GROUPS: dict[str, frozenset[str | None]] = {
+    "Certificate": frozenset({"cert-manager.io"}),
+    "SealedSecret": frozenset({"bitnami.com"}),
+    "ExternalSecret": frozenset({"external-secrets.io"}),
+    "Kustomization": frozenset({"kustomize.config.k8s.io"}),
+    "Service": frozenset({"", None}),
+    "StatefulSet": frozenset({"apps", None}),
+}
+#: Which rule reads which of them: the per-rule declaration, as `context=` is for the kinds a rule audits beside.
+PRODUCER_KINDS_READ: dict[str, frozenset[str]] = {"KN-C017": frozenset(_PRODUCER_GROUPS)}
+
+
+def _producer_docs(ctx: AuditContext, kind: str) -> list[Document]:
+    """The documents of one producer kind, under its own API group only, in input order (see `_PRODUCER_GROUPS`).
+
+    A kind that is not in the table is a KeyError, not an empty list: an undeclared read must not look like
+    "the bundle holds none".
+    """
+    groups = _PRODUCER_GROUPS[kind]
+    out: list[Document] = []
+    for d in ctx.docs:
+        if not isinstance(d.data, dict) or d.kind != kind:
+            continue
+        version = d.api_version
+        if (version.rpartition("/")[0] if version else None) in groups:
+            out.append(d)
+    return out
+
+
+def _produced(ctx: AuditContext) -> _Produced:
+    """Read every producer in the input into what it creates, and what it leaves unknown."""
+    out = _Produced()
+    for d in _producer_docs(ctx, "Certificate"):
+        out.add("Secret", ctx.ns(d), get_path(d.data, ("spec", "secretName")), "a cert-manager Certificate")
+    for d in _producer_docs(ctx, "SealedSecret"):
+        out.add("Secret", ctx.ns(d), d.name, "a SealedSecret")
+    for d in _producer_docs(ctx, "ExternalSecret"):
+        ns = ctx.ns(d)
+        target = get_path(d.data, ("spec", "target"))
+        target = {} if target is None else target
+        policy = target.get("creationPolicy") if isinstance(target, dict) else None
+        name = (target.get("name") or d.name) if isinstance(target, dict) else None
+        if policy == "None":
+            continue
+        if policy == "Merge" and isinstance(name, str) and name:
+            out.hedges.append(("Secret", ns, name, "an ExternalSecret there merges into it and does not create it"))
+            continue
+        out.add("Secret", ns, name, "an ExternalSecret")
+    for d in _producer_docs(ctx, "Kustomization"):
+        out.kustomization(d.data)
+    for d in _producer_docs(ctx, "Service"):
+        annotations = get_path(d.data, ("metadata", "annotations"))
+        for key in _SERVING_CERT_ANNOTATIONS:
+            name = annotations.get(key) if isinstance(annotations, dict) else None
+            if not isinstance(name, str) or not name:
+                continue
+            if ctx.is_openshift:
+                out.made.setdefault(("Secret", ctx.ns(d)), set()).add(name)
+            else:
+                out.hedges.append(
+                    (
+                        "Secret",
+                        ctx.ns(d),
+                        name,
+                        "a Service there asks OpenShift's service CA for it, and the target platform is not OpenShift",
+                    )
+                )
+    for d in _producer_docs(ctx, "StatefulSet"):
+        if d.name:
+            out.claim_prefixes.setdefault(ctx.ns(d), set()).update(f"{t}-{d.name}-" for t in _generated_claim_names(d))
+    return out
 
 
 #: Where a ConfigMap and a Secret keep their keys. `stringData` is merged into `data` on write.
@@ -1302,7 +1346,7 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             if d.name:
                 present.setdefault((kind, ctx.ns(d)), {}).setdefault(d.name, []).append(d)
     always = _ALWAYS_THERE | (_ALWAYS_THERE_OPENSHIFT if ctx.is_openshift else frozenset())
-    produced = _Produced(ctx)
+    produced = _produced(ctx)
     #: (namespace, kind) pairs a reference needed and the bundle does not MANAGE: no object of that kind there.
     unjudged: dict[str, set[str]] = {}
     #: Single names not judged though the kind is managed, with the reason (G410): (namespace, kind, name) -> why.

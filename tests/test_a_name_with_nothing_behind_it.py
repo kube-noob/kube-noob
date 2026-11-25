@@ -714,3 +714,46 @@ def test_a_missing_key_is_not_a_finding_where_the_api_or_the_bundle_says_it_need
     assert _rule_findings(_env("configMapKeyRef", "settings", "nope", ", optional: true")) == []
     # An object committed with no keys is the shape of one a controller fills: it shows no key to be missing.
     assert _rule_findings(_env("configMapKeyRef", "injected", "service-ca.crt")) == []
+
+
+# --- G410: reading a producer refuses nothing ----------------------------------------------------------------
+
+FOREIGN_CERTIFICATE = """
+---
+apiVersion: acm.services.k8s.aws/v1alpha1
+kind: Certificate
+metadata: {name: made, namespace: shop}
+spec: {domainName: shop.example.com, secretName: made}
+"""
+
+
+def test_reading_a_producer_kind_does_not_refuse_the_same_kind_name_under_another_group() -> None:
+    """A producer is matched under its own group and is NOT a kind the rules know (`SUBJECT_GROUPS`), because a
+    kind in that table is refused under every other group: an AWS ACK Certificate in a bundle that has nothing
+    to do with this rule would become a refused object and its audit an undetermined one."""
+    from kube_noob.audit.cprules import _PRODUCER_GROUPS
+    from kube_noob.audit.rules import SUBJECT_GROUPS, AuditContext, refusal
+    from kube_noob.yamlio import load_documents
+
+    for kind in ("Certificate", "SealedSecret", "ExternalSecret", "Kustomization"):
+        assert kind in _PRODUCER_GROUPS and kind not in SUBJECT_GROUPS, kind
+    docs = load_documents(_pod(MADE_SECRET, extra=FOREIGN_CERTIFICATE))
+    foreign = [d for d in docs if d.kind == "Certificate"]
+    assert len(foreign) == 1 and refusal(foreign[0]) is None
+    ctx = AuditContext(docs, "kubernetes", "1.31")
+    assert not any(d.kind == "Certificate" for d in ctx.refused())
+    # ... and it is not this rule's producer either: the Secret it does not create is still reported.
+    found = _messages(_pod(MADE_SECRET, extra=FOREIGN_CERTIFICATE))
+    assert len(found) == 1 and "Secret 'made'" in found[0], found
+
+
+def test_a_producer_read_names_a_declared_kind_or_fails_loudly() -> None:
+    from kube_noob.audit.cprules import _producer_docs
+    from kube_noob.audit.rules import AuditContext
+    from kube_noob.yamlio import load_documents
+
+    knative = SERVING_CERT.replace("apiVersion: v1", "apiVersion: serving.knative.dev/v1")
+    ctx = AuditContext(load_documents(_pod(extra=SERVING_CERT + knative)), "openshift", "1.31")
+    assert [d.api_version for d in _producer_docs(ctx, "Service")] == ["v1"]
+    with pytest.raises(KeyError):
+        _producer_docs(ctx, "Issuer")

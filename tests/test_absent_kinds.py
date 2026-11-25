@@ -923,6 +923,12 @@ _KIND_READERS: dict[str, int | str] = {"by_kind": "*", "has_subject": 0, "kind_i
 _POD_SPEC_READERS = frozenset(
     {"workloads", "refused_workloads", "unread_pod_spec_docs", "refused_subject_group", "refusal"}
 )
+#: The one function that selects a PRODUCER kind: a kind a rule reads for what it creates and does not audit,
+#: matched under its own API group and kept out of `SUBJECT_GROUPS` so that reading it refuses nothing (G410).
+#: The walk does not descend into it -- it is a reader, like `by_kind` -- and records the kind it is given as
+#: `+Kind`, which the test below holds to the reader's own table and to the rule's declaration. Anything else
+#: that walks `ctx.docs` is still loud.
+_PRODUCER_READER = "_producer_docs"
 
 
 def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
@@ -991,6 +997,8 @@ def _kinds_asked(tree: Any, names: Iterable[str]) -> dict[str, set[str]]:
                     out |= kinds_of(fn, arg)
             elif name in _POD_SPEC_READERS:
                 out.add(WORKLOAD_SUBJECT)
+            elif name == _PRODUCER_READER:
+                out |= {f"+{k}" for k in kinds_of(fn, node.args[1])}
             elif isinstance(node.func, ast.Name) and node.func.id in funcs:
                 out |= kinds_in(funcs[node.func.id], seen)
             elif any(isinstance(a, ast.Name) and a.id == "ctx" for a in node.args):
@@ -1056,7 +1064,13 @@ def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_contex
 
     by_rule = _by_kind_calls_per_rule()
     assert by_rule.keys() == RULES.keys()
+    from kube_noob.audit.cprules import _PRODUCER_GROUPS, PRODUCER_KINDS_READ
     from kube_noob.audit.rules import ANY_OBJECT
+
+    # The producer path is exercised, not merely permitted: a walk that stopped seeing those reads would pass
+    # by looking at less. And a declaration nothing reads is a stale one.
+    assert {k[1:] for k in by_rule["KN-C017"] if k.startswith("+")} == PRODUCER_KINDS_READ["KN-C017"]
+    assert PRODUCER_KINDS_READ.keys() <= RULES.keys()
 
     for rid, asked in by_rule.items():
         r = RULES[rid]
@@ -1067,6 +1081,11 @@ def test_every_kind_a_rule_asks_by_kind_for_is_declared_as_its_subject_or_contex
         assert not unknown, f"unknown pattern in {rid}: {'; '.join(unknown)}"
         for kind in asked:
             if kind.startswith("?"):
+                continue
+            if kind.startswith("+"):
+                # A producer kind: declared by the rule, and given a group by the one reader that selects it.
+                assert kind[1:] in PRODUCER_KINDS_READ.get(rid, ()), f"{rid} reads the producer {kind[1:]} undeclared"
+                assert kind[1:] in _PRODUCER_GROUPS, (rid, kind)
                 continue
             if kind == WORKLOAD_SUBJECT:
                 # `workloads()` is the pod-spec subject, or a declared subset of its kinds (KN-V010, KN-N001).
