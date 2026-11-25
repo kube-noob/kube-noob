@@ -99,6 +99,91 @@ tracks:
             holds: >-
               the veth pair, the bridge and the overlay carry it the last hop. Nothing in a manifest records
               this, so kube-noob does not check it and does not count it as passed.
+      - id: mech-sec-rbac-and-serviceaccounts
+        title: RBAC and ServiceAccounts
+        layer: security
+        docs: [k8s-rbac]
+        objectives:
+          - Follow what stands between a pod's identity and the API, from the token it holds to the grants behind it
+          - See which of those your own manifests answer for, and which only a running API server decides
+        keyPoints:
+          - Each rule on this path reads every object of its kind in the input. None of them joins a pod to its
+            ServiceAccount, a ServiceAccount to its bindings, or a binding to the role it names.
+          - A role that a binding names and that is not in the input -- the built-in edit, admin and view among
+            them -- is a role nothing here read, so the walk never says what a ServiceAccount can do.
+          - Every rule on the RBAC and Secret hops abstains when its kind is absent, so a bundle with no binding,
+            no Role or no Secret stops the walk at that hop instead of passing it.
+        steps:
+          - id: no-pod-automounts-a-token
+            title: A ServiceAccount is here, and no pod spec leaves the automatic token mount on
+            # Measured (G401): with no pod spec KN-S014 abstains ("no pod spec in the input"), so the walk
+            # stops. With a pod spec and NO ServiceAccount object it FIRES -- from a directory and from a
+            # single file alike -- on a ServiceAccount nobody passed, which may be the one that opts out. So
+            # the hop needs the ServiceAccount: without one it is not judged, rather than reported BROKEN on
+            # evidence that cannot say so (the direction G394 found on the network lesson's policy hop).
+            needs: [ServiceAccount]
+            reads: [ServiceAccount, Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob]
+            holds: >-
+              every pod spec here sets automountServiceAccountToken false, or leaves it unset while running as a
+              ServiceAccount in this input that sets it false. KN-S014 does not read a projected
+              serviceAccountToken volume a pod mounts on purpose, and does not check that the ServiceAccount a
+              pod names exists
+            rules: [KN-S014]
+          - id: no-binding-grants-to-everyone
+            title: No RoleBinding or ClusterRoleBinding here names everyone as a subject
+            needs: [RoleBinding, ClusterRoleBinding]
+            holds: >-
+              no binding here has system:unauthenticated, system:anonymous, system:authenticated,
+              system:serviceaccounts or system:authenticated:oauth among its subjects. A binding whose own name
+              starts with system: or that carries the rbac-defaults bootstrapping label is left alone, and
+              KN-S028 does not check that a subject exists
+            rules: [KN-S028]
+          - id: no-binding-names-cluster-admin
+            title: No RoleBinding or ClusterRoleBinding here names the cluster-admin role
+            needs: [RoleBinding, ClusterRoleBinding]
+            holds: >-
+              no binding here has roleRef.name cluster-admin. A role of the same reach under another name is not
+              what KN-S016 reads
+            rules: [KN-S016]
+          - id: no-role-uses-a-wildcard
+            title: No Role or ClusterRole here uses a wildcard in verbs, resources or apiGroups
+            # Measured (G401): a RoleBinding whose Role is not in the input leaves KN-S015 and KN-S017 with "no
+            # ClusterRole or Role in the input", and the walk stops here -- the binding hops before it are
+            # judged, the grants behind the binding are not.
+            needs: [Role, ClusterRole]
+            holds: >-
+              no rule of any Role or ClusterRole in this input lists '*' in verbs, resources or apiGroups. Every
+              role here is read, bound or not; a role a binding names that is not in this input was not read
+            rules: [KN-S015]
+          - id: no-role-carries-an-escalation-grant
+            title: No Role or ClusterRole here carries a grant KN-S017 lists as a privilege-escalation path
+            needs: [Role, ClusterRole]
+            holds: >-
+              no Role or ClusterRole in this input grants escalate, bind or impersonate; reads Secrets other than
+              by get on named ones; creates pods/exec or pods/attach; names nodes/proxy; creates or changes
+              workloads; patches ephemeral containers; creates PersistentVolumes; or writes ControllerRevisions.
+              That list is the whole of what KN-S017 reads, and a role not in this input was not read
+            rules: [KN-S017]
+          - id: no-long-lived-token-secret
+            title: A Secret is here, and none of them is a long-lived ServiceAccount token
+            # Last of the observable hops on purpose. Measured (G401): with no Secret in the input KN-S027
+            # abstains, from a directory too, so this hop stops the walk -- and a bundle whose Secrets live in
+            # an external store has none. Placed second, where the credential belongs in the telling, it would
+            # stop most walks before a single RBAC hop was read.
+            needs: [Secret]
+            holds: >-
+              no Secret in this input has type kubernetes.io/service-account-token, the legacy kind that holds
+              a token which never expires. KN-S027 reads the Secrets that are here; one that lives only in the
+              cluster is not in a manifest
+            rules: [KN-S027]
+          - id: the-api-server-authorizes-the-request
+            title: The API server authorizes the request
+            observable: false
+            holds: >-
+              the authorizer chain decides each request from the bindings and roles in the live cluster --
+              built-in and aggregated ClusterRoles, bindings made in other namespaces, webhook and node
+              authorizers. That is cluster state and no manifest here records it, so kube-noob does not check it
+              and does not count it as passed.
   - id: kubernetes
     title: Kubernetes foundations
     summary: Workloads, services, storage, security context, probes, resources, RBAC, NetworkPolicy, debugging.

@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 18 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 19 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -80,6 +80,28 @@ lesson marked `observable: false` hop by hop printed exactly that at exit `0` --
 that checked nothing (G395). A hop's **title** is also held to what its rules decide: the network lesson's
 policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
 an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
+
+### RBAC and ServiceAccounts
+
+```
+kube-noob learn mechanism mech-sec-rbac-and-serviceaccounts -f ./manifests
+```
+
+Six hops a manifest can answer for, and one it cannot: no pod spec leaves the automatic token mount on (KN-S014),
+no binding names everyone (KN-S028) or the `cluster-admin` role (KN-S016), no Role or ClusterRole uses a wildcard
+(KN-S015) or carries a grant KN-S017 lists as an escalation path, no Secret is a long-lived ServiceAccount token
+(KN-S027) -- and then the API server authorizes the request, which is **not checked**, because the authorizer
+chain and the roles of the live cluster are not in a manifest.
+
+Read the titles literally. Each rule reads every object of its kind **in the input**; none of them joins a pod
+to its ServiceAccount, a ServiceAccount to its bindings, or a binding to the role it names. A binding to the
+built-in `admin` ClusterRole, which no manifest carries, leaves the Role hops holding on the roles that are
+here and saying so -- the walk never states what a ServiceAccount can do. And every one of these rules was
+measured on an input without its object before a hop was written (G401): five abstain, so a bundle with no
+binding, no Role or no Secret **stops** at that hop; the sixth, KN-S014, fires on a pod whose ServiceAccount
+was never passed, so its hop needs a ServiceAccount in the input and is `cannot judge` without one. The Secret
+hop is last for that reason: a bundle whose Secrets live in an external store has none, and placed earlier it
+would stop the walk before any RBAC hop was read.
 
 ## What kube-noob remembers
 
