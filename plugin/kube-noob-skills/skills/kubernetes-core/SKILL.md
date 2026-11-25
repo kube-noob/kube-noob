@@ -139,13 +139,15 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | Command | Exit code | Verdict in | Not evaluated in |
 |---|---|---|---|
 | `search` | always `0`; no results is "not in the local knowledge" | `results`, `howToCite` | |
-| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
-| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
+| `audit` | `0`, or `1` for a finding at or above `--fail-on` (default high) or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings`, `redTeam` | `assumptions`, `unreadable`, `controlSummary`, `notEvaluated?` |
+| `validate` | `0`, or `1` for a HIGH or CRITICAL finding or an undetermined verdict; `4` when a named input could not be read; `5` when a directory input held a file that could not be read, so nothing was answered about the rest | `summary`, `findings` | `assumptions`, `controlSummary`, `notEvaluated?` |
 | `learn tracks` | always `0` | `tracks` | |
 | `learn lesson` | always `0` | `content`, `keyPoints` | |
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
+| `learn mechanism` | `0` when every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, or a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1` | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
 audit it before commenting and quote the rule ids and line numbers. For "is this API removed in version X?", validate
