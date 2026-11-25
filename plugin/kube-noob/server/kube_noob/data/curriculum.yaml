@@ -71,6 +71,18 @@ tracks:
             needs: [Ingress]
             holds: an Ingress is here and the rules that read it found nothing wrong
             rules: [KN-N003, KN-N009, KN-N011, KN-V019]
+          - id: edge-names-a-service-here
+            title: The Ingress routes to a Service that is here, on a port it serves
+            # The link between the edge and the Service, which nothing read (G405): the two hops either side of
+            # this one were adjacent, and an Ingress routing to a Service that does not exist walked complete.
+            # `needs` is the Ingress alone. A missing Service is not a stop of its own: on a whole namespace
+            # KN-V024 fires on it, and on a fragment the rule says it had nothing to judge and the hop stops.
+            # `reads` adds Service, so one that is HERE and that nothing could read (a Knative Service) stops it.
+            needs: [Ingress]
+            reads: [Ingress, Service]
+            holds: every Service an Ingress backend names is a Service in this namespace, and the port the
+              backend names is one that Service serves
+            rules: [KN-V024]
           - id: service-selects-pods
             title: The Service finds pods to send it to
             needs: [Service]

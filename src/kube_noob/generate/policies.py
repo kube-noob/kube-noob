@@ -395,6 +395,8 @@ NOT_GENERATED: dict[str, str] = {
     "decides it",
     "KN-V023": "needs the containerPorts the Service's selected pods declare (other objects), and the mismatch is "
     "advisory rather than a refusal; `kube-noob audit` checks the bundle",
+    "KN-V024": "needs the Service the Ingress names and the ports it serves (another object); `kube-noob audit` "
+    "checks the bundle",
     "KN-V020": "the API server refuses a claim name the Pod does not declare itself",
     "KN-V021": "the API server refuses a claim entry with neither or both sources itself",
     "KN-V022": "the API server forbids pod-level resources.claims itself",

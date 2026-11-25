@@ -938,7 +938,8 @@ def _s041(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 #:   FailedToRetrieveImagePullSecret and tries the pull anonymously, which succeeds for a public image. It is
 #:   also KN-C013's subject, and two rules on one field would be two answers. KN-C013 owns it.
 #: * **A Service named by an Ingress backend, a ServiceAccount named by a RoleBinding subject** -- not a pod
-#:   spec, so not this rule's subject. KN-V011 and KN-N009 are the places for those.
+#:   spec, so not this rule's subject. KN-V024, at the end of this module, reads the Ingress backend (G405);
+#:   this line used to send it to "KN-V011 and KN-N009", neither of which asks. No rule reads the RoleBinding one.
 _DANGLE_KINDS: tuple[str, ...] = ("ConfigMap", "PersistentVolumeClaim", "Secret", "ServiceAccount")
 
 #: How a volume names one: the volume key, the kind, and the field inside it that carries the name. `secret`
@@ -1121,3 +1122,152 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             "created outside the bundle (a secrets operator, cert-manager, a provisioner, by hand) and its absence "
             "is not evidence",
         )
+
+
+# =====================================================================================================
+# VALIDATE - the edge names a Service that is here (KN-V024, G405)
+# =====================================================================================================
+# Here for the reason KN-C017 is: `rules.py` has under 2 KiB left under the plugin directory's per-file limit.
+#
+# An Ingress routes to a Service by NAME, in its own namespace, on a port the Service must serve. No rule read
+# that link: KN-N003, KN-N009, KN-N011 and KN-V019 read the Ingress alone, KN-V011 and KN-V012 read the Service
+# against its pods, and the comment above KN-C017 that sent this question to "KN-V011 and KN-N009" named two
+# rules that do not ask it. So the mechanism walk drew `edge-admits` and `service-selects-pods` as adjacent
+# hops with nothing between them, and an Ingress routing to a Service that does not exist -- or to port 9999
+# of one that serves 8080 -- walked "A request finds your Pod" complete at exit 0. The request gets a 503.
+#
+# The discipline is KN-C017's, for the reason G396 learned the hard way:
+#
+# * A port is judged whenever the Service IS in the input, fragment or not: both objects are in front of the
+#   rule, so nothing rests on an absence.
+# * A missing Service is judged only where the input is the whole namespace (`partial_bundle` false) AND the
+#   namespace defines at least one Service. A fragment cannot show an absence; and a namespace that commits an
+#   Ingress and no Service at all has its Services made elsewhere (a chart, an operator), so a name it gives
+#   is not evidence either. Both are recorded as nothing to judge, never as clean.
+# * A Service of that name the rules refused to read (a Knative `Service`) is not an absent one (G368).
+_NOT_A_SERVICE = (
+    "an Ingress backend here is not a Service (a `resource` backend, or none), so there is no Service to look for"
+)
+_FRAGMENT = (
+    "part of a namespace was passed, so a Service an Ingress names that is in a file you did not pass is not an "
+    "absent one"
+)
+_NO_SERVICES_THERE = (
+    "an Ingress's namespace defines no Service in this input, so a Service it names may be created outside the "
+    "bundle and its absence is not evidence"
+)
+_NO_PORTS = "a Service an Ingress names declares no ports in this input, so the port the Ingress names was not compared"
+_NO_PORT_NAMED = "an Ingress backend names no port that can be read (neither a number nor a name)"
+
+
+def _ingress_backends(doc: Document) -> Iterator[tuple[Any, PathT]]:
+    """Every backend this Ingress routes to, with its path: the default backend, then each rule's paths."""
+    spec = doc.data.get("spec") if isinstance(doc.data, dict) else None
+    if not isinstance(spec, dict):
+        return
+    if spec.get("defaultBackend") is not None:
+        yield spec["defaultBackend"], ("spec", "defaultBackend")
+    rules = spec.get("rules")
+    if not isinstance(rules, list):
+        return
+    for i, entry in enumerate(rules):
+        paths = get_path(entry, ("http", "paths")) if isinstance(entry, dict) else None
+        if not isinstance(paths, list):
+            continue
+        for j, item in enumerate(paths):
+            if isinstance(item, dict):
+                yield item.get("backend"), ("spec", "rules", i, "http", "paths", j, "backend")
+
+
+def _service_ports(services: list[Document]) -> tuple[set[int], set[str]]:
+    """The port numbers and port names these Services serve (several only when the bundle repeats a name)."""
+    numbers: set[int] = set()
+    names: set[str] = set()
+    for svc in services:
+        ports = get_path(svc.data, ("spec", "ports"))
+        for port in ports if isinstance(ports, list) else ():
+            if not isinstance(port, dict):
+                continue
+            if type(port.get("port")) is int:
+                numbers.add(port["port"])
+            if isinstance(port.get("name"), str) and port["name"]:
+                names.add(port["name"])
+    return numbers, names
+
+
+@rule(
+    "KN-V024",
+    "Ingress routes to a Service that is not in its namespace, or to a port it does not serve",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.MEDIUM,
+    "Point the backend at a Service that exists in the Ingress's own namespace, on a port number or port name "
+    "that Service declares under spec.ports.",
+    "An Ingress backend names a Service in the Ingress's own namespace and one of that Service's ports. If the "
+    "Service is not there, or does not serve that port, the controller has nowhere to send the request and "
+    "answers 503. The port is judged whenever the Service is in the input. A missing Service is judged only "
+    "where a whole namespace was passed and that namespace defines at least one Service: a fragment cannot show "
+    "an absence, and a namespace that commits no Service has them made elsewhere.",
+    subjects=("Ingress", "Service"),
+)
+def _v024(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    here: dict[tuple[str, str], list[Document]] = {}
+    managed: set[str] = set()
+    for svc in ctx.by_kind("Service"):
+        managed.add(ctx.ns(svc))
+        if svc.name:
+            here.setdefault((ctx.ns(svc), svc.name), []).append(svc)
+    for ing in ctx.by_kind("Ingress"):
+        ns = ctx.ns(ing)
+        backends = list(_ingress_backends(ing))
+        if not backends:
+            ctx.nothing_to_judge(r.rule_id, _NOT_A_SERVICE)
+        for backend, path in backends:
+            ref = backend.get("service") if isinstance(backend, dict) else None
+            name = ref.get("name") if isinstance(ref, dict) else None
+            if not isinstance(ref, dict) or not isinstance(name, str) or not name:
+                ctx.nothing_to_judge(r.rule_id, _NOT_A_SERVICE)
+                continue
+            found = here.get((ns, name))
+            if not found:
+                if ctx.partial_bundle:
+                    ctx.nothing_to_judge(r.rule_id, _FRAGMENT)
+                elif ns not in managed:
+                    ctx.nothing_to_judge(r.rule_id, _NO_SERVICES_THERE)
+                elif not ctx.cannot_judge_absence(
+                    r.rule_id, "Service", namespace=ns, name=name, suppresses_finding=True
+                ):
+                    shown = sorted(n for (space, n) in here if space == ns)
+                    more = f" and {len(shown) - 3} more" if len(shown) > 3 else ""
+                    yield r.finding(
+                        ing,
+                        (*path, "service", "name"),
+                        f"Backend names the Service {name!r}, which nothing in this bundle defines in namespace "
+                        f"{ns}, though it defines {', '.join(repr(n) for n in shown[:3])}{more} there. Unless "
+                        "something outside this bundle creates it, requests to this backend get a 503.",
+                    )
+                continue
+            port = ref.get("port")
+            number = port.get("number") if isinstance(port, dict) else None
+            port_name = port.get("name") if isinstance(port, dict) else None
+            numbers, names = _service_ports(found)
+            if not numbers and not names:
+                ctx.nothing_to_judge(r.rule_id, _NO_PORTS)
+            elif type(number) is int:
+                if number not in numbers:
+                    yield r.finding(
+                        ing,
+                        (*path, "service", "port", "number"),
+                        f"Backend names port {number} of the Service {name!r}, which serves "
+                        f"{', '.join(str(n) for n in sorted(numbers)) or 'no numbered port'}.",
+                    )
+            elif isinstance(port_name, str) and port_name:
+                if port_name not in names:
+                    yield r.finding(
+                        ing,
+                        (*path, "service", "port", "name"),
+                        f"Backend names the port {port_name!r} of the Service {name!r}, whose named ports are "
+                        f"{', '.join(repr(n) for n in sorted(names)) or 'none'}.",
+                    )
+            else:
+                ctx.nothing_to_judge(r.rule_id, _NO_PORT_NAMED)

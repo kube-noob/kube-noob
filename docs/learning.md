@@ -71,6 +71,13 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
 work -- so a walk that finds one and then stops is `1`, with the stop named beside it, not `5` (G400).
 
+**The network lesson follows the Ingress to its Service.** Its second hop asks whether every Service an Ingress
+backend names is in the namespace, and serves the port the backend names (KN-V024). An Ingress routing to a
+Service that is not there, or to port 9999 of one that serves 8080, is BROKEN at that hop when a whole namespace
+was passed; on a fragment the missing Service may be in another file, so the hop says **cannot judge**. Before
+this hop existed the walk went from "there is an Ingress" straight to "the Service finds pods", and an Ingress
+pointing at nothing walked complete (G405).
+
 **A walk judges one namespace, and names it.** A path runs inside a namespace: an Ingress routes to a Service of
 its own namespace, and a Service selects pods of its own. The second line of the text view says
 `namespace judged: 'shop'`, and the JSON carries `namespaces`. When the objects the path reads are in more than

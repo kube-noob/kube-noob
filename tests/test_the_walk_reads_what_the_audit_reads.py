@@ -287,9 +287,13 @@ def test_a_hop_does_not_hold_on_an_object_with_a_duplicate_key(tmp_path: Path) -
     assert DUPLICATE_KEY.count("  selector:") == 3, "the edit did not apply"
     assert _audit_exit(tmp_path, DUPLICATE_KEY) == 1
     walked = _walk(DUPLICATE_KEY)
-    hop = _by_id(walked)["service-selects-pods"]
+    # The first hop that READS the Service, which since G405 is the one that follows the Ingress to it. Before
+    # that hop existed this stopped one later, at `service-selects-pods`, the hop the report measured it on.
+    hop = _by_id(walked)["edge-names-a-service-here"]
     assert hop["verdict"] == M.CANNOT_JUDGE and "KN-V018" in hop["why"], hop
+    assert [f["resource"] for f in hop["findings"]] == ["Service/shop/orders-api"]
     assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5)
+    assert "service-selects-pods" not in _by_id(walked), "the Service hop was drawn over a malformed Service"
 
 
 def test_a_schema_finding_from_the_hops_own_rule_is_still_a_verdict() -> None:
@@ -571,3 +575,135 @@ def test_every_shipped_hop_names_what_it_reads_and_every_absent_rule_is_one_of_i
             assert set(step.absent) <= set(step.rules) <= set(RULES), (lesson["id"], step.id)
     declared = {r for lesson in lessons for raw in lesson["steps"] for r in raw.get("absent") or ()}
     assert declared == {"KN-C007", "KN-V011", "KN-N012"}, "a new `absent` rule needs its own fragment case above"
+
+
+# --- G405 (M2): the Ingress -> Service link, which nothing read ------------------------------------------------
+
+LINK = "edge-names-a-service-here"
+GHOST = FIXTURE.replace("                name: orders-api\n", "                name: ghost\n")
+WRONG_PORT = FIXTURE.replace("                  number: 8080", "                  number: 9999")
+NAMED_PORT = FIXTURE.replace("                  number: 8080", "                  name: http")
+WRONG_NAME = FIXTURE.replace("                  number: 8080", "                  name: grpc")
+SECOND_PATH = FIXTURE.replace(
+    "          - path: /\n",
+    "          - path: /old\n"
+    "            pathType: Prefix\n"
+    "            backend: {service: {name: ghost, port: {number: 8080}}}\n"
+    "          - path: /\n",
+)
+DEFAULT_BACKEND = FIXTURE.replace(
+    "  rules:\n    - host: shop.example.com",
+    "  defaultBackend: {service: {name: ghost, port: {number: 8080}}}\n  rules:\n    - host: shop.example.com",
+)
+RESOURCE_BACKEND = FIXTURE.replace(
+    "            backend:\n"
+    "              service:\n"
+    "                name: orders-api\n"
+    "                port:\n"
+    "                  number: 8080\n",
+    "            backend:\n              resource: {apiGroup: k8s.example.com, kind: StorageBucket, name: assets}\n",
+)
+
+
+def _v024(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [f for f in report["findings"] if f["ruleId"] == "KN-V024"]
+
+
+@pytest.mark.parametrize(
+    ("manifests", "says"),
+    [
+        (GHOST, "'ghost'"),
+        (WRONG_PORT, "9999"),
+        (WRONG_NAME, "'grpc'"),
+        (SECOND_PATH, "'ghost'"),
+        (DEFAULT_BACKEND, "'ghost'"),
+    ],
+    ids=["no-such-service", "a-port-it-does-not-serve", "a-port-name-it-does-not-have", "one-path-of-two", "default"],
+)
+def test_an_ingress_routing_to_nothing_does_not_find_the_pod(manifests: str, says: str) -> None:
+    """Each of these walked "A request finds your Pod" complete at exit 0. The request gets a 503."""
+    assert manifests != FIXTURE, "the edit did not apply"
+    walked = _walk(manifests)
+    hop = _by_id(walked)[LINK]
+    assert hop["verdict"] == M.FAILS, hop
+    assert [f["ruleId"] for f in hop["findings"]] == ["KN-V024"]
+    assert (walked["verdict"], walked["exitCode"]) == ("broken", 1)
+    found = _v024(_report(manifests))
+    assert len(found) == 1 and says in found[0]["message"], found
+    assert found[0]["resource"] == "Ingress/shop/shop"
+
+
+def test_the_link_holds_by_number_and_by_name() -> None:
+    for manifests in (FIXTURE, NAMED_PORT):
+        walked = _walk(manifests)
+        assert _by_id(walked)[LINK]["verdict"] == M.HOLDS, walked["steps"]
+        assert (walked["verdict"], walked["exitCode"]) == ("complete", 0)
+    assert NAMED_PORT != FIXTURE
+
+
+def test_a_service_in_a_file_nobody_passed_is_not_a_missing_one() -> None:
+    """On a fragment the absence is not evidence: no finding, never clean, and the hop is not judged."""
+    report = _report(GHOST, partial=True)
+    assert _v024(report) == []
+    assert "part of a namespace was passed" in report["notEvaluated"]["KN-V024"]
+    walked = M.walk(_lesson(NET), report, partial_bundle=True)
+    assert _by_id(walked)[LINK]["verdict"] == M.CANNOT_JUDGE
+    assert (walked["verdict"], walked["exitCode"], walked["stoppedAt"]) == ("stopped", 5, LINK)
+
+
+def test_a_wrong_port_is_judged_on_a_fragment_because_both_objects_are_there() -> None:
+    """The neighbouring input: nothing here rests on an absence, so a fragment does not excuse it."""
+    report = _report(WRONG_PORT, partial=True)
+    assert len(_v024(report)) == 1
+    walked = M.walk(_lesson(NET), report, partial_bundle=True)
+    assert _by_id(walked)[LINK]["verdict"] == M.FAILS and walked["exitCode"] == 1
+
+
+def test_a_namespace_that_defines_no_service_is_not_evidence_that_one_is_missing() -> None:
+    """KN-C017's discipline (G396): an Ingress whose namespace commits no Service has them made elsewhere."""
+    d = _docs()
+    edge = d["Ingress"].replace("namespace: shop", "namespace: edge")
+    report = _report("\n---\n".join([edge, d["Service"], d["Deployment"], d["NetworkPolicy"]]))
+    assert _v024(report) == []
+    assert "defines no Service" in report["notEvaluated"]["KN-V024"]
+    walked = M.walk(_lesson(NET), report)
+    assert walked["exitCode"] == 5 and walked["namespaces"] == ["edge", "shop"]
+
+
+def test_a_backend_that_is_not_a_service_is_not_judged_and_not_clean() -> None:
+    report = _report(RESOURCE_BACKEND)
+    assert _v024(report) == []
+    assert "not a Service" in report["notEvaluated"]["KN-V024"]
+    walked = M.walk(_lesson(NET), report)
+    assert _by_id(walked)[LINK]["verdict"] == M.CANNOT_JUDGE and walked["exitCode"] == 5
+
+
+def test_a_service_of_that_name_nothing_could_read_is_not_an_absent_one() -> None:
+    """A Knative `Service` named `ghost` is HERE. "Nothing in this bundle defines it" would be false (G368)."""
+    knative = (
+        "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: {name: ghost, namespace: shop}\n"
+        "spec: {template: {spec: {containers: [{image: registry.example.com/g@sha256:" + "4" * 64 + "}]}}}\n"
+    )
+    report = _report(GHOST + "\n---\n" + knative)
+    assert _v024(report) == []
+    walked = M.walk(_lesson(NET), report)
+    assert walked["exitCode"] == 5
+    assert not [s for s in walked["steps"] if s["step"] == LINK and s["verdict"] == M.HOLDS]
+
+
+def test_an_ingress_with_no_service_in_the_input_at_all_stops_at_the_link() -> None:
+    d = _docs()
+    walked = _walk("\n---\n".join([d["Ingress"], d["Deployment"], d["NetworkPolicy"]]))
+    assert (walked["stoppedAt"], walked["exitCode"]) == (LINK, 5)
+    assert "no" in _by_id(walked)[LINK]["why"] and "Service" in _by_id(walked)[LINK]["why"]
+
+
+def test_the_command_says_broken_and_exits_one_on_the_reports_two_cases(tmp_path: Path) -> None:
+    for name, manifests in (("ghost", GHOST), ("port", WRONG_PORT)):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "b.yaml").write_text(manifests, encoding="utf-8")
+        done = _cli(NET, folder)
+        assert done.returncode == 1, done.stdout + done.stderr
+        assert "2. [BROKEN] The Ingress routes to a Service that is here, on a port it serves" in done.stdout
+        assert "every observable hop on this path holds" not in done.stdout
