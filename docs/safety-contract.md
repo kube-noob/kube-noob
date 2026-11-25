@@ -346,6 +346,7 @@ Where it is applied (found in the code):
 - `kube_noob/knowledge_status.py` `_corpus_as_of` calls `sanitize.loads_bounded`
 - `kube_noob/known_issues.py` `_read_parts` calls `sanitize.loads_bounded`
 - `kube_noob/kyverno_migrate.py` `_header` calls `sanitize.visible`
+- `kube_noob/learn/mechanism.py` `_line` calls `sanitize.one_line`
 - `kube_noob/memory/importers.py` `parse` calls `sanitize.loads_bounded`
 - `kube_noob/memory/model.py` `Command._one_clean_line` calls `sanitize.has_invisible`
 - `kube_noob/memory/replay.py` `markdown` calls `sanitize.visible_lines`
