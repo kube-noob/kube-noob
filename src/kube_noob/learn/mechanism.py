@@ -59,6 +59,22 @@ What the walk still may do, on purpose: answer `complete` at 0 where `audit` exi
 something other than this path -- a missing `seccompProfile`, a `latest` tag. The walk answers for one path, and
 the audit's exit code answers for `--fail-on`.
 
+**A fragment cannot show that something is missing (G408).** `partial_bundle` says the input is part of a
+namespace. Most rules that fire on an ABSENT object decline there themselves (KN-N001, KN-C008), and the hop says
+`cannot judge` through their `notEvaluated` entry. Three do not, because for `audit` their finding is a true
+sentence about the objects in front of it -- "this Deployment runs 1 replica", "no pod template in this input
+matches" -- and silencing them on every single-file audit would cost more than it saves: KN-C007 (excused by an
+autoscaler that may be in another file), KN-V011 and KN-N012 (the pod they look for may be in another file). The
+walk makes a stronger claim than the audit does -- BROKEN is a verdict about the PATH -- so it does not promote
+such a finding to that verdict on a fragment. A lesson names those rules per hop (`absent:`), and on a fragment
+a hop whose every finding is from one of them is `cannot judge`, with the findings still listed under it. A
+finding from any other rule on the hop is BROKEN as before, fragment or not.
+
+**A hop that names nothing to read holds on nothing (G408).** An observable hop must name at least one kind, in
+`needs` or `reads`: a hop with neither could hold against an empty report, where no rule ran and so no rule is
+listed as unevaluated. `walk` refuses such a lesson, and independently never holds a hop over a report that
+lists no object at all.
+
 The verdict obeys the same rule one level up: a walk that judged NO hop reached no verdict about the path, so it
 is `stopped` at exit 5 however many hops it drew. "Every observable hop on this path holds" is vacuously true of
 a path with no observable hops, and a lesson whose every hop was `observable: false` printed it at exit 0 (G395).
@@ -101,10 +117,23 @@ class Step:
     #: NetworkPolicy that is HERE and that nothing could read leaves the hop unjudged. Defaults to `needs`.
     reads: tuple[str, ...] = ()
     rules: tuple[str, ...] = ()
+    #: The rules among `rules` whose FINDING rests on an object that is not in the input: an autoscaler nobody
+    #: passed, a pod template in another file. On a fragment such a finding cannot make the hop BROKEN (G408).
+    absent: tuple[str, ...] = ()
     observable: bool = True
 
     @classmethod
     def load(cls, raw: dict[str, Any]) -> Step:
+        absent = tuple(str(r) for r in raw.get("absent") or ())
+        stray = sorted(set(absent) - {str(r) for r in raw.get("rules") or ()})
+        if stray:
+            raise ValueError(f"step {raw.get('id')!r} lists {', '.join(stray)} under `absent` and not under `rules`")
+        if raw.get("observable", True) and not (raw.get("needs") or raw.get("reads")):
+            # A hop that reads no kind cannot say what it read, and held against an empty report (G408).
+            raise ValueError(
+                f"step {raw.get('id')!r} is observable and names no kind in `needs` or `reads`, so nothing "
+                "would show it was read"
+            )
         return cls(
             id=str(raw["id"]),
             title=str(raw["title"]),
@@ -112,6 +141,7 @@ class Step:
             needs=tuple(str(k) for k in raw.get("needs") or ()),
             reads=tuple(str(k) for k in raw.get("reads") or raw.get("needs") or ()),
             rules=tuple(str(r) for r in raw.get("rules") or ()),
+            absent=absent,
             observable=bool(raw.get("observable", True)),
         )
 
@@ -173,8 +203,12 @@ def _namespace_of(resource: str) -> str:
     return parts[1] if len(parts) == 3 else NO_NAMESPACE
 
 
-def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
-    """The lesson's path against one report, stopping at the first hop that cannot be judged."""
+def walk(lesson: dict[str, Any], report: dict[str, Any], partial_bundle: bool = False) -> dict[str, Any]:
+    """The lesson's path against one report, stopping at the first hop that cannot be judged.
+
+    ``partial_bundle`` is what the caller told `analyze` about the same input: these documents are part of a
+    namespace. It is passed and not read from the report, which records it only as a sentence for a person.
+    """
     steps = [Step.load(s) for s in lesson.get("steps") or ()]
     if not steps:
         raise ValueError(f"{lesson.get('id')!r} declares no steps, so there is no path to walk")
@@ -276,6 +310,13 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
             results.append(StepResult(step, CANNOT_JUDGE, f"no {kinds} in the input, so this hop was not judged"))
             continue
 
+        if not here:
+            # No object at all: `analyze` returns before any rule runs, so `notEvaluated` is empty too and
+            # every rule would read as silent. A hop with no `needs` reached `holds` from here (G408).
+            stopped_at = step.id
+            results.append(StepResult(step, CANNOT_JUDGE, "the input holds no object, so no rule read anything"))
+            continue
+
         blind = [r for r in step.rules if r in unevaluated]
         if blind and not any(r in by_rule for r in step.rules):
             # Every rule this hop rests on reached no verdict, so the hop has nothing behind it. A rule that
@@ -293,6 +334,24 @@ def walk(lesson: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
             continue
 
         hits = [f for r in step.rules for f in by_rule.get(r, ())]
+        if hits and partial_bundle and all(str(f.get("ruleId")) in step.absent for f in hits):
+            # Every finding on this hop is from a rule that fires on what is NOT in the input, and the input is
+            # a fragment: the autoscaler, or the pod the Service selects, may be in the file nobody pasted. The
+            # findings are shown, and the hop is not called BROKEN on evidence that cannot say so (G408).
+            stopped_at = step.id
+            ids = ", ".join(sorted({str(f.get("ruleId")) for f in hits}))
+            results.append(
+                StepResult(
+                    step,
+                    CANNOT_JUDGE,
+                    f"{ids} found something, and it rests on an object that is not in this input; part of a "
+                    "namespace was passed, so the input cannot show that object is missing -- pass the whole "
+                    "namespace (a directory, or partial_bundle=false) for a verdict on this hop",
+                    tuple(hits),
+                    tuple(present),
+                )
+            )
+            continue
         if hits:
             ids = ", ".join(sorted({str(f.get("ruleId")) for f in hits}))
             results.append(StepResult(step, FAILS, f"{ids} found something on this hop", tuple(hits), tuple(present)))

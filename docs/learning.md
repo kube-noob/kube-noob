@@ -92,6 +92,14 @@ rule on the hop reports (G406):
 A walk can still be `complete` where `audit` exits `1` on a finding that is not about this path -- an image tag,
 a missing `seccompProfile`. The walk answers for one path.
 
+**One file is a fragment, and a fragment cannot show that something is missing.** Pass a directory and the walk
+takes it to be the whole namespace; pass one file (or paste text into the `learn_mechanism` tool without
+`partial_bundle: false`) and it is part of one. A hop whose only findings rest on an object that is *not* in the
+input -- no autoscaler holding a single replica at two, no pod the Service or the NetworkPolicy selects -- then
+says **cannot judge** and lists the finding under it, instead of BROKEN: the object may be in the file you did
+not pass. The same bytes in a directory are BROKEN. `kube-noob audit` on one file still reports those findings;
+only the walk's verdict about the path is withheld (G408).
+
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
 holds. kube-noob does not claim to have checked something it cannot see, in a lesson any more than in an audit.

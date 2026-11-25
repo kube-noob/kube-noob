@@ -28,6 +28,9 @@ tracks:
             holds: every Deployment, StatefulSet and ReplicaSet here declares two or more replicas, or is scaled by
               an autoscaler whose own floor is two or more -- so losing one replica is not losing all of it
             rules: [KN-C007]
+            # KN-C007 is excused by an autoscaler, and on a fragment the autoscaler may be in a file nobody
+            # passed: the walk then lists the finding and does not call the hop BROKEN (G408).
+            absent: [KN-C007]
           - id: replicas-can-land-apart
             title: A workload with replicas to spread asks for them spread
             needs: [Deployment, StatefulSet, ReplicaSet]
@@ -74,6 +77,8 @@ tracks:
             holds: the Service selects at least one pod in this bundle, and no named targetPort it uses is missing
               from the selected containers
             rules: [KN-V011, KN-V012, KN-N008]
+            # "matches no pod template in this input": on a fragment the pod may be in another file (G408).
+            absent: [KN-V011]
           - id: workload-selects-its-own-pods
             title: The workload owns the pods it selects
             needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
@@ -88,6 +93,9 @@ tracks:
             reads: [NetworkPolicy]
             holds: the namespace has a NetworkPolicy, and none of them is an allow-all or selects nothing
             rules: [KN-N001, KN-N007, KN-N012]
+            # KN-N001 declines on a fragment by itself. KN-N012 ("selects none of the pod templates here") does
+            # not, and the pod it would select may be in another file (G408).
+            absent: [KN-N012]
           - id: pod-reports-ready
             title: The containers declare a readiness probe
             needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]

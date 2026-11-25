@@ -426,3 +426,148 @@ def test_a_budget_is_not_measured_against_a_replica_count_nobody_could_read() ->
     report = _report(strict)
     assert not [f for f in report["findings"] if f["ruleId"] == "KN-C009"]
     assert "not an integer" in report["notEvaluated"]["KN-C009"]
+
+
+# --- G408 (M6, and the hop that names nothing to read): a fragment cannot show that something is missing --------
+
+SINGLE = NODE_OK.split("---", maxsplit=1)[0].replace("replicas: 2", "replicas: 1")
+WRONG_SELECTOR = FIXTURE.replace(SELECTOR, "  selector:\n    app: someone-else\n  ports:")
+INERT_POLICY = FIXTURE.replace(
+    "  podSelector:\n    matchLabels:\n      app: orders-api",
+    "  podSelector:\n    matchLabels:\n      app: someone-else",
+)
+
+
+def _kit(tmp_path: Path) -> Any:
+    from kube_noob import toolkit as tk
+    from kube_noob.config import load_settings
+
+    return tk.Toolkit(load_settings(overrides={"offline": True, "dataDir": str(tmp_path / "data")}))
+
+
+def _tool(tmp_path: Path, lesson_id: str, manifests: str, **kw: Any) -> dict[str, Any]:
+    from kube_noob import toolkit as tk
+
+    return _kit(tmp_path).mechanism(tk.MechanismIn(mechanism_id=lesson_id, manifests=manifests, **kw))
+
+
+@pytest.mark.parametrize(
+    ("lesson_id", "manifests", "step", "rule"),
+    [
+        (NODE, SINGLE, "more-than-one-replica", "KN-C007"),
+        (NET, WRONG_SELECTOR, "service-selects-pods", "KN-V011"),
+        (NET, INERT_POLICY, "policy-admits-the-packet", "KN-N012"),
+    ],
+    ids=["no-autoscaler-pasted", "no-matching-pod-pasted", "no-selected-pod-pasted"],
+)
+def test_a_fragment_is_not_called_broken_on_an_object_it_does_not_hold(
+    lesson_id: str, manifests: str, step: str, rule: str, tmp_path: Path
+) -> None:
+    """`MechanismIn.partial_bundle` promised this and the walk did the opposite for three rules.
+
+    The autoscaler that excuses one replica, and the pod a Service or a NetworkPolicy selects, may be in the
+    file nobody pasted. The finding is still shown; it is not read as a verdict about the namespace.
+    """
+    assert manifests not in (FIXTURE, NODE_OK), "the edit did not apply"
+    fragment = _tool(tmp_path, lesson_id, manifests)  # partial_bundle defaults to True
+    hop = _by_id(fragment)[step]
+    assert hop["verdict"] == M.CANNOT_JUDGE, hop
+    assert rule in hop["why"] and "part of a namespace was passed" in hop["why"]
+    assert rule in [f["ruleId"] for f in hop["findings"]], "the finding is withheld from the reader"
+    assert (fragment["verdict"], fragment["exitCode"], fragment["stoppedAt"]) == ("stopped", 5, step)
+
+    # The same bytes declared to be the whole namespace: now the absence is evidence, and the hop is BROKEN.
+    whole = _tool(tmp_path, lesson_id, manifests, partial_bundle=False)
+    assert _by_id(whole)[step]["verdict"] == M.FAILS
+    assert (whole["verdict"], whole["exitCode"]) == ("broken", 1)
+
+
+def test_one_file_through_the_command_is_a_fragment_too(tmp_path: Path) -> None:
+    one = tmp_path / "deployment.yaml"
+    one.write_text(SINGLE, encoding="utf-8")
+    done = _cli(NODE, one)
+    assert done.returncode == 5, done.stdout + done.stderr
+    assert "1. [cannot judge]" in done.stdout and "KN-C007" in done.stdout
+    assert "BROKEN" not in done.stdout
+
+    folder = tmp_path / "ns"
+    folder.mkdir()
+    (folder / "deployment.yaml").write_text(SINGLE, encoding="utf-8")
+    done = _cli(NODE, folder)
+    assert done.returncode == 1 and "1. [BROKEN]" in done.stdout, done.stdout + done.stderr
+
+
+def test_a_finding_that_rests_on_nothing_absent_is_broken_on_a_fragment_as_before() -> None:
+    """Over a hand-built lesson and report: only a hop whose EVERY finding is from an `absent` rule declines."""
+    lesson = {
+        "id": "x",
+        "title": "t",
+        "layer": "l",
+        "steps": [
+            {"id": "a", "title": "a", "needs": ["Service"], "rules": ["R-1", "R-2"], "absent": ["R-1"], "holds": "h"}
+        ],
+    }
+
+    def walked(rules: tuple[str, ...], partial: bool) -> str:
+        findings = [{"ruleId": r, "severity": "low", "resource": "Service/shop/web", "title": "t"} for r in rules]
+        report = {"resources": ["Service/shop/web"], "summary": {}, "findings": findings}
+        return str(M.walk(lesson, report, partial_bundle=partial)["steps"][0]["verdict"])
+
+    assert walked(("R-1",), True) == M.CANNOT_JUDGE
+    assert walked(("R-1",), False) == M.FAILS
+    assert walked(("R-2",), True) == M.FAILS
+    assert walked(("R-1", "R-2"), True) == M.FAILS
+    assert walked((), True) == M.HOLDS
+
+
+def test_the_field_that_promises_this_says_what_the_walk_does() -> None:
+    from kube_noob import toolkit as tk
+
+    text = str(tk.MechanismIn.model_fields["partial_bundle"].description)
+    assert "`cannot judge`" in text and "without reading it as a verdict" in text
+
+
+def _step(**kw: Any) -> dict[str, Any]:
+    return {"id": "s", "title": "t", "holds": "h", **kw}
+
+
+def test_a_hop_that_names_nothing_to_read_is_refused_and_an_empty_report_holds_nothing() -> None:
+    """`walk(lesson, {})` answered `complete`, exit 0, for a lesson whose only hop was `needs: []`."""
+    bare = {"id": "x", "title": "t", "layer": "l", "steps": [_step(needs=[], rules=["KN-N001"])]}
+    with pytest.raises(ValueError, match="names no kind"):
+        M.walk(bare, {})
+
+    reads = {
+        "id": "x",
+        "title": "t",
+        "layer": "l",
+        "steps": [_step(needs=[], reads=["NetworkPolicy"], rules=["KN-N001"])],
+    }
+    for empty in ({}, {"resources": []}, {"resources": None}):
+        walked = M.walk(reads, empty)
+        assert (walked["verdict"], walked["exitCode"]) == ("stopped", 5), empty
+        assert walked["steps"][0]["verdict"] == M.CANNOT_JUDGE
+    # With an object in the report the engine ran, its ledger is whole, and the hop is judged as before.
+    assert M.walk(reads, {"resources": ["Deployment/shop/web"]})["verdict"] == "complete"
+
+    stray = {"id": "x", "title": "t", "layer": "l", "steps": [_step(needs=["Service"], rules=["R-1"], absent=["R-9"])]}
+    with pytest.raises(ValueError, match="R-9"):
+        M.walk(stray, {})
+
+
+def test_every_shipped_hop_names_what_it_reads_and_every_absent_rule_is_one_of_its_own() -> None:
+    """The curriculum invariant: a third lesson cannot reintroduce the hop that holds on nothing."""
+    data = yaml.safe_load((ROOT / "src" / "kube_noob" / "data" / "curriculum.yaml").read_text(encoding="utf-8"))
+    lessons = [lsn for trk in data["tracks"] for lsn in trk.get("lessons") or () if lsn.get("steps")]
+    assert len(lessons) >= 2
+    from kube_noob.audit.rules import RULES
+
+    for lesson in lessons:
+        for raw in lesson["steps"]:
+            step = M.Step.load(raw)  # raises on a hop that names no kind, or a stray `absent`
+            if not step.observable:
+                continue
+            assert step.needs or step.reads, (lesson["id"], step.id)
+            assert set(step.absent) <= set(step.rules) <= set(RULES), (lesson["id"], step.id)
+    declared = {r for lesson in lessons for raw in lesson["steps"] for r in raw.get("absent") or ()}
+    assert declared == {"KN-C007", "KN-V011", "KN-N012"}, "a new `absent` rule needs its own fragment case above"
