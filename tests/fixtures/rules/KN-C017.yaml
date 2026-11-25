@@ -36,3 +36,12 @@ bad: |
       image: registry.example.com/web@sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809
       volumeMounts:
       - {name: cfg, mountPath: /etc/shop}
+  ---
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata: {name: shop, namespace: shop}
+  ---
+  apiVersion: v1
+  kind: ConfigMap
+  metadata: {name: shop-setting, namespace: shop}
+  data: {LOG_LEVEL: info}

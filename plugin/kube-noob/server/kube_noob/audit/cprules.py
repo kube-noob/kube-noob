@@ -1055,7 +1055,9 @@ def _generated_claim_names(doc: Document) -> set[str]:
     "A pod spec names a ConfigMap, Secret, PersistentVolumeClaim or ServiceAccount in its own namespace. If no "
     "such object exists the Pod never runs: a missing ServiceAccount is refused at admission, a missing claim "
     "leaves it Pending, and a missing ConfigMap or Secret leaves the container in CreateContainerConfigError or "
-    "the Pod in ContainerCreating. The failure arrives after the deploy rather than during it.",
+    "the Pod in ContainerCreating. The failure arrives after the deploy rather than during it. A kind is judged "
+    "only where the bundle defines at least one object of it in that namespace: a correct repository often "
+    "carries no Secrets (an operator or a person creates them), so a namespace that defines none is not evidence.",
     subjects=(WORKLOAD_SUBJECT,),
     context=_DANGLE_KINDS,
 )
@@ -1074,11 +1076,23 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         for d in ctx.by_kind(kind):
             if d.name:
                 present.setdefault((kind, ctx.ns(d)), set()).add(d.name)
+    #: (namespace, kind) pairs a reference needed and the bundle does not MANAGE: no object of that kind there.
+    unjudged: dict[str, set[str]] = {}
     for d, pt in ctx.workloads():
         ns = ctx.ns(d)
         generated = _generated_claim_names(d)
         for kind, name, path in _dangling_candidates(pt):
-            if name in present.get((kind, ns), set()):
+            defined = present.get((kind, ns))
+            if defined is None:
+                # The first design fired here, and the full suite answered with 98 failures, every one a correct
+                # repository (G396). A directory is the whole namespace for what people COMMIT; a correct
+                # GitOps repository commits no Secrets -- sealed-secrets, external-secrets, cert-manager or a
+                # person create them -- and often no ServiceAccounts or claims. A namespace that defines no
+                # object of a kind says nothing about whether one of a given name exists, so the kind is not
+                # judged here, and the record says so.
+                unjudged.setdefault(ns, set()).add(kind)
+                continue
+            if name in defined:
                 continue
             if kind == "PersistentVolumeClaim" and name in generated:
                 continue
@@ -1087,9 +1101,23 @@ def _c017(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             # is this text's own granularity and no wider.
             if ctx.cannot_judge_absence(r.rule_id, kind, namespace=ns, name=name, suppresses_finding=True):
                 continue
+            shown = sorted(defined)
+            more = f" and {len(shown) - 3} more" if len(shown) > 3 else ""
+            # True even where something outside the bundle creates it: the bundle manages this kind here, so
+            # the name is most often a typo of one it does define, and those are named for that reader.
             yield r.finding(
                 d,
                 path,
-                f"Pod names the {kind} {name!r}, which nothing in this bundle defines in namespace {ns}. "
-                f"The Pod will not run.",
+                f"Pod names the {kind} {name!r}, which nothing in this bundle defines in namespace {ns}, though it "
+                f"defines {', '.join(repr(n) for n in shown[:3])}{more} there. Unless something outside this "
+                f"bundle creates it, the Pod will not run.",
             )
+    if unjudged:
+        parts = [f"no {' or '.join(sorted(kinds))} in namespace {ns}" for ns, kinds in sorted(unjudged.items())]
+        more = f" and {len(parts) - 3} more namespace(s)" if len(parts) > 3 else ""
+        ctx.nothing_to_judge(
+            r.rule_id,
+            f"the bundle defines {'; '.join(parts[:3])}{more}, so a name a pod spec gives there may be an object "
+            "created outside the bundle (a secrets operator, cert-manager, a provisioner, by hand) and its absence "
+            "is not evidence",
+        )
