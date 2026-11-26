@@ -146,7 +146,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
-| `learn mechanism` | `0` when at least one hop was judged and every observable hop on the path holds; `1` when the walk reached the end and a hop is BROKEN; `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads, when it judged no hop at all, or when a directory input held a file that could not be read -- a stopped walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn mechanism` | `0` when at least one hop was judged and every observable hop on the path holds; `1` when a hop is BROKEN, including when the walk then stopped at a later hop (`stoppedAt` names it; a broken hop is a verdict about the path, so the stop is named beside it, never instead of it); `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads before finding anything broken, when it judged no hop at all, or when a directory input held a file that could not be read -- such a walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
 | `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
@@ -176,11 +176,14 @@ kube-noob learn quiz k8s-q-exit137 --choice 1 --format json
 When the user asks how something *works* rather than whether it is safe -- how a request reaches their Pod, why
 their Service has no endpoints -- walk the mechanism over their own manifests. It answers hop by hop and stops at
 the first hop it cannot judge, so the hops after it are reported as not checked, never as fine. Three answers,
-never two: `0` at least one hop was judged and every observable hop holds, `1` the walk reached the end and a hop
-is BROKEN, `5` the walk STOPPED because nothing in this build reads that hop, it judged no hop at all, or a file
+never two: `0` at least one hop was judged and every observable hop holds, `1` a hop is BROKEN, even if the walk
+then stopped at a later one, `5` the walk STOPPED before finding anything broken because nothing in this build reads that hop, it judged no hop at all, or a file
 beside the input could not be read. A `5` is not a pass and not a failure -- read `stoppedAt` and say which hop
 went unanswered, and where it is null read `verdictReason`, which is the walk that judged nothing. `learn progress` reports the credits and
-lessons recorded so far, and never writes.
+lessons recorded so far, and never writes. When the user wants to *watch* the path rather than read it, the same
+command with `--format html` writes one self-contained offline page of the same walk -- the hops drawn in order,
+an event that travels them, each hop's rules, objects and findings -- with the same exit code; read the answer
+yourself from `--format json`, never from the page.
 
 ```bash
 kube-noob learn mechanism mech-net-request-to-pod -f "$KN/app.yaml" --format json

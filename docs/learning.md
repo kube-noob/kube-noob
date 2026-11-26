@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 18 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 19 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -62,11 +62,13 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 |---|---|---|
 | every observable hop holds, and at least one hop was judged | `complete` | `0` |
 | reached the end, a hop is broken | `broken` | `1` |
-| stopped at a hop it could not judge | `stopped` | `5` |
+| found a broken hop, then stopped at a hop it could not judge | `broken`, with `stoppedAt` set | `1` |
+| stopped at a hop it could not judge, nothing broken before it | `stopped` | `5` |
 | judged no hop at all | `stopped` | `5` |
 
-`5` and `1` are not two answers to the same question: `1` says the path was walked and something on it is wrong,
-`5` says the path was not walked.
+`5` and `1` are not two answers to the same question: `1` says something on the path is wrong, `5` says the path
+was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
+work -- so a walk that finds one and then stops is `1`, with the stop named beside it, not `5` (G400).
 
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that
@@ -78,6 +80,56 @@ lesson marked `observable: false` hop by hop printed exactly that at exit `0` --
 that checked nothing (G395). A hop's **title** is also held to what its rules decide: the network lesson's
 policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
 an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
+
+### RBAC and ServiceAccounts
+
+```
+kube-noob learn mechanism mech-sec-rbac-and-serviceaccounts -f ./manifests
+```
+
+Six hops a manifest can answer for, and one it cannot: no pod spec leaves the automatic token mount on (KN-S014),
+no binding names everyone (KN-S028) or the `cluster-admin` role (KN-S016), no Role or ClusterRole uses a wildcard
+(KN-S015) or carries a grant KN-S017 lists as an escalation path, no Secret is a long-lived ServiceAccount token
+(KN-S027) -- and then the API server authorizes the request, which is **not checked**, because the authorizer
+chain and the roles of the live cluster are not in a manifest.
+
+Read the titles literally. Each rule reads every object of its kind **in the input**; none of them joins a pod
+to its ServiceAccount, a ServiceAccount to its bindings, or a binding to the role it names. A binding to the
+built-in `admin` ClusterRole, which no manifest carries, leaves the Role hops holding on the roles that are
+here and saying so -- the walk never states what a ServiceAccount can do. And every one of these rules was
+measured on an input without its object before a hop was written (G401): five abstain, so a bundle with no
+binding, no Role or no Secret **stops** at that hop; the sixth, KN-S014, fires on a pod whose ServiceAccount
+was never passed, so its hop needs a ServiceAccount in the input and is `cannot judge` without one. The Secret
+hop is last for that reason: a bundle whose Secrets live in an external store has none, and placed earlier it
+would stop the walk before any RBAC hop was read.
+
+### Watching the walk
+
+```
+kube-noob learn mechanism mech-net-request-to-pod -f ./manifests --format html > walk.html
+```
+
+`--format html` writes the same walk as one page you open in a browser: the components the lesson's hops touch,
+drawn in hop order and labelled with the objects from your own manifests; an event that travels from hop to hop
+with a caption such as `02/06  Ingress/shop/shop -> Service/shop/orders-api`; and, for the selected hop, its
+verdict, the rules it rests on, the objects it read and the findings on it. Play and pause, previous and next,
+the left and right arrow keys and space all step it, and the address ends in `#step-N` so a hop can be linked.
+
+It is a third view of the dict `--format json` prints, not a second opinion, and it keeps the walk's rules:
+
+- The exit code is the walk's, `0`, `1` or `5`, exactly as for the text and JSON views.
+- The event is drawn only for a hop a rule read. At a BROKEN hop it arrives and fails. At a hop that could not be
+  judged it stops short and the page says why. For a hop marked **not observable**, and for a hop that was **not
+  walked** because the walk stopped first, no event is drawn at all, and the page says so in those words -- the
+  state is text, not only a colour, and neither is ever shown as passing.
+- Every declared hop is on the page, including the ones after a stop, which the text view only counts.
+- The page is complete without playing it and without its script: every hop's detail is in the HTML.
+- It fetches nothing. There is no URL in the file -- no font, no image, no library -- and its
+  Content-Security-Policy forbids the browser from loading one. Names from your manifests are text on the page,
+  never markup, and the same input gives the same bytes, so the file can be attached to a review or diffed.
+
+`--format html` belongs to `learn mechanism` alone; any other command refuses it with exit `2` rather than print
+something else under that name.
 
 ## What kube-noob remembers
 

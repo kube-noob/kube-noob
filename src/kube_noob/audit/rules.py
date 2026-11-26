@@ -4651,10 +4651,13 @@ def _c007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 
 
 def _has_hpa(ctx: AuditContext, d: Document) -> bool:
+    """An HPA that keeps `d` at two replicas or more. A floor of one is not one: `minReplicas` defaults to 1 (G397)."""
     for h in ctx.by_kind("HorizontalPodAutoscaler"):
         ref = get_path(h.data, ("spec", "scaleTargetRef")) or {}
         if ref.get("name") == d.name and ref.get("kind") == d.kind and ctx.ns(h) == ctx.ns(d):
-            return True
+            low = get_path(h.data, ("spec", "minReplicas"))
+            if (low if isinstance(low, int) else 1) >= 2:
+                return True
     return False
 
 

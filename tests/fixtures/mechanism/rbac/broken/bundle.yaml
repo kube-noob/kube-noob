@@ -1,0 +1,80 @@
+# The RBAC and ServiceAccounts walk with one realistic mistake (mech-sec-rbac-and-serviceaccounts): the bundle in
+# ../complete with a second rule on the Role granting '*' on secrets. KN-S015 and KN-S017 both read it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orders-api
+  template:
+    metadata:
+      labels:
+        app: orders-api
+    spec:
+      serviceAccountName: orders
+      # The automatic mount is off; the token the app does use is asked for, short-lived and audience-bound.
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: ghcr.io/acme/orders-api:1.4.2
+          volumeMounts:
+            - name: api-token
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
+      volumes:
+        - name: api-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: api-token
+                  expirationSeconds: 3600
+                  audience: https://kubernetes.default.svc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orders-config-reader
+  namespace: shop
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["orders-config"]
+    verbs: ["get"]
+  # The mistake: the app needed to read one Secret, and it was given every verb on all of them.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orders-config-reader
+  namespace: shop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orders-config-reader
+subjects:
+  - kind: ServiceAccount
+    name: orders
+    namespace: shop
+---
+# Opaque, and empty on purpose: the values are delivered by an external store, never committed. It is here so
+# the last observable hop has a Secret to read -- with none in the input KN-S027 abstains and the walk stops.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-db
+  namespace: shop
+type: Opaque

@@ -1984,11 +1984,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument(
         "--format",
-        choices=["text", "json", "yaml", "sarif", "mermaid"],
+        choices=["text", "json", "yaml", "sarif", "mermaid", "html"],
         default=argparse.SUPPRESS,
         help="output format. `sarif` (SARIF 2.1.0) is for `audit` only: it is a format for findings, and a command "
         "with none to put in it refuses rather than print something else under that name. `mermaid` is for "
-        "`posture reach` only, for the same reason: it draws a graph",
+        "`posture reach` only, for the same reason: it draws a graph. `html` is for `learn mechanism` only: one "
+        "self-contained page that draws the walk hop by hop",
     )
     p = argparse.ArgumentParser(
         prog="kube-noob",
@@ -3565,6 +3566,17 @@ def _main(a: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if a.format == "html" and (a.cmd, getattr(a, "learn_cmd", None)) != ("learn", "mechanism"):
+        # The same refusal as `mermaid`, for the same reason: falling through would print YAML under the name, and
+        # a caller who redirected it would hold a file called .html that is not a page (G402).
+        sub = getattr(a, f"{a.cmd}_cmd", None)
+        command = f"{a.cmd} {sub}" if isinstance(sub, str) and sub else a.cmd
+        print(
+            f"error: --format html is for `kube-noob learn mechanism`; `{command}` has no walk to draw "
+            "(the gate and posture reports write a page with their own `--html PATH`)",
+            file=sys.stderr,
+        )
+        return 2
     if a.format == "sarif" and getattr(a, "oscal", False):
         print("error: --oscal and --format sarif each replace the report; ask for one document", file=sys.stderr)
         return 2
@@ -4225,6 +4237,13 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
                 return 2
             if a.format == "text":
                 print(_mech.render(walked))
+            elif a.format == "html":
+                from kube_noob.learn import mechanism_html as _mech_html
+
+                # A third view of the SAME dict, so it cannot reach a different answer; the lesson is passed only
+                # to name the hops after a stop, which `walked` counts and does not list. Written past the text
+                # boundary as a document: the page is ASCII and every value in it is already one cleaned line.
+                _write_document(_mech_html.render_html(walked, _mech.lessons().get(a.mechanism_id)))
             else:
                 _emit(walked, fmt)
             # The walk's own verdict decides, in one place, as everywhere else: 5 when it stopped and reached no
