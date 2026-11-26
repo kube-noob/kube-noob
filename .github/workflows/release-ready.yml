@@ -215,5 +215,11 @@ jobs:
             gh issue edit "${existing}" --repo "$GITHUB_REPOSITORY" --title "${title}" --body "${body}"
             echo "updated issue #${existing}"
           else
+            # `gh issue create --label` refuses a label the repository does not have, and this one had never been
+            # created: the first run of this workflow, on 2026-11-26, read every reading, wrote its answer, and
+            # exited 1 on "could not add label: 'release-ready' not found" with no issue opened (G413). Created
+            # here, as risk-review does for its own, and only on this branch -- after every reading is in.
+            gh label create release-ready --repo "$GITHUB_REPOSITORY" --color 0e8a16 \
+              --description "Weekly: is there something to release, and is main safe to release" --force >/dev/null
             gh issue create --repo "$GITHUB_REPOSITORY" --title "${title}" --label release-ready --body "${body}"
           fi
