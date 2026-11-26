@@ -37,7 +37,7 @@ smallest fix. `reach` exits 1 when denied; both say what they could not determin
 
 Also: 99 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
 must-gathers triaged into a case draft that says what could not be read; OpenShift bugs with fix versions; hardened
-manifests and admission policies; 6 tracks, 18 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
+manifests and admission policies; 6 tracks, 19 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
 exception list, and a design request runs the 7-step protocol. All of it: [use-cases.md](docs/use-cases.md).
 
 ## Who does the thinking

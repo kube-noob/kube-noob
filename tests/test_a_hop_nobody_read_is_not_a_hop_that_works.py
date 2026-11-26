@@ -302,7 +302,9 @@ def test_a_hostile_name_on_the_unread_object_reaches_the_reader_through_the_boun
     # The whole forged span sits inside ONE quoted token, so a reader can see where the name ends. The boundary
     # has already collapsed the newlines by the time the name is quoted, which is why there is no `\n` to find.
     assert "'NetworkPolicy/shop/web" in text, "the name is not quoted, so the forged text reads as our own prose"
-    assert "' is here and nothing read it:" in text, text[-500:]
+    # A hop's explanation is wrapped onto indented lines rather than cut (G411), so the phrase is read with the
+    # wrapping undone; the forged-line checks above stay on the raw text, where a newline would matter.
+    assert "' is here and nothing read it:" in " ".join(text.split()), text[-500:]
     # And the hop is still reported, with the walk stopped: the name is made safe, not dropped.
     assert "cannot judge" in text and "not walked and are not reported as working" in text
 
@@ -703,7 +705,8 @@ def test_the_readiness_hop_claims_a_declared_probe_and_not_a_running_pod(tmp_pat
 
 
 _ONE_REPLICA = _WORKLOAD % {"replicas": 1, "spread": ""}
-#: Any HPA naming this workload clears KN-C007, whatever its own `minReplicas` -- `_has_hpa` does not read it.
+#: An HPA pinned at 1..1. Until G397 any HPA naming the workload cleared KN-C007 whatever its own
+#: `minReplicas`; now a floor of one excuses nothing, and this is the input that proves it.
 _HPA_PINNED_AT_ONE = """\
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -736,7 +739,9 @@ def test_the_replica_hops_never_describe_one_unspread_replica_as_many_and_spread
     report = analyze("---\n".join((_ONE_REPLICA, _HPA_PINNED_AT_ONE, _PDB_ALLOWS_ONE)), "kubernetes", None).as_dict()
     unevaluated = report.get("notEvaluated") or {}
     fired = {f["ruleId"] for f in report.get("findings") or ()}
-    assert "KN-C007" not in unevaluated and "KN-C007" not in fired, "KN-C007 now speaks here; this test is stale"
+    # G397: KN-C007 reads the autoscaler's floor, so an HPA pinned at one no longer excuses one replica. The hop
+    # that held on this input now FAILS, which is the true answer -- one replica does not survive its node.
+    assert "KN-C007" in fired, "an HPA with a floor of one excused a single replica again"
     assert "KN-C010" not in unevaluated and "KN-C010" not in fired, "KN-C010 now speaks here; this test is stale"
 
     lesson = next(lsn for lsn in _mechanism_lessons() if lsn["id"] == NODE_DARK)
@@ -744,7 +749,11 @@ def test_the_replica_hops_never_describe_one_unspread_replica_as_many_and_spread
     hops = {s["step"]: s for s in walked["steps"]}
     one = hops["more-than-one-replica"]
     apart = hops["replicas-can-land-apart"]
-    assert one["verdict"] == M.HOLDS and apart["verdict"] == M.HOLDS, walked
+    assert one["verdict"] == M.FAILS, one
+    assert walked["verdict"] == "broken" and walked["exitCode"] == 1, walked
+    # KN-C010 is still silent below two replicas, and correctly so -- there is nothing to spread. The hop still
+    # holds, so its title may claim only what KN-C010 decides, never that THESE replicas are spread.
+    assert apart["verdict"] == M.HOLDS, apart
     assert "runs more than a single replica" not in f"{one['title']} {one['why']}".lower(), one
     assert "there is more than one of it" not in one["title"].lower(), one
     assert "spreads its replicas" not in f"{apart['title']} {apart['why']}".lower(), apart

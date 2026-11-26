@@ -1,0 +1,76 @@
+# The RBAC and ServiceAccounts walk, with every observable hop holding (mech-sec-rbac-and-serviceaccounts).
+# One workload, the identity it runs as, the one grant behind that identity, and the Secret it reads.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orders-api
+  template:
+    metadata:
+      labels:
+        app: orders-api
+    spec:
+      serviceAccountName: orders
+      # The automatic mount is off; the token the app does use is asked for, short-lived and audience-bound.
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: ghcr.io/acme/orders-api:1.4.2
+          volumeMounts:
+            - name: api-token
+              mountPath: /var/run/secrets/tokens
+              readOnly: true
+      volumes:
+        - name: api-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: api-token
+                  expirationSeconds: 3600
+                  audience: https://kubernetes.default.svc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orders-config-reader
+  namespace: shop
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["orders-config"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orders-config-reader
+  namespace: shop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orders-config-reader
+subjects:
+  - kind: ServiceAccount
+    name: orders
+    namespace: shop
+---
+# Opaque, and empty on purpose: the values are delivered by an external store, never committed. It is here so
+# the last observable hop has a Secret to read -- with none in the input KN-S027 abstains and the walk stops.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-db
+  namespace: shop
+type: Opaque
