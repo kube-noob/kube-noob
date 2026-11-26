@@ -20,9 +20,13 @@ updates:
       actions:
         patterns: ["*"]
     ignore:
-      # v4.39.4 breaks the two-language upload in codeql.yml; see the note there. Ignore this one release only, so
-      # the next one is still proposed and its pull request shows whether analyze is green again.
-      - dependency-name: github/codeql-action
+      # v4.39.4 failed the two-language upload in codeql.yml intermittently (2 of 5 runs, against 25 of 25 green on
+      # v4.39.3); see the note there. Ignore this one release only, so the next one is still proposed and its pull
+      # request shows whether analyze is green again. The workflow pins the SUB-actions `github/codeql-action/init`
+      # and `/analyze`, and Dependabot matches `dependency-name` against those exact names: the bare
+      # `github/codeql-action` matched neither, and #140 proposed 4.39.4 the day after this was written (G412). The
+      # wildcard matches every sub-action of the repository.
+      - dependency-name: "github/codeql-action*"
         versions: ["4.39.4"]
   - package-ecosystem: docker
     directory: /
