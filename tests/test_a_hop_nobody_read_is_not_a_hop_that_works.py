@@ -302,7 +302,9 @@ def test_a_hostile_name_on_the_unread_object_reaches_the_reader_through_the_boun
     # The whole forged span sits inside ONE quoted token, so a reader can see where the name ends. The boundary
     # has already collapsed the newlines by the time the name is quoted, which is why there is no `\n` to find.
     assert "'NetworkPolicy/shop/web" in text, "the name is not quoted, so the forged text reads as our own prose"
-    assert "' is here and nothing read it:" in text, text[-500:]
+    # A hop's explanation is wrapped onto indented lines rather than cut (G411), so the phrase is read with the
+    # wrapping undone; the forged-line checks above stay on the raw text, where a newline would matter.
+    assert "' is here and nothing read it:" in " ".join(text.split()), text[-500:]
     # And the hop is still reported, with the walk stopped: the name is made safe, not dropped.
     assert "cannot judge" in text and "not walked and are not reported as working" in text
 

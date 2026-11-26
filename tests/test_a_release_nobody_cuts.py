@@ -77,7 +77,9 @@ def test_every_check_counts_not_only_the_required_eight() -> None:
 
 
 def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
-    """Four separate refusals, each its own non-zero exit, before any verdict is reported."""
+    """Eight separate refusals, each its own non-zero exit, before any verdict is reported. The last four are
+    G399's: whether the latest release finished shipping is a reading too, and one that cannot be taken is not
+    "it did"."""
     script = _script()
     for phrase in (
         "whether there is anything to release is NOT KNOWN",
@@ -88,20 +90,31 @@ def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
         # check runs OTHER than this workflow's own". The refusal is the same refusal; only the count it is
         # honest about changed.
         "no check runs other than this workflow's own",
+        "whether ${tag} finished shipping is NOT KNOWN",
+        "no release run exists for ${tag}",
+        "whether it finishes shipping is NOT KNOWN yet",
+        "so what it did not ship is NOT KNOWN",
+        # G403: shape, not only transport.
+        "has no line that is exactly '## Unreleased'",
+        "how long the website has stated it is NOT KNOWN",
+        "which checks to read is NOT KNOWN",
+        "came back in a shape that is not a list of check runs",
+        "no check on main concluded success",
     ):
         assert phrase in script, f"missing refusal: {phrase!r}"
     assert "This is not 'nothing to release'." in script
     assert "it is an unanswered question" in script
     head = script[: script.index("existing=$(gh issue list")]
-    assert head.count("exit 1") == 4, head.count("exit 1")
-    assert "exit 0" not in head, "nothing may pass before all four readings are in"
+    assert head.count("exit 1") == 13, head.count("exit 1")
+    assert "exit 0" not in head, "nothing may pass before all thirteen readings are in"
 
 
 def test_nothing_to_release_closes_the_issue_instead_of_nagging() -> None:
     script = _script()
     tail = script[script.index('if [ "${bullets}" = "0" ]') :]
     assert "gh issue close" in tail.split("exit 0")[0]
-    assert "in step with" in tail, "the close comment should say why it is closing"
+    assert "nothing is waiting to be released after" in tail, "the close comment should say why it is closing"
+    assert "in step with" not in tail, "the workflow never reads the site, so it must not say the site is in step"
 
 
 def test_the_ready_answer_carries_the_command_and_the_not_ready_answer_carries_the_reason() -> None:
@@ -117,7 +130,7 @@ def test_it_cannot_write_to_the_repository_itself() -> None:
     spec = _spec()
     assert spec["permissions"] == {"contents": "read"}
     job = spec["jobs"]["ready"]["permissions"]
-    assert job == {"contents": "read", "issues": "write", "checks": "read"}, job
+    assert job == {"contents": "read", "issues": "write", "checks": "read", "actions": "read"}, job
     script = _script()
     for forbidden in ("git push", "git commit", "git tag", "refs/heads"):
         assert forbidden not in script, f"this workflow reports; it must not {forbidden}"

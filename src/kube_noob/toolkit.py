@@ -2572,14 +2572,8 @@ class Toolkit:
         """
         from kube_noob.audit.engine import analyze
         from kube_noob.learn import mechanism as mech
-        from kube_noob.learn.tutor import curriculum
 
-        known = {
-            str(lsn["id"]): lsn
-            for trk in curriculum().get("tracks") or ()
-            for lsn in trk.get("lessons") or ()
-            if lsn.get("steps")
-        }
+        known = mech.lessons()
         lesson = known.get(p.mechanism_id)
         if lesson is None:
             names = ", ".join(sorted(known)) or "none"

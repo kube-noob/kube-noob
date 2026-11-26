@@ -82,6 +82,7 @@ a path with no observable hops, and a lesson whose every hop was `observable: fa
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -173,6 +174,19 @@ class StepResult:
         if self.step.rules:
             out["rules"] = list(self.step.rules)
         return out
+
+
+def lessons() -> dict[str, dict[str, Any]]:
+    """Every lesson in the curriculum that declares a path, by id: the one lookup the command, the tool and the
+    HTML view share, so none of them can walk or draw a lesson the others do not know."""
+    from kube_noob.learn.tutor import curriculum
+
+    return {
+        str(lsn["id"]): lsn
+        for trk in curriculum().get("tracks") or ()
+        for lsn in trk.get("lessons") or ()
+        if lsn.get("steps")
+    }
 
 
 def _kind_of(resource: str) -> str:
@@ -484,6 +498,25 @@ def _line(value: object) -> str:
     return sanitize.one_line(str(value))[:200]
 
 
+def _wrapped(value: object, indent: str = "      ", width: int = 116, limit: int = 4000) -> list[str]:
+    """A hop's explanation, wrapped instead of cut.
+
+    `_line` cut every value at 200 characters with no mark, and a hop's `why` is mostly the curriculum's own
+    `holds` sentence -- whose last clause is where each hop states its limit ("KN-S014 does not read a projected
+    serviceAccountToken volume", "a role of the same reach under another name is not what KN-S016 reads"). Cut
+    there, the hold read stronger than the lesson wrote it, and nothing said a word was missing: six of the RBAC
+    lesson's seven hops and one node-dark hop lost their caveat (G411). The text is wrapped onto indented lines,
+    so it still cannot reach column zero, and a value longer than `limit` -- only input can be that long -- says
+    how much was cut.
+    """
+    text = sanitize.one_line(str(value))
+    if len(text) > limit:
+        text = f"{text[:limit]} [cut: {len(text) - limit} more characters]"
+    return textwrap.wrap(
+        text, width=width, initial_indent=indent, subsequent_indent=indent, break_on_hyphens=False
+    ) or [indent.rstrip()]
+
+
 def render(walked: dict[str, Any]) -> str:
     """The same walk as text. The marks are words, not colour: a log keeps them and a pipe does not eat them."""
     mark = {HOLDS: "holds", FAILS: "BROKEN", CANNOT_JUDGE: "cannot judge", NOT_OBSERVABLE: "not checked"}
@@ -496,7 +529,7 @@ def render(walked: dict[str, Any]) -> str:
     out.append("")
     for i, s in enumerate(walked["steps"], 1):
         out.append(f"{i}. [{mark[s['verdict']]}] {_line(s['title'])}")
-        out.append(f"      {_line(s['why'])}")
+        out.extend(_wrapped(s["why"]))
         for f in s.get("findings") or ():
             out.append(
                 f"      {_line(f['severity']).upper()}  {_line(f['ruleId'])}  "
@@ -505,5 +538,7 @@ def render(walked: dict[str, Any]) -> str:
     counts = walked["counts"]
     if counts["notReached"]:
         out += ["", f"{counts['notReached']} hop(s) after it were not walked and are not reported as working."]
-    out += ["", _line(walked["verdictReason"])]
+    # The verdict line stays one line, uncut: a reader and a script both take the last line as the answer, and
+    # every word of it is built here from the curriculum's own step ids, never from the input.
+    out += ["", sanitize.one_line(str(walked["verdictReason"]))]
     return "\n".join(out)
