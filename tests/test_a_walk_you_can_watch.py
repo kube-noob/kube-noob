@@ -495,11 +495,15 @@ def test_the_page_is_complete_at_rest_and_usable_without_the_script(capsys: pyte
     the page is the whole walk, top to bottom, and each node links to its hop."""
     _, page = _run("html", REQUEST, FIXTURES / "broken", capsys)
     static = "".join(_outside(page, frozenset({"script"}), keep_tags=True).out)
-    for n in range(1, 7):
+    # Counted from the lesson, not written down: G405 added the hop that follows the Ingress to its Service, and a
+    # literal 6 would then have stopped checking the hop it added.
+    hops = _embedded(page)["walk"]["counts"]["declared"]
+    assert hops == 7, hops  # the six hops G394 shipped, and the one G405 added
+    for n in range(1, hops + 1):
         assert f'href="#step-{n}"' in static and f'id="step-{n}"' in static
     assert "KN-V019" in static and "Ingress targets the retired ingress-nginx" in static
     assert '<code class="in">Ingress/shop/shop</code>' in static
-    assert "01/06  start &#8594; Ingress/shop/shop" in static
+    assert f"01/{hops:02d}  start &#8594; Ingress/shop/shop" in static
     # Hidden only once the script has run, and shown again in print.
     assert ".js .hop{display:none}" in page and ".hop{display:none}" not in page.replace(".js .hop{display:none}", "")
     # The controls the brief names, the deep link and the motion preference.

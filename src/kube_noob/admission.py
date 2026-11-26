@@ -65,6 +65,7 @@ SKIPPED_RULES = frozenset(
         "KN-N012",  # needs pods that are created after the NetworkPolicy
         "KN-V012",
         "KN-V023",  # same: the containerPorts the Service's pods declare are in other objects
+        "KN-V024",  # needs the Service an Ingress names: another object, usually admitted after the Ingress
         "KN-N014",  # needs the cluster's CNI and version, which no admitted object carries
         "KN-V014",  # bundle properties
         "KN-V018",
@@ -299,20 +300,29 @@ def review(
         enforced = [f for f in found if f[0] in cfg.enforce]
         if enforced and before is not None:
             enforced = [f for f in enforced if (f[0], f[1]) not in before]
-        warnings = [w for _, _, w, _ in found[: cfg.max_warnings]]
+        statements: list[str] = []
         if unread_lists:
-            warnings.append(
-                _warning(
-                    "kube-noob: rules that need other objects of the namespace were not evaluated: "
-                    f"{', '.join(unread_lists)} could not be read"
-                )
+            statements.append(
+                "kube-noob: rules that need other objects of the namespace were not evaluated: "
+                f"{', '.join(unread_lists)} could not be read"
             )
         if withheld:
             # Said even when there are findings: "this object has three problems" and "part of it was never read"
             # are different statements, and the second does not stop being true because the first is.
-            warnings.append(_warning(f"kube-noob: not fully audited, so this is not a clean result: {withheld}"))
-        if len(found) > cfg.max_warnings:
-            warnings.append(_warning(f"kube-noob: {len(found) - cfg.max_warnings} more findings: kube-noob audit"))
+            statements.append(f"kube-noob: not fully audited, so this is not a clean result: {withheld}")
+        # The response carries at most `max_warnings` + 1 lines, as the configuration documents and the tests and
+        # the in-cluster load run assert. The statements used to be ADDED to `max_warnings` findings and the
+        # "more findings" line, so an object with ten findings and a rule that declined reached twelve: the load
+        # run's fuzz cases 27 and 81 failed on exactly that once G407 made a non-numeric `replicas` a decline
+        # (G419). The statements are never dropped -- each says something the findings cannot -- so they take
+        # their room from the findings, and "N more findings" counts every finding not shown. With `max_warnings`
+        # smaller than the statements, the statements share one line.
+        if len(statements) > cfg.max_warnings:
+            statements = ["; ".join(statements)]
+        room = max(0, cfg.max_warnings - len(statements))
+        warnings = [w for _, _, w, _ in found[:room]] + [_warning(t) for t in statements]
+        if len(found) > room:
+            warnings.append(_warning(f"kube-noob: {len(found) - room} more findings: kube-noob audit"))
         if enforced:
             rules = sorted({r for r, _, _, _ in enforced})
             message = f"kube-noob denied {enforced[0][3]}: " + "; ".join(w for _, _, w, _ in enforced[:3])

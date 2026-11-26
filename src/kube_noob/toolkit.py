@@ -1098,8 +1098,9 @@ class MechanismIn(_In):
         description="These documents are only part of a namespace. Default true, as for the other tool that "
         "takes pasted manifests: a pasted bundle is usually a fragment, and a rule that fires because another "
         "object is absent cannot tell a real gap from an object the caller did not paste. On a walk the "
-        "difference is not a count but a VERDICT -- with a fragment such a rule reaches no verdict, so the hop "
-        "it judges says `cannot judge` and the walk stops there; with this false the same hop would be reported "
+        "difference is not a count but a VERDICT -- with a fragment a hop whose only findings rest on an absent "
+        "object says `cannot judge` and the walk stops there (the rule declines, or the walk lists its finding "
+        "without reading it as a verdict about the namespace); with this false the same hop would be reported "
         "BROKEN, which claims the object is missing from the namespace on evidence that cannot say so. Set it "
         "false only when the manifests really are every object of the namespace.",
     )
@@ -2583,7 +2584,7 @@ class Toolkit:
             p.version,
             partial_bundle=p.partial_bundle,
         ).as_dict()
-        return mech.walk(lesson, report)
+        return mech.walk(lesson, report, partial_bundle=p.partial_bundle)
 
     # -- training enforcer -----------------------------------------------------------------------------------
     def grade(self, p: GradeIn) -> dict[str, Any]:

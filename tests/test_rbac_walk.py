@@ -314,14 +314,23 @@ def test_the_bare_role_hop_is_also_stopped_by_the_rule_and_not_only_by_needs(tmp
     """`needs` and `notEvaluated` both stop the Role hop today, and either alone has to be enough.
 
     A synthetic copy of the hop with its `needs` removed still stops, on KN-S015's own abstention -- so the stop
-    does not rest on a list in the YAML that a later edit could drop.
+    does not rest on a list in the YAML that a later edit could drop. It keeps `reads`: since G408 an observable hop
+    must name at least one kind, and `reads` (what the hop looks at) is not `needs` (what must be present).
     """
     report = analyze(_without("Role"), "kubernetes", None, partial_bundle=False).as_dict()
     lesson = {
         "id": "mech-test-no-needs",
         "title": "t",
         "layer": "test",
-        "steps": [{"id": "roles", "title": "roles", "holds": "h", "rules": ["KN-S015", "KN-S017"]}],
+        "steps": [
+            {
+                "id": "roles",
+                "title": "roles",
+                "holds": "h",
+                "reads": ["Role", "ClusterRole"],
+                "rules": ["KN-S015", "KN-S017"],
+            }
+        ],
     }
     walked = M.walk(lesson, report)
     assert _verdicts(walked) == {"roles": M.CANNOT_JUDGE}, walked["steps"]

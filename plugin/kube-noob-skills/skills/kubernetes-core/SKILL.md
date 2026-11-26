@@ -146,7 +146,7 @@ KUBE_NOOB_FOR_MODEL=1 KUBE_NOOB_LEARNING_ENABLED=false kube-noob audit -f app.ya
 | `learn exercise` | always `0` | `prompt`, `checks` | |
 | `learn submit` | `0`, or `1` when the answer did not pass | `passed`, `score`, `feedback` | |
 | `learn quiz` | always `0` | `correct?`, `explanation?`, `choices?` | |
-| `learn mechanism` | `0` when at least one hop was judged and every observable hop on the path holds; `1` when a hop is BROKEN, including when the walk then stopped at a later hop (`stoppedAt` names it; a broken hop is a verdict about the path, so the stop is named beside it, never instead of it); `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads before finding anything broken, when it judged no hop at all, or when a directory input held a file that could not be read -- such a walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop | `verdict`, `verdictReason`, `steps` | `stoppedAt`, `counts` |
+| `learn mechanism` | `0` when at least one hop was judged and every observable hop on the path holds; `1` when a hop is BROKEN, including when the walk then stopped at a later hop (`stoppedAt` names it; a broken hop is a verdict about the path, so the stop is named beside it, never instead of it); `4` when a named input could not be read; `5` when the walk STOPPED at a hop nothing in this build reads before finding anything broken, when it judged no hop at all, the audit of the same input is undetermined (an object nothing read, or a rule that declined on one), or when a directory input held a file that could not be read -- such a walk reached no verdict about the path, so it is never `1`. Pass a DIRECTORY for `0` or `1`: one file is a fragment, and the hops judged by a rule that fires on an absent object cannot be judged from a fragment, so a single file stops at that hop. A walk judges ONE namespace and names it in `namespaces`: when the objects the path reads are in more than one, the first hop cannot be judged and the walk is `5` -- pass one namespace's manifests | `verdict`, `verdictReason`, `steps`, `namespaces` | `stoppedAt`, `counts` |
 | `learn progress` | always `0` | `credits`, `maxCredits`, `lessonsRead` | `completedExercises`, `answeredQuiz` |
 
 Search the local knowledge with the user's own terms and cite the `[kn:...]` ids it returns. When the user shares YAML,
@@ -177,9 +177,10 @@ When the user asks how something *works* rather than whether it is safe -- how a
 their Service has no endpoints -- walk the mechanism over their own manifests. It answers hop by hop and stops at
 the first hop it cannot judge, so the hops after it are reported as not checked, never as fine. Three answers,
 never two: `0` at least one hop was judged and every observable hop holds, `1` a hop is BROKEN, even if the walk
-then stopped at a later one, `5` the walk STOPPED before finding anything broken because nothing in this build reads that hop, it judged no hop at all, or a file
-beside the input could not be read. A `5` is not a pass and not a failure -- read `stoppedAt` and say which hop
-went unanswered, and where it is null read `verdictReason`, which is the walk that judged nothing. `learn progress` reports the credits and
+then stopped at a later one, `5` the walk STOPPED before finding anything broken because nothing in this build reads that hop, it judged no hop at all, the
+audit of the same input is undetermined, or a file beside the input could not be read. A `5` is not a pass and not
+a failure -- read `stoppedAt` and say which hop went unanswered, and where it is null read `verdictReason`: the walk
+judged nothing, or every hop it read holds over an input the audit could not decide (run `audit` on it and say what was not read). `learn progress` reports the credits and
 lessons recorded so far, and never writes. When the user wants to *watch* the path rather than read it, the same
 command with `--format html` writes one self-contained offline page of the same walk -- the hops drawn in order,
 an event that travels them, each hop's rules, objects and findings -- with the same exit code; read the answer

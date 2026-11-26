@@ -35,7 +35,7 @@ false explanation, which is the G368 defect one layer down.
 
 from __future__ import annotations
 
-from kube_noob.audit.podspec import EMBEDDED_POD_SPEC_PATHS, POD_SPEC_PATHS
+from kube_noob.audit.podspec import EMBEDDED_POD_SPEC_PATHS, POD_SPEC_PATHS, REPLICATED_KINDS, replicas
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     RULES,
@@ -46,6 +46,51 @@ from kube_noob.audit.rules import (
     refused_summary,
 )
 from kube_noob.yamlio import Document
+
+# Why KN-V011 and KN-V012 reached no verdict about a Service they were GIVEN (G404). Both rules walked past three
+# kinds of Service with a bare `continue` -- one with no selector (ExternalName, hand-made Endpoints), one whose
+# namespace holds no pod template in the input, one that selects none of the templates there -- and a rule that
+# skips its subject records nothing, so the report counted it evaluated and clean and the mechanism walk printed
+# "the Service selects at least one pod in this bundle" about a Service that selects nothing by construction.
+# Each is legitimate and none is a finding; what was wrong is that the skip was indistinguishable from a verdict.
+# Recorded through `nothing_to_judge`, so the score stands (nothing went unread) and the rule is `notEvaluated`
+# with these words. Fixed phrases, never the input's own text (class 7). Here and not in `rules.py` only because
+# that module is 2 KiB under the plugin directory's per-file limit.
+NO_SELECTOR = (
+    "a Service here has no selector (ExternalName, or Endpoints made by hand), so which pods it sends to is not "
+    "in these manifests"
+)
+NO_PODS_IN_NAMESPACE = (
+    "a Service's namespace holds no pod template in this input, so whether its selector finds a pod was not judged"
+)
+NO_PODS_SELECTED = (
+    "a Service here selects no pod template in this input, so there are no containers to read its targetPort against"
+)
+
+UNKNOWN_REPLICAS = "spec.replicas is not an integer, so how many replicas this workload declares is not known"
+
+
+def replicas_unknown(d: Document) -> bool:
+    """Whether ``d`` is a replicated workload whose replica count cannot be read (G407).
+
+    `podspec.replicas` answers `None` for a count that is not an integer -- `replicas: "1"`, a Helm expression
+    left in a quoted string -- and the four rules that read it each turned that `None` into an answer:
+    KN-C007 into "not below two" (`reps is not None and reps < 2`), KN-C008, KN-C009 and KN-C010 into "one"
+    (`replicas(d) or 1`). So one unreadable field read as "two or more replicas" to the first rule and as "a
+    single replica, nothing to spread" to the third, and both said nothing: the node-dark walk printed "every
+    Deployment, StatefulSet and ReplicaSet here declares two or more replicas" over `replicas: "1"`, exit 0.
+
+    An unknown count is neither. Each of those rules asks this first and declines on THIS object, naming it,
+    through `cannot_decide` with `UNKNOWN_REPLICAS`: the object is here and the rule could not read what it
+    needs from it, which is G272's definition of a decline that withholds the score -- unlike a Service with no
+    selector (G404), where nothing went unread. A boolean is refused with the strings: Python counts `True` as
+    the integer 1 and the API server does not.
+
+    A predicate and not a recorder: the rule records its own decline, because the test that reads which kinds
+    a rule asks for (`tests/test_absent_kinds.py`) does not follow a call that hands `ctx` to another module.
+    """
+    return d.kind in REPLICATED_KINDS and type(replicas(d)) is not int
+
 
 _WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
 # The kinds a rule reads as evidence BESIDE the ones its `context=` declares -- the PDB that selects a workload,

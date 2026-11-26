@@ -65,10 +65,47 @@ whose policy hop nobody looked at. So the path's verdict is that no verdict was 
 | found a broken hop, then stopped at a hop it could not judge | `broken`, with `stoppedAt` set | `1` |
 | stopped at a hop it could not judge, nothing broken before it | `stopped` | `5` |
 | judged no hop at all | `stopped` | `5` |
+| every hop it read holds, and the audit of the same input is undetermined | `stopped`, `stoppedAt` null | `5` |
 
 `5` and `1` are not two answers to the same question: `1` says something on the path is wrong, `5` says the path
 was not walked far enough to say. A broken hop answers the question by itself -- no hop after it can make the path
 work -- so a walk that finds one and then stops is `1`, with the stop named beside it, not `5` (G400).
+
+**The network lesson follows the Ingress to its Service.** Its second hop asks whether every Service an Ingress
+backend names is in the namespace, and serves the port the backend names (KN-V024). An Ingress routing to a
+Service that is not there, or to port 9999 of one that serves 8080, is BROKEN at that hop when a whole namespace
+was passed; on a fragment the missing Service may be in another file, so the hop says **cannot judge**. Before
+this hop existed the walk went from "there is an Ingress" straight to "the Service finds pods", and an Ingress
+pointing at nothing walked complete (G405).
+
+**A walk judges one namespace, and names it.** A path runs inside a namespace: an Ingress routes to a Service of
+its own namespace, and a Service selects pods of its own. The second line of the text view says
+`namespace judged: 'shop'`, and the JSON carries `namespaces`. When the objects the path reads are in more than
+one namespace the walk does not pick one: the first hop says **cannot judge**, the namespaces are named, and the
+exit is `5`. Pass the manifests of one namespace. An object that states no namespace counts as a namespace of its
+own, because nothing in the manifest says where `kubectl apply -n` will put it (G404).
+
+**The walk does not say more than the audit of the same files.** Three things stop a hop, or the path, that no
+rule on the hop reports (G406):
+
+- an object the hop reads carries a *schema* finding from the validation stage -- a required field missing, a
+  duplicate key, a duplicate object. The hop says **cannot judge** and shows the finding, because the object is
+  not what the API server would accept as written;
+- the input holds a pod spec nothing read (an Argo Rollout, a kind with no reader). Every hop about workloads
+  says **cannot judge** and names it, because it may be the workload the hop is about;
+- `kube-noob audit` on the same input is `undetermined` for any other reason. The walk is then `stopped` at `5`
+  with `stoppedAt` null, never `complete`.
+
+A walk can still be `complete` where `audit` exits `1` on a finding that is not about this path -- an image tag,
+a missing `seccompProfile`. The walk answers for one path.
+
+**One file is a fragment, and a fragment cannot show that something is missing.** Pass a directory and the walk
+takes it to be the whole namespace; pass one file (or paste text into the `learn_mechanism` tool without
+`partial_bundle: false`) and it is part of one. A hop whose only findings rest on an object that is *not* in the
+input -- no autoscaler holding a single replica at two, no pod the Service or the NetworkPolicy selects -- then
+says **cannot judge** and lists the finding under it, instead of BROKEN: the object may be in the file you did
+not pass. The same bytes in a directory are BROKEN. `kube-noob audit` on one file still reports those findings;
+only the walk's verdict about the path is withheld (G408).
 
 A hop whose evidence no manifest can hold -- the veth pair, the bridge, the overlay -- is marked `observable:
 false` in the curriculum. It is printed as **not checked**, names no rules, and is never counted as a hop that

@@ -22,7 +22,7 @@ reach a reader (G206), and these are the same kind of claim.
 python -c "import sys; sys.path.insert(0,'src'); from kube_noob import __version__; from kube_noob.audit.engine import list_rules; from kube_noob.audit.controls import RULE_CONTROLS; from kube_noob.audit.redteam import SCENARIOS; from kube_noob.debug.playbooks import PLAYBOOKS; from kube_noob.learn.tutor import curriculum; from kube_noob.toolkit import Toolkit; from kube_noob.config import load_settings; t=curriculum()['tracks']; print('version', __version__); print('rules', len(list_rules())); print('controls', len({c for cs in RULE_CONTROLS.values() for c in cs})); print('playbooks', len(PLAYBOOKS)); print('red-team scenarios', len(SCENARIOS)); print('tracks', len(t), 'lessons', sum(len(x.get('lessons',[])) for x in t)); print('MCP tools', len(Toolkit(load_settings()).specs()))"
 ```
 
-As of 2026-11-23 on `release/0.10.0`, merged up to `b8ad0f0`: version 0.10.0, 99 rules,
+As of 2026-11-23 on `release/0.10.0`, merged up to `b8ad0f0`: version 0.10.0, 100 rules,
 31 NIST SP 800-53 Rev. 5 controls,
 67 offline playbooks, 9 red-team scenarios, 6 tracks with 19 lessons, 58 MCP tools. These seven figures are
 asserted against the code by `tests/test_guidance.py::test_the_website_queue_states_the_real_numbers`, so this
