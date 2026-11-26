@@ -537,3 +537,214 @@ def test_a_name_full_of_newlines_cannot_write_a_line_of_its_own(tmp_path: Path) 
     for line in out.stdout.splitlines():
         assert not line.startswith("6. ["), f"a forged step line reached column zero: {line!r}"
         assert line.strip() != "every observable hop on this path holds", "a forged verdict line was printed"
+
+
+# --- a walk that judged nothing reached no verdict (G395) ---------------------------------------------------
+
+_ALL_UNOBSERVABLE = {
+    "id": "probe-node-layer",
+    "title": "A walk that checked nothing",
+    "layer": "node",
+    "steps": [
+        {"id": "kubelet-syncs", "title": "The kubelet syncs the pod", "observable": False, "holds": "it syncs"},
+        {"id": "runtime-starts", "title": "The runtime starts it", "observable": False, "holds": "CRI creates it"},
+        {"id": "cgroups-hold", "title": "The cgroups hold the limits", "observable": False, "holds": "it is written"},
+    ],
+}
+
+
+def test_a_walk_in_which_nothing_was_judged_reached_no_verdict_about_the_path() -> None:
+    """The headline of G395, and the vacuous truth this project has caught three times before.
+
+    Every hop of this lesson is `observable: false`, so none sets `stopped_at` and none counts as judged. The
+    walk came out `complete` at exit 0 with "every observable hop on this path holds" beside it -- true, and
+    vacuously so: there are no observable hops, so all of them hold. Measured before the repair:
+    `verdict: complete | exitCode: 0 | counts.judged: 0`. Zero of the 98 rules read the kubelet, the container
+    runtime, cgroups, kube-proxy, iptables, conntrack, veth or the overlay, so an author writing a Node-layer
+    lesson could mark every hop unobservable and ship a full green page.
+    """
+    walked = M.walk(_ALL_UNOBSERVABLE, analyze(DEPLOYMENT, "kubernetes", None).as_dict())
+    assert walked["counts"]["judged"] == 0
+    assert walked["verdict"] == "stopped" and walked["exitCode"] == 5
+    # No hop is the obstacle: each was honestly reported `not-observable` and none was skipped, so there is no
+    # hop to name and `stoppedAt` stays null. The reason carries the truth instead.
+    assert walked["stoppedAt"] is None
+    assert "no hop on this path was judged" in walked["verdictReason"]
+    assert "every observable hop on this path holds" not in walked["verdictReason"]
+    assert all(s["verdict"] == M.NOT_OBSERVABLE for s in walked["steps"])
+    assert walked["counts"]["notReached"] == 0
+
+
+def test_one_judged_hop_beside_unobservable_ones_is_still_a_verdict() -> None:
+    """The control. `judged == 0` is the bar, not "some hop was unobservable"."""
+    lesson = {
+        **_ALL_UNOBSERVABLE,
+        "steps": [
+            *_ALL_UNOBSERVABLE["steps"],
+            {"id": "probe", "title": "A hop a rule reads", "needs": ["Deployment"], "holds": "x", "rules": ["KN-C001"]},
+        ],
+    }
+    walked = M.walk(lesson, analyze(DEPLOYMENT, "kubernetes", None).as_dict())
+    assert walked["counts"]["judged"] == 1
+    assert walked["verdict"] == "complete" and walked["exitCode"] == 0
+
+
+def test_the_text_view_of_a_walk_that_judged_nothing_does_not_read_as_a_pass() -> None:
+    text = M.render(M.walk(_ALL_UNOBSERVABLE, analyze(DEPLOYMENT, "kubernetes", None).as_dict()))
+    assert "every observable hop on this path holds" not in text
+    assert "no hop on this path was judged" in text
+
+
+def test_every_mechanism_lesson_declares_an_observable_hop_a_rule_in_this_build_reads() -> None:
+    """The curriculum invariant that stops an all-unobservable lesson from being written at all.
+
+    The verdict repair above makes such a lesson answer 5 rather than 0; this makes it impossible to ship. The
+    inventory comes from `list_rules()` -- the rules this build really has -- and never from the YAML, because a
+    step naming a rule id that no longer exists reads as a rule that found nothing.
+    """
+    from kube_noob.audit.engine import list_rules
+
+    known = {r["ruleId"] for r in list_rules()}
+    for lesson in _mechanism_lessons():
+        readable = [
+            step
+            for step in lesson["steps"]
+            if step.get("observable", True) is not False and (set(step.get("rules") or ()) & known)
+        ]
+        assert readable, (
+            f"{lesson['id']} declares no observable hop whose rules name a rule this build has, so every walk of "
+            f"it judges nothing and answers 5. Give it at least one hop with `observable: true` and a `rules:` "
+            f"list naming a rule from `kube-noob rules list` -- or, if this layer's hops genuinely have no reader "
+            f"in this build (nothing reads the kubelet, the container runtime, cgroups, kube-proxy, iptables, "
+            f"conntrack, veth or the overlay), write the rule first and the lesson after."
+        )
+
+
+# --- a hop's title asserts only what its rules decide (G395) -------------------------------------------------
+
+#: `podSelector: {}` with `policyTypes: [Ingress]` and no `ingress:` rules. It admits NOTHING, and all three
+#: rules the policy hop names are clean on it: KN-N001 fires on an ABSENT policy, KN-N007 on an over-permissive
+#: one, KN-N012 on one that selects nothing -- and `podSelector: {}` selects every pod, so KN-N012 skips it.
+DENY_ALL = """\
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: web, namespace: shop}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+"""
+
+
+def _dir_walk(tmp_path: Path, *docs: str) -> dict:
+    """A DIRECTORY, which `cli._partial_input` reads as the whole namespace, so the absence rules are evaluated."""
+    d = tmp_path / "bundle"
+    d.mkdir()
+    (d / "all.yaml").write_text("---\n".join(docs), encoding="utf-8")
+    from kube_noob import cli
+
+    return M.walk(_lesson(), analyze(cli._read(str(d)), "kubernetes", None).as_dict())
+
+
+def test_the_policy_hop_never_says_a_deny_all_policy_lets_the_packet_in(tmp_path: Path) -> None:
+    """Measured: hop 4 rendered `[holds] Network policy lets the packet in` over a policy that admits nothing.
+
+    The `holds` SENTENCE was true -- that is exactly what KN-N001, KN-N007 and KN-N012 checked. The TITLE
+    claimed admission, which by construction none of them can establish: they fire when a policy is absent,
+    too permissive, or inert. A reader saw "the packet gets in" over a policy that denies everything.
+    """
+    walked = _dir_walk(tmp_path, INGRESS, SERVICE, DEPLOYMENT, DENY_ALL)
+    hop = _by_id(walked)["policy-admits-the-packet"]
+    assert hop["verdict"] == M.HOLDS, walked
+    claim = f"{hop['title']} {hop['why']}".lower()
+    assert "lets the packet in" not in claim, hop
+    assert "admits the packet" not in claim, hop
+    # What the rules DO establish, still said.
+    assert "networkpolicy" in claim and ("allow-all" in claim or "selects nothing" in claim), hop
+
+
+def test_the_edge_hop_never_claims_admission_it_cannot_establish(tmp_path: Path) -> None:
+    """KN-N003, KN-N009, KN-N011 and KN-V019 read TLS and ingress-nginx hazards; none reads host or backend.
+
+    Measured: an Ingress whose only backend names a Service that is not in the bundle walked
+    `[holds] The edge admits the request`.
+    """
+    nowhere = INGRESS.replace("{service: {name: web,", "{service: {name: absent-service,")
+    assert "absent-service" in nowhere
+    walked = _dir_walk(tmp_path, nowhere, SERVICE, DEPLOYMENT, NETPOL)
+    hop = _by_id(walked)["edge-admits"]
+    assert hop["verdict"] == M.HOLDS, walked
+    assert "admits the request" not in f"{hop['title']} {hop['why']}".lower(), hop
+
+
+def test_the_service_hop_never_claims_a_port_the_containers_do_not_declare(tmp_path: Path) -> None:
+    """KN-V012 reads a NAMED targetPort only, so a numeric one no container declares is nobody's finding.
+
+    Measured: `targetPort: 9999` against a container declaring 8080 walked `[holds]` under the words "on a port
+    the containers declare".
+    """
+    svc = SERVICE.replace("targetPort: http", "targetPort: 9999")
+    assert "9999" in svc
+    walked = _dir_walk(tmp_path, INGRESS, svc, DEPLOYMENT, NETPOL)
+    hop = _by_id(walked)["service-selects-pods"]
+    assert hop["verdict"] == M.HOLDS, walked
+    claim = f"{hop['title']} {hop['why']}".lower()
+    assert "on a port the containers declare" not in claim, hop
+    assert "selects at least one pod" in claim, hop
+
+
+def test_the_readiness_hop_claims_a_declared_probe_and_not_a_running_pod(tmp_path: Path) -> None:
+    """KN-C001 reads `readinessProbe` in a pod template. Whether a pod IS ready is runtime state no manifest holds."""
+    walked = _dir_walk(tmp_path, INGRESS, SERVICE, DEPLOYMENT, NETPOL)
+    hop = _by_id(walked)["pod-reports-ready"]
+    assert hop["verdict"] == M.HOLDS, walked
+    claim = f"{hop['title']} {hop['why']}".lower()
+    assert "says it is ready" not in claim and "is ready to receive" not in claim, hop
+    assert "readiness probe" in claim, hop
+
+
+_ONE_REPLICA = _WORKLOAD % {"replicas": 1, "spread": ""}
+#: Any HPA naming this workload clears KN-C007, whatever its own `minReplicas` -- `_has_hpa` does not read it.
+_HPA_PINNED_AT_ONE = """\
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: web, namespace: shop}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: web}
+  minReplicas: 1
+  maxReplicas: 1
+  metrics: []
+"""
+_PDB_ALLOWS_ONE = """\
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: shop}
+spec: {maxUnavailable: 1, selector: {matchLabels: {app: web}}}
+"""
+
+
+def test_the_replica_hops_never_describe_one_unspread_replica_as_many_and_spread() -> None:
+    """The same gap in the control-plane lesson, and the answer to "can a hop hold on a silent abstention?".
+
+    Measured on one replica, no `topologySpreadConstraints`, no `podAntiAffinity`, an HPA pinned at 1..1 and a
+    budget that permits an eviction: the walk came out `complete` at exit 0 with hop 1 saying "the workload runs
+    more than a single replica" and hop 2 "the pod template spreads its replicas". Both are false of that input.
+    KN-C007 is excused by ANY HorizontalPodAutoscaler naming the workload, and KN-C010 skips a workload below two
+    replicas -- neither records anything in `notEvaluated`, so `by_rule` is empty, nothing is unevaluated, and the
+    walk's only remaining branch is `holds`. A rule that silently skips its subject is indistinguishable here from
+    a rule that read it and was satisfied, which is why these two hops may claim only what the rules test for.
+    """
+    report = analyze("---\n".join((_ONE_REPLICA, _HPA_PINNED_AT_ONE, _PDB_ALLOWS_ONE)), "kubernetes", None).as_dict()
+    unevaluated = report.get("notEvaluated") or {}
+    fired = {f["ruleId"] for f in report.get("findings") or ()}
+    assert "KN-C007" not in unevaluated and "KN-C007" not in fired, "KN-C007 now speaks here; this test is stale"
+    assert "KN-C010" not in unevaluated and "KN-C010" not in fired, "KN-C010 now speaks here; this test is stale"
+
+    lesson = next(lsn for lsn in _mechanism_lessons() if lsn["id"] == NODE_DARK)
+    walked = M.walk(lesson, report)
+    hops = {s["step"]: s for s in walked["steps"]}
+    one = hops["more-than-one-replica"]
+    apart = hops["replicas-can-land-apart"]
+    assert one["verdict"] == M.HOLDS and apart["verdict"] == M.HOLDS, walked
+    assert "runs more than a single replica" not in f"{one['title']} {one['why']}".lower(), one
+    assert "there is more than one of it" not in one["title"].lower(), one
+    assert "spreads its replicas" not in f"{apart['title']} {apart['why']}".lower(), apart
