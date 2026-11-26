@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Render the three animated videos from demos/ai-video-prompts.md without a video model, for free:
+# Render the animated videos videos.json defines without a video model, for free:
 # a Kokoro voice-over, the kube-noob brand music, and Chromium frames of stage.html (the look of the Grok teaser).
 #
-# Usage: demos/video/stage/build.sh <out-dir> [teaser|sidecar|mcp|all] [--voice af_heart] [--music-db -12]
+# Usage: demos/video/stage/build.sh <out-dir> [<a video in videos.json>|all] [--voice af_heart] [--music-db -12]
 #        (also --engine piper, --speed, --speaker, --sidecar <transcript>; see voiceover.py)
 # Writes <out-dir>/<video>/kube-noob-<video>.mp4 (3840x2160, 30 fps, AAC 320k at -16 LUFS; KN_SCALE=1 for
 # 1920x1080) and the stems voice.wav and music.wav. Each video is checked before it renders (videos.schema.json,
@@ -21,8 +21,12 @@ fi
 out="$(mkdir -p "$1" && cd "$1" && pwd)"
 which_video="${2:-all}"
 shift $(( $# >= 2 ? 2 : 1 ))
-case "$which_video" in teaser|sidecar|mcp|all) ;; *) echo "unknown video: $which_video" >&2; exit 2;; esac
-for v in teaser sidecar mcp; do
+# The videos are the ones videos.json defines, read from it: a list written here went stale when #125 added `scan`
+# to videos.json and the release matrix, and the release's `render (scan)` leg would have stopped on "unknown
+# video: scan" -- on the tag's own copy of this file, so no re-run could fix it (G414).
+videos="$("${PYTHON:-python3}" -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1], encoding="utf-8"))["videos"]))' "$here/videos.json")"
+case " $videos all " in *" $which_video "*) ;; *) echo "unknown video: $which_video (known: $videos)" >&2; exit 2;; esac
+for v in $videos; do
   if [ "$which_video" != all ] && [ "$which_video" != "$v" ]; then
     continue
   fi

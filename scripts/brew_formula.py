@@ -254,7 +254,22 @@ def main(argv: list[str]) -> int:
         if text != render(version):
             print(f"Formula/kube-noob.rb does not match PyPI kube-noob {version}", file=sys.stderr)
             return 1
-        print(f"Formula/kube-noob.rb matches PyPI kube-noob {version}")
+        # A formula that matches an OLD release exactly is still a stale one. Before G415 the offline test demanded
+        # the formula equal this repository's version, which no bump PR can satisfy -- the formula's URLs exist
+        # only once PyPI has the files -- so the bump had to be admin-merged onto a red main, which skipped the
+        # e2e job that records the sidecar transcript and failed the release's video legs. The question "is the
+        # formula behind what users can install" is asked here instead, of PyPI itself: green before the upload,
+        # red from the upload until the formula PR the release opens is merged, which is what G357 wanted.
+        latest = str(_get_json("https://pypi.org/pypi/kube-noob/json")["info"]["version"])
+        if Version(latest) > Version(version):
+            print(
+                f"PyPI serves kube-noob {latest} and Formula/kube-noob.rb still serves {version}: "
+                f"`brew install kube-noob` installs the old release. Merge the chore/brew-formula-{latest} "
+                "pull request the release opened.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Formula/kube-noob.rb matches PyPI kube-noob {version}, the latest release")
         return 0
     write = "--write" in argv
     rest = [a for a in argv if a != "--write"]
