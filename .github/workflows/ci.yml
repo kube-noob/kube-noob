@@ -11,7 +11,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request makes the older run moot; a newer push to main does not. The release renders its
+  # sidecar video from the transcript the e2e job records on the TAGGED commit, and main's run takes about an hour,
+  # so a merge in that hour cancelled the run the tag needed and failed the release's video legs (G418).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job below sets timeout-minutes. One that does not gets GitHub's default of 360, and this account runs one
 # `ci` workflow at a time, so a single hung job holds every other pull request's checks for six hours. A budget is
