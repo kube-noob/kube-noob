@@ -49,7 +49,7 @@ import json, os, subprocess, sys
 args = sys.argv[1:]
 line = " ".join(args)
 scenario = json.load(open(os.environ["STUB_SCENARIO"]))
-if args[:2] in (["issue", "close"], ["issue", "edit"], ["issue", "create"]):
+if args[:2] in (["issue", "close"], ["issue", "edit"], ["issue", "create"], ["label", "create"]):
     with open(os.environ["STUB_LOG"], "a") as f:
         f.write(json.dumps(args) + "\n")
     sys.exit(0)
@@ -138,8 +138,16 @@ def _run(
 
 
 def _body(writes: list[list[str]]) -> str:
-    assert len(writes) == 1, writes
-    args = writes[0]
+    issue = [w for w in writes if w[:1] == ["issue"]]
+    assert len(issue) == 1, writes
+    if issue[0][:2] == ["issue", "create"]:
+        # G413: the label must exist before the issue that carries it is created.
+        assert writes.index(issue[0]) > 0 and writes[writes.index(issue[0]) - 1][:3] == [
+            "label",
+            "create",
+            "release-ready",
+        ], writes
+    args = issue[0]
     assert args[:2] in (["issue", "create"], ["issue", "edit"]), args
     return args[args.index("--body") + 1]
 
@@ -287,3 +295,18 @@ def test_every_page_of_check_runs_is_read(tmp_path: Path) -> None:
     code, out, writes = _run(sub, changelog=WAITING_CHANGELOG, runs=SHIPPED, answers=[["check-runs", green]])
     assert code == 0, out
     assert "all **2** checks on" in _body(writes), "two pages of one check each are two checks, counted once"
+
+
+def test_the_first_run_creates_the_label_it_files_under(tmp_path: Path) -> None:
+    """G413: with no open issue the workflow creates one, and `gh issue create --label` refuses a label the
+    repository lacks. The label is created first, with `--force` so an existing one is left as it is."""
+    code, out, writes = _run(tmp_path, changelog=WAITING_CHANGELOG, runs=SHIPPED)
+    assert code == 0, out
+    assert [w[:3] for w in writes] == [["label", "create", "release-ready"], ["issue", "create", "--repo"]], writes
+    assert "--force" in writes[0]
+
+
+def test_an_existing_issue_is_edited_without_touching_labels(tmp_path: Path) -> None:
+    code, out, writes = _run(tmp_path, changelog=WAITING_CHANGELOG, runs=SHIPPED, existing=(7,))
+    assert code == 0, out
+    assert [w[:2] for w in writes] == [["issue", "edit"]], writes
