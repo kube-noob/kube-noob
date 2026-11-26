@@ -261,3 +261,49 @@ def test_the_size_check_is_run_not_read(size: str, code: int, tmp_path: Path) ->
         check=False,
     )
     assert out.returncode == code, f"stdout={out.stdout!r} stderr={out.stderr!r}"
+
+
+def test_every_video_the_release_renders_is_one_build_sh_accepts(tmp_path: Path) -> None:
+    """G414: #125 added `scan` to videos.json and to the release matrix, and `build.sh` kept its own list of three.
+    The release leg `render (scan)` calls `build.sh out scan`, which stopped on "unknown video: scan" -- from the
+    tag's own copy of the file, so no re-run could fix it -- and no CI job runs `build.sh`. Asked of the script
+    itself: every name in the release matrix but the walkthrough (rendered by render.sh) must be one it accepts."""
+    bash = shutil.which("bash")
+    assert bash, "bash is not on PATH, so build.sh could not be asked"
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "videos.yml").read_text(encoding="utf-8"))
+    matrix = wf["jobs"]["render"]["strategy"]["matrix"]["video"]
+    staged = [v for v in matrix if v != "walkthrough"]
+    assert "scan" in staged, matrix
+    out = subprocess.run(
+        [bash, str(ROOT / "demos" / "video" / "stage" / "build.sh"), str(tmp_path / "out"), "not-a-video"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert out.returncode == 2, out.stderr
+    known = re.search(r"\(known: ([^)]*)\)", out.stderr)
+    assert known, out.stderr
+    accepted = set(known.group(1).split())
+    assert accepted == set(json.loads((ROOT / "demos/video/stage/videos.json").read_text(encoding="utf-8"))["videos"])
+    missing = [v for v in staged if v not in accepted]
+    assert not missing, f"the release renders {missing}, which build.sh refuses"
+
+
+def test_the_release_ffmpeg_install_is_its_own_bounded_step() -> None:
+    """G417: inline with pip and Playwright, the install was bounded only by the leg's 240 minutes."""
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "videos.yml").read_text(encoding="utf-8"))
+    steps = wf["jobs"]["render"]["steps"]
+    ff = [s for s in steps if s.get("name") == "ffmpeg"]
+    assert len(ff) == 1, [s.get("name") for s in steps]
+    assert 0 < ff[0]["timeout-minutes"] <= 30
+    assert "for attempt in 1 2" in ff[0]["run"]
+    others = "\n".join(str(s.get("run", "")) for s in steps if s.get("name") != "ffmpeg")
+    assert "apt-get install" not in others or "ffmpeg" not in others.split("apt-get install", 1)[1].split("\n", 1)[0]
+
+
+def test_a_push_to_main_does_not_cancel_the_run_the_tag_needs() -> None:
+    """G418: the release reads the sidecar transcript from the tagged commit's CI run."""
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    cancel = str(ci["concurrency"]["cancel-in-progress"])
+    assert cancel.replace(" ", "") == "${{github.event_name=='pull_request'}}", cancel

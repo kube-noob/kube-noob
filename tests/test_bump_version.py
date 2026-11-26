@@ -32,6 +32,7 @@ FILES = [
     "deploy/gitlab/kube-noob-gate.gitlab-ci.yml",
     "docs/install.md",
     "docs/openshift-catalog.md",
+    "docs/website-updates.md",
     "CHANGELOG.md",
 ]
 # Files a patch release leaves alone. docs/install.md used to be one (it names the image's MAJOR.MINOR tag), until it
@@ -84,14 +85,22 @@ def test_bump_updates_every_reference(repo: Path) -> None:
     changelog = (repo / "CHANGELOG.md").read_text()
     assert changelog.index(f"## {new}") < changelog.index(f"## {old}")
     if "## Unreleased" in (ROOT / "CHANGELOG.md").read_text():
-        assert "## Unreleased" not in changelog, "the Unreleased notes become the new version's entry"
+        # The notes become the new version's entry, and an EMPTY `## Unreleased` stays above it (G416): release-ready
+        # reads a missing heading as NOT KNOWN.
+        head = changelog.index("## Unreleased")
+        assert head < changelog.index(f"## {new}"), "the empty heading stays above the new entry"
+        between = changelog[head + len("## Unreleased") : changelog.index(f"## {new}")]
+        assert not [ln for ln in between.splitlines() if ln.startswith("- ")], "the moved notes left the heading"
     else:
         assert "patched UBI" in changelog
     for f in FILES:
         # CHANGELOG keeps history; uv.lock may hold dependency versions that contain the old string (checked above);
         # "(from 0.2.3)" says which release a feature arrived in, not the current version.
         text = re.sub(r"\(from \d+\.\d+\.\d+\)", "", (repo / f).read_text())
-        assert old not in text or f in {"CHANGELOG.md", "plugin/kube-noob/uv.lock"}, f
+        # docs/website-updates.md names the branch its figures were measured on ("on `release/0.10.0`"), which is
+        # history; its asserted figure is checked by the `version` line above via test_guidance.
+        assert old not in text or f in {"CHANGELOG.md", "plugin/kube-noob/uv.lock", "docs/website-updates.md"}, f
+    assert f": version {new}, " in (repo / "docs/website-updates.md").read_text()
 
 
 def test_a_minor_bump_moves_the_major_minor_image_tag(repo: Path) -> None:

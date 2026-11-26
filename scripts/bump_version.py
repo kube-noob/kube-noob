@@ -48,6 +48,8 @@ TARGETS: dict[str, tuple[str, ...]] = {
     ),
     # the owner's commands for the OpenShift Helm catalog pull request: every version in it is the release's
     "docs/openshift-catalog.md": (r"(?<![\d.])(?P<v>\d+\.\d+\.\d+)(?!\.?\d)",),
+    # the website queue's figures, which tests/test_guidance.py asserts against the code (G416)
+    "docs/website-updates.md": (r": version (?P<v>\d+\.\d+\.\d+), \d+ rules",),
 }
 
 
@@ -88,8 +90,13 @@ def bump(root: Path, new: str, note: str) -> list[str]:
     text = log.read_text()
     header = f"## {new} - {dt.date.today().isoformat()}\n\n- {note.strip()}\n"
     if "\n## Unreleased\n\n" in text:
-        # The notes gathered under "Unreleased" already describe the release: they become its entry as written.
-        log.write_text(text.replace("\n## Unreleased\n\n", f"\n## {new} - {dt.date.today().isoformat()}\n\n", 1))
+        # The notes gathered under "Unreleased" already describe the release: they become its entry as written, and
+        # an empty `## Unreleased` stays above it for the next release's notes. The heading used to be renamed away,
+        # so release-ready -- which reads "no such heading" as NOT KNOWN, never as "nothing to release" (G403) --
+        # would have exited 1 every Monday until someone noticed and put it back (G416).
+        log.write_text(
+            text.replace("\n## Unreleased\n\n", f"\n## Unreleased\n\n## {new} - {dt.date.today().isoformat()}\n\n", 1)
+        )
     else:
         first = text.index("\n## ") + 1
         log.write_text(text[:first] + header + "\n" + text[first:])

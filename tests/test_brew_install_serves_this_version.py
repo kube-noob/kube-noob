@@ -36,16 +36,44 @@ def _homebrew_script() -> str:
     return "\n".join(str(s.get("run", "")) for s in steps)
 
 
-def test_the_formula_serves_exactly_the_version_this_repository_is() -> None:
-    """The one that matters to a user typing the documented command."""
+def _released_versions() -> list[str]:
+    """The release headings of CHANGELOG.md, newest first."""
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    return re.findall(r"^## (\d+\.\d+\.\d+) - \d{4}-\d{2}-\d{2}$", text, flags=re.M)
+
+
+def test_the_formula_serves_this_version_or_the_one_before_it_while_the_bump_is_unpublished() -> None:
+    """The one that matters to a user typing the documented command.
+
+    Equality alone (G357) was unsatisfiable on the bump PR itself: the formula carries PyPI's URLs, which do not
+    exist until the tag uploads the files, so every bump had to be admin-merged onto a red main -- which skipped the
+    e2e job that records the sidecar transcript, and failed the release's video legs (G415). Offline, the formula
+    must serve this version or the release immediately before it; nothing older. Whether PyPI already has a newer
+    one than the formula is asked of PyPI by `scripts/brew_formula.py --check`, in the `plugin` CI job, which is
+    red from the upload until the formula PR lands.
+    """
     import kube_noob
 
     found = re.search(r'^  url ".*/kube_noob-([0-9][0-9.]*)\.tar\.gz"', FORMULA.read_text(encoding="utf-8"), re.M)
     assert found, "the formula has no sdist url"
-    assert found.group(1) == kube_noob.__version__, (
-        f"the documented `brew install kube-noob` would serve {found.group(1)} from this branch while this "
-        f"repository is {kube_noob.__version__}"
+    served, current = found.group(1), kube_noob.__version__
+    released = _released_versions()
+    assert released and released[0] == current, (
+        f"CHANGELOG's newest release heading is {released[:1]}, not this repository's version {current}"
     )
+    allowed = released[:2]
+    assert served in allowed, (
+        f"the documented `brew install kube-noob` would serve {served} from this branch while this repository is "
+        f"{current}; only {current} or the release before it ({allowed[1:] or 'none'}) is acceptable"
+    )
+
+
+def test_the_networked_check_asks_pypi_whether_the_formula_is_behind() -> None:
+    src = (ROOT / "scripts" / "brew_formula.py").read_text(encoding="utf-8")
+    assert "https://pypi.org/pypi/kube-noob/json" in src and "Version(latest) > Version(version)" in src
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    runs = "\n".join(str(s.get("run", "")) for s in ci["jobs"]["plugin"]["steps"])
+    assert "python scripts/brew_formula.py --check" in runs
 
 
 def test_the_job_never_pushes_to_protected_main_again() -> None:
