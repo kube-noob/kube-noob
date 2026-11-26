@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -66,11 +67,56 @@ def _embedded(page: str) -> dict[str, Any]:
     return data
 
 
+class _Outside(HTMLParser):
+    """The page as a browser's parser reads it, with the contents of `skip` elements dropped. A real parser, not a
+    regex: an end tag like `</script\t\n bar>` still closes a script, and a regex either misses it or is wrong
+    about it (CodeQL py/bad-tag-filter)."""
+
+    def __init__(self, skip: frozenset[str], keep_tags: bool) -> None:
+        super().__init__(convert_charrefs=False)
+        self.skip, self.keep_tags, self.depth, self.out, self.tags = skip, keep_tags, 0, [], set()
+        self.opened: dict[str, int] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.opened[tag] = self.opened.get(tag, 0) + 1
+        if tag in self.skip:
+            self.depth += 1
+        elif not self.depth:
+            self.tags.add(tag)
+            if self.keep_tags:
+                self.out.append(self.get_starttag_text() or "")
+            else:
+                self.out.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.skip:
+            self.depth = max(0, self.depth - 1)
+        elif not self.depth:
+            self.out.append(f"</{tag}>" if self.keep_tags else " ")
+
+    def handle_data(self, data: str) -> None:
+        if not self.depth:
+            self.out.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        if not self.depth:
+            self.out.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self.depth:
+            self.out.append(f"&#{name};")
+
+
+def _outside(page: str, skip: frozenset[str], keep_tags: bool) -> _Outside:
+    parser = _Outside(skip, keep_tags)
+    parser.feed(page)
+    parser.close()
+    return parser
+
+
 def _body_text(page: str) -> str:
     """What a reader sees: the page with the style, both scripts and every tag removed."""
-    page = re.sub(r"<style>.*?</style>", "", page, flags=re.S)
-    page = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
-    return re.sub(r"<[^>]+>", " ", page)
+    return "".join(_outside(page, frozenset({"style", "script"}), keep_tags=False).out)
 
 
 def _hostile(payload: str) -> dict[str, Any]:
@@ -164,7 +210,7 @@ def test_a_name_that_closes_the_script_element_closes_nothing() -> None:
     walked = _hostile(SCRIPT)
     page = H.render_html(walked)
     # Exactly the two elements this module writes; a third would be the payload's.
-    assert page.lower().count("<script") == 2 and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
+    assert _scripts(page) == 2
     assert "alert(1)</script>" not in page and "<script>alert" not in page
     assert "&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in page
     data = _embedded(page)
@@ -192,10 +238,9 @@ def test_no_string_from_the_walk_becomes_markup_or_a_command(payload: str) -> No
     walked = _hostile(payload)
     page = H.render_html(walked)
     assert page.isascii()
-    assert page.lower().count("<script") == 2 and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
-    # No tag on the page but the ones the module writes.
-    unscripted = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
-    tags = set(re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)", unscripted))
+    assert _scripts(page) == 2
+    # No tag on the page but the ones the module writes, as a browser's parser finds them.
+    tags = _outside(page, frozenset({"script"}), keep_tags=True).tags
     assert tags <= {
         *("html", "head", "meta", "title", "style", "body", "main", "header", "h1", "h2", "p", "section", "div"),
         *("span", "dl", "dt", "dd", "svg", "path", "g", "circle", "ol", "ul", "li", "a", "code", "button"),
@@ -244,11 +289,7 @@ def test_a_hostile_manifest_through_the_command_is_text_on_the_page(
     code, page = _run("html", REQUEST, d, capsys)
     json_code, _ = _run("json", REQUEST, d, capsys)
     assert code == json_code
-    assert (
-        page.lower().count("<script") == 2
-        and len(re.findall(r"</script\s*>", page, flags=re.I)) == 2
-        and "<script>alert" not in page
-    )
+    assert page.lower().count("<script") == 2 and _scripts(page) == 2 and "<script>alert" not in page
     assert "alert(1)" in page, "the hostile name never reached the page, so this test did not test the escaping"
 
 
@@ -453,7 +494,7 @@ def test_the_page_is_complete_at_rest_and_usable_without_the_script(capsys: pyte
     """Every hop's decoder is in the HTML itself, and the script only chooses which one to show: with no script
     the page is the whole walk, top to bottom, and each node links to its hop."""
     _, page = _run("html", REQUEST, FIXTURES / "broken", capsys)
-    static = re.sub(r"<script\b.*?</script\s*>", "", page, flags=re.S | re.I)
+    static = "".join(_outside(page, frozenset({"script"}), keep_tags=True).out)
     for n in range(1, 7):
         assert f'href="#step-{n}"' in static and f'id="step-{n}"' in static
     assert "KN-V019" in static and "Ingress targets the retired ingress-nginx" in static
@@ -467,3 +508,8 @@ def test_the_page_is_complete_at_rest_and_usable_without_the_script(capsys: pyte
     assert "prefers-reduced-motion" in H._CSS and "prefers-reduced-motion" in H._JS
     assert "prefers-color-scheme:dark" in H._CSS and "max-width:480px" in H._CSS
     assert 'data-start="1"' in page  # opens on the broken hop
+
+
+def _scripts(page: str) -> int:
+    """How many script elements a browser's parser opens on the page."""
+    return _outside(page, frozenset({"script"}), keep_tags=False).opened.get("script", 0)
