@@ -184,6 +184,7 @@ stroke-dasharray:6 3}
 .alabel text{paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
 .alabel .n{fill:var(--text);font-family:var(--sans);font-weight:600;font-size:13.5px}
 .alabel .ip{fill:var(--dim);font-family:var(--mono);font-size:11.5px}
+.alabel .sec{fill:var(--l-drop);font-weight:700}
 .alabel .st{fill:var(--dim);font-family:var(--mono);font-size:11.5px;font-weight:700}
 .actor[data-on] .alabel .n{fill:var(--accent-text)}
 .actor[data-v="holds"] .st{fill:var(--ok)}.actor[data-v="fails"] .st{fill:var(--l-drop)}
@@ -406,22 +407,29 @@ var still=window.matchMedia?window.matchMedia("(prefers-reduced-motion: reduce)"
 var DRAWN={"holds":1,"fails":1,"cannot-judge":1};
 var RANK={"fails":6,"cannot-judge":5,"unrecognised":5,"holds":3,"not-observable":2,"not-walked":1};
 var cur=-1,raf=0,camRaf=0,timer=0,playing=false,speed=1,box=V.scene.frame.slice();
-var chipText=dot.querySelector(".mchip text"),chipRect=dot.querySelector(".mchip rect");
+var chipBox=dot.querySelector(".mchip"),chipText=chipBox.querySelector("text"),chipRect=chipBox.querySelector("rect");
 var acts=V.scene.actors.map(function(a){var el=$("act-"+a.id);
-return{id:a.id,hops:a.hops,el:el,st:el?el.querySelector(".st"):null};});
+return{id:a.id,hops:a.hops,el:el,st:el?el.querySelector(".st"):null,sec:el?el.querySelector(".sec"):null};});
 var rows=document.querySelectorAll(".etable tr[data-hop]"),count=$("count"),bar=$("bar");
 
 /* What each actor shows: the worst state among the hops on it that the walk has reached so far. A hop that was
    not walked is never reached, so it is shown as not walked from the start. */
-function paint(upto){
+function paint(upto,here){
 acts.forEach(function(a){
 if(!a.el||!a.hops.length)return;
-var best=null;
+var best=null,left=[];
 a.hops.forEach(function(k){var h=hops[k-1];if(!h)return;
 if(k-1>upto&&h.state!=="not-walked")return;
 if(!best||(RANK[h.state]||5)>(RANK[best.state]||5))best=h;});
+/* The card the walk is standing on shows THIS hop's verdict, so it cannot contradict the caption under it. A
+   break an earlier hop left on the same card is not lost: it stays on the card's second line, as "hop 1 x". */
+if(here>=0&&here<=upto&&a.id===hops[here].actor){
+best=hops[here];
+a.hops.forEach(function(k){var h=hops[k-1];
+if(h&&k-1<here&&h.state==="fails"&&best.state!=="fails")left.push("hop "+k+" "+h.glyph);});}
 a.el.setAttribute("data-v",best?best.state:"pending");
 if(a.st)a.st.textContent=best?best.glyph+" "+best.mark:"";
+if(a.sec)a.sec.textContent=left.length?" \u00b7 "+left.join(", "):"";
 });}
 function flag(el,name,on){if(!el)return;if(on){el.setAttribute(name,"");}else{el.removeAttribute(name);}}
 function focus(i){
@@ -459,7 +467,8 @@ function length(pts){var t=0;for(var i=1;i<pts.length;i++){
 t+=Math.sqrt(Math.pow(pts[i][0]-pts[i-1][0],2)+Math.pow(pts[i][1]-pts[i-1][1],2));}return t;}
 function path(pts){return pts.map(function(q,i){return(i?"L":"M")+q[0].toFixed(1)+" "+q[1].toFixed(1);}).join(" ");}
 function put(q){dot.setAttribute("transform","translate("+q[0].toFixed(1)+" "+q[1].toFixed(1)+")");}
-function label(text){
+function label(text,dy){
+chipBox.setAttribute("transform","translate(0 "+dy+")");
 chipText.textContent=text;
 var w=160;try{w=chipText.getComputedTextLength()+18;}catch(e){}
 chipRect.setAttribute("x",(-w/2).toFixed(1));chipRect.setAttribute("width",w.toFixed(1));}
@@ -477,14 +486,14 @@ dot.setAttribute("class","on "+(s==="fails"?"fail":s==="cannot-judge"?"halt":bro
 put(inPlace?h.at:at(pts,reach(s)));
 if(!inPlace){trail.setAttribute("d",path(pts));trail.setAttribute("class","trail on t-"+s);
 trail.style.strokeDashoffset=String(1-reach(s));}
-paint(i);
+paint(i,i);
 }
 function fly(i,move){
 if(raf){window.cancelAnimationFrame(raf);raf=0;}
 trail.setAttribute("class","trail");
 var s=hops[i].state,pts=hops[i].route;
 if(!DRAWN[s]){dot.setAttribute("class","");return;}
-label(hops[i].chip);
+label(hops[i].chip,hops[i].chipdy);
 if(!move||still.matches||pts.length<2){settle(i);return;}
 var end=reach(s),t0=0,ms=travel(i);
 dot.setAttribute("class","on"+(brokenBefore(i)?" after":""));
@@ -530,13 +539,13 @@ focus(i);
 if(timer){window.clearTimeout(timer);timer=0;}
 if(i<0){
 if(raf){window.cancelAnimationFrame(raf);raf=0;}
-capbox.hidden=true;dot.setAttribute("class","");trail.setAttribute("class","trail");paint(n-1);
+capbox.hidden=true;dot.setAttribute("class","");trail.setAttribute("class","trail");paint(n-1,-1);
 if(playing)timer=window.setTimeout(tick,600);
 return;}
 var h=hops[i],flying=move&&!still.matches&&DRAWN[h.state]&&h.route.length>1;
 capbox.hidden=false;capbox.className="caption s-"+h.state;
 capn.textContent=String(h.n);capr.textContent=h.caption;cap.textContent=h.says;
-paint(flying?i-1:i);
+paint(flying?i-1:i,i);
 fly(i,move);
 if(playing)timer=window.setTimeout(tick,(flying||h.route.length<2?travel(i):0)+reading(i));
 }

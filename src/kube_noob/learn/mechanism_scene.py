@@ -329,28 +329,75 @@ def _screen_route(route: list[Point], a: Actor, b: Actor) -> list[Point]:
     return out
 
 
-def frame(actors: list[Actor], min_width: float, also: list[Point], caption: bool) -> list[float]:
-    """The smallest world box that shows these actors, padded and kept at the stage's aspect ratio."""
-    xs = [p[0] for p in also]
-    ys = [p[1] for p in also]
-    for a in actors:
-        xs += [a.pos[0] + a.box[0], a.pos[0] + a.box[2]]
-        ys += [a.pos[1] + a.box[1], a.pos[1] + a.box[3]]
-    if not xs:
-        return [0.0, 0.0, WORLD[0], WORLD[1]]
-    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-    pad = 48.0
-    # Room under the actors for the caption and the transport bar, which sit over the bottom of the stage.
-    y1 += 110.0 if caption else 56.0
-    w = max(x1 - x0 + pad * 2, min_width)
-    h = y1 - y0 + pad * 2
+def extent(a: Actor) -> Box:
+    """What must be in view for this actor to be whole: its art and its three label lines, as wide as they are.
+
+    The sub-line is given room for the mark an earlier hop may leave on it (" . hop 12 x"), so a label is never
+    cropped by a camera box that was measured before the script wrote on it.
+    """
+    x, y = a.pos
+    half = max(a.box[2], len(a.name) * 3.9 + 6, (len(a.sub) + 12) * 3.6 + 6)
+    return (x - half, y + a.box[1], x + half, y + a.label_dy + 42)
+
+
+#: The share of the stage's height the caption strip and the transport bar lie over, and so may not hold an
+#: actor: about 170 px of a 700 px stage with a caption up, the transport bar alone on the overview.
+_BAND, _BAND_OVERVIEW = 0.26, 0.13
+
+
+def frame(
+    focus: list[Actor], everyone: list[Actor], min_width: float, also: list[Point], band: float, rounds: int
+) -> list[float]:
+    """The camera box for these actors: all of each, label included, clear of the caption and the transport bar.
+
+    After KubeLearn's `frame()`: padded, at least `min_width` wide, kept at the stage's aspect ratio. Two things
+    are added. The bottom `band` of the box is left empty, because the caption strip lies over it. And an actor
+    the box would cut through is taken into the box whole, up to `rounds` times: if it does not fit, the camera
+    zooms out rather than crop a label.
+    """
+    shown = list(focus)
     ratio = WORLD[0] / WORLD[1]
-    if w / h > ratio:
+    pad = 40.0
+    box = [0.0, 0.0, WORLD[0], WORLD[1]]
+    for attempt in range(rounds + 1):
+        ext = [extent(a) for a in shown]
+        xs = [p[0] for p in also] + [e[0] for e in ext] + [e[2] for e in ext]
+        ys = [p[1] for p in also] + [e[1] for e in ext] + [e[3] for e in ext]
+        if not xs:
+            return box
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        clear = y1 - y0 + pad * 2
+        w = max(x1 - x0 + pad * 2, min_width, clear / (1 - band) * ratio)
         h = w / ratio
-    else:
-        w = h * ratio
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    return [round(cx - w / 2, 1), round(cy - h / 2, 1), round(w, 1), round(h, 1)]
+        top = y0 - pad - (h * (1 - band) - clear) / 2
+        left = (x0 + x1) / 2 - w / 2
+        box = [round(left, 1), round(top, 1), round(w, 1), round(h, 1)]
+        if attempt == rounds:
+            break
+        cut = [
+            o
+            for o in everyone
+            if o not in shown and (e := extent(o))[2] > left and e[0] < left + w and e[3] > top and e[1] < top + h
+        ]
+        if len(cut) == 0:
+            break
+        shown += cut
+    return box
+
+
+def _chip_dy(text: str, at: Point, actors: list[Actor]) -> int:
+    """How far above the marker its chip sits: the first height at which it lies over no actor's label."""
+    half = (len(text) * 6.6 + 18) / 2
+    labels = [(e[0], a.pos[1] + a.label_dy - 13, e[2], e[3]) for a in actors for e in (extent(a),)]
+
+    def over(dy: int) -> float:
+        x0, x1, y0, y1 = at[0] - half, at[0] + half, at[1] + dy - 11, at[1] + dy + 10
+        return sum(
+            max(0.0, min(x1, lx1) - max(x0, lx0)) * max(0.0, min(y1, ly1) - max(y0, ly0))
+            for lx0, ly0, lx1, ly1 in labels
+        )
+
+    return min((-24, -42, -60, -78, -96, -114), key=lambda dy: (over(dy), -dy))
 
 
 def _d(points: list[Point]) -> str:
@@ -406,6 +453,7 @@ def _hop_actor(h: dict[str, Any], spot: Spot | None) -> tuple[str, Actor]:
             "", "card", g, clip(f"{kind} {name}", 30), clip(sub, 34), badge_for(kind), TONE.get(kind, "other")
         )
     if kinds:
+        # One card for the kind, whichever hop reads it. `build` puts a name on it when the evidence has one.
         kind = kinds[0]
         name = kind if len(kinds) == 1 else f"{kind} (or {len(kinds) - 1} more kinds)"
         return "kind:" + "/".join(kinds), Actor(
@@ -439,6 +487,7 @@ def build(
     actors: list[Actor] = []
     by_key: dict[str, Actor] = {}
     taken: set[Point] = set()
+    named: dict[str, list[str]] = {}
 
     def add(a: Actor) -> Actor:
         a.id = f"a{len(actors)}"
@@ -469,6 +518,20 @@ def build(
             actor = by_key[key] = add(fresh)
         actor.hops.append(h["n"])
         h["actor"] = actor.id
+        if key.startswith("kind:"):
+            named.setdefault(actor.id, [])
+            named[actor.id] += [o for o in h.get("evidence", ()) if o not in named[actor.id]]
+
+    # A hop the walk names no object for may still have findings that do. A card for a kind takes the name the
+    # evidence gives it: one object named, that object; several, the first and how many more.
+    for a in actors:
+        found = named.get(a.id)
+        if found:
+            kind, namespace, name = split_object(found[0])
+            more = f" \u00b7 +{len(found) - 1} more" if len(found) > 1 else ""
+            a.name = clip(f"{kind} {name}", 30)
+            a.sub = clip((f"namespace {namespace}" if namespace else "no namespace stated") + more, 34)
+            a.badge, a.tone = badge_for(kind), TONE.get(kind, "other")
 
     if layout is not None:
         rect = layout.floor
@@ -482,6 +545,9 @@ def build(
 
     ids = {a.id: a for a in actors}
     cables: list[str] = []
+    # A lesson's own stage is small enough to keep the plate in view and take in whatever the box would cut. The
+    # plain row can be sixty hops long, so there the camera follows the hop and takes in its neighbours once.
+    around, rounds = (corners, 4) if layout is not None else ([], 1)
     prev = origin
     for h in hops:
         here = ids[h["actor"]]
@@ -490,8 +556,10 @@ def build(
         route = [] if start.id == here.id else _screen_route(_ground_route(start, here, actors), start, here)
         h["route"] = [[round(p[0], 1), round(p[1], 1)] for p in route]
         h["at"] = [round(here.pos[0], 1), round(here.pos[1] - 20, 1)]
-        h["frame"] = frame([start, here], 820.0, [], caption=True)
+        h["frame"] = frame([start, here], actors, 520.0, around, _BAND, rounds)
         h["chip"] = clip(h["title"], 34)
+        stop = route[-1] if route else (here.pos[0], here.pos[1] - 20)
+        h["chipdy"] = _chip_dy(h["chip"], stop, actors)
         if route:
             cables.append(f'<path class="cable c-{h["state"]}" id="cab-{h["n"]}" d="{_d(route)}"/>')
         prev = here
@@ -509,11 +577,12 @@ def build(
             f'<g class="{classes}" id="act-{a.id}" data-v="{verdict}" data-manifest="{"yes" if a.manifest else "no"}">'
             f'<g transform="translate({I.num(x, 1)} {I.num(y, 1)})">{_art(a, esc)}</g>'
             f'<g class="alabel" transform="translate({I.num(x, 1)} {I.num(y + a.label_dy, 1)})" text-anchor="middle">'
-            f'<text class="n">{esc(a.name)}</text><text class="ip" y="16">{esc(a.sub)}</text>'
+            f'<text class="n">{esc(a.name)}</text>'
+            f'<text class="ip" y="16">{esc(a.sub)}<tspan class="sec"></tspan></text>'
             f'<text class="st" y="32">{esc(word)}</text></g></g>'
         )
 
-    overview = frame(actors, WORLD[0], corners if layout is not None or actors else [], caption=False)
+    overview = frame(actors, actors, WORLD[0], corners, _BAND_OVERVIEW, 0)
     view_box = " ".join(I.num(v, 1) for v in overview)
     scene = (
         f'<svg class="iso scene" id="scene" viewBox="{view_box}" preserveAspectRatio="xMidYMid meet" role="img" '
@@ -532,7 +601,7 @@ def build(
         "sequence": _sequence(hops, lanes, esc),
         "data": {
             "frame": overview,
-            "actors": [{"id": a.id, "hops": a.hops} for a in actors],
+            "actors": [{"id": a.id, "hops": a.hops, "box": [round(v, 1) for v in extent(a)]} for a in actors],
             "layout": lesson if layout is not None else "row",
         },
     }

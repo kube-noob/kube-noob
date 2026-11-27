@@ -245,7 +245,7 @@ def test_what_no_manifest_holds_is_dashed_and_says_so(
         if hop["state"] == "not-observable":
             seen += 1
             assert 'data-manifest="no"' in art and 'data-v="not-observable"' in art
-            assert '<text class="ip" y="16">not in any manifest</text>' in art
+            assert '<text class="ip" y="16">not in any manifest<tspan class="sec"></tspan></text>' in art
             assert "not observable</text>" in art and "holds" not in art
         elif hop["objects"]:
             assert 'data-manifest="yes"' in art
@@ -517,7 +517,7 @@ def test_a_lesson_with_no_layout_is_drawn_as_a_row_and_not_refused() -> None:
         assert f">{badge}</text>" in _scene(page)
     last = _actor(page, view["hops"][3]["actor"])
     assert 'data-manifest="no"' in last and "not in any manifest" in last and "The kubelet mounts it" in last
-    assert 'class="floor-top"' in page and all(h["frame"][2] >= 820 for h in view["hops"])
+    assert 'class="floor-top"' in page and all(h["frame"][2] >= 520 for h in view["hops"])
     spots = set()
     for a in view["scene"]["actors"]:
         art = _actor(page, a["id"])
@@ -609,3 +609,171 @@ def test_the_port_is_credited_where_a_licence_asks_for_it() -> None:
     for module in (I, SC, P, H):
         doc = module.__doc__ or ""
         assert "KubeLearn" in doc and "Joe Sabbagh" in doc and "MIT" in doc, module.__name__
+
+
+# -- 8. the camera, the chip and the card while the walk is on a hop -----------------------------------------
+
+
+def _inside(inner: list[float], x0: float, y0: float, x1: float, y1: float) -> bool:
+    return inner[0] >= x0 and inner[1] >= y0 and inner[2] <= x1 and inner[3] <= y1
+
+
+@pytest.mark.parametrize(("lesson", "path"), CASES, ids=IDS)
+def test_the_camera_on_a_hop_crops_no_actor_and_keeps_the_caption_band_clear(
+    lesson: str, path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first cut of the player framed two actors tightly: the plate was cut off, a neighbour's label ran off
+    the edge, and the caption strip lay over the card the hop was about."""
+    _, page, _ = _both(lesson, path, capsys)
+    view = _view(page)
+    boxes = {a["id"]: a["box"] for a in view["scene"]["actors"]}
+    ratio = SC.WORLD[0] / SC.WORLD[1]
+    for hop in view["hops"]:
+        x, y, w, h = hop["frame"]
+        assert w >= 520 and abs(w / h - ratio) < 0.01, hop["frame"]
+        clear = y + h * (1 - SC._BAND)
+        for actor in (hop["from"], hop["actor"]):
+            assert _inside(boxes[actor], x, y, x + w, clear + 0.2), f"hop {hop['n']}: {actor} is under the caption"
+        for actor, box in boxes.items():
+            apart = box[2] <= x or box[0] >= x + w or box[3] <= y or box[1] >= y + h
+            assert apart or _inside(box, x, y, x + w, y + h), f"hop {hop['n']}: the camera cuts through {actor}"
+    x, y, w, h = view["scene"]["frame"]
+    for actor, box in boxes.items():
+        assert _inside(box, x, y, x + w, y + h * (1 - SC._BAND_OVERVIEW) + 0.2), f"the overview crops {actor}"
+    # A label is as wide as its text, and the box an actor must fit in knows it.
+    wide = SC.Actor("a", "card", (0.0, 0.0), "N" * 30, "s" * 34)
+    narrow = SC.Actor("b", "card", (0.0, 0.0), "N", "s")
+    assert SC.extent(wide)[2] - SC.extent(wide)[0] > SC.extent(narrow)[2] - SC.extent(narrow)[0] >= 160
+
+
+def test_the_chip_on_the_marker_is_moved_off_a_label_it_would_cover() -> None:
+    quiet = SC.Actor("a", "card", (40.0, 40.0), "Service web", "namespace shop")
+    assert SC._chip_dy("a hop", (0.0, 0.0), [quiet]) == -24, "nothing is near, so the chip sits where KubeLearn's does"
+    # An actor whose label lies exactly where that chip would be: the chip goes higher, clear of it.
+    x, y = quiet.pos
+    under = (x, y + quiet.label_dy + 10 + 24)
+    moved = SC._chip_dy("a hop title that is thirty-four ch", under, [quiet])
+    assert moved < -24
+    label_top = y + quiet.label_dy - 13
+    assert under[1] + moved + 10 <= label_top, "the chip still lies over the label"
+    assert len(SC.clip("x" * 80, 34)) == 34
+
+
+def test_the_chip_is_clear_of_every_label_on_the_shipped_walks(capsys: pytest.CaptureFixture[str]) -> None:
+    for lesson, path in CASES:
+        _, page, _ = _both(lesson, path, capsys)
+        view = _view(page)
+        for hop in view["hops"]:
+            assert hop["chipdy"] <= -24 and len(hop["chip"]) <= 34
+    # The case that was reported: hop 2 of the Service walk put its chip over "Deployment orders-api".
+    _, page, _ = _both(SERVICE, FIXTURES / "service" / "broken", capsys)
+    view = _view(page)
+    hop = view["hops"][1]
+    half, cx, cy = (len(hop["chip"]) * 6.6 + 18) / 2, hop["at"][0], hop["at"][1] + hop["chipdy"]
+    for a in view["scene"]["actors"]:
+        if a["id"] == hop["actor"]:
+            continue
+        x0, _top, x1, y1 = a["box"]
+        label_top = y1 - 55
+        over = min(cx + half, x1) > max(cx - half, x0) and min(cy + 10, y1) > max(cy - 11, label_top)
+        assert not over, f"the chip of hop 2 lies over the label of {a['id']}"
+    assert 'chipBox.setAttribute("transform","translate(0 "+dy+")");' in P.JS
+
+
+def test_the_card_under_the_walk_shows_this_hops_verdict_and_keeps_an_earlier_break_beside_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Hop 2 of the broken request walk holds, on the card hop 1 broke. The card read BROKEN under a caption that
+    said holds. The overview still shows the worse of the two; a hop shows its own."""
+    walked, page, _ = _both(REQUEST, FIXTURES / "broken", capsys)
+    assert [s["verdict"] for s in walked["steps"][:2]] == ["fails", "holds"]
+    view = _view(page)
+    assert view["hops"][0]["actor"] == view["hops"][1]["actor"]
+    art = _actor(page, view["hops"][0]["actor"])
+    assert 'data-v="fails"' in art and "&#10007; BROKEN</text>" in art, "at rest the card shows the worse verdict"
+    assert '<tspan class="sec"></tspan>' in art, "the secondary mark is the script's to write, and empty at rest"
+    js = P.JS
+    assert "if(here>=0&&here<=upto&&a.id===hops[here].actor){" in js and "best=hops[here];" in js
+    assert 'if(h&&k-1<here&&h.state==="fails"&&best.state!=="fails")left.push("hop "+k+" "+h.glyph);});}' in js
+    assert 'if(a.sec)a.sec.textContent=left.length?" \\u00b7 "+left.join(", "):"";' in js
+    # On a hop the focused card is painted with that hop; on the overview no card is in focus.
+    assert "paint(i,i);" in js and "paint(flying?i-1:i,i);" in js and "paint(n-1,-1);" in js
+    # The mark is written into an element the page already has: the script needs no namespace address to make one.
+    assert "createElementNS" not in js and ".alabel .sec{fill:var(--l-drop)" in P.CSS
+
+
+def test_a_card_for_a_kind_takes_the_name_the_evidence_gives_it(capsys: pytest.CaptureFixture[str]) -> None:
+    walked, page, _ = _both(SERVICE, FIXTURES / "service" / "broken", capsys)
+    step = walked["steps"][1]
+    assert step["verdict"] == "fails" and not step.get("objects")
+    assert [f["resource"] for f in step["findings"]] == ["NetworkPolicy/shop/deny-egress"]
+    view = _view(page)
+    first, second = view["hops"][0], view["hops"][1]
+    assert first["actor"] == second["actor"], "the two policy hops still stand on one card"
+    art = _actor(page, second["actor"])
+    assert '<text class="n">NetworkPolicy deny-egress</text>' in art and ">NP</text>" in art
+    assert '<text class="ip" y="16">namespace shop<tspan' in art and "no object named" not in art
+    assert second["objects"] == [] and second["evidence"] == ["NetworkPolicy/shop/deny-egress"]
+    assert (
+        '<dt>Object</dt><dd><code class="in">NetworkPolicy/shop/deny-egress</code> '
+        "(named by the finding on this hop; the walk lists none)</dd>"
+    ) in page
+    assert _embedded_walk(page) == walked, "the walk the page carries is not rewritten to match"
+    # Where the evidence names nothing, the card stays a kind and says so.
+    _, complete, _ = _both(SERVICE, FIXTURES / "service" / "complete", capsys)
+    quiet = _actor(complete, _view(complete)["hops"][0]["actor"])
+    assert '<text class="n">NetworkPolicy</text>' in quiet and "kind; no object named" in quiet
+
+
+def test_several_objects_in_the_evidence_are_counted_and_another_kind_is_not_borrowed() -> None:
+    lesson = M.lessons()[SERVICE]
+    ids = [s["id"] for s in lesson["steps"]]
+
+    def finding(resource: str) -> dict[str, str]:
+        return {"ruleId": "KN-N013", "severity": "medium", "resource": resource, "title": "t"}
+
+    steps = [
+        {"step": ids[0], "title": "A", "verdict": "holds", "why": "w"},
+        {
+            "step": ids[1],
+            "title": "B",
+            "verdict": "fails",
+            "why": "w",
+            "findings": [
+                finding("NetworkPolicy/shop/a"),
+                finding("Deployment/shop/web"),
+                finding("NetworkPolicy/shop/b"),
+                finding("NetworkPolicy/shop/a"),
+            ],
+        },
+    ]
+    walked = _walk_of(steps, lesson=SERVICE, counts={"declared": 7, "judged": 2, "notObservable": 0, "notReached": 5})
+    page = H.render_html(walked, lesson)
+    hop = _view(page)["hops"][1]
+    assert hop["evidence"] == ["NetworkPolicy/shop/a", "NetworkPolicy/shop/b"]
+    art = _actor(page, hop["actor"])
+    assert '<text class="n">NetworkPolicy a</text>' in art and "namespace shop &#183; +1 more<tspan" in art
+    assert "Deployment web" not in art
+
+
+def test_a_hop_that_stays_on_its_card_is_at_it_and_not_a_journey_from_it_to_itself(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, page, _ = _both(REQUEST, FIXTURES / "broken", capsys)
+    hops = _view(page)["hops"]
+    assert hops[0]["caption"] == "01/07  start \u2192 Ingress/shop/shop"
+    assert hops[1]["caption"] == "02/07  at Ingress/shop/shop" and hops[1]["route"] == []
+    assert hops[2]["caption"] == "03/07  Ingress/shop/shop \u2192 Service/shop/orders-api" and hops[2]["route"]
+    assert '<p class="sub route">02/07  at Ingress/shop/shop</p>' in page
+    for lesson, path in CASES:
+        _, page, _ = _both(lesson, path, capsys)
+        for hop in _view(page)["hops"]:
+            same = hop["n"] > 1 and hop["from"] == hop["actor"]
+            assert ("  at " in hop["caption"]) == same and ("\u2192" in hop["caption"]) != same, hop["caption"]
+
+
+def _embedded_walk(page: str) -> dict[str, Any]:
+    tag = '<script type="application/json" id="walk-data">'
+    start = page.index(tag) + len(tag)
+    walk: dict[str, Any] = json.loads(page[start : page.index("</script>", start)])["walk"]
+    return walk

@@ -249,7 +249,7 @@ def test_no_string_from_the_walk_becomes_markup_or_a_command(payload: str) -> No
         *("html", "head", "meta", "title", "style", "body", "main", "header", "h1", "h2", "p", "section", "div"),
         *("span", "dl", "dt", "dd", "svg", "path", "g", "circle", "ol", "ul", "li", "a", "code", "button"),
         *("output", "script", "aside", "nav", "footer", "details", "summary", "dialog", "kbd", "em", "i"),
-        *("table", "thead", "tbody", "tr", "th", "td", "polygon", "rect", "line", "text", "ellipse"),
+        *("table", "thead", "tbody", "tr", "th", "td", "polygon", "rect", "line", "text", "tspan", "ellipse"),
     }, tags
     # No attribute the payload could have added: every `on...=` handler would be one.
     assert not re.search(r"<[^>]*\son[a-z]+\s*=", page)

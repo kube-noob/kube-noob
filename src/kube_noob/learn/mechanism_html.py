@@ -292,12 +292,6 @@ def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[
         )
         objects = _strings(s.get("objects"))
         kinds = _kinds(declared[i] if declared else None)
-        if objects:
-            label, named = objects[0] + (f" (+{len(objects) - 1} more)" if len(objects) > 1 else ""), True
-        elif kinds:
-            label, named = " / ".join(kinds), False
-        else:
-            label, named = _text(s.get("step") or f"hop {n}"), False
         raw_findings = s.get("findings")
         findings = [
             {
@@ -309,6 +303,21 @@ def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[
             for f in (raw_findings if isinstance(raw_findings, list) else [])
             if isinstance(f, dict)
         ]
+        # A hop the walk names no object for (a kind it reads without needing one) may still have findings that
+        # name one. That name is the reader's own object, so the card and the Object fact use it -- and say where
+        # it came from, because the walk did not list it as an object of the hop.
+        evidence = (
+            list(dict.fromkeys(f["resource"] for f in findings if f["resource"].split("/", 1)[0] in kinds))
+            if len(objects) == 0
+            else []
+        )
+        shown = objects or evidence
+        if shown:
+            label, named = shown[0] + (f" (+{len(shown) - 1} more)" if len(shown) > 1 else ""), True
+        elif kinds:
+            label, named = " / ".join(kinds), False
+        else:
+            label, named = _text(s.get("step") or f"hop {n}"), False
         why = _whole(s.get("why"))
         hops.append(
             {
@@ -322,6 +331,7 @@ def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[
                 "label": label,
                 "named": named,
                 "objects": objects,
+                "evidence": evidence,
                 "kinds": kinds,
                 "rules": _strings(s.get("rules")),
                 "findings": findings,
@@ -349,17 +359,14 @@ def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[
                 "label": " / ".join(kinds) if kinds else ident,
                 "named": False,
                 "objects": [],
+                "evidence": [],
                 "kinds": kinds,
                 "rules": _strings(step.get("rules")) if step else [],
                 "findings": [],
                 "event": _event(NOT_WALKED, n, "", broken_before, stop_at),
             }
         )
-    total = len(hops)
-    width = max(2, len(str(total)))
     for h in hops:
-        prev = hops[h["n"] - 2]["label"] if h["n"] > 1 else "start"
-        h["caption"] = f"{h['n']:0{width}d}/{total:0{width}d}  {prev} \u2192 {h['label']}"
         h["says"] = _says(h)
 
     verdict = walked.get("verdict")
@@ -392,6 +399,18 @@ def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[
     lesson_id = _text(walked.get("lesson"))
     namespaces = _strings(walked.get("namespaces"))
     drawn = mechanism_scene.build(hops, lesson_id, namespaces, _esc) if hops else {"scene": "", "sequence": ""}
+    # Written after the scene is built, because it says where the event came from: another card, or this one.
+    # A hop that stays on the card of the hop before it is "at" that object -- the marker pulses there, it does
+    # not travel -- so the line does not read as a journey from an object to itself.
+    total = len(hops)
+    width = max(2, len(str(total)))
+    for h in hops:
+        count_ = f"{h['n']:0{width}d}/{total:0{width}d}"
+        if h["n"] > 1 and h["from"] == h["actor"]:
+            h["caption"] = f"{count_}  at {h['label']}"
+        else:
+            prev = hops[h["n"] - 2]["label"] if h["n"] > 1 else "start"
+            h["caption"] = f"{count_}  {prev} \u2192 {h['label']}"
     view_ = {
         "lesson": lesson_id,
         "title": _text(walked.get("title") or "A mechanism walk"),
@@ -458,6 +477,8 @@ def _section(h: dict[str, Any], total: int) -> str:
     state = h["state"]
     if h["objects"]:
         objects = _list(h["objects"], from_input=True)
+    elif h["evidence"]:
+        objects = _list(h["evidence"], from_input=True) + " (named by the finding on this hop; the walk lists none)"
     elif h["kinds"]:
         objects = f"none named by the walk (the hop reads {_esc(' / '.join(h['kinds']))})"
     else:
