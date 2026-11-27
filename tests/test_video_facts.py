@@ -270,3 +270,105 @@ def test_videos_json_passes_its_schema_and_the_schema_knows_every_scene_kind() -
     bad["videos"]["teaser"]["scenes"][0]["vo"] = "Link below."
     bad["videos"]["teaser"]["scenes"].append({"kind": "nope", "min": 1})
     assert len(list(jsonschema.Draft202012Validator(schema).iter_errors(bad))) >= 2
+
+
+def _walk_run(path: str) -> tuple[int, dict[str, Any]]:
+    import subprocess
+
+    r = subprocess.run(
+        [sys.executable, "-m", "kube_noob", "learn", "mechanism", vfacts.WALK_LESSON, "-f", path, "--format", "json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    return r.returncode, json.loads(r.stdout)
+
+
+def test_the_walk_video_draws_the_hops_the_command_grades(facts: vfacts.Facts) -> None:
+    """Every hop, mark, reason and exit code in the walk video is the command's own, on the three inputs it shows."""
+    assert set(vfacts.WALKS) == {"complete", "broken", "fragment"}
+    for name, path in vfacts.WALKS.items():
+        code, real = _walk_run(path)
+        shown = facts.walk(name)
+        assert shown["exit"] == code == real["exitCode"], name
+        assert shown["command"] == f"kube-noob learn mechanism {vfacts.WALK_LESSON} -f {path}"
+        assert (shown["title"], shown["reason"]) == (real["title"], real["verdictReason"])
+        assert len(shown["steps"]) == real["counts"]["declared"]
+        walked = shown["steps"][: len(real["steps"])]
+        assert [(s["id"], s["state"], s["why"]) for s in walked] == [
+            (s["step"], s["verdict"], s["why"]) for s in real["steps"]
+        ]
+        for s, r in zip(walked, real["steps"], strict=True):
+            assert all(f["ruleId"] in s["finding"] and f["title"] in s["finding"] for f in r.get("findings", [])), s
+    spelt = {s["state"]: s["mark"] for name in vfacts.WALKS for s in facts.walk(name)["steps"]}
+    assert spelt == {
+        "holds": "holds",
+        "fails": "BROKEN",
+        "cannot-judge": "cannot judge",
+        "not-observable": "not checked",
+        "not-walked": "not walked",
+    }  # the words `learn mechanism` prints, read from its output; only `not walked` has no mark of its own there
+
+
+def test_a_hop_the_walk_did_not_reach_is_never_drawn_as_holding(facts: vfacts.Facts) -> None:
+    code, real = _walk_run(vfacts.WALKS["fragment"])
+    shown = facts.walk("fragment")
+    assert code == 5 and real["stoppedAt"]
+    after = shown["steps"][len(real["steps"]) :]
+    assert len(after) == real["counts"]["notReached"] == facts.get("walk.unwalked") >= 1
+    assert all(s["state"] == "not-walked" and s["mark"] != "holds" and not s["why"] for s in after)
+    assert shown["steps"][shown["focus"]]["id"] == real["stoppedAt"]
+    assert shown["note"] == f"{len(after)} hop(s) after it were not walked and are not reported as working."
+    # ... and a hop no manifest records is not counted with the ones that hold
+    done = facts.walk("complete")
+    assert facts.get("walk.holds") == sum(s["state"] == "holds" for s in done["steps"]) >= 1
+    assert facts.get("walk.unchecked") == sum(s["state"] == "not-observable" for s in done["steps"]) >= 1
+    assert facts.get("walk.holds") + facts.get("walk.unchecked") == facts.get("walk.hops") == len(done["steps"])
+    assert done["steps"][done["focus"]]["state"] == "not-observable"
+
+
+def test_the_walk_facts_are_the_story_the_video_tells(facts: vfacts.Facts) -> None:
+    assert [facts.get(f"walk.{n}_exit") for n in ("complete", "broken", "fragment")] == [0, 1, 5]
+    broken = facts.walk("broken")
+    hop = broken["steps"][broken["focus"]]
+    assert hop["state"] == "fails" and facts.get("walk.broken_rule") in hop["finding"]
+    assert facts.get("walk.judged") == sum(s["state"] == "holds" for s in facts.walk("fragment")["steps"])
+    bundle = facts.recording("walk:bundle")
+    assert bundle[0].startswith("# ") and [ln.split()[0] for ln in bundle[1:]] == [
+        "Ingress",
+        "Service",
+        "Deployment",
+        "NetworkPolicy",
+    ]
+
+
+def test_the_walk_video_refuses_to_render_a_story_the_command_no_longer_tells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole, part = vfacts.WALKS["complete"], vfacts.WALKS["fragment"]
+    for swapped, why in (
+        ({"complete": vfacts.WALKS["broken"]}, "no longer holds on every hop"),
+        ({"complete": part}, "no longer holds on every hop"),
+        ({"broken": whole}, "no hop is BROKEN"),
+        ({"fragment": whole}, "no longer stops"),
+    ):
+        monkeypatch.setattr(vfacts, "WALKS", {**vfacts.WALKS, **swapped})
+        with pytest.raises(vfacts.FactError, match=why):
+            vfacts.Facts().get("walk.hops")
+        monkeypatch.undo()
+
+
+def test_a_hops_scene_names_the_walk_it_draws_and_the_stage_marks_every_state() -> None:
+    schema = json.loads((VIDEO / "stage" / "videos.schema.json").read_text(encoding="utf-8"))
+    spec = _spec()
+    drawn = [s["walk"] for s in spec["videos"]["walk"]["scenes"] if s["kind"] == "hops"]
+    assert drawn == ["complete", "broken", "fragment"]
+    bad = json.loads(json.dumps(spec))
+    del next(s for s in bad["videos"]["walk"]["scenes"] if s["kind"] == "hops")["walk"]
+    assert list(jsonschema.Draft202012Validator(schema).iter_errors(bad))
+    stage = (VIDEO / "stage" / "stage.html").read_text(encoding="utf-8")
+    for state in ("holds", "fails", "cannot-judge", "not-observable", "not-walked"):
+        assert f".hops .{state} " in stage, state  # each state has a look of its own; none borrows `holds`
+    assert "esc(s.mark)" in stage  # the word under a hop is the command's, not the stage's

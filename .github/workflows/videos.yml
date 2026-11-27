@@ -1,7 +1,7 @@
 name: videos
 
 # The demo videos of a release, rendered from its own code and attached to its GitHub release: 4K masters
-# (3840x2160, 30 fps) and 1080p web copies of the walkthrough and the four animated videos, WebVTT captions, poster
+# (3840x2160, 30 fps) and 1080p web copies of the walkthrough and the five animated videos, WebVTT captions, poster
 # frames, the YouTube thumbnail and the YouTube description. Every number in them comes from the released code and
 # from the sidecar transcript its CI run recorded on a kind cluster (demos/video/facts.py); every file's sound is
 # measured against the brand spec before it is attached (demos/video/loudness.py). release.yml calls this after the
@@ -176,7 +176,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        video: [walkthrough, teaser, sidecar, mcp, scan]
+        video: [walkthrough, teaser, sidecar, mcp, scan, walk]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
