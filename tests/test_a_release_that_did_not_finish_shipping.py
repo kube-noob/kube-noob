@@ -43,6 +43,11 @@ V0100_JOBS = {
 EMPTY_CHANGELOG = "# Changelog\n\n## Unreleased\n\n## 0.10.0 - 2026-11-23\n\n- old (G1)\n"
 WAITING_CHANGELOG = "# Changelog\n\n## Unreleased\n\n- a (G2)\n- b (G3)\n\n## 0.10.0 - 2026-11-23\n\n- old (G1)\n"
 
+# The `ledger` job's outputs when every deliverable of v0.10.0 was read where it is served.
+DELIVERED_LEDGER = ("v0.10.0", "0", "- [x] **delivered** `pypi` PyPI serves kube-noob 0.10.0")
+CARD = "- [ ] **MISSING** `website:video-card:scan` kube-noob.com/videos/ has a card for the scan video"
+BLIND = "- [ ] **not known** `image:0.10.0` the image exists — URLError: timed out (after one retry)"
+
 # Answers by a substring of the command line, first match wins. A value of None makes that read fail.
 STUB = r"""
 import json, os, subprocess, sys
@@ -84,6 +89,7 @@ def _run(
     jobs: Any = V0100_JOBS,
     existing: Any = (),
     answers: Any = (),
+    ledger: tuple[str, str, str] = DELIVERED_LEDGER,
 ) -> tuple[int, str, list[list[str]]]:
     for tool in ("jq", "awk", "paste", "date", "grep"):
         assert shutil.which(tool), f"{tool} is not on PATH, so the workflow's script could not be executed"
@@ -122,6 +128,10 @@ def _run(
         "GITHUB_SERVER_URL": "https://github.com",
         "STUB_SCENARIO": str(tmp_path / "scenario.json"),
         "STUB_LOG": str(log),
+        # What the `ledger` job hands over as its outputs (G436): the tag it read, its exit code and its rows.
+        "LEDGER_TAG": ledger[0],
+        "LEDGER_RC": ledger[1],
+        "LEDGER_ROWS": ledger[2],
     }
     # The shell GitHub runs a `run:` block with on ubuntu-latest.
     out = subprocess.run(
@@ -310,3 +320,83 @@ def test_an_existing_issue_is_edited_without_touching_labels(tmp_path: Path) -> 
     code, out, writes = _run(tmp_path, changelog=WAITING_CHANGELOG, runs=SHIPPED, existing=(7,))
     assert code == 0, out
     assert [w[:2] for w in writes] == [["issue", "edit"]], writes
+
+
+# G436: the release run concluding success says every job ran. It does not say the Videos page has a card for
+# every video, or that the formula on main serves this version. The `ledger` job reads each deliverable where it
+# is served, and a row that is MISSING or not known is "not finished" exactly as an unshipped job is.
+@pytest.mark.parametrize(
+    ("rc", "row", "word"),
+    [("1", CARD, "website:video-card:scan"), ("5", BLIND, "image:0.10.0")],
+    ids=["a-row-missing", "a-row-not-known"],
+)
+def test_a_release_whose_run_succeeded_and_whose_ledger_did_not_is_not_finished(
+    tmp_path: Path, rc: str, row: str, word: str
+) -> None:
+    rows = DELIVERED_LEDGER[2] + "\n" + row
+    code, out, writes = _run(
+        tmp_path, changelog=EMPTY_CHANGELOG, runs=SHIPPED, existing=(7,), ledger=("v0.10.0", rc, rows)
+    )
+    assert code == 0, out
+    assert not any(w[:2] == ["issue", "close"] for w in writes), f"closed over an undelivered row: {writes}"
+    body = _body(writes)
+    assert body.startswith("**Not finished.**"), body
+    named = body.split("these rows are MISSING or not known:")[1].split("MISSING was read")[0]
+    assert word in named, "the row must name itself"
+    assert "`pypi`" not in named, "a delivered row is not named as undelivered"
+    assert "did not finish shipping" not in body, "the run succeeded; only the ledger is open"
+    assert "python scripts/release_deliverables.py --version 0.10.0" in body
+    assert "<details>" in body and "`pypi` PyPI serves kube-noob 0.10.0" in body.split("<details>")[1], (
+        "every row goes into the issue, delivered ones included"
+    )
+
+
+def test_ready_carries_the_ledger_and_an_open_row_beside_it(tmp_path: Path) -> None:
+    rows = DELIVERED_LEDGER[2] + "\n" + CARD
+    code, out, writes = _run(tmp_path, changelog=WAITING_CHANGELOG, runs=SHIPPED, ledger=("v0.10.0", "1", rows))
+    assert code == 0, out
+    body = _body(writes)
+    assert body.startswith("**Ready.**") and "is not everywhere it is served" in body, body
+    assert "website:video-card:scan" in body
+
+
+def test_an_unshipped_job_and_an_open_row_are_both_named(tmp_path: Path) -> None:
+    rows = DELIVERED_LEDGER[2] + "\n" + CARD
+    code, out, writes = _run(tmp_path, changelog=EMPTY_CHANGELOG, runs=UNSHIPPED, ledger=("v0.10.0", "1", rows))
+    assert code == 0, out
+    body = _body(writes)
+    assert "failure homebrew" in body and "website:video-card:scan" in body, body
+
+
+@pytest.mark.parametrize(
+    "ledger",
+    [
+        ("", "", ""),
+        ("v0.10.0", "", DELIVERED_LEDGER[2]),
+        ("v0.10.0", "4", DELIVERED_LEDGER[2]),
+        ("v0.10.0", "0", ""),
+        ("v0.9.2", "0", DELIVERED_LEDGER[2]),
+        ("v0.10.0", "10", DELIVERED_LEDGER[2]),
+    ],
+    ids=["job-failed", "no-exit-code", "crashed", "no-rows", "another-tag", "not-an-exit-code"],
+)
+def test_a_ledger_that_was_not_taken_is_not_known_and_writes_nothing(
+    tmp_path: Path, ledger: tuple[str, str, str]
+) -> None:
+    """The ledger job failing, or answering for another release, is a reading that was not taken. Closing the
+    issue on it would be `in step` over a release nobody looked at."""
+    for changelog in (EMPTY_CHANGELOG, WAITING_CHANGELOG):
+        sub = tmp_path / str(len(changelog))
+        sub.mkdir()
+        code, out, writes = _run(sub, changelog=changelog, runs=SHIPPED, existing=(7,), ledger=ledger)
+        assert code == 1, out
+        assert "the deliverables ledger for v0.10.0 was not taken" in out and "NOT KNOWN" in out, out
+        assert writes == [], writes
+
+
+def test_a_ledger_that_exited_non_zero_with_no_open_row_still_names_itself(tmp_path: Path) -> None:
+    code, out, writes = _run(
+        tmp_path, changelog=EMPTY_CHANGELOG, runs=SHIPPED, ledger=("v0.10.0", "5", DELIVERED_LEDGER[2])
+    )
+    assert code == 0, out
+    assert "no row names itself; the ledger exited 5" in _body(writes)
