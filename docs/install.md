@@ -27,7 +27,7 @@ kube-noob is one engine. What changes from one place to another is how Claude, o
 |---|---|---|
 | Claude Code, from this repository's marketplace | `/plugin marketplace add kube-noob/kube-noob`, then `/plugin install kube-noob@kube-noob` | The full plugin: its own stdio MCP server, bundled as readable source and started with `uv run --frozen`, and seven skills that call its tools. Needs uv |
 | Claude Code, from the Claude plugin directory (once `kube-noob-skills` is listed) | `kube-noob-skills`, and the CLI: `pipx install 'kube-noob>=0.9.3'` (0.9.3 is the first release the skills work with) | The seven skills check `kube-noob --version`, then run the CLI through the Bash tool on a private folder, offline, under your permission settings, with `KUBE_NOOB_FOR_MODEL=1` so the output is cleaned for Claude. With no CLI they say nothing was audited and give the install command |
-| Claude Desktop | `{"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.11.0", "kube-noob", "mcp"]}}}` in its MCP server configuration | The MCP server over stdio, every tool |
+| Claude Desktop | `{"mcpServers": {"kube-noob": {"command": "uvx", "args": ["--from", "kube-noob==0.11.1", "kube-noob", "mcp"]}}}` in its MCP server configuration | The MCP server over stdio, every tool |
 | claude.ai chat | The [Agent Skill](#agent-skill) zip, uploaded under **Customize > Skills** | The tools in claude.ai's code sandbox, offline. The directory plugin's skills load in chat too, but chat has no shell on your machine: they give you the command and read the output you paste |
 | Any MCP client | The CLI by any method above, then the client pointed at `kube-noob mcp` | The MCP server over stdio, every tool |
 | Plain kubectl | `kubectl-noob` on your `PATH`: [kubectl, without krew](#kubectl-without-krew) today, and through krew once the krew-index pull request ([krew/SUBMIT.md](../krew/SUBMIT.md)) merges | `kubectl noob` passes every argument to the kube-noob CLI unchanged (`kubectl noob audit -f k8s/` is `kube-noob audit -f k8s/`), and, when kube-noob is not on `PATH` but uv is, downloads the pinned release through `uvx` |
@@ -44,7 +44,7 @@ before it is in krew-index. Download the release asset, check it against the dig
 and put the script on your `PATH` (`~/.local/bin` here; use any directory on yours):
 
 ```bash
-curl -fsSLO https://github.com/kube-noob/kube-noob/releases/download/v0.11.0/kubectl-noob-v0.11.0.tar.gz && want=$(curl -fsSL https://raw.githubusercontent.com/kube-noob/kube-noob/v0.11.0/krew/noob.yaml | sed -n 's/^ *sha256: //p') && test -n "$want" && if command -v sha256sum >/dev/null 2>&1; then echo "$want  kubectl-noob-v0.11.0.tar.gz" | sha256sum -c -; else echo "$want  kubectl-noob-v0.11.0.tar.gz" | shasum -a 256 -c -; fi && mkdir -p ~/.local/bin && tar -xzf kubectl-noob-v0.11.0.tar.gz -C ~/.local/bin kubectl-noob && kubectl noob --version
+curl -fsSLO https://github.com/kube-noob/kube-noob/releases/download/v0.11.1/kubectl-noob-v0.11.1.tar.gz && want=$(curl -fsSL https://raw.githubusercontent.com/kube-noob/kube-noob/v0.11.1/krew/noob.yaml | sed -n 's/^ *sha256: //p') && test -n "$want" && if command -v sha256sum >/dev/null 2>&1; then echo "$want  kubectl-noob-v0.11.1.tar.gz" | sha256sum -c -; else echo "$want  kubectl-noob-v0.11.1.tar.gz" | shasum -a 256 -c -; fi && mkdir -p ~/.local/bin && tar -xzf kubectl-noob-v0.11.1.tar.gz -C ~/.local/bin kubectl-noob && kubectl noob --version
 ```
 
 It is one line so that a failed step stops it: the archive is extracted only after the digest check printed `OK`, with
