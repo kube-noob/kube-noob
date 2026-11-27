@@ -143,7 +143,9 @@ def build(
     music_start = 0.0
     story = np.zeros(n)  # sound effects that tell the story
     if "alarm" in kinds:
-        d = kinds["dust"]
+        # The alarm sounds until the dust settles. A video that opens on the alarm and has no dust scene (walk)
+        # stops it where its own alarm scene ends, instead of failing on a scene it never had.
+        d = kinds.get("dust") or kinds["alarm"]
         story += alarm(total, 0.0, d["start"] + d["dur"] + 0.6)
         music_start = kinds["arrive"]["start"] - 0.2
         story += whoosh(total, kinds["arrive"]["start"] + 0.2)

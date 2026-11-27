@@ -195,6 +195,54 @@ html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; backgro
 .payoff .diff { font: 500 21px/1.6 var(--mono); padding: 14px 18px; border-radius: 14px; background: rgba(var(--kn-navy-night-rgb), .6); border: 1px solid rgba(var(--kn-green-rgb), .3); }
 .payoff .diff .add { color: var(--kn-green-soft); } .payoff .diff .del { color: var(--kn-danger-soft); }
 .payoff .note { position: absolute; left: 0; right: 0; top: 590px; text-align: center; font: 600 24px/1.35 var(--sans); color: var(--kn-warning); }
+/* hops: one mechanism walk as `kube-noob learn mechanism` graded it. Every state has its own look, and a hop the
+   walk did not reach is hollow and dashed: it never borrows the look of one that holds. */
+.hops { position: absolute; left: 110px; top: 164px; width: 1700px; height: 762px; border-radius: 26px; overflow: hidden;
+  background: linear-gradient(165deg, rgba(var(--kn-panel-rgb), .96), rgba(var(--kn-navy-night-rgb), .97) 70%);
+  border: 1.5px solid rgba(var(--kn-sky-rgb), .28);
+  box-shadow: 0 50px 140px -40px rgba(var(--kn-navy-night-rgb), .95), 0 0 120px -40px rgba(var(--kn-blue-rgb), .7); }
+.hops .head { height: 58px; display: flex; align-items: center; gap: 14px; padding: 0 22px 0 26px; white-space: nowrap;
+  border-bottom: 1px solid rgba(var(--kn-sky-rgb), .16); font: 500 22px var(--mono); color: var(--kn-ink-soft); }
+.hops .head i { width: 15px; height: 15px; border-radius: 50%; display: inline-block; flex: none; }
+.hops .head .ps { color: var(--kn-green); margin-left: 8px; }
+.hops .exit { margin-left: auto; font: 600 22px var(--mono); padding: 5px 16px; border-radius: 10px; color: rgb(var(--hc));
+  background: rgba(var(--hc), .14); border: 1.5px solid rgba(var(--hc), .6); }
+.hops .lesson { position: absolute; left: 40px; top: 82px; font: 700 34px var(--sans); color: var(--kn-ink); letter-spacing: -0.01em; }
+.hops .track { position: absolute; left: 0; top: 152px; width: 1700px; height: 250px; }
+.hops .rail { position: absolute; left: 130px; top: 44px; height: 6px; border-radius: 3px; }
+.hops .rail.base { width: 1440px; background: rgba(var(--kn-sky-rgb), .16); }
+.hops .rail.done { background: linear-gradient(90deg, var(--kn-teal), var(--kn-green)); box-shadow: 0 0 16px rgba(var(--kn-green-rgb), .45); }
+.hops .pkt { position: absolute; top: 33px; width: 28px; height: 28px; margin-left: -14px; border-radius: 50%; background: var(--kn-ink);
+  box-shadow: 0 0 26px 6px rgba(var(--kn-sky-rgb), .75); }
+.hops .pend { --hc: var(--kn-sky-rgb); }
+.hops .holds { --hc: var(--kn-green-rgb); }
+.hops .fails { --hc: var(--kn-danger-rgb); }
+.hops .cannot-judge { --hc: var(--kn-warning-rgb); }
+.hops .not-observable { --hc: var(--kn-muted-rgb); }
+.hops .not-walked { --hc: var(--kn-muted-rgb); }
+.hop { position: absolute; top: 0; width: 236px; margin-left: -118px; text-align: center; }
+.hop .dot { width: 94px; height: 94px; margin: 0 auto; border-radius: 50%; display: grid; place-items: center; font: 600 36px var(--mono);
+  color: rgb(var(--hc)); border: 3px solid rgba(var(--hc), .9);
+  background: linear-gradient(rgba(var(--hc), .2), rgba(var(--hc), .2)), var(--kn-navy-night); }
+.hop.pend .dot { border-color: rgba(var(--hc), .3); color: rgba(var(--hc), .45); background: var(--kn-navy-night); }
+.hop.fails .dot { box-shadow: 0 0 34px rgba(var(--hc), .55); }
+.hop.cannot-judge .dot { box-shadow: 0 0 34px rgba(var(--hc), .5); }
+.hop.not-observable .dot, .hop.not-walked .dot { border-style: dashed; }
+.hop.not-walked .dot { background: var(--kn-navy-night); color: rgba(var(--hc), .7); border-color: rgba(var(--hc), .6); }
+.hop .mark { display: inline-block; margin-top: 14px; font: 600 20px var(--mono); padding: 4px 12px; border-radius: 9px; white-space: nowrap;
+  color: rgb(var(--hc)); background: rgba(var(--hc), .13); border: 1.5px solid rgba(var(--hc), .5); }
+.hop.not-observable .mark, .hop.not-walked .mark { border-style: dashed; }
+.hop .id { width: 216px; margin: 10px auto 0; font: 500 17px/1.3 var(--mono); color: var(--kn-muted); overflow-wrap: anywhere; }
+.hops .card { position: absolute; left: 40px; right: 40px; top: 424px; height: 190px; border-radius: 18px; padding: 20px 30px 0 36px; overflow: hidden;
+  background: rgba(var(--kn-navy-night-rgb), .6); border: 1.5px solid rgba(var(--hc), .45); box-shadow: inset 7px 0 0 rgb(var(--hc)); }
+.hops .card .t { font: 700 30px/1.25 var(--sans); color: var(--kn-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hops .card .t b { font: 600 24px var(--mono); color: rgb(var(--hc)); margin-right: 16px; }
+.hops .card .w { margin-top: 12px; font: 500 25px/1.4 var(--sans); color: var(--kn-ink-soft); }
+.hops .card .f { margin-top: 12px; font: 600 22px var(--mono); color: rgb(var(--hc)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hops .foot { position: absolute; left: 40px; right: 40px; top: 636px; }
+.hops .foot .note { font: 600 25px/1.35 var(--sans); color: var(--kn-warning); }
+.hops .foot .reason { margin-top: 8px; font: 500 23px/1.4 var(--mono); color: var(--kn-ink-soft); }
+.hops .foot .reason::before { content: "→ "; color: var(--kn-green); }
 </style>
 </head>
 <body>
@@ -654,6 +702,36 @@ function book(T, o) {
   b.style.boxShadow = o.glow ? `0 0 ${40 * o.glow}px rgba(${K.greenRgb},${0.6 * o.glow})` : 'none';
 }
 
+/* ------------------------------------------------------------------ hops (the mechanism walk) */
+// One panel per hops scene, built once from sc.hops: what `kube-noob learn mechanism` returned on that input
+// (demos/video/facts.py). The stage adds no word to it: marks, reasons, findings and the exit code are the command's.
+const HOP_X0 = 130, HOP_DX = 1440;
+function buildHops(d, i) {
+  const n = d.steps.length;
+  const x = k => HOP_X0 + (n > 1 ? HOP_DX * k / (n - 1) : HOP_DX / 2);
+  const e = reg('hops' + i, el($('front'), `<div class="hops">
+    <div class="head"><i style="background:var(--kn-danger)"></i><i style="background:var(--kn-warning)"></i><i style="background:var(--kn-green)"></i>
+      <span class="ps">$</span><span>${esc(d.command)}</span><span class="exit">exit ${d.exit}</span></div>
+    <div class="lesson">${esc(d.title)}</div>
+    <div class="track"><div class="rail base"></div><div class="rail done"></div>
+      <div class="pkt"></div>
+      ${d.steps.map((s, k) => `<div class="hop" style="left:${x(k)}px"><div class="dot">${k + 1}</div><div class="mark">${esc(s.mark)}</div><div class="id">${esc(s.id)}</div></div>`).join('')}</div>
+    <div class="card"><div class="t"></div><div class="w"></div><div class="f"></div></div>
+    <div class="foot"><div class="note">${esc(d.note)}</div><div class="reason">${esc(d.reason)}</div></div></div>`));
+  const f = d.steps[d.focus], card = e.querySelector('.card');
+  card.classList.add(f.state);
+  card.querySelector('.t').innerHTML = `<b>${d.focus + 1}. [${esc(f.mark)}]</b>${esc(f.title)}`;
+  card.querySelector('.w').textContent = f.why;
+  card.querySelector('.f').textContent = f.finding;
+  // a walk that exits 0 is green; any other exit takes the colour of the hop that caused it
+  e.querySelector('.exit').classList.add(d.exit === 0 ? 'holds' : f.state);
+  return { e, x, hops: [...e.querySelectorAll('.hop')], done: e.querySelector('.rail.done'), pkt: e.querySelector('.pkt'), card,
+    exit: e.querySelector('.exit'), note: e.querySelector('.note'), reason: e.querySelector('.reason'),
+    walked: d.steps.filter(s => s.state !== 'not-walked').length,
+    // the rail lights only as far as the last hop that was judged: the stretch to a hop nothing checked stays dark
+    lit: x(d.steps.reduce((m, s, k) => (['holds', 'fails', 'cannot-judge'].includes(s.state) ? k : m), 0)) };
+}
+
 /* ------------------------------------------------------------------ captions, end card */
 function caption(sc, L) {
   const c = $('caption');
@@ -673,7 +751,7 @@ function caption(sc, L) {
 }
 const DEFAULT_POS = { alarm: 'center', dust: 'center', arrive: 'center', split: 'center', install: 'lower',
   pod: 'top', loopback: 'top', lock: 'top', sidecarTerm: 'lower', gauge: 'lower', pullback: 'lower',
-  desk: 'lower', beam: 'top', mcpTerm: 'lower', explain: 'lower', local: 'top', cta: 'lower' };
+  desk: 'lower', beam: 'top', mcpTerm: 'lower', explain: 'lower', local: 'top', cta: 'lower', hops: 'top' };
 const CAP_AT = { arrive: 2.5 };
 function endcard(L, dur) {
   const e = $('endcard'); e.style.display = '';
@@ -965,6 +1043,37 @@ const KINDS = {
     const pulse = 0.25 + 0.1 * Math.sin(T * 2);
     g.style.opacity = pulse;
   },
+  hops(L, dur, sc, T) {
+    room(T, { color: TEAL.join(','), floor: false });
+    drawCubes(T, { color: TEAL.join(','), op: 0.25 });
+    const H = sc._h, d = sc.hops, e = H.e;
+    e.style.display = '';
+    const u = easeOut(clamp(L / 0.5));
+    e.style.opacity = u; e.style.transform = `translateY(${(1 - u) * 28}px)`;
+    // The packet takes the hops in order and stops where the walk stopped. Each hop shows its mark when the packet
+    // gets there; the hops after a stop are then marked as not walked, never left looking as if they were pending.
+    const step = clamp((dur * 0.55 - 1.0) / H.walked, 0.3, 0.8), at = k => 1.0 + k * step;
+    const end = at(H.walked - 1);
+    let px = H.x(0) - 90 * (1 - easeOut(clamp((L - 0.4) / 0.6)));
+    for (let k = 1; k < H.walked; k++) px = lerp(px, H.x(k), easeIO(clamp((L - at(k) + step * 0.75) / (step * 0.75))));
+    H.pkt.style.left = px + 'px';
+    H.pkt.style.opacity = sstep(0.3, 0.6, L) * (1 - sstep(end, end + 0.5, L));
+    H.done.style.width = Math.max(0, Math.min(px, H.lit) - HOP_X0) + 'px';
+    H.hops.forEach((h, k) => {
+      const t0 = k < H.walked ? at(k) : end + 0.5 + (k - H.walked) * 0.25;
+      const p = clamp((L - t0) / 0.3);
+      h.className = 'hop ' + (p > 0 ? d.steps[k].state : 'pend');
+      h.children[0].style.transform = `scale(${p > 0 ? 0.86 + 0.14 * back(p) : 1})`;
+      h.children[1].style.opacity = p;
+    });
+    const tf = at(d.focus);
+    H.card.style.opacity = sstep(tf + 0.1, tf + 0.5, L);
+    H.card.style.transform = `translateY(${(1 - sstep(tf + 0.1, tf + 0.5, L)) * 16}px)`;
+    H.reason.style.opacity = sstep(end + 0.3, end + 0.7, L);
+    H.note.style.opacity = sstep(end + 0.6, end + 1.0, L);
+    const x = sstep(end + 0.5, end + 0.9, L);
+    H.exit.style.opacity = x; H.exit.style.transform = `scale(${0.8 + 0.2 * back(x)})`;
+  },
   cta(L, dur, sc, T) {
     room(T, { color: TEAL.join(','), floor: false });
     drawCubes(T, { color: TEAL.join(','), op: 0.6 });
@@ -1011,9 +1120,12 @@ async function init() {
   TERM = makeTerm($('props'), 'term');
   const kinds = new Set(TL.scenes.map(s => s.kind));
   if (['pod', 'loopback', 'lock', 'gauge', 'pullback'].some(k => kinds.has(k))) buildIso(); else $('iso').style.display = 'none';
-  if (['desk', 'beam', 'explain', 'local'].some(k => kinds.has(k))) buildDesk();
+  // every kind that draws the desk (deskBase): cta and mcpTerm dim it behind their terminal, and a video whose only
+  // desk scene is its cta (walk) stopped on a desk that was never built
+  if (['desk', 'beam', 'explain', 'local', 'mcpTerm', 'cta'].some(k => kinds.has(k))) buildDesk();
   const pay = TL.scenes.find(s => s.kind === 'payoff');
   if (pay) buildPayoff(pay.payoff);
+  TL.scenes.forEach((sc, i) => { if (sc.kind === 'hops') sc._h = buildHops(sc.hops, i); });
   for (const s of TL.scenes) if (s.term) {
     const typedEnd = s.kind === 'install' ? s.dur * 0.62 : s.dur * 0.72;
     s._s = schedule(s.term, s.kind === 'cta' ? 0.5 : 0.55, typedEnd);

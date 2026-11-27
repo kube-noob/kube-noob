@@ -273,7 +273,7 @@ def test_every_video_the_release_renders_is_one_build_sh_accepts(tmp_path: Path)
     wf = yaml.safe_load((ROOT / ".github" / "workflows" / "videos.yml").read_text(encoding="utf-8"))
     matrix = wf["jobs"]["render"]["strategy"]["matrix"]["video"]
     staged = [v for v in matrix if v != "walkthrough"]
-    assert "scan" in staged, matrix
+    assert "scan" in staged and "walk" in staged, matrix
     out = subprocess.run(
         [bash, str(ROOT / "demos" / "video" / "stage" / "build.sh"), str(tmp_path / "out"), "not-a-video"],
         capture_output=True,

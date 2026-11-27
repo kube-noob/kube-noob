@@ -42,6 +42,8 @@ def load(video: str, facts: vfacts.Facts) -> dict[str, Any]:
                 s["term"] = facts.lines(s["term"])
             if s.get("kind") == "payoff":
                 s["payoff"] = facts.payoff()
+            if s.get("kind") == "hops":
+                s["hops"] = facts.walk(s["walk"])
             if "answer" in s:
                 s["answer"] = [facts.fill(a) for a in s["answer"]]
             if "gauge" in s:

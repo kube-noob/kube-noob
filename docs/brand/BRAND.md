@@ -73,5 +73,5 @@ Trademark line, on every page and every video description:
 | End card | Icon, wordmark, tagline, platforms, surfaces, install command, kube-noob.com, credits |
 | Formats | 16:9. Square (1:1) and vertical (9:16) need their own layout, not a crop of the 16:9 frame: planned |
 
-Scripts: [demos/ai-video-prompts.md](../../demos/ai-video-prompts.md) (the three animated videos) and
+Scripts: [demos/ai-video-prompts.md](../../demos/ai-video-prompts.md) (the animated videos) and
 [demos/youtube-walkthrough.md](../../demos/youtube-walkthrough.md) (the walkthrough and its YouTube metadata).
