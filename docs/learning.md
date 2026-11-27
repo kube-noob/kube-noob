@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 19 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 22 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -118,6 +118,58 @@ that checked nothing (G395). A hop's **title** is also held to what its rules de
 policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
 an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
 
+### A Pod calls a Service
+
+```
+kube-noob learn mechanism mech-net-pod-calls-a-service -f ./manifests
+```
+
+The in-cluster call: the namespace has a policy that is neither open nor inert (KN-N001, KN-N007, KN-N012); no
+policy stops the calling pods from reaching cluster DNS on port 53 (KN-N013); cluster DNS answers the Service name,
+which is **not checked**; the Service selects pods here and its ports are ones they declare (KN-V011, KN-V012,
+KN-V023); the workload owns its pods (KN-V010); the containers declare readiness (KN-C001); and the node sends
+the ClusterIP to an endpoint, which is **not checked**. A namespace with no NetworkPolicy is BROKEN at the first
+hop and stops at the DNS hop, because KN-N013 has no policy to read (G420).
+
+### A packet meets a NetworkPolicy
+
+```
+kube-noob learn mechanism mech-net-network-policy -f ./manifests
+```
+
+Six hops, four of them in a manifest: the namespace has a NetworkPolicy (KN-N001); every policy here selects a
+pod that is here (KN-N012); the cluster's network plugin turns the policy into rules on each node, which is
+**not checked**; no policy carries an ingress rule that is open to every source (KN-N007); the node admits the
+packet a rule allows and drops the rest, which is **not checked**; and no policy stops the pods it selects from
+reaching cluster DNS (KN-N013). A namespace with no NetworkPolicy is BROKEN at the first hop and stops at the
+second, because every later rule has no policy to read.
+
+Read the titles literally here too. Measured before the lesson was written (G421): KN-N012 is silent about a
+workload that no policy selects, KN-N007 is silent about a rule that names ports and no `from`, and no rule
+compares a policy's ports with the ports the containers declare -- a policy naming port 9999 in front of a
+container on 8080 is nobody's finding. The hops say so in their own sentences, and none of them says a packet
+gets in: a default-deny walks `complete`, because a policy is here, it selects pods and no rule in it is open.
+
+### Deploy an app
+
+```
+kube-noob learn mechanism mech-cp-deploy-an-app -f ./manifests
+```
+
+Nine hops from the manifest to a pod that is ready, five of them in the manifest: nothing here is refused for
+its identity, its API version, its selector or a request above its limit (KN-V001, KN-V002, KN-V005, KN-V009,
+KN-V010, KN-C006); every container declares the CPU and memory it asks the scheduler for (KN-C004); every
+ConfigMap, Secret, claim and ServiceAccount a pod names is in this namespace (KN-C017); every container names
+its image by digest (KN-S012); and the containers declare a readiness probe (KN-C001). The four between them --
+the API server admitting and storing the object, the controllers creating the pods, the scheduler binding one,
+the kubelet starting it -- are **not checked**, because a running cluster decides them.
+
+Pass a directory. A single file is part of a namespace, so a name it does not define is not a missing object:
+KN-C017 declines, and the walk stops at that hop at exit 5 instead of calling it found. It stops the same way
+when a pod names a Secret and the bundle defines no Secret at all, since an operator may create it. One gap was
+measured and is not this lesson's to close: a pod template with `containers: []` is silent on every rule and on
+the schema stage, so it walks `complete` (G422).
+
 ### RBAC and ServiceAccounts
 
 ```
@@ -139,6 +191,13 @@ binding, no Role or no Secret **stops** at that hop; the sixth, KN-S014, fires o
 was never passed, so its hop needs a ServiceAccount in the input and is `cannot judge` without one. The Secret
 hop is last for that reason: a bundle whose Secrets live in an external store has none, and placed earlier it
 would stop the walk before any RBAC hop was read.
+
+### Each lesson's worked examples
+
+A walkable lesson names the bundles that show it under `examples:` in the curriculum -- directories relative to
+this repository's `tests/fixtures`, for instance `mechanism/deploy/complete` and `mechanism/deploy/broken`. They
+are for the repository and for a page built from it: the installed package ships no `tests/`, so a walk never
+opens or prints them. Every entry is held to a directory that exists and whose walk reaches a verdict (G423).
 
 ### Watching the walk
 
