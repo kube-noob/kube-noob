@@ -1,8 +1,10 @@
 """A mechanism walk as a page you can watch, and what that page must never do (G402).
 
-`learn mechanism --format html` is a third view of the dict `walk()` returns: a schematic of the hops, an event
-that travels them, a decoder for the selected hop. It is the one view of the walk that becomes a document someone
-opens in a browser, so it is held to five things the text and JSON views get for free or do not need:
+`learn mechanism --format html` is a third view of the dict `walk()` returns: the hops drawn as a scene, an event
+that travels them, a decoder for the selected hop. Since G430 the drawing is a lesson player (an isometric scene,
+a story column, a transport bar; `tests/test_the_walk_like_kubelearn.py` holds what that added), and what this
+file holds did not move with it. It is the one view of the walk that becomes a document someone opens in a
+browser, so it is held to five things the text and JSON views get for free or do not need:
 
 1. it fetches nothing -- no URL anywhere in it, and a Content-Security-Policy that would refuse one;
 2. it is the same bytes for the same walk;
@@ -160,10 +162,10 @@ def test_the_page_names_no_address_and_forbids_fetching_one(
         "script-src 'unsafe-inline'; img-src data:\">"
     ) in page
     # Nothing a browser would fetch: no external script, stylesheet, image, font or import, and every link on the
-    # page is a step of this page.
+    # page is a step of this page or its overview (G430: the player's step 0, where the old page had a banner).
     assert not re.search(r"<(link|img|iframe|object|embed|video|audio|base|form)\b", page, flags=re.I)
     assert not re.search(r"\bsrc\s*=|@import|url\(|@font-face", page, flags=re.I)
-    assert set(re.findall(r'href="([^"]*)"', page)) <= {f"#step-{n}" for n in range(1, 50)}
+    assert set(re.findall(r'href="([^"]*)"', page)) <= {"#overview"} | {f"#step-{n}" for n in range(1, 50)}
     assert page.isascii()
 
 
@@ -241,10 +243,13 @@ def test_no_string_from_the_walk_becomes_markup_or_a_command(payload: str) -> No
     assert _scripts(page) == 2
     # No tag on the page but the ones the module writes, as a browser's parser finds them.
     tags = _outside(page, frozenset({"script"}), keep_tags=True).tags
+    # The player (G430) draws an isometric scene and a sequence diagram, and has a story column, an evidence
+    # table and a shortcuts dialog, so the list is longer than the schematic's was. It is still a closed list.
     assert tags <= {
         *("html", "head", "meta", "title", "style", "body", "main", "header", "h1", "h2", "p", "section", "div"),
         *("span", "dl", "dt", "dd", "svg", "path", "g", "circle", "ol", "ul", "li", "a", "code", "button"),
-        *("output", "strong", "script"),
+        *("output", "script", "aside", "nav", "footer", "details", "summary", "dialog", "kbd", "em", "i"),
+        *("table", "thead", "tbody", "tr", "th", "td", "polygon", "rect", "line", "text", "tspan", "ellipse"),
     }, tags
     # No attribute the payload could have added: every `on...=` handler would be one.
     assert not re.search(r"<[^>]*\son[a-z]+\s*=", page)
