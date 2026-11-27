@@ -20,8 +20,10 @@ Measured (G422), one Deployment and one ConfigMap in a namespace, whole unless i
 - With no workload at all, KN-V010 and KN-C001 are "no apps DaemonSet, ..." and KN-C004, KN-C006, KN-C017 and
   KN-S012 are "no pod spec in the input". A Deployment with no pod template leaves those four with the same
   reason beside a schema finding, and the first hop stops.
-- `containers: []` is silent on every rule here and on the schema stage, although the API server refuses it. That
-  is a gap in the audit, not in this lesson: the row pins it so the day a rule reads it, this file says so.
+- `containers: []` was silent on every rule here and on the schema stage when this lesson was written (G422),
+  although the API server refuses it, and the row pinned that gap. G431 closed it in the schema stage: KN-V007 now
+  reports a pod template with no regular container, the rules here still say nothing, and by G406 the first hop
+  does not hold beside that finding (`tests/test_zero_regular_containers.py` walks it).
 
 So KN-V010 sits on the first hop (a validation finding about the Deployment, beside which no hop that reads a
 Deployment holds), the hop about what a pod names needs no `absent:` entry because KN-C017 declines on a fragment
@@ -324,8 +326,9 @@ def test_the_measurement_table_still_holds(case: str) -> None:
         assert words in reasons.get(rule, ""), (rule, reasons.get(rule))
     assert not ({r for r in reasons if r in WATCHED} - set(expect_reason)), reasons
     if case == "containers-empty":
-        # The gap named in the docstring: nothing at all is said about a pod template with no containers.
-        assert not [f for f in report["findings"] if f.get("stage") == "validate"], report["findings"]
+        # No rule a hop names reads it; the schema stage does, since G431, and that is what stops the walk.
+        said = [f["message"] for f in report["findings"] if f["ruleId"] == "KN-V007"]
+        assert len(said) == 1 and "no regular container" in said[0], report["findings"]
 
 
 def test_every_rule_a_hop_names_was_measured() -> None:

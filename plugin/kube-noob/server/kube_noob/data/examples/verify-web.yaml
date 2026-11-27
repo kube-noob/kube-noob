@@ -38,7 +38,10 @@ spec:
     matchLabels: {app: web}
   policyTypes: [Ingress]
   ingress:
-    - ports:
+    - from:
+        - podSelector:
+            matchLabels: {app: frontend}
+      ports:
         - port: 8080
 ---
 apiVersion: policy/v1

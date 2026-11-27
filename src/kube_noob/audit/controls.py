@@ -218,6 +218,9 @@ RULE_CONTROLS: dict[str, tuple[str, ...]] = {
     "KN-V012": _VALIDATION,
     "KN-V023": _VALIDATION,
     "KN-V024": _VALIDATION,  # an Ingress backend naming a Service, or a port, that is not there (G405)
+    "KN-V025": _VALIDATION,  # an HPA the API refuses, or one whose target is in another namespace (G433)
+    "KN-V026": _VALIDATION,  # a volumeMount naming no volume of its pod (G434)
+    "KN-V027": _VALIDATION,  # a StatefulSet whose governing Service is not headless (G434)
     "KN-V014": _VALIDATION,
     "KN-V015": ("SC-7", "CM-6"),  # an EgressFirewall not named 'default' is ignored: no egress control at all
     "KN-V016": ("SC-8", "CM-6"),

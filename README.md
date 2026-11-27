@@ -35,9 +35,9 @@ cluster order, naming the tier, policy and rule that decided. A checker reading 
 **Which system denied this pod?** One pass across Pod Security, SCC, Kyverno, Gatekeeper, VAP and RHACS, with the
 smallest fix. `reach` exits 1 when denied; both say what they could not determine.
 
-Also: 100 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
+Also: 103 rules with strict schemas and 9 red-team scenarios; 67 offline playbooks, read-only steps first;
 must-gathers triaged into a case draft that says what could not be read; OpenShift bugs with fix versions; hardened
-manifests and admission policies; 6 tracks, 22 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
+manifests and admission policies; 6 tracks, 23 lessons. `kube-noob gate` puts any of it in CI with SARIF and one
 exception list, and a design request runs the 7-step protocol. All of it: [use-cases.md](docs/use-cases.md).
 
 ## Who does the thinking

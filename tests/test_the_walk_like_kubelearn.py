@@ -41,6 +41,7 @@ RBAC = "mech-sec-rbac-and-serviceaccounts"
 NODE_DARK = "mech-cp-a-node-goes-dark"
 NETPOL = "mech-net-network-policy"
 DEPLOY = "mech-cp-deploy-an-app"
+AUTOSCALE = "mech-cp-autoscaling"
 
 #: Every walkable lesson against every fixture written for it, and one fragment that stops.
 CASES = [
@@ -56,6 +57,8 @@ CASES = [
     (NETPOL, FIXTURES / "networkpolicy" / "broken"),
     (DEPLOY, FIXTURES / "deploy" / "complete"),
     (DEPLOY, FIXTURES / "deploy" / "broken"),
+    (AUTOSCALE, FIXTURES / "autoscaling" / "complete"),
+    (AUTOSCALE, FIXTURES / "autoscaling" / "broken"),
 ]
 IDS = [f"{lesson}:{path.parent.name}/{path.name}" for lesson, path in CASES]
 

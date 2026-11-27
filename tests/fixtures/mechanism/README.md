@@ -29,7 +29,7 @@ single file walks to the same answer as its directory (`tests/test_rbac_walk.py`
 Every object in `rbac/complete/` is there because removing it stops the walk: the Secret is empty and still
 needed, since with no Secret in the input KN-S027 abstains and the last observable hop cannot be judged.
 
-## `service/`, `networkpolicy/`, `deploy/` -- one pair per lesson (G420, G421, G422)
+## `service/`, `networkpolicy/`, `deploy/`, `autoscaling/` -- one pair per lesson (G420, G421, G422, G435)
 
 - `service/complete/` and `service/broken/` — `mech-net-pod-calls-a-service`. Broken: an Egress policy with no
   route to port 53 (KN-N013) and a numeric targetPort no container declares (KN-V023). Exit 0 and 1.
@@ -37,6 +37,9 @@ needed, since with no Secret in the input KN-S027 abstains and the last observab
   podSelector matches no pod here (KN-N012) and one with the empty ingress rule (KN-N007). Exit 0 and 1.
 - `deploy/complete/` and `deploy/broken/` — `mech-cp-deploy-an-app`. Broken: a ConfigMap name that is not here
   beside one that is (KN-C017), a `:latest` image (KN-S012) and no readiness probe (KN-C001). Exit 0 and 1.
+- `autoscaling/complete/` and `autoscaling/broken/` — `mech-cp-autoscaling` (G435). Broken: no CPU request under
+  a CPU utilization target (KN-C012), `spec.replicas` beside the autoscaler (KN-C014) and a floor of one
+  (KN-C007). Exit 0 and 1.
 
 Each lesson names its own pair under `examples:` in `src/kube_noob/data/curriculum.yaml`, relative to
 `tests/fixtures`, and `tests/test_a_lesson_names_its_examples.py` holds every entry to a directory that exists

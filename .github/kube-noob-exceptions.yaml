@@ -21,3 +21,18 @@ exceptions:
     cluster admitting objects. The finding is correct and the trade-off is accepted and documented in
     SECURITY.md. A policy gate whose whole purpose is to deny should set Fail, which is why the rule stays HIGH.
   expires: 2027-06-30
+- id: EXC-ADM-002
+  rule: KN-N007
+  # G432 taught KN-N007 that an ingress rule with ports and no `from` admits every source on those ports. The
+  # first object it found was this chart's own admission webhook policy (templates/admission.yaml). The chart
+  # writes no metadata.namespace (helm template -n only sets .Release.Namespace), and kube-noob reads an object
+  # without one as namespace `default`, so that is the namespace this entry names; an install that sets one needs
+  # its own entry.
+  scope: {namespace: default, kind: NetworkPolicy, name: kn-kube-noob-admission}
+  owner: kube-noob-maintainer
+  reason: >-
+    The API server calls the webhook on 8443, and on most clusters it is not a pod a selector can name or an
+    address the chart can know, so the default leaves 8443 open to every source; the webhook only evaluates what
+    it is sent. admission.networkPolicy.from narrows it, and an install that knows its API server's addresses
+    should set it. The finding is correct and the default is a stated trade-off, not a fix.
+  expires: 2027-06-30

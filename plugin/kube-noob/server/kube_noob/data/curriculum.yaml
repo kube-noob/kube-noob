@@ -153,6 +153,101 @@ tracks:
               the containers declare a readiness probe, so the Pod is marked Ready, and added to a Service's
               endpoints, only when it can serve. Whether the probe succeeds is runtime state no manifest holds
             rules: [KN-C001]
+      - id: mech-cp-autoscaling
+        title: Autoscaling
+        layer: control-plane
+        docs: [kubernetes]
+        examples: [mechanism/autoscaling/complete, mechanism/autoscaling/broken]
+        objectives:
+          - Follow how a HorizontalPodAutoscaler turns measured usage into a replica count
+          - See which of those steps your manifests decide, and which belong to the metrics pipeline, the
+            controller and the scheduler
+        keyPoints:
+          - An autoscaler scales only a target in its own namespace, and a target that is not in the bundle is
+            not judged either way -- something else may create it.
+          - A CPU utilization target is usage divided by the request, so it needs the request.
+          - Four of the seven steps are in the manifest; the three that are not are where a running cluster decides.
+        steps:
+          - id: autoscaler-names-a-target-that-is-here
+            title: No autoscaler here has a floor above its ceiling or a target in another namespace
+            # Measured (G435): first, because with the target absent KN-C012 and KN-C014 are silent and
+            # EVALUATED -- they found no workload the autoscaler names and said nothing -- and only KN-V025
+            # records that no verdict was reached ("may be created outside the bundle"; on a fragment, "part of a
+            # namespace was passed"; a different API group, "names an API group other than"). So the walk stops
+            # here instead of holding the next two hops on an autoscaler that scales nothing in this input. It
+            # fires on minReplicas above maxReplicas, which is how this hop is BROKEN. It fires on a target that
+            # is only in another namespace too, but a walk judges one namespace (G404): given two it names them
+            # and stops here at exit 5, and that finding is `audit`'s to give. With no HorizontalPodAutoscaler
+            # at all, `needs` stops the walk.
+            needs: [HorizontalPodAutoscaler]
+            reads: [HorizontalPodAutoscaler, Deployment, StatefulSet, ReplicaSet]
+            holds: >-
+              every HorizontalPodAutoscaler here has minReplicas at or below maxReplicas and names a Deployment,
+              StatefulSet or ReplicaSet that is in its own namespace in this input. KN-V025 takes a reference
+              with no apiVersion to mean the object of that kind and name, which a cluster may still refuse, and
+              an autoscaler of an Argo Rollout or another kind is not resolved
+            rules: [KN-V025]
+          - id: metrics-are-served
+            title: The metrics API serves what each pod is using
+            observable: false
+            holds: >-
+              the kubelet measures each container, and metrics-server (or an adapter, for custom and external
+              metrics) serves those numbers through the metrics API the autoscaler reads. Whether that pipeline
+              is installed and answering is a fact about the cluster and no manifest here records it, so
+              kube-noob does not check it and does not count it as passed.
+          - id: target-declares-cpu-requests
+            title: Every workload a CPU-utilization autoscaler scales declares CPU requests
+            # Measured (G435): fires when a container of the target has no CPU request and the autoscaler's
+            # metric is CPU Utilization; silent on a CPU AverageValue target, which needs no request. Silent on
+            # a MEMORY utilization target with no memory request -- the rule reads CPU only -- and the sentence
+            # says so.
+            needs: [HorizontalPodAutoscaler]
+            reads: [HorizontalPodAutoscaler, Deployment, StatefulSet, ReplicaSet]
+            holds: >-
+              every container of a workload scaled on CPU utilization declares a CPU request, which is what the
+              autoscaler divides usage by. KN-C012 reads CPU utilization only: a memory utilization target whose
+              containers declare no memory request, and a custom or external metric, are not read
+            rules: [KN-C012]
+          - id: controller-computes-the-count
+            title: The autoscaler computes a replica count and writes it to the target
+            observable: false
+            holds: >-
+              about every fifteen seconds the HorizontalPodAutoscaler controller compares usage with the target,
+              computes how many replicas that calls for, clamps it between minReplicas and maxReplicas and
+              writes it through the target's scale subresource. That happens in the controller manager of a
+              running cluster, so kube-noob does not check it and does not count it as passed.
+          - id: manifest-leaves-the-count-to-the-autoscaler
+            title: No workload an autoscaler scales also sets spec.replicas
+            # Measured (G435): fires on any spec.replicas beside an autoscaler that names the workload, 0
+            # included (high: a target at 0 switches the autoscaler off); silent when the field is absent.
+            needs: [HorizontalPodAutoscaler]
+            reads: [HorizontalPodAutoscaler, Deployment, StatefulSet, ReplicaSet]
+            holds: >-
+              no Deployment, StatefulSet or ReplicaSet that an autoscaler here scales sets spec.replicas, so
+              applying the manifest again does not reset the count the autoscaler chose
+            rules: [KN-C014]
+          - id: floor-keeps-more-than-one-replica
+            title: No replicated workload here is left at a single replica
+            # Measured (G435): fires on a workload declaring fewer than two replicas (an absent spec.replicas
+            # is the default of one) unless an autoscaler with minReplicas of two or more names it; a floor of
+            # one, or no minReplicas, does not excuse it. It fires on a second workload no autoscaler scales when
+            # that one declares a single replica, and is silent on one declaring two: nothing asks for an
+            # autoscaler. On a fragment the autoscaler may be in another file, hence `absent` (G408).
+            needs: [Deployment, StatefulSet, ReplicaSet]
+            holds: >-
+              every Deployment, StatefulSet and ReplicaSet here declares two or more replicas, or is scaled by
+              an autoscaler whose own floor is two or more, so scaling down never leaves one replica to carry
+              everything. KN-C007 reads the declared count and the floor: no rule here asks that a workload have
+              an autoscaler at all
+            rules: [KN-C007]
+            absent: [KN-C007]
+          - id: scheduler-places-the-new-replicas
+            title: The scheduler finds a node for each new replica
+            observable: false
+            holds: >-
+              a replica the autoscaler adds is a Pod like any other: it needs a node with room for its requests.
+              Whether one exists, or a cluster autoscaler adds one, is decided in a running cluster and no
+              manifest records it, so kube-noob does not check it and does not count it as passed.
       - id: mech-net-request-to-pod
         title: A request finds your Pod
         layer: network
@@ -340,14 +435,15 @@ tracks:
           - id: no-rule-admits-every-source
             title: No NetworkPolicy here carries an ingress rule that is open to every source
             # Measured (G421): fires on a rule of {}, on `from: []`, on `namespaceSelector: {}` and on an ipBlock
-            # of 0.0.0.0/0. Silent on a rule that names ports and no `from` (every source, on those ports) and on
-            # `from: [{podSelector: {}}]` (every pod of this namespace). The sentence says so.
+            # of 0.0.0.0/0. It was silent on a rule that names ports and no `from` (every source, on those
+            # ports) until G432, and fires on it now. Still silent on `from: [{podSelector: {}}]` (every pod of
+            # this namespace). The sentence says so.
             needs: []
             reads: [NetworkPolicy]
             holds: >-
-              no NetworkPolicy here has an ingress rule that is empty, lists no peer, selects every namespace or
-              allows 0.0.0.0/0. KN-N007 reads those shapes: a rule that names ports and no `from` still admits
-              every source on those ports, and is not reported
+              no NetworkPolicy here has an ingress rule that is empty, names ports and no `from`, lists no peer,
+              selects every namespace or allows 0.0.0.0/0. KN-N007 reads those shapes: a rule whose `from` is
+              `podSelector: {}` still admits every pod of this namespace, and is not reported
             rules: [KN-N007]
           - id: packet-is-admitted-or-dropped
             title: The node admits the packet a rule allows and drops the rest

@@ -1,0 +1,64 @@
+rule: KN-V027
+good: |
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata: {name: db, namespace: shop}
+  spec:
+    serviceName: db
+    replicas: 2
+    selector:
+      matchLabels: {app: db}
+    template:
+      metadata:
+        labels: {app: db}
+      spec:
+        containers:
+        - name: db
+          image: registry.example.com/db@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          volumeMounts:
+          - {name: data, mountPath: /var/lib/db}
+    volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 1Gi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: db, namespace: shop}
+  spec:
+    clusterIP: None
+    selector: {app: db}
+    ports:
+    - {name: sql, port: 5432, targetPort: 5432}
+bad: |
+  apiVersion: apps/v1
+  kind: StatefulSet
+  metadata: {name: db, namespace: shop}
+  spec:
+    serviceName: db
+    replicas: 2
+    selector:
+      matchLabels: {app: db}
+    template:
+      metadata:
+        labels: {app: db}
+      spec:
+        containers:
+        - name: db
+          image: registry.example.com/db@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          volumeMounts:
+          - {name: data, mountPath: /var/lib/db}
+    volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 1Gi}}
+  ---
+  apiVersion: v1
+  kind: Service
+  metadata: {name: db, namespace: shop}
+  spec:
+    selector: {app: db}
+    ports:
+    - {name: sql, port: 5432, targetPort: 5432}

@@ -92,6 +92,21 @@ def replicas_unknown(d: Document) -> bool:
     return d.kind in REPLICATED_KINDS and type(replicas(d)) is not int
 
 
+def ports_shown(ports: object) -> str:
+    """The ports a NetworkPolicy rule names, for KN-N007's message (G432): the first five, then a count.
+
+    Only shown, never judged: an entry of any shape is printed as something, so a port the message cannot read
+    does not turn the finding off. An entry with no `port` is every port of its protocol. A named port is the
+    input's own text, so each is cut to one short line here. In this module only because `rules.py` is about
+    1 KiB under the plugin directory's per-file limit.
+    """
+    items = ports if isinstance(ports, list) else [ports]
+    shown = [
+        " ".join(str(p.get("port", "any")).split())[:20] if isinstance(p, dict) else "unreadable" for p in items[:5]
+    ]
+    return ", ".join(shown) + (f" and {len(items) - 5} more" if len(items) > 5 else "")
+
+
 _WORKLOAD_KINDS = frozenset(POD_SPEC_PATHS) | frozenset(EMBEDDED_POD_SPEC_PATHS)
 # The kinds a rule reads as evidence BESIDE the ones its `context=` declares -- the PDB that selects a workload,
 # the HPA that scales it. With `context=`, read through `evidence_kinds`, this is ONE declaration of one question,
@@ -103,6 +118,7 @@ _EVIDENCE_KINDS: dict[str, frozenset[str]] = {
     "KN-C009": frozenset({"PodDisruptionBudget"}),
     "KN-C012": frozenset({"HorizontalPodAutoscaler"}),
     "KN-C014": frozenset({"HorizontalPodAutoscaler"}),
+    "KN-V025": frozenset({"HorizontalPodAutoscaler"}),
     "KN-C013": frozenset({"Secret", "ServiceAccount"}),
     "KN-V011": frozenset({"Service"}),
     "KN-V012": frozenset({"Service"}),

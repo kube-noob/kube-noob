@@ -36,6 +36,11 @@ def _recording() -> Iterator[list[str]]:
         _READ.reset(token)
 
 
+def _list(value: object) -> list[Any]:
+    """A list as it is, anything else as nothing: a wrong-typed field is the schema stage's finding, not a crash."""
+    return value if isinstance(value, list) else []
+
+
 def _ids(findings: list[Finding], *rule_ids: str) -> list[Finding]:
     read = _READ.get()
     if read is not None:
@@ -100,12 +105,15 @@ def zone_outage(ctx: AuditContext, findings: list[Finding]) -> RedTeamScenario |
     if not any(d.kind in REPLICATED_KINDS for d in ctx.docs):
         return None
     fs = _ids(findings, "KN-C010", "KN-ST003")
+    # Lists only: a claim template list or accessModes of another type crashed this scenario (int, float, bool) until
+    # G434's fixture put a StatefulSet with claim templates in front of the wrong-types fuzz. The schema stage owns the
+    # finding for that shape (KN-V007); this only declines to add the zonal evidence line on it.
     zonal_sts = [
         d
         for d in ctx.by_kind("StatefulSet")
         if any(
-            "ReadWriteOnce" in (get_path(v, ("spec", "accessModes")) or [])
-            for v in get_path(d.data, ("spec", "volumeClaimTemplates")) or []
+            isinstance(modes := get_path(v, ("spec", "accessModes")), list) and "ReadWriteOnce" in modes
+            for v in _list(get_path(d.data, ("spec", "volumeClaimTemplates")))
             if isinstance(v, dict)
         )
     ]

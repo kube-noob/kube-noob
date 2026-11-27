@@ -61,7 +61,7 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
 
-## The 100 audit rules and their controls
+## The 103 audit rules and their controls
 
 | Rule | What it checks | NIST SP 800-53 Rev. 5 controls |
 |---|---|---|
@@ -165,6 +165,9 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
 | KN-V022 | Resource claims set at pod level, where they are forbidden | CM-3(2), CM-6 |
 | KN-V023 | Service numeric targetPort is not a declared containerPort | CM-3(2), CM-6 |
 | KN-V024 | Ingress routes to a Service that is not in its namespace, or to a port it does not serve | CM-3(2), CM-6 |
+| KN-V025 | HorizontalPodAutoscaler has a floor above its ceiling, or scales a target that is in another namespace | CM-3(2), CM-6 |
+| KN-V026 | Container mounts a volume the pod does not declare | CM-3(2), CM-6 |
+| KN-V027 | StatefulSet names a governing Service that is not headless | CM-3(2), CM-6 |
 
 Control titles ([NIST SP 800-53 Rev. 5](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final)):
 

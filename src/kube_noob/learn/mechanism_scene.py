@@ -229,6 +229,21 @@ LAYOUTS: dict[str, Layout] = {
             "containers-declare-readiness": Spot(_WORKLOAD),
         },
     ),
+    "mech-cp-autoscaling": Layout(
+        floor=_PLATE,
+        scenery=(Spot(_NODES[1], "node", "worker node", slots=("v1", "other", "starting")),),
+        steps={
+            # The autoscaler's own hops share its card, the floor hop stands on the workload it scales, and the three
+            # hops no manifest shows are the metrics pipeline, the controller's arithmetic and the scheduler.
+            "autoscaler-names-a-target-that-is-here": Spot(_POLICY),
+            "metrics-are-served": Spot(_EDGE_FRONT, "rack", "metrics-server", word="MET"),
+            "target-declares-cpu-requests": Spot(_POLICY),
+            "controller-computes-the-count": Spot((40.0, 66.0), "rack", "HPA controller", word="CTRL"),
+            "manifest-leaves-the-count-to-the-autoscaler": Spot(_POLICY),
+            "floor-keeps-more-than-one-replica": Spot(_WORKLOAD),
+            "scheduler-places-the-new-replicas": Spot(_EDGE, "sched", "Scheduler"),
+        },
+    ),
 }
 
 #: The plain row: how far apart along the floor's x axis, how many to a row, how far apart the rows.

@@ -28,6 +28,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 EXPECTED = {
     "mech-cp-a-node-goes-dark": {"mechanism/complete": 1, "mechanism/broken": 1},
     "mech-cp-deploy-an-app": {"mechanism/deploy/complete": 0, "mechanism/deploy/broken": 1},
+    "mech-cp-autoscaling": {"mechanism/autoscaling/complete": 0, "mechanism/autoscaling/broken": 1},
     "mech-net-request-to-pod": {"mechanism/complete": 0, "mechanism/broken": 1},
     "mech-net-pod-calls-a-service": {"mechanism/service/complete": 0, "mechanism/service/broken": 1},
     "mech-net-network-policy": {"mechanism/networkpolicy/complete": 0, "mechanism/networkpolicy/broken": 1},

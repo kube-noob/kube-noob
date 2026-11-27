@@ -53,12 +53,20 @@ from kube_noob.audit.cpflags import (
     _unread_lists,
 )
 from kube_noob.audit.model import Finding, Severity, Stage
-from kube_noob.audit.podspec import ContainerRef, PodTemplate, containers
+from kube_noob.audit.podspec import (
+    REPLICATED_KINDS,
+    ContainerRef,
+    PodTemplate,
+    containers,
+    declared_volume_names,
+    operator_builds_the_pod,
+)
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     APISERVICE_GROUP,
     HOSTED_CONTROL_PLANE_PLATFORMS,
     OAUTH_GROUP,
+    REPLICATED,
     WORKLOAD_SUBJECT,
     AuditContext,
     Rule,
@@ -66,9 +74,10 @@ from kube_noob.audit.rules import (
     _off_openshift,
     _singleton,
     cluster_apiservers,
+    hpa_scales,
     rule,
 )
-from kube_noob.catalog import parse_minor
+from kube_noob.catalog import api_group, parse_minor
 from kube_noob.yamlio import Document, PathT, get_path
 
 # =====================================================================================================
@@ -1575,3 +1584,254 @@ def _v024(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     )
             else:
                 ctx.nothing_to_judge(r.rule_id, _NO_PORT_NAMED)
+
+
+# =====================================================================================================
+# VALIDATE - a HorizontalPodAutoscaler that scales nothing (G433)
+# =====================================================================================================
+# Three rules read an HPA and none judged the autoscaler itself. Measured before this rule existed: `minReplicas`
+# above `maxReplicas`, which the API server refuses, was silent AND excused KN-C007's single replica; an HPA whose
+# target is in another namespace matched nothing in all three, so nothing was said about it.
+#
+# The discipline is KN-V024's:
+#
+# * The bounds are the HPA's own two fields, so they are judged on every HPA, fragment or not.
+# * A target that is NOT in the HPA's namespace in this input is never a finding by itself and never a pass: an
+#   operator, a chart or another repository may create it. It is recorded as nothing to judge, with the kind
+#   named. The one absence that is a finding is the contradictory one -- the bundle DOES define that kind and
+#   name, in another namespace, and a HorizontalPodAutoscaler scales only a target in its own.
+# * A fragment cannot show that the target is missing from its namespace, so nothing is concluded from it there.
+# * An object of that name the rules refused to read is not an absent one (G368).
+# * `scaleTargetRef.apiVersion` is compared only to decline: the controller resolves by group and kind, and
+#   which groups serve a kind depends on the cluster, so a different group is neither the target nor a missing
+#   one. `hpa_scales` itself does not compare groups, because KN-C007 must answer what it answered.
+_HPA_BOUNDS = (
+    "minReplicas or maxReplicas is not an integer, so whether this autoscaler's floor is above its ceiling is not known"
+)
+_HPA_NO_REF = "a HorizontalPodAutoscaler here names no scale target that can be read (no kind, or no name)"
+_HPA_OTHER_KIND = (
+    "a HorizontalPodAutoscaler here scales a kind this rule does not resolve (it resolves "
+    f"{', '.join(REPLICATED)}), so its target was not looked for"
+)
+_HPA_GROUP = (
+    "a HorizontalPodAutoscaler's scaleTargetRef names an API group other than the one the object of that kind and "
+    "name here is in, so whether that object is its target was not decided"
+)
+_HPA_FRAGMENT = (
+    "part of a namespace was passed, so a scale target a HorizontalPodAutoscaler names that is in a file you did "
+    "not pass is not an absent one"
+)
+_HPA_ABSENT = (
+    "the {kind} a HorizontalPodAutoscaler names as its scale target is not in its namespace in this input; it may "
+    "be created outside the bundle, so the reference was not judged"
+)
+
+
+@rule(
+    "KN-V025",
+    "HorizontalPodAutoscaler has a floor above its ceiling, or scales a target that is in another namespace",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.HIGH,
+    "Set minReplicas at or below maxReplicas, and put the HorizontalPodAutoscaler in the namespace of the workload "
+    "its scaleTargetRef names.",
+    "The API server refuses a HorizontalPodAutoscaler whose minReplicas is above its maxReplicas, so the workload "
+    "it was written for is left with no autoscaler. A HorizontalPodAutoscaler scales only a target in its own "
+    "namespace: when the kind and name it gives exist in this bundle in another namespace and not in its own, it "
+    "finds nothing and scales nothing. A target that is in no namespace of the input is not judged, because it "
+    "may be created outside the bundle; nor is one on a fragment, or one whose API group differs from the "
+    "reference's.",
+    ("k8s-hpa-replicas",),
+    subjects=("HorizontalPodAutoscaler",),
+    context=REPLICATED,
+)
+def _v025(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    for h in ctx.by_kind("HorizontalPodAutoscaler"):
+        spec = h.data.get("spec") if isinstance(h.data, dict) else None
+        if spec is not None and not isinstance(spec, dict):
+            continue  # `object_unreadable`'s: the evidence check names this object and the rule is undecided
+        spec = spec or {}
+        low, high = spec.get("minReplicas"), spec.get("maxReplicas")
+        low = 1 if low is None else low  # the API's default, and how kubectl sends an explicit null
+        if type(low) is not int or type(high) is not int:
+            ctx.cannot_decide(r.rule_id, _HPA_BOUNDS, h.ref())
+        elif low > high:
+            stated = "minReplicas" in spec and spec["minReplicas"] is not None
+            yield r.finding(
+                h,
+                ("spec", "minReplicas" if stated else "maxReplicas"),
+                f"minReplicas {low}{'' if stated else ' (the default)'} is above maxReplicas {high}: the API server "
+                "refuses this autoscaler, so nothing scales its target.",
+            )
+        ref = spec.get("scaleTargetRef")
+        if ref is not None and not isinstance(ref, dict):
+            continue  # `object_unreadable`'s too
+        ref = ref or {}
+        kind, name = ref.get("kind"), ref.get("name")
+        if not isinstance(kind, str) or not isinstance(name, str) or not kind or not name:
+            ctx.nothing_to_judge(r.rule_id, _HPA_NO_REF)
+            continue
+        if kind not in REPLICATED_KINDS:
+            ctx.nothing_to_judge(r.rule_id, _HPA_OTHER_KIND)
+            continue
+        named = [d for d in ctx.by_kind(*REPLICATED_KINDS) if hpa_scales(ctx, h, d, anywhere=True)]
+        here = [d for d in named if hpa_scales(ctx, h, d)]
+        if here:
+            stated_group = ref.get("apiVersion")
+            if isinstance(stated_group, str) and all(api_group(stated_group) != api_group(d.api_version) for d in here):
+                ctx.nothing_to_judge(r.rule_id, _HPA_GROUP)
+            continue
+        if ctx.partial_bundle:
+            ctx.nothing_to_judge(r.rule_id, _HPA_FRAGMENT)
+            continue
+        elsewhere = sorted({ctx.ns(d) for d in named})
+        if ctx.cannot_judge_absence(
+            r.rule_id, kind, namespace=ctx.ns(h), name=name, suppresses_finding=bool(elsewhere)
+        ):
+            continue
+        if not elsewhere:
+            ctx.nothing_to_judge(r.rule_id, _HPA_ABSENT.format(kind=kind))
+            continue
+        more = f" and {len(elsewhere) - 3} more" if len(elsewhere) > 3 else ""
+        yield r.finding(
+            h,
+            ("spec", "scaleTargetRef", "name"),
+            f"scaleTargetRef names the {kind} {name!r}, which this bundle defines in namespace "
+            f"{', '.join(elsewhere[:3])}{more} and not in {ctx.ns(h)}. A HorizontalPodAutoscaler scales only a "
+            "target in its own namespace, so this one scales nothing.",
+        )
+
+
+# =====================================================================================================
+# VALIDATE - what a pod mounts and what a StatefulSet names (G434)
+# =====================================================================================================
+# Two relationships no rule read, both measured silent on every shape before these rules existed.
+#
+# KN-V026 is internal to one object: a mount name resolves against the pod's own `volumes` and, in a StatefulSet,
+# its `volumeClaimTemplates`. Nothing rests on an absence in the bundle, so a fragment is judged like a namespace.
+#
+# KN-V027 reads a second object, with KN-V024's discipline: whether the Service is headless is judged whenever
+# the Service IS in the input, fragment or not; a Service that is not in the StatefulSet's namespace in this
+# input is never a finding and never a pass, because a chart or an operator may create it.
+_MOUNTS_UNREADABLE = (
+    "a container's volumeMounts, or the volumes or volumeClaimTemplates beside it, cannot be read as a list of "
+    "named entries, so which volume each mount names was not compared"
+)
+_OPERATOR_VOLUMES = (
+    "a container in a pod an operator builds (KServe, KubeRay) mounts a volume its manifest does not declare; the "
+    "operator may add volumes to that pod, so the mount was not judged"
+)
+
+
+@rule(
+    "KN-V026",
+    "Container mounts a volume the pod does not declare",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.HIGH,
+    "Name a volume the pod declares: every volumeMounts[].name has to match a volumes[].name of the same pod or, "
+    "in a StatefulSet, a volumeClaimTemplates[].metadata.name.",
+    "A container's volumeMounts entry refers to a volume of its own pod by name, so a name the pod never declares "
+    "resolves to nothing and the API server refuses the object. A StatefulSet also gives each pod one volume per "
+    "volumeClaimTemplate, under the template's name; no other kind has claim templates. Init and ephemeral "
+    "containers are read as well. A pod spec inside an operator's kind (KServe, KubeRay) is not judged, because "
+    "the operator may add volumes to it.",
+    subjects=(WORKLOAD_SUBJECT,),
+)
+def _v026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    for d, pt in ctx.workloads():
+        declared = declared_volume_names(pt)
+        for c in containers(pt):
+            mounts = c.container.get("volumeMounts")
+            if mounts is None:
+                continue
+            if declared is None or not isinstance(mounts, list):
+                ctx.cannot_decide(r.rule_id, _MOUNTS_UNREADABLE, d.ref())
+                continue
+            for j, mount in enumerate(mounts):
+                name = mount.get("name") if isinstance(mount, dict) else None
+                if not isinstance(name, str) or not name:
+                    ctx.cannot_decide(r.rule_id, _MOUNTS_UNREADABLE, d.ref())
+                elif name in declared:
+                    continue
+                elif operator_builds_the_pod(pt):
+                    ctx.nothing_to_judge(r.rule_id, _OPERATOR_VOLUMES)
+                else:
+                    shown = sorted(declared)
+                    more = f" and {len(shown) - 5} more" if len(shown) > 5 else ""
+                    yield r.finding(
+                        d,
+                        (*c.path, "volumeMounts", j, "name"),
+                        f"Container '{c.name}' mounts the volume {name!r}, which this pod does not declare; it "
+                        f"declares {', '.join(repr(n) for n in shown[:5]) or 'none'}{more}. The API server "
+                        "refuses the object.",
+                    )
+
+
+_NO_GOVERNING_NAME = "a StatefulSet here names no governing Service (no serviceName), so there is none to look for"
+_GOVERNING_FRAGMENT = (
+    "part of a namespace was passed, so a Service a StatefulSet names that is in a file you did not pass is not "
+    "an absent one"
+)
+_GOVERNING_ABSENT = (
+    "the Service a StatefulSet names as its serviceName is not in its namespace in this input; it may be created "
+    "outside the bundle, so whether it is headless was not judged"
+)
+_GOVERNING_UNREADABLE = (
+    "the spec of the Service a StatefulSet names cannot be read, so whether it is headless is not known"
+)
+
+
+@rule(
+    "KN-V027",
+    "StatefulSet names a governing Service that is not headless",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.MEDIUM,
+    "Set clusterIP: None on the Service the StatefulSet's serviceName names, or point serviceName at a headless "
+    "Service; keep a second, ordinary Service for clients that want one address.",
+    "A StatefulSet's serviceName is the Service that gives each pod its stable DNS name "
+    "(pod-0.service.namespace.svc). Only a headless Service (clusterIP: None) publishes a record per pod, so with "
+    "any other Service those names do not resolve and peers that find each other by them cannot. Judged whenever "
+    "the Service is in the input. A Service that is not in the StatefulSet's namespace in the input is not judged: "
+    "it may be created outside the bundle. volumeClaimTemplates are not required and are not read here.",
+    subjects=("StatefulSet", "Service"),
+)
+def _v027(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    here: dict[tuple[str, str], list[Document]] = {}
+    for svc in ctx.by_kind("Service"):
+        if svc.name:
+            here.setdefault((ctx.ns(svc), svc.name), []).append(svc)
+    for sts in ctx.by_kind("StatefulSet"):
+        ns = ctx.ns(sts)
+        name = get_path(sts.data, ("spec", "serviceName"))
+        if not isinstance(name, str) or not name:
+            ctx.nothing_to_judge(r.rule_id, _NO_GOVERNING_NAME)
+            continue
+        found = here.get((ns, name))
+        if not found:
+            if ctx.partial_bundle:
+                ctx.nothing_to_judge(r.rule_id, _GOVERNING_FRAGMENT)
+            elif not ctx.cannot_judge_absence(r.rule_id, "Service", namespace=ns, name=name):
+                ctx.nothing_to_judge(r.rule_id, _GOVERNING_ABSENT)
+            continue
+        for svc in found:
+            spec = svc.data.get("spec") if isinstance(svc.data, dict) else None
+            if not isinstance(spec, dict):
+                ctx.cannot_decide(r.rule_id, _GOVERNING_UNREADABLE, svc.ref())
+                continue
+            ip = spec.get("clusterIP")
+            if ip == "None":
+                continue
+            if spec.get("type") == "ExternalName":
+                has = "is an ExternalName Service and has no endpoints of its own"
+            elif ip is None or ip == "":
+                has = "sets no clusterIP, so the cluster assigns one"
+            else:
+                has = f"has clusterIP {str(ip)[:45]!r}"
+            yield r.finding(
+                sts,
+                ("spec", "serviceName"),
+                f"serviceName names the Service {name!r}, which {has}. Only a headless Service (clusterIP: None) "
+                "gives each pod of a StatefulSet its own DNS record.",
+            )

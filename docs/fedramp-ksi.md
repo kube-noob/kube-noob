@@ -25,7 +25,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** whether a workload could be redeployed to a known state at all -- a mutable image reference (KN-S012), a pull secret that exists only in another namespace (KN-C013), a replica count fighting an HPA (KN-C014), a resource claim no object in the bundle defines (KN-C015), a request above its limit (KN-C006).
 - **Does not show:** how changes reach the cluster, which is what the indicator is about. This is the widest row in the table because it cites `cm-6` (Configuration Settings) and a third of kube-noob's rules are evidence about `cm-6`, so the count here is a weak signal and the named findings are the useful part.
 - kube-noob controls: CM-2, CM-6, CM-7
-- Rules that are evidence (53), of which the sentences above name 5: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-C017`, `KN-N005`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-S001`, `KN-S002`, `KN-S003` and 41 more
+- Rules that are evidence (56), of which the sentences above name 5: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-C017`, `KN-N005`, `KN-N009`, `KN-N010`, `KN-N011`, `KN-S001`, `KN-S002`, `KN-S003` and 44 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
@@ -233,7 +233,7 @@ One line each on what the evidence shows and, more importantly, what it does not
 - **Shows:** the settings most often changed by hand, through `cm-2` and `cm-6`: a mutable image tag (KN-S012), a replica count fighting an HPA (KN-C014), a request above its limit (KN-C006), a container that may run as root (KN-S003), no seccomp profile (KN-S008), and ReadWriteMany asked of a StorageClass that only offers ReadWriteOnce (KN-ST001).
 - **Does not show:** drift, and whether automation made the change. kube-noob does measure drift -- `posture diff` names every object whose configuration changed between two snapshots and reports standing per control -- but that output does not feed this view, so nothing in this row is evidence of drift over time. It is one audit of one bundle, like every other row.
 - kube-noob controls: CM-2, CM-6
-- Rules that are evidence (37), of which the sentences above name 6: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-C017`, `KN-N010`, `KN-S003`, `KN-S004`, `KN-S008`, `KN-S012`, `KN-S032`, `KN-S036` and 25 more
+- Rules that are evidence (40), of which the sentences above name 6: `KN-C006`, `KN-C013`, `KN-C014`, `KN-C015`, `KN-C017`, `KN-N010`, `KN-S003`, `KN-S004`, `KN-S008`, `KN-S012`, `KN-S032`, `KN-S036` and 28 more
 
 | Rule named above | Its own title, so the sentence can be checked against it |
 |---|---|
