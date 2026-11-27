@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 22 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 23 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -171,6 +171,27 @@ when a pod names a Secret and the bundle defines no Secret at all, since an oper
 template with `containers: []` walked `complete` when this lesson was written (G422); the schema stage now
 reports a pod spec with no regular container (KN-V007, G431), init and ephemeral containers not counted, and
 no hop that reads the workload holds beside it.
+
+### Autoscaling
+
+```
+kube-noob learn mechanism mech-cp-autoscaling -f ./manifests
+```
+
+Seven hops from a HorizontalPodAutoscaler to a new replica on a node, four of them in the manifest: no autoscaler
+here has a floor above its ceiling or a target in another namespace (KN-V025); every workload scaled on CPU
+utilization declares CPU requests (KN-C012); no workload an autoscaler scales also sets `spec.replicas`
+(KN-C014); and no replicated workload is left at a single replica, an autoscaler's floor of one included
+(KN-C007). The three between them -- the metrics API serving usage, the controller computing a count and writing
+it, the scheduler placing the new replica -- are **not checked**, because a running cluster decides them.
+
+The target hop is first for a measured reason (G435): when the workload an autoscaler names is not in the
+bundle, KN-C012 and KN-C014 find nothing to compare and say nothing, and only KN-V025 records that no verdict
+was reached, because the target may be created outside the bundle. So the walk stops there at exit 5 instead of
+holding two hops on an autoscaler that scales nothing in front of it. A target that is only in another namespace
+is KN-V025's finding in `kube-noob audit`; a walk judges one namespace, so given the two it names them and
+stops. Two limits are in the hops' own sentences: KN-C012 reads CPU utilization only, so a memory utilization
+target with no memory request is not read, and no rule asks that a workload have an autoscaler at all.
 
 ### RBAC and ServiceAccounts
 

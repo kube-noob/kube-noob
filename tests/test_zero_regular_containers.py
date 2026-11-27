@@ -34,6 +34,7 @@ The mechanism walks, each lesson's `complete` example with every workload's `con
 | mech-cp-a-node-goes-dark          | broken, 1; replicas hop holds | stopped, 5 at more-than-one-replica      |
 | mech-sec-rbac-and-serviceaccounts | complete, 0   | stopped, 5 at no-pod-automounts-a-token                      |
 | mech-net-network-policy           | complete, 0   | complete, 0: no hop of it reads a workload kind (see the test) |
+| mech-cp-autoscaling (G435, later) | not written   | stopped, 5 at autoscaler-names-a-target-that-is-here         |
 """
 
 from __future__ import annotations
@@ -242,6 +243,10 @@ WALKS: dict[str, tuple[str, tuple[str, ...]]] = {
     "mech-cp-deploy-an-app": (
         "manifest-is-not-refused",
         ("containers-declare-requests", "image-is-named-by-digest", "containers-declare-readiness"),
+    ),
+    "mech-cp-autoscaling": (
+        "autoscaler-names-a-target-that-is-here",
+        ("target-declares-cpu-requests", "floor-keeps-more-than-one-replica"),
     ),
     "mech-net-request-to-pod": ("workload-selects-its-own-pods", ("pod-reports-ready",)),
     "mech-net-pod-calls-a-service": ("workload-selects-its-own-pods", ("pod-reports-ready",)),
