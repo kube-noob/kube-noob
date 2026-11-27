@@ -1,33 +1,45 @@
-"""One mechanism walk as a page you can watch: a schematic of the hops, an event that travels them, a decoder.
+"""One mechanism walk as a lesson player you can watch: an isometric scene, an event that travels it, a story.
 
 `render()` in :mod:`kube_noob.learn.mechanism` is the walk as text and `--format json` is the walk as data. This
-is the third view of the SAME dict, for the reader who learns a path by watching it: the components the lesson's
-hops touch drawn in hop order, one event moving hop to hop, and a panel that opens the selected hop -- its
-verdict, its rules, the objects it read and the findings on it.
+is the third view of the SAME dict, for the reader who learns a path by watching it. The page is a port of
+KubeLearn's lesson player (kubelearn.joesabbagh.com, Copyright (c) 2026 Joe Sabbagh, MIT License; the notice is in
+``THIRD_PARTY_NOTICES.md``), driven by kube-noob's own walk: a stage with the reader's objects standing on a
+cluster floor, a marker that flies from one hop's object to the next, a caption strip and a transport bar under
+it, a story column with the hop's explanation and its facts, the list of hops, a sequence view of the same path,
+and a drawer of the evidence. One KubeLearn "step" is one hop; the lesson overview is the path's verdict. The
+drawing lives in :mod:`kube_noob.learn.iso` and :mod:`kube_noob.learn.mechanism_scene`, the stylesheet and the
+script in :mod:`kube_noob.learn.mechanism_player`; this module decides what the page says.
 
-Four rules hold the module up, and `tests/test_a_walk_you_can_watch.py` holds each of them.
+Five rules hold the module up. `tests/test_a_walk_you_can_watch.py` and `tests/test_the_walk_like_kubelearn.py`
+hold each of them.
 
 **It adds no judgement.** Every verdict on the page is the one `walk()` reached. The only thing computed here is
 how to draw it, and the drawing has five states, not two: holds, BROKEN, cannot judge, not observable and not
 walked. A value this module does not recognise -- a verdict it has no word for, a path verdict that disagrees with
 its own hops -- is drawn as unrecognised, in the colour of a stop, and never as a pass.
 
-**Nothing that was not judged is animated as passing.** The event is drawn only for a hop a rule read. At a
+**Nothing that was not judged is animated as passing.** The marker is drawn only for a hop a rule read. At a
 BROKEN hop it arrives and fails; at a hop that could not be judged it stops short and the page says why; for a
-hop no manifest can show, and for a hop after a stop, no event is drawn at all and the page says that in words.
-Each state is text first and colour second, so a monochrome print and a screen reader get the same answer.
+hop no manifest can show, and for a hop after a stop, no marker is drawn at all and the page says that in words.
+Each state is a glyph and a word first and a colour second, so a monochrome print and a screen reader get the
+same answer, and on this page green is used for one thing only: a rule read the hop and it holds.
 
 **Nothing from a manifest is ever markup.** Object names, finding titles and the walker's own sentences that
-quote them all pass through :func:`_text` (one line, invisible characters marked, capped) and :func:`_esc`. The
-walk is also embedded as JSON for the script and for any program that wants the data back; there `<`, `>`, `&`,
-U+2028 and U+2029 are written as `\\uXXXX`, so no string can close the element it sits in. The script puts text
-on the page with `textContent` only.
+quote them all pass through :func:`_text` (one line, invisible characters marked, capped) and :func:`_esc`, in
+the HTML and in the SVG text of the scene alike. The walk is also embedded as JSON for the script and for any
+program that wants the data back; there `<`, `>`, `&`, U+2028 and U+2029 are written as `\\uXXXX`, so no string
+can close the element it sits in. The script puts text on the page with `textContent` only.
 
 **The page fetches nothing and is the same bytes every time.** No URL appears in it -- not a font, not an image,
-not an SVG namespace -- and the Content-Security-Policy in its head forbids the browser from fetching one even if
-a name tried. A `://` that arrives inside a name is written with its colon as a character reference, so the page
-carries no clickable or auto-linked address either. There is no timestamp and no randomness: one walk, one page.
-The output is ASCII, so it is safe to print to a terminal as well as to redirect to a file.
+not an SVG namespace, not the address of the project this player is ported from -- and the Content-Security-
+Policy in its head forbids the browser from fetching one even if a name tried. A `://` that arrives inside a
+name is written with its colon as a character reference, so the page carries no clickable or auto-linked address
+either. There is no timestamp and no randomness: one walk, one page. The output is ASCII, so it is safe to print
+to a terminal as well as to redirect to a file.
+
+**The page is the whole walk without the script.** The overview, every hop's verdict, explanation, rules,
+objects and findings, the list of hops and the evidence table are in the HTML as written, and the scene is drawn
+in its final state. The script only chooses what to show and moves the marker and the camera.
 """
 
 from __future__ import annotations
@@ -36,11 +48,15 @@ import html
 from typing import Any
 
 from kube_noob import sanitize
+from kube_noob.learn import iso, mechanism_scene
 from kube_noob.learn.mechanism import CANNOT_JUDGE, FAILS, HOLDS, NOT_OBSERVABLE
+from kube_noob.learn.mechanism_player import CSS as _CSS
+from kube_noob.learn.mechanism_player import JS as _JS
+from kube_noob.learn.mechanism_player import icon as _icon
 from kube_noob.yamlio import json_document
 
 #: A hop the lesson declares and the walk never reached, because it stopped first. Not a verdict `walk()` emits --
-#: those hops are absent from `steps` and only counted -- so this view gives the absence a name and a box.
+#: those hops are absent from `steps` and only counted -- so this view gives the absence a name and a card.
 NOT_WALKED = "not-walked"
 #: A step verdict this build has no word for. Drawn like a stop; never like a pass.
 UNRECOGNISED = "unrecognised"
@@ -55,7 +71,24 @@ MARK = {
     UNRECOGNISED: "unrecognised verdict",
 }
 
-#: The hops an event is drawn for: the ones a rule read. `cannot-judge` is here because the event is drawn
+#: The glyph beside each word: a tick, a cross, a question mark, a dotted circle, a middle dot. Only a hop a rule
+#: read and found nothing wrong on gets the tick.
+GLYPH = {
+    HOLDS: "\u2713",
+    FAILS: "\u2717",
+    CANNOT_JUDGE: "?",
+    NOT_OBSERVABLE: "\u25cc",
+    NOT_WALKED: "\u00b7",
+    UNRECOGNISED: "?",
+}
+
+#: What the list of hops says under a hop nobody judged, beside its word.
+_NOTE = {
+    NOT_OBSERVABLE: "not checked by any manifest",
+    NOT_WALKED: "the walk stopped before this hop",
+}
+
+#: The hops a marker is drawn for: the ones a rule read. `cannot-judge` is here because the marker is drawn
 #: stopping short of it, which is the picture of what happened.
 _DRAWN = (HOLDS, FAILS, CANNOT_JUDGE)
 
@@ -69,8 +102,12 @@ _EXIT_MEANS = {
 #: because the count is read from a dict a caller may have built by hand.
 _MAX_PLACEHOLDERS = 64
 _MAX_LISTED = 40
+#: Progress dots are drawn per hop in every hop's section, so only for a path short enough to read them.
+_MAX_DOTS = 24
 
 CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:"
+
+CREDIT = "Player design ported from KubeLearn by Joe Sabbagh, MIT"
 
 
 def _text(value: object, cap: int = 240) -> str:
@@ -82,8 +119,19 @@ def _text(value: object, cap: int = 240) -> str:
     return out if len(out) <= cap else out[: cap - 3].rstrip() + "..."
 
 
+def _whole(value: object, limit: int = 4000) -> str:
+    """A hop's explanation, on one line and not cut: it wraps on the page instead (G411).
+
+    The last clause of a `holds` sentence is where the lesson states what its rule does not read; a cap that fell
+    there made the hold read stronger than the lesson wrote it. Only input can be longer than `limit`, and then
+    the page says how much was left out.
+    """
+    out = sanitize.one_line("" if value is None else str(value))
+    return out if len(out) <= limit else f"{out[:limit]} (cut: {len(out) - limit} more characters)"
+
+
 def _esc(value: object) -> str:
-    """Escaped for HTML text and for a double-quoted attribute, and ASCII.
+    """Escaped for HTML text, for SVG text and for a double-quoted attribute, and ASCII.
 
     `[` and the colon of `://` are written as character references: the first so no line of the page can be read
     as a CI service message (`##[`), the second so the page carries no address a viewer would auto-link.
@@ -169,8 +217,58 @@ def _event(state: str, n: int, why: str, broken_before: int | None, stop_at: int
     return "No event is drawn: this hop carries a verdict this page does not recognise. It is not counted as passing."
 
 
-def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Everything the page shows, as cleaned strings: the model the HTML and the script are both written from."""
+def _says(h: dict[str, Any]) -> str:
+    """The caption under the scene: what this hop checked and what the walk found there, in a plain sentence."""
+    state, head = h["state"], f"{h['title']}: {h['mark']}."
+    if state == HOLDS:
+        return f"{head} The rules that read this hop found nothing wrong."
+    if state == FAILS:
+        found = h["findings"]
+        if not found:
+            return f"{head} {h['why']}"
+        first = found[0]
+        more = f" And {len(found) - 1} more finding(s)." if len(found) > 1 else ""
+        return f"{head} {first['ruleId']} on {first['resource']}: {first['title']}.{more}"
+    if state == CANNOT_JUDGE:
+        return f"{head} {h['why']}"
+    if state == NOT_OBSERVABLE:
+        return f"{head} No manifest can show this hop, so it was not checked and is not counted as passing."
+    if state == NOT_WALKED:
+        return f"{head} The walk stopped before this hop, so it is not reported as working."
+    return f"{head} This page does not recognise the verdict on this hop, so it is not counted as passing."
+
+
+def _evidence(hops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the walk recorded, hop by hop: every finding, and the reason beside every hop no rule could judge."""
+    rows: list[dict[str, Any]] = []
+    for h in hops:
+        for f in h["findings"]:
+            rows.append(
+                {
+                    "hop": h["n"],
+                    "state": h["state"],
+                    "rule": f["ruleId"],
+                    "severity": f["severity"].upper() or "not stated",
+                    "object": f["resource"],
+                    "message": f["title"],
+                }
+            )
+        if h["state"] in (CANNOT_JUDGE, UNRECOGNISED, NOT_OBSERVABLE):
+            rows.append(
+                {
+                    "hop": h["n"],
+                    "state": h["state"],
+                    "rule": ", ".join(h["rules"]) or "none",
+                    "severity": "not observable" if h["state"] == NOT_OBSERVABLE else "not evaluated",
+                    "object": ", ".join(h["objects"][:3]) or "none named by the walk",
+                    "message": h["why"],
+                }
+            )
+    return rows
+
+
+def _model(walked: dict[str, Any], lesson: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, str]]:
+    """The view, and the markup of the stage drawn from it."""
     raw_steps = walked.get("steps")
     steps = [s for s in raw_steps if isinstance(s, dict)] if isinstance(raw_steps, list) else []
     raw_counts = walked.get("counts")
@@ -211,7 +309,7 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
             for f in (raw_findings if isinstance(raw_findings, list) else [])
             if isinstance(f, dict)
         ]
-        why = _text(s.get("why"), 600)
+        why = _whole(s.get("why"))
         hops.append(
             {
                 "n": n,
@@ -219,6 +317,7 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
                 "title": _text(s.get("title") or f"hop {n}"),
                 "state": state,
                 "mark": MARK[state],
+                "glyph": GLYPH[state],
                 "why": why,
                 "label": label,
                 "named": named,
@@ -245,6 +344,7 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
                 "title": _text(step.get("title")) if step else "A hop the walk did not reach",
                 "state": NOT_WALKED,
                 "mark": MARK[NOT_WALKED],
+                "glyph": GLYPH[NOT_WALKED],
                 "why": "The walk stopped before this hop, so nothing read it and nothing is claimed about it.",
                 "label": " / ".join(kinds) if kinds else ident,
                 "named": False,
@@ -260,6 +360,7 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
     for h in hops:
         prev = hops[h["n"] - 2]["label"] if h["n"] > 1 else "start"
         h["caption"] = f"{h['n']:0{width}d}/{total:0{width}d}  {prev} \u2192 {h['label']}"
+        h["says"] = _says(h)
 
     verdict = walked.get("verdict")
     exit_code = _int(walked.get("exitCode"))
@@ -280,7 +381,7 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
     else:
         tone, word = "warn", "unrecognised verdict"
 
-    # Where the page opens: the hop a reader has to act on. The stop, else the first break, else the first hop.
+    # The hop a reader has to act on: the stop, else the first break, else the first hop. The overview links it.
     start = next((h["n"] for h in hops if h["state"] in (CANNOT_JUDGE, UNRECOGNISED)), None)
     start = start or next((h["n"] for h in hops if h["state"] == FAILS), None) or (1 if hops else 0)
 
@@ -288,8 +389,11 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
         got = _int(counts.get(key))
         return "not stated" if got is None else str(got)
 
-    return {
-        "lesson": _text(walked.get("lesson")),
+    lesson_id = _text(walked.get("lesson"))
+    namespaces = _strings(walked.get("namespaces"))
+    drawn = mechanism_scene.build(hops, lesson_id, namespaces, _esc) if hops else {"scene": "", "sequence": ""}
+    view_ = {
+        "lesson": lesson_id,
         "title": _text(walked.get("title") or "A mechanism walk"),
         "layer": _text(walked.get("layer")),
         "verdict": _text(verdict),
@@ -299,203 +403,19 @@ def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[s
         "exitCode": "not stated" if exit_code is None else str(exit_code),
         "exitMeans": _EXIT_MEANS.get(exit_code if exit_code is not None else -1, "not an exit code this page knows"),
         "counts": {k: count(k) for k in ("declared", "judged", "notObservable", "notReached")},
+        "namespaces": namespaces,
         "hiddenHops": after - capped,
         "start": start,
         "hops": hops,
+        "evidence": _evidence(hops),
+        "scene": drawn.get("data"),
     }
+    return view_, {"scene": str(drawn["scene"]), "sequence": str(drawn["sequence"])}
 
 
-_CSS = """
-:root{color-scheme:light dark;--bg:#f2f5fb;--grid:#dfe6f3;--panel:#ffffff;--line:#b4c2de;--ink:#13203d;
---dim:#4d5c7c;--ok:#0b6f4d;--bad:#b3261e;--warn:#7a4f00;--mute:#5a6684;--evt:#0a5fc2;--in:#eaf0fb}
-@media (prefers-color-scheme:dark){:root{--bg:#0a1630;--grid:#11224a;--panel:#0f2044;--line:#2c4379;
---ink:#dce7ff;--dim:#93a7d1;--ok:#5fd6a8;--bad:#ff7b72;--warn:#f3bd55;--mute:#8492b5;--evt:#7fd2ff;--in:#16295a}}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;padding:20px 16px 56px;color:var(--ink);background:var(--bg);
-background-image:linear-gradient(var(--grid) 1px,transparent 1px),
-linear-gradient(90deg,var(--grid) 1px,transparent 1px);
-background-size:24px 24px;font:15px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
-main{max-width:1040px;margin:0 auto}
-h1{font-size:1.7rem;line-height:1.2;margin:0 0 4px;letter-spacing:-.01em}
-h2{font-size:1rem;margin:0 0 8px}
-p{margin:0 0 8px}
-.prose{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:1rem;max-width:68ch}
-.dim{color:var(--dim)}
-code.in{background:var(--in);padding:0 4px;border-radius:3px;overflow-wrap:anywhere;font:inherit}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px 16px;margin-top:16px}
-.verdict{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
-.verdict .word{font-size:1.5rem;font-weight:700;overflow-wrap:anywhere}
-.t-ok .word{color:var(--ok)}.t-bad .word{color:var(--bad)}.t-warn .word{color:var(--warn)}
-.t-ok{border-left:6px solid var(--ok)}.t-bad{border-left:6px solid var(--bad)}
-.t-warn{border-left:6px dashed var(--warn)}
-.counts{display:flex;flex-wrap:wrap;gap:6px 22px;margin:10px 0 0;padding:0}
-.counts div{display:flex;gap:8px;align-items:baseline}
-.counts dt{color:var(--dim)}.counts dd{margin:0;font-weight:700;font-size:1.1rem}
-.schem{position:relative;padding:22px 16px 22px 34px}
-.nodes{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(172px,1fr));gap:36px}
-.node{position:relative;z-index:1;display:block;height:100%;min-height:104px;padding:8px 10px;color:inherit;
-text-decoration:none;background:var(--panel);border:2px solid var(--line);border-radius:4px;overflow-wrap:anywhere}
-.node .num{color:var(--dim)}.node .lab{display:block;font-weight:700;margin:2px 0}
-.node .sub{display:block;color:var(--dim);font-size:.8rem}
-.chip{display:inline-block;padding:0 7px;border:1.5px solid currentColor;border-radius:3px;
-font-weight:700;font-size:.85rem}
-.s-holds .chip,.s-holds.chip{color:var(--ok)}
-.s-fails .chip,.s-fails.chip{color:var(--bad)}
-.s-cannot-judge .chip,.s-cannot-judge.chip,.s-unrecognised .chip,
-.s-unrecognised.chip{color:var(--warn);border-style:dashed}
-.s-not-observable .chip,.s-not-observable.chip,.s-not-walked .chip,
-.s-not-walked.chip{color:var(--mute);border-style:dashed}
-.node.s-holds{border-color:var(--ok)}.node.s-fails{border-color:var(--bad);border-width:3px}
-.node.s-cannot-judge,.node.s-unrecognised{border-color:var(--warn);border-style:dashed}
-.node.s-not-observable{border-style:dashed;border-color:var(--mute);color:var(--mute)}
-.node.s-not-walked{border-style:dotted;border-color:var(--mute);color:var(--mute)}
-.node.s-not-walked>*{opacity:.5}
-.node:focus-visible,button:focus-visible{outline:3px solid var(--evt);outline-offset:3px}
-.node.sel{box-shadow:0 0 0 3px var(--evt)}
-.node.hit{animation:hit .5s 1}
-@keyframes hit{20%{transform:translateX(-5px)}40%{transform:translateX(5px)}
-60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
-.wires{display:none;position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.wires.over{z-index:2}
-.wire{fill:none;stroke:var(--line);stroke-width:2}
-.w-holds,.w-fails{stroke:var(--dim)}
-.w-cannot-judge,.w-unrecognised{stroke:var(--warn);stroke-dasharray:7 5}
-.w-not-observable{stroke:var(--mute);stroke-dasharray:3 6}
-.w-not-walked{stroke:var(--mute);stroke-dasharray:1 7;opacity:.45}
-#dot{display:none}
-#dot circle{fill:var(--evt);stroke:var(--bg);stroke-width:2}
-#dot path{display:none;fill:none;stroke-width:3;stroke-linecap:round}
-#dot.after circle{fill:var(--bg);stroke:var(--bad);stroke-width:3}
-#dot.ok circle{fill:var(--ok)}
-#dot.fail circle{fill:var(--bg);stroke:var(--bad);stroke-width:3}#dot.fail .x{display:inline;stroke:var(--bad)}
-#dot.halt circle{fill:var(--bg);stroke:var(--warn);stroke-width:3}#dot.halt .bar{display:inline;stroke:var(--warn)}
-.controls{display:none;flex-wrap:wrap;gap:8px 10px;align-items:center}
-button{font:inherit;color:var(--ink);background:var(--panel);border:1.5px solid var(--line);border-radius:4px;
-padding:6px 12px;min-height:40px;cursor:pointer}
-button:hover{border-color:var(--evt)}
-#cap{flex:1 1 220px;font-weight:700;white-space:pre-wrap;overflow-wrap:anywhere}
-.hop h2{white-space:pre-wrap;overflow-wrap:anywhere}
-.hop .event{border-left:4px solid var(--line);padding-left:10px}
-.hop.s-fails .event{border-color:var(--bad)}.hop.s-cannot-judge .event,
-.hop.s-unrecognised .event{border-color:var(--warn)}
-.hop.s-holds .event{border-color:var(--ok)}
-.dec{margin:10px 0 0;display:grid;grid-template-columns:minmax(84px,max-content) 1fr;gap:4px 14px}
-.dec dt{color:var(--dim)}.dec dd{margin:0;overflow-wrap:anywhere}
-.finds{list-style:none;margin:0;padding:0}
-.finds li{display:flex;flex-wrap:wrap;gap:2px 10px;padding:4px 0;border-top:1px solid var(--line)}
-.finds .sev{font-weight:700;color:var(--bad)}
-.legend{font-size:.9rem}.legend li{margin:2px 0}
-.jsonly{display:none}
-.js .wires{display:block}.js #dot.on{display:inline}.js .controls{display:flex}.js .jsonly{display:block}
-.js .hop{display:none}.js .hop.sel{display:block}
-@media (prefers-reduced-motion:reduce){.node.hit{animation:none}}
-@media (max-width:480px){body{padding:14px 12px 40px}h1{font-size:1.35rem}.schem{padding:18px 10px 18px 28px}
-.dec{grid-template-columns:1fr}.dec dt{margin-top:6px}}
-@media print{.controls{display:none!important}.js .hop{display:block}body{background:none}}
-"""
-
-_JS = """
-(function(){
-"use strict";
-var blob=document.getElementById("walk-data");if(!blob)return;
-var hops;try{hops=JSON.parse(blob.textContent).view.hops;}catch(e){return;}
-var n=hops.length;if(!n)return;
-var root=document.documentElement,stage=document.getElementById("schem");
-var nodes=stage.querySelectorAll(".node"),wires=stage.querySelectorAll(".wire");
-var secs=document.querySelectorAll(".hop"),dot=document.getElementById("dot");
-var cap=document.getElementById("cap"),play=document.getElementById("play");
-if(nodes.length!==n||wires.length!==n||secs.length!==n)return;
-root.classList.add("js");
-var still=window.matchMedia?window.matchMedia("(prefers-reduced-motion: reduce)"):{matches:true};
-var DRAWN={"holds":1,"fails":1,"cannot-judge":1};
-var cur=-1,raf=0,timer=0,playing=false,wantMove=false,paths=[];
-function box(e){return{l:e.offsetLeft,t:e.offsetTop,r:e.offsetLeft+e.offsetWidth,b:e.offsetTop+e.offsetHeight,
-cx:e.offsetLeft+e.offsetWidth/2,cy:e.offsetTop+e.offsetHeight/2};}
-function layout(){
-paths=[];
-for(var i=0;i<n;i++){
-var c=box(nodes[i]),pts;
-if(i===0){pts=[[c.l-22,c.cy],[c.l,c.cy]];}
-else{var p=box(nodes[i-1]);
-if(Math.abs(p.t-c.t)<4&&c.l>=p.r){pts=[[p.r,p.cy],[c.l,c.cy]];}
-else{var mid=(p.b+c.t)/2;pts=[[p.cx,p.b],[p.cx,mid],[c.cx,mid],[c.cx,c.t]];}}
-paths.push(pts);
-wires[i].setAttribute("d","M"+pts.map(function(q){return q[0].toFixed(1)+" "+q[1].toFixed(1);}).join("L"));
-}}
-function at(pts,f){
-var len=[],total=0,i;
-for(i=1;i<pts.length;i++){var d=Math.abs(pts[i][0]-pts[i-1][0])+Math.abs(pts[i][1]-pts[i-1][1]);len.push(d);total+=d;}
-var want=total*f;
-for(i=0;i<len.length;i++){if(want<=len[i]||i===len.length-1){var k=len[i]?Math.min(1,want/len[i]):1;
-return[pts[i][0]+(pts[i+1][0]-pts[i][0])*k,pts[i][1]+(pts[i+1][1]-pts[i][1])*k];}want-=len[i];}
-return pts[pts.length-1];}
-function put(q){dot.setAttribute("transform","translate("+q[0].toFixed(1)+" "+q[1].toFixed(1)+")");}
-function brokenBefore(i){for(var k=0;k<i;k++){if(hops[k].state==="fails")return true;}return false;}
-function settle(i){
-var s=hops[i].state;
-dot.setAttribute("class","on "+(s==="fails"?"fail":s==="cannot-judge"?"halt":brokenBefore(i)?"after":"ok"));
-put(at(paths[i],s==="cannot-judge"?0.55:1));
-if(s==="fails"&&!still.matches){nodes[i].classList.remove("hit");void nodes[i].offsetWidth;
-nodes[i].classList.add("hit");}
-}
-function show(i,move){
-if(raf){window.cancelAnimationFrame(raf);raf=0;}
-cur=i;
-for(var k=0;k<n;k++){
-var on=k===i;nodes[k].classList.toggle("sel",on);secs[k].classList.toggle("sel",on);
-if(on){nodes[k].setAttribute("aria-current","step");}else{nodes[k].removeAttribute("aria-current");}}
-cap.textContent=hops[i].caption;
-var s=hops[i].state;
-if(!DRAWN[s]){dot.setAttribute("class","");return;}
-if(!move||still.matches){settle(i);return;}
-var end=s==="cannot-judge"?0.55:1,t0=0;
-dot.setAttribute("class","on"+(brokenBefore(i)?" after":""));
-put(at(paths[i],0));
-function frame(t){if(!t0)t0=t;var f=Math.min(1,(t-t0)/900);put(at(paths[i],f*end));
-if(f<1){raf=window.requestAnimationFrame(frame);}else{raf=0;settle(i);}}
-raf=window.requestAnimationFrame(frame);
-}
-function fromHash(){var m=/^#step-(\\d+)$/.exec(window.location.hash);if(!m)return-1;var i=parseInt(m[1],10)-1;
-return i>=0&&i<n?i:-1;}
-function go(i,move){
-if(i<0||i>=n)return;
-var h="#step-"+(i+1);
-if(window.location.hash===h){show(i,move);return;}
-wantMove=move;
-try{window.location.hash=h;}catch(e){wantMove=false;show(i,move);}
-}
-function stop(){playing=false;if(timer){window.clearTimeout(timer);timer=0;}
-play.textContent="Play";play.setAttribute("aria-pressed","false");}
-function canAdvance(){
-if(cur>=n-1)return false;
-var s=hops[cur].state;
-if(s==="cannot-judge"||s==="unrecognised"||s==="not-walked")return false;
-return hops[cur+1].state!=="not-walked";}
-function tick(){timer=0;if(!playing)return;if(!canAdvance()){stop();return;}
-go(cur+1,true);timer=window.setTimeout(tick,2200);}
-function start(){playing=true;play.textContent="Pause";play.setAttribute("aria-pressed","true");
-if(!canAdvance()){go(0,true);timer=window.setTimeout(tick,2200);}else{tick();}}
-window.addEventListener("hashchange",function(){var i=fromHash();if(i<0)return;
-var move=wantMove&&i===cur+1;wantMove=false;show(i,move);});
-play.addEventListener("click",function(){if(playing){stop();}else{start();}});
-document.getElementById("prev").addEventListener("click",function(){stop();go(cur-1,false);});
-document.getElementById("next").addEventListener("click",function(){stop();go(cur+1,true);});
-document.addEventListener("keydown",function(e){
-if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey)return;
-var tag=e.target&&e.target.tagName;
-if(e.key==="ArrowLeft"){stop();go(cur-1,false);e.preventDefault();}
-else if(e.key==="ArrowRight"){stop();go(cur+1,true);e.preventDefault();}
-else if((e.key===" "||e.key==="Spacebar")&&tag!=="BUTTON"&&tag!=="A"){
-if(playing){stop();}else{start();}e.preventDefault();}
-});
-window.addEventListener("resize",function(){layout();if(cur>=0)show(cur,false);});
-layout();
-var first=fromHash();
-if(first<0){first=parseInt(stage.getAttribute("data-start"),10)-1;if(!(first>=0&&first<n))first=0;}
-show(first,false);
-})();
-"""
+def view(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Everything the page shows, as cleaned strings: the model the HTML and the script are both written from."""
+    return _model(walked, lesson)[0]
 
 
 def _code(value: str) -> str:
@@ -511,66 +431,240 @@ def _list(values: list[str], *, from_input: bool) -> str:
     return ", ".join(parts)
 
 
+def _glyph(state: str) -> str:
+    """The mark in the list of hops. A hop nobody judged gets a hollow ring drawn by the stylesheet, not a tick."""
+    if state in (NOT_OBSERVABLE, NOT_WALKED):
+        return '<span class="glyph hollow" aria-hidden="true"></span>'
+    return f'<span class="glyph" aria-hidden="true">{_esc(GLYPH[state])}</span>'
+
+
 def _node(h: dict[str, Any]) -> str:
-    label = _code(h["label"]) if h["named"] else _esc(h["label"])
-    if h["named"]:
-        sub = "object in your manifests"
-    elif h["kinds"]:
-        sub = "kind; the walk names no object here"
-    else:
-        sub = "no manifest object"
+    """One hop in the list: its number, its glyph, its title and its verdict as a word."""
+    note = f'<span class="note">{_esc(_NOTE[h["state"]])}</span>' if h["state"] in _NOTE else ""
     return (
         f'<li><a class="node s-{h["state"]}" href="#step-{h["n"]}">'
-        f'<span class="num">{h["n"]:02d}</span> <span class="chip">{_esc(h["mark"])}</span>'
-        f'<span class="lab">{label}</span><span class="sub">{_esc(sub)}</span></a></li>'
+        f'<span class="num">{h["n"]}</span>{_glyph(h["state"])}'
+        f'<span class="lab"><span class="toc-title">{_esc(h["title"])}</span> '
+        f'<span class="chip">{_esc(h["mark"])}</span>{note}</span></a></li>'
     )
 
 
-def _section(h: dict[str, Any]) -> str:
-    rows: list[str] = [f'<dt>verdict</dt><dd><span class="chip s-{h["state"]}">{_esc(h["mark"])}</span></dd>']
-    rows.append(f"<dt>hop</dt><dd>{_esc(h['id'])}</dd>")
-    if h["rules"]:
-        word = "rules it would rest on" if h["state"] == NOT_WALKED else "rules"
-        rows.append(f"<dt>{word}</dt><dd>{_list(h['rules'], from_input=False)}</dd>")
-    else:
-        rows.append("<dt>rules</dt><dd>none: no rule in this build reads this hop</dd>")
+def _fact(name: str, value: str) -> str:
+    return f"<div><dt>{name}</dt><dd>{value}</dd></div>"
+
+
+def _section(h: dict[str, Any], total: int) -> str:
+    """One hop of the story: where it is on the path, what it checks, why it got its verdict, and the facts."""
+    state = h["state"]
     if h["objects"]:
-        rows.append(f"<dt>objects</dt><dd>{_list(h['objects'], from_input=True)}</dd>")
+        objects = _list(h["objects"], from_input=True)
+    elif h["kinds"]:
+        objects = f"none named by the walk (the hop reads {_esc(' / '.join(h['kinds']))})"
     else:
-        rows.append("<dt>objects</dt><dd>none named by the walk</dd>")
+        objects = "none named by the walk"
+    if h["rules"]:
+        rules = _list(h["rules"], from_input=False)
+        if state == NOT_WALKED:
+            rules += " (the rules it would rest on; none ran)"
+    else:
+        rules = "none: no rule in this build reads this hop"
+    facts = [
+        _fact("Object", objects),
+        _fact("Rules", rules),
+        _fact("Verdict", f'<span class="chip s-{state}">{_esc(h["glyph"])} {_esc(h["mark"])}</span>'),
+    ]
     if h["findings"]:
         items = "".join(
-            f'<li><span class="sev">{_esc(f["severity"].upper())}</span><span>{_esc(f["ruleId"])}</span>'
-            f"{_code(f['resource'])}<span>{_esc(f['title'])}</span></li>"
+            f'<li><span class="sev">{_esc(f["severity"].upper())}</span><span>{_esc(f["ruleId"])}</span> '
+            f"{_code(f['resource'])} <span>{_esc(f['title'])}</span></li>"
             for f in h["findings"][:_MAX_LISTED]
         )
         if len(h["findings"]) > _MAX_LISTED:
             more = len(h["findings"]) - _MAX_LISTED
             items += f"<li>{_esc(f'and {more} more findings not listed here')}</li>"
-        rows.append(f'<dt>findings</dt><dd><ul class="finds">{items}</ul></dd>')
-    elif h["state"] == HOLDS:
-        rows.append("<dt>findings</dt><dd>none from the rules above</dd>")
+        facts.append(_fact("Findings", f'<ul class="finds">{items}</ul>'))
+    elif state == HOLDS:
+        facts.append(_fact("Findings", "none from the rules above"))
+    elif state == FAILS:
+        facts.append(_fact("Findings", "not listed in the walk"))
     else:
-        rows.append(
-            "<dt>findings</dt><dd>none reported; that is not a pass for this hop</dd>"
-            if h["state"] != FAILS
-            else "<dt>findings</dt><dd>not listed in the walk</dd>"
+        facts.append(_fact("Findings", "none reported; that is not a pass for this hop"))
+    dots = ""
+    if total <= _MAX_DOTS:
+        dots = (
+            '<span class="dots" aria-hidden="true">'
+            + "".join('<i class="on"></i>' if k < h["n"] else "<i></i>" for k in range(total))
+            + "</span>"
         )
     return (
-        f'<section class="panel hop s-{h["state"]}" id="step-{h["n"]}">'
-        f"<h2>{_esc(h['caption'])}</h2>"
-        f'<p class="prose"><strong>{_esc(h["title"])}.</strong> {_esc(h["why"])}</p>'
-        f'<p class="prose event">{_esc(h["event"])}</p>'
-        f'<dl class="dec">{"".join(rows)}</dl></section>'
+        f'<section class="panel hop s-{state}" id="step-{h["n"]}">'
+        f'<div class="kicker-row"><span class="kicker">Hop {h["n"]} of {total}</span>{dots}'
+        f'<a class="link-btn" href="#overview">{_icon("back", 12)}Overview</a></div>'
+        f'<h2 class="display">{_esc(h["title"])}</h2>'
+        f'<p class="sub route">{_esc(h["caption"])}</p>'
+        f'<p class="body prose">{_esc(h["why"])}</p>'
+        f'<p class="body event">{_esc(h["event"])}</p>'
+        f'<dl class="facts">{"".join(facts)}</dl></section>'
     )
+
+
+def _overview(v: dict[str, Any]) -> list[str]:
+    """Step 0 of the player: the path's verdict, what the exit code means, the counts and the walk's reason."""
+    hops, counts = v["hops"], v["counts"]
+    spaces = v["namespaces"]
+    if len(spaces) == 1:
+        where = _code(spaces[0]) + " (the namespace judged)"
+    elif spaces:
+        where = _list(spaces, from_input=True) + " (more than one, so none was judged)"
+    else:
+        where = "none stated by the walk"
+    out = [
+        f'<section class="panel t-{v["tone"]}" id="overview" aria-label="Path verdict">',
+        '<p class="kicker">' + (f"{_esc(v['layer'])} layer &#183; " if v["layer"] else "") + "mechanism walk</p>",
+        '<h2 class="display">',
+        f'<span class="word">Path verdict: {_esc(v["verdictWord"])}</span>',
+        "</h2>",
+        f'<p class="sub">exit code {_esc(v["exitCode"])} ({_esc(v["exitMeans"])})</p>',
+        f'<p class="body prose">{_esc(v["reason"])}</p>',
+        '<dl class="stats">',
+        f"<div><dt>hops declared</dt><dd>{_esc(counts['declared'])}</dd></div>",
+        f"<div><dt>judged</dt><dd>{_esc(counts['judged'])}</dd></div>",
+        f"<div><dt>not observable</dt><dd>{_esc(counts['notObservable'])}</dd></div>",
+        f"<div><dt>not walked</dt><dd>{_esc(counts['notReached'])}</dd></div>",
+        "</dl>",
+        '<dl class="facts">',
+        _fact("Lesson", f"kube-noob learn mechanism {_esc(v['lesson'])}"),
+        _fact("Namespace", where),
+        "</dl>",
+    ]
+    if hops:
+        out.append(f'<a class="btn primary start" href="#step-1">{_icon("play", 12)}Walk the {len(hops)} hops</a>')
+        act = hops[int(v["start"]) - 1]
+        if act["state"] not in (HOLDS, NOT_OBSERVABLE):
+            out.append(
+                f'<a class="jump" href="#step-{act["n"]}">Go to hop {act["n"]}: {_esc(act["mark"])}, '
+                "the hop to act on</a>"
+            )
+    out.append("</section>")
+    return out
+
+
+def _stage(v: dict[str, Any], markup: dict[str, str]) -> list[str]:
+    """The left of the player: the scene, the sequence view of it, the caption strip and the transport bar."""
+    return [
+        f'<section class="stage" id="schem" data-view="cluster" data-start="{int(v["start"])}" aria-label="Diagram">',
+        '<div class="canvas">',
+        markup["scene"],
+        f'<div class="sequence">{markup["sequence"]}</div>',
+        '<div class="stage-tools jsonly">',
+        '<div class="seg" role="group" aria-label="Diagram view">',
+        f'<button type="button" id="v-cluster" aria-pressed="true">{_icon("layers", 14)}Cluster</button>',
+        f'<button type="button" id="v-sequence" aria-pressed="false">{_icon("sequence", 14)}Sequence</button>',
+        "</div>",
+        "</div>",
+        '<div class="zoom-ui jsonly">',
+        f'<button type="button" class="ibtn" id="zin" aria-label="Zoom in">{_icon("plus", 14)}</button>',
+        f'<button type="button" class="ibtn" id="zout" aria-label="Zoom out">{_icon("minus", 14)}</button>',
+        f'<button type="button" class="ibtn" id="zreset" aria-label="Reset view" hidden>{_icon("recenter", 14)}'
+        "</button>",
+        "</div>",
+        '<div class="caption" id="capbox" hidden>',
+        '<div class="caption-in"><span class="badge" id="capn" aria-hidden="true"></span>'
+        '<span><em id="capr"></em><output id="cap" aria-live="polite"></output></span>'
+        f'<button type="button" class="caption-next" id="capnext" aria-label="Next">{_icon("right")}</button></div>',
+        "</div>",
+        '<div class="transport controls" role="group" aria-label="Step through the walk">',
+        f'<button type="button" class="ibtn" id="prev" aria-label="Previous hop">{_icon("prev")}</button>',
+        f'<button type="button" class="btn primary play" id="next">{_icon("next", 12)}'
+        '<span id="nextlabel">Next hop</span></button>',
+        f'<button type="button" class="ibtn" id="play" aria-pressed="false" aria-label="Auto-play the hops">'
+        f"{_icon('play', 14)}</button>",
+        '<button type="button" class="ibtn speed" id="speed" aria-label="Playback speed 1 times. Change speed">'
+        "1&#215;</button>",
+        f'<button type="button" class="ibtn" id="restart" aria-label="Restart at the overview">{_icon("replay")}'
+        "</button>",
+        "</div>",
+        "</div>",
+        "</section>",
+    ]
+
+
+def _flow(v: dict[str, Any]) -> list[str]:
+    """The drawer under the stage: the evidence the walk recorded, one row per finding or unjudged hop."""
+    rows = v["evidence"]
+    out = [
+        '<details class="flow" id="flow">',
+        f"<summary>{_icon('right', 14).replace('ico i-right', 'ico i-right flow-chevron')}Events "
+        f'<span class="count" id="count">{len(rows)} / {len(rows)}</span></summary>',
+        '<span class="progress" aria-hidden="true"><i id="bar"></i></span>',
+        '<div class="flow-panel">',
+    ]
+    if rows:
+        out.append(
+            '<table class="etable"><thead><tr><th scope="col">Hop</th><th scope="col">Rule</th>'
+            '<th scope="col">Severity</th><th scope="col">Object</th><th scope="col">What the walk recorded</th>'
+            "</tr></thead><tbody>"
+        )
+        for r in rows[: _MAX_LISTED * 4]:
+            out.append(
+                f'<tr data-hop="{int(r["hop"])}"><td>{int(r["hop"])}</td><td>{_esc(r["rule"])}</td>'
+                f'<td class="sev s-{r["state"]}">{_esc(r["severity"])}</td><td>{_code(r["object"])}</td>'
+                f"<td>{_esc(r['message'])}</td></tr>"
+            )
+        out.append("</tbody></table>")
+        if len(rows) > _MAX_LISTED * 4:
+            out.append(f'<p class="empty-row">{len(rows) - _MAX_LISTED * 4} more rows are not listed here.</p>')
+    else:
+        out.append(
+            '<p class="empty-row">The walk recorded no finding and no hop it could not judge. That is what this '
+            "walk recorded about this path, not a statement about anything it did not read.</p>"
+        )
+    out += ["</div>", "</details>"]
+    return out
+
+
+_LEGEND = [
+    '<details class="legend">',
+    "<summary>How to read this page</summary>",
+    "<ul>",
+    '<li><span class="chip s-holds">&#10003; holds</span> a rule read this hop and found nothing wrong.</li>',
+    '<li><span class="chip s-fails">&#10007; BROKEN</span> a rule on this hop produced a finding. The walk carries '
+    "on.</li>",
+    '<li><span class="chip s-cannot-judge">? cannot judge</span> nothing could answer for this hop. The walk stops '
+    "here.</li>",
+    '<li><span class="chip s-not-observable">&#9676; not observable</span> no manifest can show this hop. It is '
+    "never counted as passing, and what stands there in the diagram is drawn dashed and marked not in any "
+    "manifest.</li>",
+    '<li><span class="chip s-not-walked">&#183; not walked</span> the walk stopped before this hop. It is never '
+    "reported as working.</li>",
+    '<li><code class="in">shaded text</code> came from your manifests; everything else is kube-noob speaking.</li>',
+    "<li>Green is used for one thing: a hop that holds. The colour of a card that has no verdict yet says what "
+    "kind of object it is, and nothing about whether it works.</li>",
+    "</ul>",
+    "</details>",
+]
+
+_SHORTCUTS = [
+    '<dialog id="shortcuts" aria-labelledby="keys-title">',
+    '<div class="dialog-head"><h2 class="dialog-title" id="keys-title">Keyboard shortcuts</h2>',
+    f'<button type="button" class="ibtn ghost" id="keysclose" aria-label="Close">{_icon("close")}</button></div>',
+    '<dl class="shortcut-list">',
+    "<div><dt><kbd>&#8594;</kbd> <kbd>Space</kbd></dt><dd>Next hop</dd></div>",
+    "<div><dt><kbd>&#8592;</kbd></dt><dd>Previous hop</dd></div>",
+    "<div><dt><kbd>Home</kbd></dt><dd>Back to the overview</dd></div>",
+    "<div><dt><kbd>P</kbd></dt><dd>Auto-play, or stop it</dd></div>",
+    "<div><dt><kbd>+</kbd> <kbd>-</kbd></dt><dd>Zoom the diagram</dd></div>",
+    "<div><dt><kbd>?</kbd></dt><dd>This list</dd></div>",
+    "</dl>",
+    "</dialog>",
+]
 
 
 def render_html(walked: dict[str, Any], lesson: dict[str, Any] | None = None) -> str:
     """The walk as one self-contained HTML document. `lesson` names the hops after a stop; without it they are
     drawn as numbered placeholders, and either way each is labelled "not walked"."""
-    v = view(walked, lesson)
+    v, markup = _model(walked, lesson)
     hops = v["hops"]
-    counts = v["counts"]
     title = f"{v['title']} ({v['layer']})" if v["layer"] else v["title"]
     out: list[str] = [
         "<!doctype html>",
@@ -583,79 +677,58 @@ def render_html(walked: dict[str, Any], lesson: dict[str, Any] | None = None) ->
         f"<style>{_CSS}</style>",
         "</head>",
         "<body>",
-        "<main>",
-        "<header>",
-        f"<h1>{_esc(v['title'])}</h1>",
-        f'<p class="dim">kube-noob learn mechanism {_esc(v["lesson"])}'
-        + (f" ({_esc(v['layer'])} layer)" if v["layer"] else "")
-        + ", walked against your own manifests, one hop at a time</p>",
-        "</header>",
-        f'<section class="panel t-{v["tone"]}" aria-label="Path verdict">',
-        '<div class="verdict">',
-        f'<span class="word">Path verdict: {_esc(v["verdictWord"])}</span>',
-        f"<span>exit code {_esc(v['exitCode'])} ({_esc(v['exitMeans'])})</span>",
+        '<div class="shell">',
+        '<header class="topbar">',
+        f'<span class="brand"><svg class="iso brand-mark" viewBox="-19 -32 38 44" aria-hidden="true" '
+        f'focusable="false">{iso.logo(2)}</svg><span class="wordmark"><span class="k">kube</span>-noob</span></span>',
+        '<span class="topbar-sep" aria-hidden="true">/</span>',
+        '<span class="crumb">learn mechanism</span>',
+        '<span class="topbar-sep" aria-hidden="true">/</span>',
+        f'<h1 class="crumb-here">{_esc(v["title"])}</h1>',
+        '<div class="tools jsonly">',
+        f'<button type="button" class="ibtn ghost" id="theme" aria-label="Switch theme">{_icon("sun")}{_icon("moon")}'
+        "</button>",
+        f'<button type="button" class="ibtn ghost" id="keys" aria-label="Keyboard shortcuts">{_icon("keys")}</button>',
         "</div>",
-        f'<p class="prose">{_esc(v["reason"])}</p>',
-        '<dl class="counts">',
-        f"<div><dt>hops declared</dt><dd>{_esc(counts['declared'])}</dd></div>",
-        f"<div><dt>judged</dt><dd>{_esc(counts['judged'])}</dd></div>",
-        f"<div><dt>not observable</dt><dd>{_esc(counts['notObservable'])}</dd></div>",
-        f"<div><dt>not walked</dt><dd>{_esc(counts['notReached'])}</dd></div>",
-        "</dl>",
-        "</section>",
+        "</header>",
+        '<main class="workspace">',
     ]
     if hops:
+        out += _stage(v, markup)
+    else:
         out += [
-            f'<section class="panel schem" id="schem" data-start="{int(v["start"])}" aria-label="The path">',
-            '<svg class="wires" aria-hidden="true" focusable="false">',
-            *[f'<path class="wire w-{h["state"]}" d=""></path>' for h in hops],
-            "</svg>",
-            '<ol class="nodes">',
+            '<section class="stage" aria-label="Diagram">',
+            '<p class="empty-row">This walk lists no hops, so there is nothing to draw and nothing is shown as '
+            "working.</p>",
+            "</section>",
+        ]
+    out += ['<aside class="story" id="story" aria-label="The walk, hop by hop">', '<div class="story-body">']
+    out += _overview(v)
+    out += [_section(h, len(hops)) for h in hops]
+    out.append("</div>")
+    if hops:
+        out += [
+            '<nav class="toc" aria-label="Hops">',
+            '<ol class="toc-list">',
             *[_node(h) for h in hops],
             "</ol>",
-            # The event is drawn in a layer of its own ABOVE the components, so it is not hidden when it arrives.
-            '<svg class="wires over" aria-hidden="true" focusable="false">',
-            '<g id="dot"><circle r="7"></circle><path class="x" d="M-3.5 -3.5L3.5 3.5M3.5 -3.5L-3.5 3.5"></path>'
-            '<path class="bar" d="M-3.5 0H3.5"></path></g>',
-            "</svg>",
-            "</section>",
         ]
         if v["hiddenHops"]:
             out.append(
-                f'<p class="panel">{_esc(v["hiddenHops"])} more hop(s) were not walked and are not drawn here. '
+                f'<p class="more">{_esc(v["hiddenHops"])} more hop(s) were not walked and are not drawn here. '
                 "They are not reported as working.</p>"
             )
-        out += [
-            '<div class="panel controls" role="group" aria-label="Step through the walk">',
-            '<button type="button" id="prev">Previous hop</button>',
-            '<button type="button" id="play" aria-pressed="false">Play</button>',
-            '<button type="button" id="next">Next hop</button>',
-            '<output id="cap" aria-live="polite"></output>',
-            "</div>",
-            *[_section(h) for h in hops],
-        ]
-    else:
-        out.append(
-            '<p class="panel">This walk lists no hops, so there is nothing to draw and nothing is shown as working.</p>'
-        )
+        out.append("</nav>")
+    out += _LEGEND
     out += [
-        '<section class="panel legend" aria-label="How to read this page">',
-        "<h2>How to read this page</h2>",
-        "<ul>",
-        '<li><span class="chip s-holds">holds</span> a rule read this hop and found nothing wrong.</li>',
-        '<li><span class="chip s-fails">BROKEN</span> a rule on this hop produced a finding. The walk carries on.</li>',
-        '<li><span class="chip s-cannot-judge">cannot judge</span> nothing could answer for this hop. The walk stops '
-        "here.</li>",
-        '<li><span class="chip s-not-observable">not observable</span> no manifest can show this hop. It is never '
-        "counted as passing.</li>",
-        '<li><span class="chip s-not-walked">not walked</span> the walk stopped before this hop. It is never reported '
-        "as working.</li>",
-        '<li><code class="in">shaded text</code> came from your manifests; everything else is kube-noob speaking.</li>',
-        '<li class="jsonly">Left and right arrow keys step through the hops, space plays or pauses, and the address '
-        "ends in #step-N so a hop can be linked.</li>",
-        "</ul>",
-        "</section>",
-        "</main>",
+        f'<footer class="credit">{CREDIT}. Drawn by kube-noob from your own manifests; this page fetched nothing.'
+        "</footer>",
+        "</aside>",
+    ]
+    out += _flow(v)
+    out += ["</main>", "</div>"]
+    out += _SHORTCUTS
+    out += [
         f'<script type="application/json" id="walk-data">{_json({"view": v, "walk": walked})}</script>',
         f"<script>{_JS}</script>",
         "</body>",
