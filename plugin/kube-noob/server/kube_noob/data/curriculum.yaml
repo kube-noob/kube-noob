@@ -15,6 +15,7 @@ tracks:
         title: A node goes dark
         layer: control-plane
         docs: [kubernetes]
+        examples: [mechanism/complete, mechanism/broken]
         objectives:
           - Follow what has to be true, in order, for a workload to survive losing a node
           - See which of those your own manifests answer for, and which nothing here reads
@@ -59,6 +60,7 @@ tracks:
         title: Deploy an app
         layer: control-plane
         docs: [kubernetes]
+        examples: [mechanism/deploy/complete, mechanism/deploy/broken]
         objectives:
           - Follow a Deployment from the manifest you send to a pod that is ready for traffic
           - See which steps your manifests decide, and which belong to the API server, the controllers, the
@@ -155,6 +157,7 @@ tracks:
         title: A request finds your Pod
         layer: network
         docs: [kubernetes]
+        examples: [mechanism/complete, mechanism/broken]
         objectives:
           - Follow one request from the edge to a container, hop by hop
           - See which hop your own manifests cannot answer for
@@ -219,6 +222,7 @@ tracks:
         title: A Pod calls a Service
         layer: network
         docs: [kubernetes]
+        examples: [mechanism/service/complete, mechanism/service/broken]
         objectives:
           - Follow one call from a pod to a Service by name, and on to a pod behind it
           - See where the call needs cluster DNS, and which hops only a running cluster can answer
@@ -289,6 +293,7 @@ tracks:
         title: A packet meets a NetworkPolicy
         layer: network
         docs: [kubernetes]
+        examples: [mechanism/networkpolicy/complete, mechanism/networkpolicy/broken]
         objectives:
           - Follow what decides whether a packet to one of your pods is admitted or dropped
           - See which of those decisions are in your manifests, and which only the node makes
@@ -368,6 +373,7 @@ tracks:
         title: RBAC and ServiceAccounts
         layer: security
         docs: [k8s-rbac]
+        examples: [mechanism/rbac/complete, mechanism/rbac/broken]
         objectives:
           - Follow what stands between a pod's identity and the API, from the token it holds to the grants behind it
           - See which of those your own manifests answer for, and which only a running API server decides

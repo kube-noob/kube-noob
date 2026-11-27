@@ -192,6 +192,13 @@ was never passed, so its hop needs a ServiceAccount in the input and is `cannot 
 hop is last for that reason: a bundle whose Secrets live in an external store has none, and placed earlier it
 would stop the walk before any RBAC hop was read.
 
+### Each lesson's worked examples
+
+A walkable lesson names the bundles that show it under `examples:` in the curriculum -- directories relative to
+this repository's `tests/fixtures`, for instance `mechanism/deploy/complete` and `mechanism/deploy/broken`. They
+are for the repository and for a page built from it: the installed package ships no `tests/`, so a walk never
+opens or prints them. Every entry is held to a directory that exists and whose walk reaches a verdict (G423).
+
 ### Watching the walk
 
 ```
