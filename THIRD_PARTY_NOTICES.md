@@ -19,6 +19,7 @@ kube-noob bundles derived data and links to public sources. Licenses were verifi
 
 | FedRAMP 20x Key Security Indicators: the 46 indicator ids, their names, their families and the NIST control ids each one cites (no indicator statement text is shipped) | FedRAMP/rules `fedramp-consolidated-rules.json`, version 2026.11.02.01 (`last_updated` 2026-11-02), sha256 `782faecae3eee4aa2aa9d32cdb0de4c929524f2e41dc1f3d143a94a9ca64c4e3`, retrieved 2026-11-05 | A work of the US Government (FedRAMP, GSA), not subject to US copyright (17 U.S.C. 105). Verified 2026-11-05: the repository has no `LICENSE` or `LICENSE.md` (both 404 on `main`) and its README states no licence, so this is the basis recorded rather than one quoted | `src/kube_noob/audit/fedramp.py` (generated); the vendored extract, which includes the statements and is not packaged, is `vendor/fedramp/fedramp-ksi.json` |
 | MITRE ATT&CK for Containers technique ids, names and tactics (18 techniques) | mitre-attack/attack-stix-data `enterprise-attack/enterprise-attack.json` @c2494b29dd268c46a5d0ea0990553e4327cd2253 (Enterprise ATT&CK 20.0) | ATT&CK Terms of Use (below) | `src/kube_noob/vuln/attack.py` |
+| The lesson player of `kube-noob learn mechanism --format html`: the isometric drawing helpers, the scene geometry (world box, floor plate, cable routing, camera framing), the sequence diagram, the stylesheet's dark and light tokens and component rules, the icon paths and the playback timings, ported from TypeScript, TSX and CSS to Python, CSS and plain JavaScript | joesabbagh1/kubelearn @02edc5a486b964b31711a8b07edcdac594cc9594 (2026-11-26), "KubeLearn", `src/iso/iso.ts`, `src/scene/world.ts`, `src/components/Stage.tsx`, `src/components/SequenceView.tsx`, `src/components/Icon.tsx`, `src/playback.ts`, `src/index.css` | MIT (notice below) | `src/kube_noob/learn/iso.py`, `src/kube_noob/learn/mechanism_scene.py`, `src/kube_noob/learn/mechanism_player.py`, `src/kube_noob/learn/mechanism_html.py`; every page the command writes carries the credit "Player design ported from KubeLearn by Joe Sabbagh, MIT" as text |
 
 Exact source URLs and upstream SHA-256 digests: `src/kube_noob/schemas/data/PROVENANCE.json`.
 
@@ -29,6 +30,36 @@ development, and commercial purposes. Any copy you make for such purposes is aut
 MITRE's copyright designation and this license in any such copy." The same licence file carries MITRE's disclaimers
 (ATT&CK does not enumerate all possibilities, and is provided as is); every threat model kube-noob writes carries the
 copyright designation.
+
+KubeLearn (https://github.com/joesabbagh1/kubelearn), the lesson player ported above:
+
+```
+MIT License
+
+Copyright (c) 2026 Joe Sabbagh
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+What kube-noob changed in the port: no web font (the page fetches nothing), no green for a kind of object (on that
+page green means a hop holds), a marker drawn only for a hop a rule read, and every thing no manifest holds drawn
+dashed and labelled. The lessons' text, the walk and its verdicts are kube-noob's own.
 
 ## Test fixtures (in the repository, not in the package)
 
