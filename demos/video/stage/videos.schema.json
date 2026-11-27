@@ -95,6 +95,7 @@
             "payoff",
             "explain",
             "local",
+            "hops",
             "cta",
             "end"
           ]
@@ -151,6 +152,14 @@
           "items": {
             "$ref": "#/$defs/text"
           }
+        },
+        "walk": {
+          "description": "For a hops scene: which run of `kube-noob learn mechanism` it draws (WALKS in ../facts.py). video_script.py fills the scene's hops from that run, so no hop, mark or exit code is typed here.",
+          "enum": [
+            "complete",
+            "broken",
+            "fragment"
+          ]
         },
         "gauge": {
           "type": "object",
@@ -228,6 +237,27 @@
             "required": [
               "answer"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "hops"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "walk"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "walk"
+              ]
+            }
           }
         },
         {
