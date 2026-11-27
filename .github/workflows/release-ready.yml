@@ -25,7 +25,84 @@ permissions:
   contents: read
 
 jobs:
+  ledger:
+    # The deliverables ledger of the latest release (G436): every asset, package, image, chart, registry entry
+    # and website page it promised, each read where it is served. G399 asks whether the release RUN succeeded; a
+    # run can succeed and the Videos page still have no card for a video, and a run can fail on one leg whose
+    # deliverable was landed by hand afterwards. This asks the question itself. Its own job because it needs
+    # Python and kube-noob's runtime dependencies (the lessons the website owes are asked of the code), and the
+    # report below needs neither. It always exits 0 once the ledger is taken: the verdict is the report's to give.
+    runs-on: ubuntu-latest
+    # Not measured yet: this job is new. About eighty reads with a 20 s timeout and one retry each, and a host
+    # that does not answer is asked once, so a run in which every host hung would take about five minutes.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.ledger.outputs.tag }}
+      rc: ${{ steps.ledger.outputs.rc }}
+      rows: ${{ steps.ledger.outputs.rows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Runtime dependencies, from the hash-locked file
+        run: |
+          python -m pip install --disable-pip-version-check --quiet --require-hashes --only-binary=:all: \
+            -r requirements.lock
+      - name: Read every deliverable of the latest release where it is served
+        id: ledger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // ""') || tag=""
+          if ! printf '%s' "${tag}" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error title=release-ready::the latest release could not be read as a tag like v1.2.3 (got '${tag}'), so there is no ledger to take."
+            exit 1
+          fi
+          # The list is derived from the TAG's tree. main is ahead of it as soon as anything merges, and a lesson
+          # merged after the release is not one that release's website owes. Without the tag the ledger says so in
+          # its first row and is not known; it never falls back to main's list silently.
+          auth=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          echo "::add-mask::${auth}"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+              fetch --quiet --no-tags --depth 1 origin "+refs/tags/${tag}:refs/tags/${tag}"; then
+            echo "::warning title=release-ready::${tag} could not be fetched; the ledger's first row will say the list was derived from main."
+          fi
+          rc=0
+          python scripts/release_deliverables.py --version "${tag#v}" --format json > "${RUNNER_TEMP}/ledger.json" || rc=$?
+          case "${rc}" in
+            0|1|5) ;;
+            *)
+              echo "::error title=release-ready::the ledger for ${tag} could not be taken (exit ${rc}), so whether ${tag} is where it is served is NOT KNOWN."
+              exit 1
+              ;;
+          esac
+          rows=$(python scripts/release_deliverables.py --render "${RUNNER_TEMP}/ledger.json" --format markdown) || true
+          if [ -z "${rows}" ]; then
+            echo "::error title=release-ready::the ledger for ${tag} printed nothing, so whether ${tag} is where it is served is NOT KNOWN."
+            exit 1
+          fi
+          printf '%s\n' "${rows}" >> "${GITHUB_STEP_SUMMARY}"
+          end="ledger_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "tag=${tag}"
+            echo "rc=${rc}"
+            echo "rows<<${end}"
+            printf '%s\n' "${rows}"
+            echo "${end}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "ledger for ${tag}: exit ${rc}"
+
   ready:
+    # always(): a ledger job that failed must reach the report as NOT KNOWN. Skipped with it, the weekly issue
+    # would simply keep last week's answer.
+    needs: ledger
+    if: always()
     runs-on: ubuntu-latest
     # Five API reads and a file parse; the last ten runs of comparable jobs finish inside a minute.
     timeout-minutes: 10
@@ -41,6 +118,9 @@ jobs:
       - name: Is there a release to cut, and would it be safe
         env:
           GH_TOKEN: ${{ github.token }}
+          LEDGER_TAG: ${{ needs.ledger.outputs.tag }}
+          LEDGER_RC: ${{ needs.ledger.outputs.rc }}
+          LEDGER_ROWS: ${{ needs.ledger.outputs.rows }}
         run: |
           set -uo pipefail
           week=$(date -u +%G-W%V)
@@ -118,6 +198,24 @@ jobs:
             fi
           fi
 
+          # Whether the latest release is WHERE IT IS SERVED (G436). The run concluding success says every job ran;
+          # it does not say the Videos page has a card for each video, that the main nav links the mechanisms
+          # page, or that the formula on main is this version's -- v0.11.0 and v0.11.1 each had one of those
+          # wrong under a release nobody had flagged. The `ledger` job read each deliverable; its exit code is 0
+          # (every row delivered), 1 (a row MISSING) or 5 (a row not known). A ledger that was not taken, or was
+          # taken for another tag, is a reading that was not taken.
+          if [ "${LEDGER_TAG:-}" != "${tag}" ] || ! printf '%s' "${LEDGER_RC:-}" | grep -Eqx '[015]' || [ -z "${LEDGER_ROWS:-}" ]; then
+            echo "::error title=release-ready::the deliverables ledger for ${tag} was not taken (the ledger job answered for '${LEDGER_TAG:-nothing}' with exit '${LEDGER_RC:-none}'), so whether ${tag} is where it is served is NOT KNOWN."
+            exit 1
+          fi
+          undelivered=""
+          if [ "${LEDGER_RC}" != "0" ]; then
+            undelivered=$(printf '%s\n' "${LEDGER_ROWS}" | grep -F -- '- [ ] ' | sed 's/^/    /' || true)
+            if [ -z "${undelivered}" ]; then
+              undelivered="    no row names itself; the ledger exited ${LEDGER_RC}"
+            fi
+          fi
+
           # Every check on main, not only the eight required ones. gate-ci, db-image and e2e-kind are not required,
           # and gate-ci is the only job that runs the gate as the real Action, a Tekton Task in kind and the GitLab
           # template -- a release cut while it is red is exactly the kind nobody should cut.
@@ -171,10 +269,31 @@ jobs:
               "What those jobs publish did not leave that run, and every job that needed them was skipped. Re-run the failed jobs once their cause is fixed, or land each one another way and say so here. This stays open until the release run reads success or a newer release replaces ${tag}.")
           fi
 
+          # A row that is MISSING or not known makes the answer "not finished", exactly as an unshipped job does,
+          # and each row names itself with what was seen. Not known counts: a deliverable nobody could read is
+          # not a delivered one.
+          if [ -n "${undelivered}" ]; then
+            unfinished=$(printf '%s\n' \
+              "${unfinished}" \
+              "" \
+              "**\`${tag}\` is not everywhere it is served.** Its deliverables ledger (\`python scripts/release_deliverables.py --version ${tag#v}\`) exited ${LEDGER_RC}; these rows are MISSING or not known:" \
+              "" \
+              "${undelivered}" \
+              "" \
+              "MISSING was read and is not there; not known could not be read, which is not delivered either. A release is shipped when that command exits 0 (MAINTENANCE.md). This stays open until it does or a newer release replaces ${tag}.")
+          fi
+          ledger=$(printf '%s\n' \
+            "" \
+            "<details><summary>The deliverables ledger of ${tag}: every row, and what was seen</summary>" \
+            "" \
+            "${LEDGER_ROWS}" \
+            "" \
+            "</details>")
+
           if [ "${bullets}" = "0" ] && [ -z "${unfinished}" ]; then
-            echo "nothing under ## Unreleased; ${tag} took everything (${days} days ago) and its release run concluded success"
+            echo "nothing under ## Unreleased; ${tag} took everything (${days} days ago), its release run concluded success and every row of its ledger is delivered"
             if [ -n "${existing}" ]; then
-              gh issue close "${existing}" --repo "$GITHUB_REPOSITORY" --comment "Closed by release-ready: \`## Unreleased\` is empty, so nothing is waiting to be released after ${tag}, and ${tag}'s release run concluded success. kube-noob.com builds from the latest release, so it states ${tag}; this workflow does not read the site itself."
+              gh issue close "${existing}" --repo "$GITHUB_REPOSITORY" --comment "Closed by release-ready: \`## Unreleased\` is empty, so nothing is waiting to be released after ${tag}, ${tag}'s release run concluded success, and every deliverable in its ledger was read where it is served -- PyPI, the release assets, the formula, the image, the chart, the MCP Registry and kube-noob.com (G436)."
             fi
             exit 0
           fi
@@ -182,7 +301,8 @@ jobs:
           if [ "${bullets}" = "0" ]; then
             body=$(printf '%s\n' \
               "**Not finished.** \`## Unreleased\` is empty, so there is nothing new to cut -- but an empty changelog is not a release that got everywhere." \
-              "${unfinished}")
+              "${unfinished}" \
+              "${ledger}")
           elif [ -n "${notgreen}" ]; then
             body=$(printf '%s\n' \
               "**Not ready.** \`## Unreleased\` has **${bullets}** bullet(s), and the latest release is \`${tag}\`, published **${days}** day(s) ago — so kube-noob.com has been stating ${tag}'s version, rule counts and install commands for that long." \
@@ -194,7 +314,8 @@ jobs:
               "Every check counts here, not only the eight required ones: \`gate-ci\` is the only job that runs the gate as the real Action, as a Tekton Task in kind and as the GitLab template, and it is not required, so a merge queue can be green while it is red." \
               "" \
               "Fix those, then re-run this workflow for the tag command." \
-              "${unfinished}")
+              "${unfinished}" \
+              "${ledger}")
           else
             body=$(printf '%s\n' \
               "**Ready.** \`## Unreleased\` has **${bullets}** bullet(s), the latest release is \`${tag}\` from **${days}** day(s) ago, and all **${total}** checks on \`main\` (\`${sha}\`) are green." \
@@ -208,7 +329,8 @@ jobs:
               "    gh api -X POST repos/${GITHUB_REPOSITORY}/git/refs -f ref=refs/tags/v<next> -f sha=<the merge commit>" \
               "" \
               "The tag publishes to PyPI, the image, the chart, the MCP Registry and Homebrew, and tells kube-noob.com within about twelve minutes (G356). The videos render afterwards and the site is asked again when they land." \
-              "${unfinished}")
+              "${unfinished}" \
+              "${ledger}")
           fi
 
           if [ -n "${existing}" ]; then

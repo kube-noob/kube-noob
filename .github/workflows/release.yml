@@ -497,3 +497,95 @@ jobs:
       why: this release's videos are attached
     secrets:
       dispatch-token: ${{ secrets.SITE_DISPATCH_TOKEN }}
+
+  deliverables:
+    # The release checks off its own deliverables, where they are served, and writes the ledger to this run's
+    # summary (G436). Every job above reports that it RAN; none of them fetches what it published. At v0.11.0 the
+    # scan video was attached and kube-noob.com/videos/ had no card for it, and at v0.11.1 the release page carried
+    # no video for hours, and the only way to find either out was to open the website.
+    #
+    # A job at the end of this run, and not a workflow listening for `release: published`: the release is created
+    # with GITHUB_TOKEN and GitHub starts no workflow for an event made with that token (the `site` job says the
+    # same). And not a `workflow_run` of this workflow either: that would put the checklist on some other run, and
+    # the page a maintainer opens after a release is this one. It needs every job that publishes, with always(),
+    # because the run in which one of them failed is exactly the run that needs the list.
+    #
+    # In flight is not MISSING. By the time this starts, everything this run publishes itself has either landed
+    # or failed -- the jobs are done -- so a row of theirs that is not there is MISSING and fails this job. The
+    # website is the one thing still on its way: `site-videos` asked kube-noob-site to rebuild seconds ago, and
+    # that takes minutes in another repository. So when the site WAS asked, a website row that is not there yet is
+    # reported as not known (in flight), this job looks again for up to eighteen minutes, and if the site still
+    # has not caught up it says so in a warning and does not fail: site-sync's drift alarm and the weekly
+    # release-ready ledger are what catch a site that never arrives. When the site was NOT asked, nothing is on
+    # its way and the same row is MISSING.
+    #
+    # Nothing needs this job, so it holds no publish back. It will be red at first on every release until the
+    # Homebrew pull request lands, for the reason the homebrew job is: the formula on main still serves the
+    # previous version. Re-run it after the merge and it checks again.
+    needs: [publish-pypi, image, chart-publish, publish-mcp-registry, homebrew, brew, github-release, videos, site, site-videos]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Not measured yet: this job is new. The reads take under a minute; the budget is the eighteen minutes it may
+    # wait for the site (nine pauses of 120 s) plus setup, doubled.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # The ledger itself is standard library only. The lessons the website owes are asked of kube_noob, which
+      # needs its runtime dependencies; without them those rows are not known, which is honest and not useful.
+      - name: Runtime dependencies, from the hash-locked file
+        run: |
+          python -m pip install --disable-pip-version-check --quiet --require-hashes --only-binary=:all: \
+            -r requirements.lock
+      - name: Check off this release's deliverables
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE_RESULT: ${{ needs.site.result }}
+        run: |
+          set -uo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          ledger="${RUNNER_TEMP}/ledger.json"
+          flying=()
+          if [ "${SITE_RESULT}" = success ]; then
+            flying=(--in-flight "website=this run asked kube-noob-site to publish ${GITHUB_REF_NAME}")
+          fi
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            rc=0
+            python scripts/release_deliverables.py --version "${version}" --format json "${flying[@]}" > "${ledger}" || rc=$?
+            open=""
+            waiting=""
+            case "${rc}" in
+              0|1|5)
+                open=$(jq -r '[.rows[] | select(.state != "delivered" and (.in_flight | not)) | "\(.state) \(.id)"] | join(", ")' "${ledger}") || rc=broken
+                waiting=$(jq -r '[.rows[] | select(.in_flight) | .id] | join(", ")' "${ledger}") || rc=broken
+                ;;
+            esac
+            case "${rc}" in
+              0|1|5) ;;
+              *)
+                echo "::error title=deliverables::the ledger for ${GITHUB_REF_NAME} could not be taken (exit ${rc}), so whether this release is where it is served is NOT KNOWN. Nothing was checked off."
+                echo "The deliverables ledger for ${GITHUB_REF_NAME} could not be taken (exit ${rc}). Nothing was checked." >> "${GITHUB_STEP_SUMMARY}"
+                exit 1
+                ;;
+            esac
+            # Look again only while the site is the one thing outstanding.
+            if [ -n "${open}" ] || [ -z "${waiting}" ] || [ "${attempt}" = 10 ]; then break; fi
+            echo "attempt ${attempt}: waiting for kube-noob.com to publish: ${waiting}"
+            sleep 120
+          done
+          python scripts/release_deliverables.py --render "${ledger}" --format markdown >> "${GITHUB_STEP_SUMMARY}" || true
+          if [ -n "${open}" ]; then
+            echo "::error title=deliverables::${GITHUB_REF_NAME} is not shipped. Every job of this run has finished, and these rows are MISSING or NOT KNOWN: ${open}. The run's summary has the whole ledger with what was seen at each URL. Fix the row's job or land it another way, then re-run this job."
+            exit 1
+          fi
+          if [ -n "${waiting}" ]; then
+            echo "::warning title=deliverables::everything this run publishes itself is delivered. Still in flight after eighteen minutes, and NOT checked off: ${waiting}. kube-noob-site was asked and has not published yet; run \`python scripts/release_deliverables.py --version ${version}\` later, and the weekly release-ready report will name these rows if they never arrive."
+            exit 0
+          fi
+          echo "every deliverable of ${GITHUB_REF_NAME} is where it is served"

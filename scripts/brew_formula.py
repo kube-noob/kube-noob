@@ -27,6 +27,8 @@ import json
 import re
 import sys
 import tarfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -81,9 +83,36 @@ def _env(target: tuple[str, str]) -> dict[str, str]:
     return {**base, **TARGETS[target]}
 
 
+#: Seconds between the two attempts of a read.
+RETRY_PAUSE = 3.0
+
+
+def _read(url: str, timeout: float) -> bytes:
+    """Read a URL, with one retry when the connection itself failed.
+
+    A single attempt failed a pull request on 2026-11-27: `--check` reads PyPI in the `plugin` CI job, and one
+    `SSL: UNEXPECTED_EOF_WHILE_READING` was reported as a formula that does not match. So a transport error
+    (URLError, a timeout, a reset) is tried once more. An HTTP status is an answer and is not: the release's
+    homebrew job polls for a version PyPI does not serve yet, and that 404 is what it waits on. Two failures
+    raise the second, so the check still fails loudly -- a formula nobody could compare is not one that matches
+    (G436).
+    """
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - PyPI https URLs only
+                return resp.read()  # type: ignore[no-any-return]
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
+            if attempt == 2:
+                raise
+            print(f"reading {url} failed ({err}); trying once more", file=sys.stderr)
+            time.sleep(RETRY_PAUSE)
+    raise AssertionError("unreachable")
+
+
 def _get_json(url: str) -> dict[str, Any]:
-    with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 - fixed https URL
-        return json.load(resp)  # type: ignore[no-any-return]
+    return json.loads(_read(url, 60))  # type: ignore[no-any-return]
 
 
 def _release(name: str, version: str) -> list[dict[str, Any]]:
@@ -91,8 +120,7 @@ def _release(name: str, version: str) -> list[dict[str, Any]]:
 
 
 def _lock_from_sdist(sdist: dict[str, Any], version: str) -> list[Requirement]:
-    with urllib.request.urlopen(sdist["url"], timeout=120) as resp:  # noqa: S310 - PyPI file URL
-        data = resp.read()
+    data = _read(sdist["url"], 120)
     if hashlib.sha256(data).hexdigest() != sdist["digests"]["sha256"]:
         raise SystemExit("sdist sha256 mismatch")
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:

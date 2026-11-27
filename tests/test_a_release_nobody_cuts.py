@@ -100,12 +100,14 @@ def test_a_reading_that_could_not_be_taken_is_not_ready() -> None:
         "which checks to read is NOT KNOWN",
         "came back in a shape that is not a list of check runs",
         "no check on main concluded success",
+        # G436: the deliverables ledger is a reading too, and one not taken for this tag is not "delivered".
+        "so whether ${tag} is where it is served is NOT KNOWN",
     ):
         assert phrase in script, f"missing refusal: {phrase!r}"
     assert "This is not 'nothing to release'." in script
     assert "it is an unanswered question" in script
     head = script[: script.index("existing=$(gh issue list")]
-    assert head.count("exit 1") == 13, head.count("exit 1")
+    assert head.count("exit 1") == 14, head.count("exit 1")
     assert "exit 0" not in head, "nothing may pass before all thirteen readings are in"
 
 

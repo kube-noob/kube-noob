@@ -9,7 +9,7 @@ everything else.
 
 ## Project status
 
-**Pre-1.0.** The first release (v0.1.0) was tagged 2026-10-27 and v0.11.0 on 2026-11-27: 19 releases in thirty-one days.
+**Pre-1.0.** The first release (v0.1.0) was tagged 2026-10-27 and v0.11.1 on 2026-11-27: 20 releases in thirty-one days.
 That pace means active development, not a stable contract. Until 1.0:
 
 - Rule ids are stable once published. A rule is deprecated, never silently repurposed.
@@ -48,6 +48,30 @@ generated offline from `requirements.lock` by `scripts/sbom.py` and carrying the
 the lock pins. It is reproducible: the same lock gives byte-identical output, with no timestamp and no UUID, so
 a stale document is a diff rather than a judgement call. A test fails when it drifts, and the release attaches
 it beside the wheel.
+
+## When a release is shipped
+
+A release is shipped when `scripts/release_deliverables.py` exits 0, and not before:
+
+```bash
+python scripts/release_deliverables.py --version X.Y.Z
+```
+
+A tag publishes to seven places, and the release run reporting success says every job ran, not that what it
+published can be fetched. The script derives the list of deliverables from the repository's own sources -- the
+release and video workflows, `demos/video/stage/videos.json`, the demo tapes, `server.json`, the chart and the
+walkable lessons, all read from the tag's tree -- and reads each one where a user would: PyPI, every asset on the
+GitHub release, the Homebrew formula on `main`, the image and the chart on GHCR, the MCP Registry, and
+kube-noob.com (its version, a card for every video, the link to the mechanisms page, every lesson and its walk
+page). Nothing in it is a hand-written list, so a video added to `videos.json` is a row the next release owes.
+
+Each row is `delivered`, `MISSING` (it was read and is not there) or `not known` (it could not be read, or the
+answer was not in a shape the script recognises), with the URL and what was seen. Exit 1 means a row is MISSING;
+exit 5 means none is MISSING and one is not known, which is not shipped either. `--format markdown` prints the
+checklist and `--format json` the same rows for a machine.
+
+The release run writes this ledger to its own summary as its last job, and the weekly `release-ready` report runs
+it for the latest release and stays open, naming the rows, until it exits 0.
 
 ## Supported versions
 
