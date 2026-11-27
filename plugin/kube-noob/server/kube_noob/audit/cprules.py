@@ -53,7 +53,14 @@ from kube_noob.audit.cpflags import (
     _unread_lists,
 )
 from kube_noob.audit.model import Finding, Severity, Stage
-from kube_noob.audit.podspec import REPLICATED_KINDS, ContainerRef, PodTemplate, containers
+from kube_noob.audit.podspec import (
+    REPLICATED_KINDS,
+    ContainerRef,
+    PodTemplate,
+    containers,
+    declared_volume_names,
+    operator_builds_the_pod,
+)
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     APISERVICE_GROUP,
@@ -1693,3 +1700,138 @@ def _v025(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             f"{', '.join(elsewhere[:3])}{more} and not in {ctx.ns(h)}. A HorizontalPodAutoscaler scales only a "
             "target in its own namespace, so this one scales nothing.",
         )
+
+
+# =====================================================================================================
+# VALIDATE - what a pod mounts and what a StatefulSet names (G434)
+# =====================================================================================================
+# Two relationships no rule read, both measured silent on every shape before these rules existed.
+#
+# KN-V026 is internal to one object: a mount name resolves against the pod's own `volumes` and, in a StatefulSet,
+# its `volumeClaimTemplates`. Nothing rests on an absence in the bundle, so a fragment is judged like a namespace.
+#
+# KN-V027 reads a second object, with KN-V024's discipline: whether the Service is headless is judged whenever
+# the Service IS in the input, fragment or not; a Service that is not in the StatefulSet's namespace in this
+# input is never a finding and never a pass, because a chart or an operator may create it.
+_MOUNTS_UNREADABLE = (
+    "a container's volumeMounts, or the volumes or volumeClaimTemplates beside it, cannot be read as a list of "
+    "named entries, so which volume each mount names was not compared"
+)
+_OPERATOR_VOLUMES = (
+    "a container in a pod an operator builds (KServe, KubeRay) mounts a volume its manifest does not declare; the "
+    "operator may add volumes to that pod, so the mount was not judged"
+)
+
+
+@rule(
+    "KN-V026",
+    "Container mounts a volume the pod does not declare",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.HIGH,
+    "Name a volume the pod declares: every volumeMounts[].name has to match a volumes[].name of the same pod or, "
+    "in a StatefulSet, a volumeClaimTemplates[].metadata.name.",
+    "A container's volumeMounts entry refers to a volume of its own pod by name, so a name the pod never declares "
+    "resolves to nothing and the API server refuses the object. A StatefulSet also gives each pod one volume per "
+    "volumeClaimTemplate, under the template's name; no other kind has claim templates. Init and ephemeral "
+    "containers are read as well. A pod spec inside an operator's kind (KServe, KubeRay) is not judged, because "
+    "the operator may add volumes to it.",
+    subjects=(WORKLOAD_SUBJECT,),
+)
+def _v026(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    for d, pt in ctx.workloads():
+        declared = declared_volume_names(pt)
+        for c in containers(pt):
+            mounts = c.container.get("volumeMounts")
+            if mounts is None:
+                continue
+            if declared is None or not isinstance(mounts, list):
+                ctx.cannot_decide(r.rule_id, _MOUNTS_UNREADABLE, d.ref())
+                continue
+            for j, mount in enumerate(mounts):
+                name = mount.get("name") if isinstance(mount, dict) else None
+                if not isinstance(name, str) or not name:
+                    ctx.cannot_decide(r.rule_id, _MOUNTS_UNREADABLE, d.ref())
+                elif name in declared:
+                    continue
+                elif operator_builds_the_pod(pt):
+                    ctx.nothing_to_judge(r.rule_id, _OPERATOR_VOLUMES)
+                else:
+                    shown = sorted(declared)
+                    more = f" and {len(shown) - 5} more" if len(shown) > 5 else ""
+                    yield r.finding(
+                        d,
+                        (*c.path, "volumeMounts", j, "name"),
+                        f"Container '{c.name}' mounts the volume {name!r}, which this pod does not declare; it "
+                        f"declares {', '.join(repr(n) for n in shown[:5]) or 'none'}{more}. The API server "
+                        "refuses the object.",
+                    )
+
+
+_NO_GOVERNING_NAME = "a StatefulSet here names no governing Service (no serviceName), so there is none to look for"
+_GOVERNING_FRAGMENT = (
+    "part of a namespace was passed, so a Service a StatefulSet names that is in a file you did not pass is not "
+    "an absent one"
+)
+_GOVERNING_ABSENT = (
+    "the Service a StatefulSet names as its serviceName is not in its namespace in this input; it may be created "
+    "outside the bundle, so whether it is headless was not judged"
+)
+_GOVERNING_UNREADABLE = (
+    "the spec of the Service a StatefulSet names cannot be read, so whether it is headless is not known"
+)
+
+
+@rule(
+    "KN-V027",
+    "StatefulSet names a governing Service that is not headless",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.MEDIUM,
+    "Set clusterIP: None on the Service the StatefulSet's serviceName names, or point serviceName at a headless "
+    "Service; keep a second, ordinary Service for clients that want one address.",
+    "A StatefulSet's serviceName is the Service that gives each pod its stable DNS name "
+    "(pod-0.service.namespace.svc). Only a headless Service (clusterIP: None) publishes a record per pod, so with "
+    "any other Service those names do not resolve and peers that find each other by them cannot. Judged whenever "
+    "the Service is in the input. A Service that is not in the StatefulSet's namespace in the input is not judged: "
+    "it may be created outside the bundle. volumeClaimTemplates are not required and are not read here.",
+    subjects=("StatefulSet", "Service"),
+)
+def _v027(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    here: dict[tuple[str, str], list[Document]] = {}
+    for svc in ctx.by_kind("Service"):
+        if svc.name:
+            here.setdefault((ctx.ns(svc), svc.name), []).append(svc)
+    for sts in ctx.by_kind("StatefulSet"):
+        ns = ctx.ns(sts)
+        name = get_path(sts.data, ("spec", "serviceName"))
+        if not isinstance(name, str) or not name:
+            ctx.nothing_to_judge(r.rule_id, _NO_GOVERNING_NAME)
+            continue
+        found = here.get((ns, name))
+        if not found:
+            if ctx.partial_bundle:
+                ctx.nothing_to_judge(r.rule_id, _GOVERNING_FRAGMENT)
+            elif not ctx.cannot_judge_absence(r.rule_id, "Service", namespace=ns, name=name):
+                ctx.nothing_to_judge(r.rule_id, _GOVERNING_ABSENT)
+            continue
+        for svc in found:
+            spec = svc.data.get("spec") if isinstance(svc.data, dict) else None
+            if not isinstance(spec, dict):
+                ctx.cannot_decide(r.rule_id, _GOVERNING_UNREADABLE, svc.ref())
+                continue
+            ip = spec.get("clusterIP")
+            if ip == "None":
+                continue
+            if spec.get("type") == "ExternalName":
+                has = "is an ExternalName Service and has no endpoints of its own"
+            elif ip is None or ip == "":
+                has = "sets no clusterIP, so the cluster assigns one"
+            else:
+                has = f"has clusterIP {str(ip)[:45]!r}"
+            yield r.finding(
+                sts,
+                ("spec", "serviceName"),
+                f"serviceName names the Service {name!r}, which {has}. Only a headless Service (clusterIP: None) "
+                "gives each pod of a StatefulSet its own DNS record.",
+            )

@@ -67,6 +67,8 @@ SKIPPED_RULES = frozenset(
         "KN-V023",  # same: the containerPorts the Service's pods declare are in other objects
         "KN-V024",  # needs the Service an Ingress names: another object, usually admitted after the Ingress
         "KN-V025",  # the API server refuses a floor above the ceiling itself; the target is another object
+        "KN-V026",  # the API server refuses a mount that names no volume of the pod itself
+        "KN-V027",  # needs the Service a StatefulSet names: another object, often admitted after it
         "KN-N014",  # needs the cluster's CNI and version, which no admitted object carries
         "KN-V014",  # bundle properties
         "KN-V018",

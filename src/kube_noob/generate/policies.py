@@ -399,6 +399,9 @@ NOT_GENERATED: dict[str, str] = {
     "checks the bundle",
     "KN-V025": "the API server refuses minReplicas above maxReplicas itself, and the scale target is another "
     "object, in this namespace or another; `kube-noob audit` checks the bundle",
+    "KN-V026": "the API server refuses a volumeMount that names no volume of the pod itself",
+    "KN-V027": "needs the Service the StatefulSet's serviceName names (another object); `kube-noob audit` checks "
+    "the bundle",
     "KN-V020": "the API server refuses a claim name the Pod does not declare itself",
     "KN-V021": "the API server refuses a claim entry with neither or both sources itself",
     "KN-V022": "the API server forbids pod-level resources.claims itself",

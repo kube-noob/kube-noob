@@ -614,6 +614,43 @@ def containers(pod: PodTemplate, include_init: bool = True, *, ephemeral: bool =
             yield ContainerRef(pod=pod, container=c, path=where, init=False, label=str(where[-1]))
 
 
+def operator_builds_the_pod(pod: PodTemplate) -> bool:
+    """Whether this pod spec is a component of an operator's kind (KServe, KubeRay) rather than a workload's own.
+
+    Such an operator adds to the pod it creates -- a storage initializer and its volume, the Ray log directory --
+    so what the manifest shows of `volumes` is a subset there, exactly as its labels are (`labels_complete`).
+    """
+    return pod.doc.kind in EMBEDDED_POD_SPEC_PATHS
+
+
+def declared_volume_names(pod: PodTemplate) -> set[str] | None:
+    """Every name a container of this pod may mount, or `None` when a list that holds them cannot be read.
+
+    `volumes[].name`, and for a StatefulSet `volumeClaimTemplates[].metadata.name` as well: the controller adds
+    one volume per claim template to each pod it creates, under the template's name. Only a StatefulSet has
+    claim templates, so the field is not read on any other kind -- a Deployment that carries it is refused for
+    the unknown field, and a mount naming it resolves to nothing (G434).
+    """
+    names: set[str] = set()
+    volumes = pod.spec.get("volumes")
+    sources: list[tuple[object, bool]] = [(volumes, False)]
+    if pod.doc.kind == "StatefulSet":
+        spec = pod.doc.data.get("spec") if isinstance(pod.doc.data, dict) else None
+        sources.append((spec.get("volumeClaimTemplates") if isinstance(spec, dict) else None, True))
+    for items, is_template in sources:
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            holder = item.get("metadata") if is_template and isinstance(item, dict) else item
+            name = holder.get("name") if isinstance(holder, dict) else None
+            if not isinstance(name, str) or not name:
+                return None
+            names.add(name)
+    return names
+
+
 def replicas(doc: Document) -> int | None:
     if doc.kind not in REPLICATED_KINDS:
         return None
