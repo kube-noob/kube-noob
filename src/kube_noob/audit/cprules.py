@@ -53,12 +53,13 @@ from kube_noob.audit.cpflags import (
     _unread_lists,
 )
 from kube_noob.audit.model import Finding, Severity, Stage
-from kube_noob.audit.podspec import ContainerRef, PodTemplate, containers
+from kube_noob.audit.podspec import REPLICATED_KINDS, ContainerRef, PodTemplate, containers
 from kube_noob.audit.rules import (
     ANY_OBJECT,
     APISERVICE_GROUP,
     HOSTED_CONTROL_PLANE_PLATFORMS,
     OAUTH_GROUP,
+    REPLICATED,
     WORKLOAD_SUBJECT,
     AuditContext,
     Rule,
@@ -66,9 +67,10 @@ from kube_noob.audit.rules import (
     _off_openshift,
     _singleton,
     cluster_apiservers,
+    hpa_scales,
     rule,
 )
-from kube_noob.catalog import parse_minor
+from kube_noob.catalog import api_group, parse_minor
 from kube_noob.yamlio import Document, PathT, get_path
 
 # =====================================================================================================
@@ -1575,3 +1577,119 @@ def _v024(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                     )
             else:
                 ctx.nothing_to_judge(r.rule_id, _NO_PORT_NAMED)
+
+
+# =====================================================================================================
+# VALIDATE - a HorizontalPodAutoscaler that scales nothing (G433)
+# =====================================================================================================
+# Three rules read an HPA and none judged the autoscaler itself. Measured before this rule existed: `minReplicas`
+# above `maxReplicas`, which the API server refuses, was silent AND excused KN-C007's single replica; an HPA whose
+# target is in another namespace matched nothing in all three, so nothing was said about it.
+#
+# The discipline is KN-V024's:
+#
+# * The bounds are the HPA's own two fields, so they are judged on every HPA, fragment or not.
+# * A target that is NOT in the HPA's namespace in this input is never a finding by itself and never a pass: an
+#   operator, a chart or another repository may create it. It is recorded as nothing to judge, with the kind
+#   named. The one absence that is a finding is the contradictory one -- the bundle DOES define that kind and
+#   name, in another namespace, and a HorizontalPodAutoscaler scales only a target in its own.
+# * A fragment cannot show that the target is missing from its namespace, so nothing is concluded from it there.
+# * An object of that name the rules refused to read is not an absent one (G368).
+# * `scaleTargetRef.apiVersion` is compared only to decline: the controller resolves by group and kind, and
+#   which groups serve a kind depends on the cluster, so a different group is neither the target nor a missing
+#   one. `hpa_scales` itself does not compare groups, because KN-C007 must answer what it answered.
+_HPA_BOUNDS = (
+    "minReplicas or maxReplicas is not an integer, so whether this autoscaler's floor is above its ceiling is not known"
+)
+_HPA_NO_REF = "a HorizontalPodAutoscaler here names no scale target that can be read (no kind, or no name)"
+_HPA_OTHER_KIND = (
+    "a HorizontalPodAutoscaler here scales a kind this rule does not resolve (it resolves "
+    f"{', '.join(REPLICATED)}), so its target was not looked for"
+)
+_HPA_GROUP = (
+    "a HorizontalPodAutoscaler's scaleTargetRef names an API group other than the one the object of that kind and "
+    "name here is in, so whether that object is its target was not decided"
+)
+_HPA_FRAGMENT = (
+    "part of a namespace was passed, so a scale target a HorizontalPodAutoscaler names that is in a file you did "
+    "not pass is not an absent one"
+)
+_HPA_ABSENT = (
+    "the {kind} a HorizontalPodAutoscaler names as its scale target is not in its namespace in this input; it may "
+    "be created outside the bundle, so the reference was not judged"
+)
+
+
+@rule(
+    "KN-V025",
+    "HorizontalPodAutoscaler has a floor above its ceiling, or scales a target that is in another namespace",
+    Stage.VALIDATE,
+    "wiring",
+    Severity.HIGH,
+    "Set minReplicas at or below maxReplicas, and put the HorizontalPodAutoscaler in the namespace of the workload "
+    "its scaleTargetRef names.",
+    "The API server refuses a HorizontalPodAutoscaler whose minReplicas is above its maxReplicas, so the workload "
+    "it was written for is left with no autoscaler. A HorizontalPodAutoscaler scales only a target in its own "
+    "namespace: when the kind and name it gives exist in this bundle in another namespace and not in its own, it "
+    "finds nothing and scales nothing. A target that is in no namespace of the input is not judged, because it "
+    "may be created outside the bundle; nor is one on a fragment, or one whose API group differs from the "
+    "reference's.",
+    ("k8s-hpa-replicas",),
+    subjects=("HorizontalPodAutoscaler",),
+    context=REPLICATED,
+)
+def _v025(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
+    for h in ctx.by_kind("HorizontalPodAutoscaler"):
+        spec = h.data.get("spec") if isinstance(h.data, dict) else None
+        if spec is not None and not isinstance(spec, dict):
+            continue  # `object_unreadable`'s: the evidence check names this object and the rule is undecided
+        spec = spec or {}
+        low, high = spec.get("minReplicas"), spec.get("maxReplicas")
+        low = 1 if low is None else low  # the API's default, and how kubectl sends an explicit null
+        if type(low) is not int or type(high) is not int:
+            ctx.cannot_decide(r.rule_id, _HPA_BOUNDS, h.ref())
+        elif low > high:
+            stated = "minReplicas" in spec and spec["minReplicas"] is not None
+            yield r.finding(
+                h,
+                ("spec", "minReplicas" if stated else "maxReplicas"),
+                f"minReplicas {low}{'' if stated else ' (the default)'} is above maxReplicas {high}: the API server "
+                "refuses this autoscaler, so nothing scales its target.",
+            )
+        ref = spec.get("scaleTargetRef")
+        if ref is not None and not isinstance(ref, dict):
+            continue  # `object_unreadable`'s too
+        ref = ref or {}
+        kind, name = ref.get("kind"), ref.get("name")
+        if not isinstance(kind, str) or not isinstance(name, str) or not kind or not name:
+            ctx.nothing_to_judge(r.rule_id, _HPA_NO_REF)
+            continue
+        if kind not in REPLICATED_KINDS:
+            ctx.nothing_to_judge(r.rule_id, _HPA_OTHER_KIND)
+            continue
+        named = [d for d in ctx.by_kind(*REPLICATED_KINDS) if hpa_scales(ctx, h, d, anywhere=True)]
+        here = [d for d in named if hpa_scales(ctx, h, d)]
+        if here:
+            stated_group = ref.get("apiVersion")
+            if isinstance(stated_group, str) and all(api_group(stated_group) != api_group(d.api_version) for d in here):
+                ctx.nothing_to_judge(r.rule_id, _HPA_GROUP)
+            continue
+        if ctx.partial_bundle:
+            ctx.nothing_to_judge(r.rule_id, _HPA_FRAGMENT)
+            continue
+        elsewhere = sorted({ctx.ns(d) for d in named})
+        if ctx.cannot_judge_absence(
+            r.rule_id, kind, namespace=ctx.ns(h), name=name, suppresses_finding=bool(elsewhere)
+        ):
+            continue
+        if not elsewhere:
+            ctx.nothing_to_judge(r.rule_id, _HPA_ABSENT.format(kind=kind))
+            continue
+        more = f" and {len(elsewhere) - 3} more" if len(elsewhere) > 3 else ""
+        yield r.finding(
+            h,
+            ("spec", "scaleTargetRef", "name"),
+            f"scaleTargetRef names the {kind} {name!r}, which this bundle defines in namespace "
+            f"{', '.join(elsewhere[:3])}{more} and not in {ctx.ns(h)}. A HorizontalPodAutoscaler scales only a "
+            "target in its own namespace, so this one scales nothing.",
+        )

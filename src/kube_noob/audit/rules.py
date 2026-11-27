@@ -4668,11 +4668,17 @@ def _c007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
             yield r.finding(d, ("spec", "replicas"), f"{d.kind} runs {reps} replica(s).")
 
 
+def hpa_scales(ctx: AuditContext, h: Document, d: Document, anywhere: bool = False) -> bool:
+    """Whether `h`'s scaleTargetRef names `d`: its name, its kind and (unless `anywhere`) the HPA's own namespace.
+    The ONE resolver: KN-C007, KN-C012 and KN-C014 each held a copy (G433). Groups are not compared."""
+    ref = get_path(h.data, ("spec", "scaleTargetRef")) or {}
+    return bool(ref.get("name") == d.name and ref.get("kind") == d.kind and (anywhere or ctx.ns(h) == ctx.ns(d)))
+
+
 def _has_hpa(ctx: AuditContext, d: Document) -> bool:
     """An HPA that keeps `d` at two replicas or more. A floor of one is not one: `minReplicas` defaults to 1 (G397)."""
     for h in ctx.by_kind("HorizontalPodAutoscaler"):
-        ref = get_path(h.data, ("spec", "scaleTargetRef")) or {}
-        if ref.get("name") == d.name and ref.get("kind") == d.kind and ctx.ns(h) == ctx.ns(d):
+        if hpa_scales(ctx, h, d):
             low = get_path(h.data, ("spec", "minReplicas"))
             if (low if isinstance(low, int) else 1) >= 2:
                 return True
@@ -4841,7 +4847,6 @@ def _c011(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
 )
 def _c012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     for h in ctx.by_kind("HorizontalPodAutoscaler"):
-        ref = get_path(h.data, ("spec", "scaleTargetRef")) or {}
         metrics = get_path(h.data, ("spec", "metrics")) or []
         uses_cpu_util = any(
             get_path(m, ("resource", "name")) == "cpu" and get_path(m, ("resource", "target", "type")) == "Utilization"
@@ -4851,8 +4856,7 @@ def _c012(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if not uses_cpu_util:
             continue
         for d, pt in ctx.workloads():
-            is_target = d.name == ref.get("name") and d.kind == ref.get("kind") and ctx.ns(d) == ctx.ns(h)
-            if is_target and any(
+            if hpa_scales(ctx, h, d) and any(
                 not get_path(c.container, ("resources", "requests", "cpu")) for c in containers(pt, include_init=False)
             ):
                 yield r.finding(h, ("spec", "metrics"), f"Target {d.ref()} has containers without CPU requests.")
@@ -4924,7 +4928,7 @@ def _c014(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
         if not isinstance(ref, dict):
             continue
         for d in ctx.by_kind(*REPLICATED_KINDS):
-            if d.name != ref.get("name") or d.kind != ref.get("kind") or ctx.ns(d) != ctx.ns(h):
+            if not hpa_scales(ctx, h, d):
                 continue
             spec = d.data.get("spec") if isinstance(d.data, dict) else None
             if not isinstance(spec, dict) or "replicas" not in spec:

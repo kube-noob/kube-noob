@@ -118,6 +118,7 @@ _EVIDENCE_KINDS: dict[str, frozenset[str]] = {
     "KN-C009": frozenset({"PodDisruptionBudget"}),
     "KN-C012": frozenset({"HorizontalPodAutoscaler"}),
     "KN-C014": frozenset({"HorizontalPodAutoscaler"}),
+    "KN-V025": frozenset({"HorizontalPodAutoscaler"}),
     "KN-C013": frozenset({"Secret", "ServiceAccount"}),
     "KN-V011": frozenset({"Service"}),
     "KN-V012": frozenset({"Service"}),

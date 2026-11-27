@@ -88,10 +88,12 @@ def test_the_excluded_partial_controls_are_named_with_their_counts() -> None:
     assert "had rules run clean and others reach no verdict" in remarks
     # The counts come from the report, not from this test's arithmetic: CM-6 is the clearest case, six rules
     # clean against twenty-nine that reached no verdict. (Twenty-eight until KN-V024, a CM-6 rule about an Ingress
-    # and its Service, neither of which this input holds -- so it is one more rule with no verdict, G405.)
-    assert "CM-6 (6 clean, 29 not evaluated)" in remarks
-    # KN-V024 is a CM-3(2) rule as well (the validation controls), so that tally moved by the same one: 9 to 10.
-    assert "CM-3(2) (7 clean, 10 not evaluated)" in remarks
+    # and its Service, neither of which this input holds -- so it is one more rule with no verdict, G405. Thirty
+    # with KN-V025, a CM-6 rule about a HorizontalPodAutoscaler, which this input does not hold either, G433.)
+    assert "CM-6 (6 clean, 30 not evaluated)" in remarks
+    # KN-V024 is a CM-3(2) rule as well (the validation controls), so that tally moved by the same one: 9 to 10,
+    # and KN-V025 moved it to 11.
+    assert "CM-3(2) (7 clean, 11 not evaluated)" in remarks
 
 
 def test_a_rule_whose_subject_is_absent_is_scope_and_not_a_gap() -> None:
