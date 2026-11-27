@@ -20,6 +20,10 @@ Facts:
   scan.findings, scan.unevaluated, scan.evaluated, scan.replicas, scan.exit, scan.verdict,
   scan.object, scan.why                          the adversarial corpus case whose every severity count is
                                                  honestly zero (demos/video/facts.py SCAN)
+  walk.hops, walk.holds, walk.unchecked, walk.judged, walk.unwalked, walk.broken_rule,
+  walk.complete_exit, walk.broken_exit, walk.fragment_exit
+                                                 `kube-noob learn mechanism` on the three inputs the walk video
+                                                 shows (demos/video/facts.py WALKS)
   protocol.steps, protocol.score                 `kube-noob demo protocol` (the walkthrough's chapter 3)
   sidecar.version, sidecar.tools, sidecar.peak, sidecar.limit
                                                  the transcript scripts/demo_sidecar_kind.sh records on a kind cluster
@@ -51,6 +55,19 @@ SIDECAR_MANIFEST = "deploy/sidecar/app-with-kube-noob-sidecar.yaml"
 #: so every severity count is honestly zero and the honest answer is still not a pass. `honest-answer.yaml`
 #: beside it pins the verdict word and the exit code, and `scripts/corpus_run.py` reproduces it.
 SCAN = "corpus/09-a-rollout-with-a-privileged-container/manifests/rollout.yaml"
+#: The mechanism walk the walk video is about, and the three inputs it is shown on. The first two are the
+#: fixture's own directories (a directory is taken to be the whole namespace). The third is the SAME bundle as
+#: the first, passed as one file: a file is a fragment of a namespace, so the policy hop cannot be judged and the
+#: walk stops there -- tests/fixtures/mechanism/README.md, "Exit 5".
+WALK_LESSON = "mech-net-request-to-pod"
+WALKS = {
+    "complete": "tests/fixtures/mechanism/complete",
+    "broken": "tests/fixtures/mechanism/broken",
+    "fragment": "tests/fixtures/mechanism/complete/bundle.yaml",
+}
+#: A hop the walk stopped before. `learn mechanism` prints no mark for one -- it prints the sentence the scene
+#: shows under the path -- so this is the one state the video names itself, and it is never `holds`.
+NOT_WALKED = ("not-walked", "not walked")
 PLATFORM, VERSION = "openshift", "4.22"
 PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*)(?::(words))?\}")
 RECORDING = re.compile(r"^@([a-z]+:[a-z]+)$")
@@ -249,7 +266,9 @@ class Facts:
             "cli": self._cli_audit,
             "tool": self._audit,
             "scan": self._scan,
+            "walk": self._walk,
         }
+        self._walks: dict[str, dict[str, Any]] = {}
         self._done: set[str] = set()
 
     # ---------------------------------------------------------------- groups
@@ -381,6 +400,132 @@ class Facts:
         verdict += ["", f"$ echo $?  -> {self._values['scan.exit']}"]
         self._recordings["scan:verdict"] = verdict
 
+    def _walk_one(self, name: str) -> dict[str, Any]:
+        """One run of `learn mechanism`, as the scene draws it: the command, every declared hop with the mark the
+        command printed for it, the reason, the finding, and the exit code the process returned."""
+        path = WALKS[name]
+        if not (PRODUCT / path).exists():
+            raise FactError(f"{PRODUCT / path} not found (KN_PRODUCT_ROOT={os.environ.get('KN_PRODUCT_ROOT', '')!r})")
+        args = ["learn", "mechanism", WALK_LESSON, "-f", path]
+        runs = [
+            subprocess.run(
+                [sys.executable, "-m", "kube_noob", *args, *extra],
+                cwd=PRODUCT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=600,
+            )
+            for extra in (["--format", "json"], [])
+        ]
+        as_json, as_text = runs
+        # 0 holds, 1 broken, 5 stopped: the three answers a walk has. Anything else is a crash, not a walk.
+        if (
+            as_json.returncode not in (0, 1, 5)
+            or not as_json.stdout.strip()
+            or as_text.returncode != as_json.returncode
+        ):
+            raise FactError(
+                f"`kube-noob {' '.join(args)}` failed ({as_json.returncode}, {as_text.returncode}): "
+                f"{as_json.stderr.strip()[:300]}"
+            )
+        walked = json.loads(as_json.stdout)
+        if walked["exitCode"] != as_json.returncode:
+            raise FactError(
+                f"`kube-noob {' '.join(args)}` says exit {walked['exitCode']} and exits {as_json.returncode}"
+            )
+        # The marks are the words the command prints (`3. [holds] ...`), read from its text and not typed here.
+        marks = re.findall(r"^\d+\. \[([^\]]+)\] ", as_text.stdout, re.M)
+        if len(marks) != len(walked["steps"]):
+            raise FactError(f"`kube-noob {' '.join(args)}` prints {len(marks)} hops and reports {len(walked['steps'])}")
+        steps = [
+            {
+                "id": str(s["step"]),
+                "title": str(s["title"]),
+                "state": str(s["verdict"]),
+                "mark": mark,
+                "why": str(s["why"]),
+                "finding": " · ".join(
+                    f"{f['severity'].upper()}  {f['ruleId']}  {f['resource']}  {f['title']}"
+                    for f in s.get("findings") or ()
+                ),
+            }
+            for s, mark in zip(walked["steps"], marks, strict=True)
+        ]
+        note = next((ln for ln in as_text.stdout.splitlines() if "were not walked" in ln), "")
+        return {
+            "command": f"kube-noob {' '.join(args)}",
+            "title": str(walked["title"]),
+            "verdict": str(walked["verdict"]),
+            "reason": str(walked["verdictReason"]),
+            "note": note,
+            "exit": as_json.returncode,
+            "steps": steps,
+            "counts": walked["counts"],
+            "stoppedAt": walked.get("stoppedAt"),
+        }
+
+    def _walk(self) -> None:
+        """The mechanism walk on three inputs, through the command itself. Nothing here is typed: the hops, their
+        marks and reasons, the rule that breaks one and all three exit codes are what `learn mechanism` returned.
+
+        The group refuses to render rather than mislead. The video says one walk holds, one names a broken hop
+        and one stops at a hop it cannot judge; if the command stops telling any of those three, the scene would
+        be drawn from a different story than its caption, so each is checked and raises.
+        """
+        import yaml
+
+        from kube_noob.learn import mechanism as mech
+
+        walks = {name: self._walk_one(name) for name in WALKS}
+        done, broken, part = walks["complete"], walks["broken"], walks["fragment"]
+        declared = mech.lessons()[WALK_LESSON]["steps"]
+        states = [s["state"] for s in done["steps"]]
+        holds, unchecked = states.count("holds"), states.count("not-observable")
+        if done["exit"] != 0 or len(states) != len(declared) or holds + unchecked != len(states) or not unchecked:
+            raise FactError(f"{WALKS['complete']} no longer holds on every hop a manifest can answer for")
+        fails = [s for s in broken["steps"] if s["state"] == "fails" and s["finding"]]
+        if broken["exit"] != 1 or not fails or broken["stoppedAt"]:
+            raise FactError(f"{WALKS['broken']}: no hop is BROKEN with the walk reaching the end")
+        unwalked = int(part["counts"]["notReached"])
+        if part["exit"] != 5 or not part["stoppedAt"] or not unwalked or not part["note"]:
+            raise FactError(f"{WALKS['fragment']} no longer stops at a hop it cannot judge")
+        for w in walks.values():
+            # Every declared hop is drawn, and one the walk stopped before is drawn as exactly that.
+            w["steps"] += [
+                {"id": str(d["id"]), "title": str(d["title"]), "state": NOT_WALKED[0], "mark": NOT_WALKED[1]}
+                | {"why": "", "finding": ""}
+                for d in declared[len(w["steps"]) :]
+            ]
+            if [s["id"] for s in w["steps"]] != [str(d["id"]) for d in declared]:
+                raise FactError(f"`{w['command']}` walks hops the lesson does not declare, or in another order")
+            # The hop the scene reads out: the first one that is anything but `holds`.
+            w["focus"] = next(i for i, s in enumerate(w["steps"]) if s["state"] != "holds")
+            del w["counts"], w["stoppedAt"]
+        rule = re.search(r"\bKN-[A-Z]+\d+\b", fails[0]["finding"])
+        if not rule:
+            raise FactError(f"{WALKS['broken']}: the broken hop names no rule")
+        self._walks = walks
+        self._values.update(
+            {
+                "walk.hops": len(declared),
+                "walk.holds": holds,
+                "walk.unchecked": unchecked,
+                "walk.judged": sum(s["state"] == "holds" for s in part["steps"]),
+                "walk.unwalked": unwalked,
+                "walk.broken_rule": rule.group(0),
+                "walk.complete_exit": done["exit"],
+                "walk.broken_exit": broken["exit"],
+                "walk.fragment_exit": part["exit"],
+            }
+        )
+        bundle = _product(f"{WALKS['complete']}/bundle.yaml")
+        docs = [d for d in yaml.safe_load_all(bundle.read_text(encoding="utf-8")) if isinstance(d, dict)]
+        width = max(len(str(d.get("kind"))) for d in docs)
+        self._recordings["walk:bundle"] = [f"# {WALKS['complete']}/"] + [
+            f"{d.get('kind')!s:<{width}}  {d['metadata'].get('namespace')}/{d['metadata']['name']}" for d in docs
+        ]
+
     def _protocol(self) -> None:
         text = _cli("demo", "protocol")
         m = re.search(r"score (\d+(?:\.\d+)?)/100", text)
@@ -450,6 +595,13 @@ class Facts:
         """The payoff scene: the example's YAML, its findings on their lines, the fix as a diff, and both scores."""
         self._ensure("audit")
         return json.loads(json.dumps(self._payoff))
+
+    def walk(self, name: str) -> dict[str, Any]:
+        """One hops scene: `learn mechanism` on one of WALKS, every declared hop with its mark, and the exit code."""
+        self._ensure("walk")
+        if name not in self._walks:
+            raise FactError(f"unknown walk {name!r}; see WALKS in demos/video/facts.py")
+        return json.loads(json.dumps(self._walks[name]))
 
     def recording(self, name: str) -> list[str]:
         self._ensure(name)

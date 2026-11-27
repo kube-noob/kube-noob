@@ -1,5 +1,5 @@
 {
-  "_comment": "Scripts for the three animated videos (demos/ai-video-prompts.md, rendered without a video model). 'vo' is spoken by the Kokoro voice (../audio_kit.py); 'say' overrides it for pronunciation. Numbers are never typed: {name} is filled from the code and a terminal line '@name' is a recording made when the video is built (../facts.py); the sidecar's come from the transcript recorded on a kind cluster in CI. Checked against videos.schema.json before rendering. The end card (tagline, platforms, surfaces, kube-noob.com) comes from docs/brand/tokens.json.",
+  "_comment": "Scripts for the animated videos (demos/ai-video-prompts.md, rendered without a video model). 'vo' is spoken by the Kokoro voice (../audio_kit.py); 'say' overrides it for pronunciation. Numbers are never typed: {name} is filled from the code and a terminal line '@name' is a recording made when the video is built (../facts.py); the sidecar's come from the transcript recorded on a kind cluster in CI. Checked against videos.schema.json before rendering. The end card (tagline, platforms, surfaces, kube-noob.com) comes from docs/brand/tokens.json.",
   "videos": {
     "teaser": {
       "title": "kube-noob: no AI inside",
@@ -270,6 +270,75 @@
           "term": [
             "uv tool install kube-noob",
             "kube-noob gate -f ./manifests"
+          ]
+        },
+        {
+          "kind": "end",
+          "min": 4.5
+        }
+      ]
+    },
+    "walk": {
+      "title": "kube-noob: the walk you can watch",
+      "cta": "uv tool install kube-noob",
+      "scenes": [
+        {
+          "kind": "alarm",
+          "min": 6.0,
+          "caption": "Every object is there. Does a request arrive?",
+          "vo": "An Ingress, a Service, a Deployment, a network policy. Every object is there. Does a request ever reach the pod?",
+          "term": [
+            "@walk:bundle"
+          ]
+        },
+        {
+          "kind": "arrive",
+          "min": 4.5,
+          "caption": "Walk the path, hop by hop.",
+          "vo": "So walk the path. kube-noob grades it hop by hop.",
+          "say": "So walk the path. kube noob grades it, hop by hop."
+        },
+        {
+          "kind": "hops",
+          "min": 9.0,
+          "walk": "complete",
+          "caption": "{walk.holds} hops hold. {walk.unchecked} not checked.",
+          "vo": "{walk.holds} hops hold, and each names the rules that read it. The last hop, across the node, no manifest records. It is not checked, and it is not counted as passed.",
+          "say": "{walk.holds:words} hops hold, and each names the rules that read it. The last hop, across the node, no manifest records. It is not checked, and it is not counted as passed."
+        },
+        {
+          "kind": "hops",
+          "min": 8.5,
+          "walk": "broken",
+          "caption": "BROKEN, with the rule that says so.",
+          "vo": "Point the Ingress at a retired controller, and that hop is broken. The walk names the rule, still reaches the end, and exits {walk.broken_exit}.",
+          "say": "Point the Ingress at a retired controller, and that hop is broken. The walk names the rule, still reaches the end, and exits {walk.broken_exit:words}."
+        },
+        {
+          "kind": "hops",
+          "min": 9.5,
+          "walk": "fragment",
+          "caption": "Cannot judge. The walk stops.",
+          "vo": "Now pass one file instead of the whole namespace. The policy hop cannot be judged, so the walk stops there and exits {walk.fragment_exit}. The {walk.unwalked} hops after it are not walked.",
+          "say": "Now pass one file instead of the whole namespace. The policy hop cannot be judged, so the walk stops there and exits {walk.fragment_exit:words}. The {walk.unwalked:words} hops after it are not walked."
+        },
+        {
+          "kind": "split",
+          "min": 7.5,
+          "caption": "A hop nothing read. Not a hop that works.",
+          "vo": "That is the whole rule. A hop nothing read is never reported as a hop that works.",
+          "say": "That's the whole rule. A hop nothing read is never reported as a hop that works."
+        },
+        {
+          "kind": "cta",
+          "min": 6.0,
+          "caption": "Walk the path your manifests describe",
+          "captionPos": "lower",
+          "vo": "Walk the path your own manifests describe. Get it at kube-noob dot com.",
+          "say": "Walk the path your own manifests describe. Get it at kube noob dot com.",
+          "term": [
+            "uv tool install kube-noob",
+            "kube-noob learn mechanism mech-net-request-to-pod -f ./manifests"
           ]
         },
         {

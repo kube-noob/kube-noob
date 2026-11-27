@@ -82,6 +82,7 @@ a path with no observable hops, and a lesson whose every hop was `observable: fa
 
 from __future__ import annotations
 
+import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import Any
@@ -189,6 +190,36 @@ def lessons() -> dict[str, dict[str, Any]]:
     }
 
 
+#: One segment of an example path: what a fixture directory is called, and nothing a path could escape through.
+_EXAMPLE_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+
+
+def examples(lesson: dict[str, Any]) -> tuple[str, ...]:
+    """The worked examples a lesson names: directories of manifests, relative to the repository's `tests/fixtures`.
+
+    Optional, and for whoever builds a page about the lesson -- the website listed each lesson's bundles by hand,
+    so a new lesson had none until someone remembered. The wheel does not ship `tests/`, so a walk never opens
+    these and never prints them; the repository's tests do, and hold each one to a directory that exists and
+    walks to a verdict. What is checked here is the shape, as strictly as a step's: a list of distinct relative
+    paths made of plain lowercase segments. No `..`, no leading `/`, no backslash, no address -- a value that
+    is not such a path raises, because a reader that joins it to a directory would otherwise follow it.
+    """
+    raw = lesson.get("examples")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{lesson.get('id')!r}: `examples` is a non-empty list of fixture directories, or is left out")
+    for item in raw:
+        if not isinstance(item, str) or not all(_EXAMPLE_SEGMENT.match(part) for part in item.split("/")):
+            raise ValueError(
+                f"{lesson.get('id')!r}: example {item!r} is not a relative path of lowercase segments "
+                "(letters, digits and `-`, separated by `/`)"
+            )
+    if len(set(raw)) != len(raw):
+        raise ValueError(f"{lesson.get('id')!r}: `examples` names a directory twice")
+    return tuple(raw)
+
+
 def _kind_of(resource: str) -> str:
     """`Deployment/shop/orders-api` -> `Deployment`. The report writes every resource in this one shape."""
     return resource.split("/", 1)[0]
@@ -226,6 +257,7 @@ def walk(lesson: dict[str, Any], report: dict[str, Any], partial_bundle: bool = 
     steps = [Step.load(s) for s in lesson.get("steps") or ()]
     if not steps:
         raise ValueError(f"{lesson.get('id')!r} declares no steps, so there is no path to walk")
+    examples(lesson)  # shape only: a lesson whose `examples` is malformed is refused, as a malformed step is
 
     here: dict[str, list[str]] = {}
     for res in report.get("resources") or ():

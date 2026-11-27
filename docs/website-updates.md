@@ -24,7 +24,7 @@ python -c "import sys; sys.path.insert(0,'src'); from kube_noob import __version
 
 As of 2026-11-23 on `release/0.10.0`, merged up to `b8ad0f0`: version 0.11.0, 100 rules,
 31 NIST SP 800-53 Rev. 5 controls,
-67 offline playbooks, 9 red-team scenarios, 6 tracks with 20 lessons, 58 MCP tools. These seven figures are
+67 offline playbooks, 9 red-team scenarios, 6 tracks with 22 lessons, 58 MCP tools. These seven figures are
 asserted against the code by `tests/test_guidance.py::test_the_website_queue_states_the_real_numbers`, so this
 paragraph cannot drift the way the compliance document's heading did. `docs/scorecard.md` and
 `krew/noob.yaml` are generated from the same source and are worth copying from rather than retyping.

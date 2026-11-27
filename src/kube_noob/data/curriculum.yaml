@@ -15,6 +15,7 @@ tracks:
         title: A node goes dark
         layer: control-plane
         docs: [kubernetes]
+        examples: [mechanism/complete, mechanism/broken]
         objectives:
           - Follow what has to be true, in order, for a workload to survive losing a node
           - See which of those your own manifests answer for, and which nothing here reads
@@ -55,10 +56,108 @@ tracks:
               filter, score, bind: the remaining nodes have the room, the taints tolerate it and the affinity
               allows it. That decision belongs to a running scheduler and no manifest records it, so kube-noob
               does not check it and does not count it as passed.
+      - id: mech-cp-deploy-an-app
+        title: Deploy an app
+        layer: control-plane
+        docs: [kubernetes]
+        examples: [mechanism/deploy/complete, mechanism/deploy/broken]
+        objectives:
+          - Follow a Deployment from the manifest you send to a pod that is ready for traffic
+          - See which steps your manifests decide, and which belong to the API server, the controllers, the
+            scheduler and the kubelet
+        keyPoints:
+          - Five of the nine steps are in the manifest; the four that are not are where a running cluster decides.
+          - A step about what the pod names stops when the bundle defines no object of that kind at all, because
+            an operator may create it -- that is not the same as the name being found.
+        steps:
+          - id: manifest-is-not-refused
+            title: Nothing here is refused for its identity, its API version, its selector or a request above its limit
+            # Measured (G422): each of these fires on its violation and is silent and evaluated on the healthy
+            # Deployment -- KN-V001 (no metadata.name), KN-V002 (apps/v2), KN-V005 (apps/v1beta1), KN-V009
+            # (Orders_API), KN-V010 (selector not matching the template, or absent), KN-C006 (request above the
+            # limit). KN-V010 is here and not on a later hop: it is a validation finding about the Deployment, and
+            # a hop that reads a Deployment does not hold beside one (G406). A Deployment with no pod template
+            # leaves KN-C006 with "no pod spec in the input", and the hop stops.
+            needs: [Deployment]
+            holds: >-
+              every object here states its apiVersion, kind and name, is sent to an API version that serves its
+              kind and has not been removed, has a valid name, selects its own pod template and requests no more
+              than its limit. These six rules are not the whole of the API server's validation, so a field none
+              of them reads can still be refused
+            rules: [KN-V001, KN-V002, KN-V005, KN-V009, KN-V010, KN-C006]
+          - id: api-server-admits-and-stores-it
+            title: The API server authenticates, authorizes, admits and stores the Deployment
+            observable: false
+            holds: >-
+              the API server checks who is asking and whether they may create Deployments in this namespace,
+              fills in defaults, runs admission, and writes the object to etcd. Who applies the manifest and what
+              the cluster's admission chain refuses are not in it, so kube-noob does not check this and does not
+              count it as passed.
+          - id: controllers-create-the-pods
+            title: The Deployment controller creates a ReplicaSet, and it creates the Pods
+            observable: false
+            holds: >-
+              the Deployment controller writes a ReplicaSet and the ReplicaSet controller writes one Pod per
+              replica, each with no node yet. That happens in the controller manager of a running cluster and no
+              manifest records it, so kube-noob does not check it and does not count it as passed.
+          - id: containers-declare-requests
+            title: Every container declares the CPU and memory it asks the scheduler for
+            # Measured (G422): fires with no requests and with no resources at all, on a fragment too (it reads
+            # the pod spec in front of it); "no pod spec in the input" without a workload.
+            needs: [Deployment]
+            holds: >-
+              every container here declares a CPU and a memory request, which is what the scheduler fits to a
+              node. Whether any node has that much free is the next hop's question, and not this one's
+            rules: [KN-C004]
+          - id: scheduler-binds-the-pod
+            title: The scheduler picks a node for each Pod
+            observable: false
+            holds: >-
+              filter, score, bind: a node with room for the requests, whose taints the Pod tolerates and whose
+              labels its affinity allows. That decision belongs to a running scheduler and no manifest records
+              it, so kube-noob does not check it and does not count it as passed.
+          - id: pod-names-objects-that-are-here
+            title: Every ConfigMap, Secret, claim and ServiceAccount a pod names is in this namespace
+            # Measured (G422): silent and evaluated when the pod names a ConfigMap that is here, or names
+            # nothing; fires on a name that is missing BESIDE another object of that kind. When the bundle
+            # defines no object of that kind at all it abstains ("may be an object created outside the bundle"),
+            # and on a fragment it abstains too -- so the hop stops in both cases and is never BROKEN on a
+            # fragment, without an `absent:` entry.
+            needs: [Deployment]
+            holds: >-
+              every ConfigMap, Secret, PersistentVolumeClaim and ServiceAccount a pod spec names is defined in
+              this namespace, so the kubelet will not hold the Pod in ContainerCreating waiting for one. KN-C017
+              reads names against the objects in this input; one the cluster already holds is not read
+            rules: [KN-C017]
+          - id: image-is-named-by-digest
+            title: Every container names its image by digest
+            # Measured (G422): fires on `:latest`, on a version tag and on a container with no image; silent on
+            # a digest. It does not read whether the registry can be reached or the pull is authorized.
+            needs: [Deployment]
+            holds: >-
+              every container names its image by digest, so the node pulls the bytes that were reviewed and
+              every replica runs the same ones. Whether the registry answers and the pull is authorized is the
+              kubelet's to find out
+            rules: [KN-S012]
+          - id: kubelet-starts-the-container
+            title: The kubelet starts the Pod on its node
+            observable: false
+            holds: >-
+              the kubelet has the runtime create a sandbox, the network plugin gives it an address, the image
+              is pulled and the container starts. None of that is in a manifest, so kube-noob does not check it
+              and does not count it as passed.
+          - id: containers-declare-readiness
+            title: The containers declare a readiness probe
+            needs: [Deployment]
+            holds: >-
+              the containers declare a readiness probe, so the Pod is marked Ready, and added to a Service's
+              endpoints, only when it can serve. Whether the probe succeeds is runtime state no manifest holds
+            rules: [KN-C001]
       - id: mech-net-request-to-pod
         title: A request finds your Pod
         layer: network
         docs: [kubernetes]
+        examples: [mechanism/complete, mechanism/broken]
         objectives:
           - Follow one request from the edge to a container, hop by hop
           - See which hop your own manifests cannot answer for
@@ -123,6 +222,7 @@ tracks:
         title: A Pod calls a Service
         layer: network
         docs: [kubernetes]
+        examples: [mechanism/service/complete, mechanism/service/broken]
         objectives:
           - Follow one call from a pod to a Service by name, and on to a pod behind it
           - See where the call needs cluster DNS, and which hops only a running cluster can answer
@@ -189,10 +289,91 @@ tracks:
               kube-proxy (iptables, IPVS or nftables) or the CNI's own replacement rewrites the ClusterIP to a
               ready endpoint. Nothing in a manifest records this, so kube-noob does not check it and does not
               count it as passed.
+      - id: mech-net-network-policy
+        title: A packet meets a NetworkPolicy
+        layer: network
+        docs: [kubernetes]
+        examples: [mechanism/networkpolicy/complete, mechanism/networkpolicy/broken]
+        objectives:
+          - Follow what decides whether a packet to one of your pods is admitted or dropped
+          - See which of those decisions are in your manifests, and which only the node makes
+        keyPoints:
+          - A namespace with no NetworkPolicy admits everything, and a policy isolates only the pods it selects.
+          - The API server stores a policy; the CNI enforces it, per packet, and neither of those is in a manifest.
+          - No rule here compares a policy's ports with the ports your containers declare, so the walk does not
+            claim it.
+        steps:
+          - id: namespace-has-a-policy
+            title: The namespace has a NetworkPolicy
+            # Measured (G421): first, because every rule below reads a NetworkPolicy and abstains without one
+            # ("no networking.k8s.io NetworkPolicy in the input"). KN-N001 FIRES on that absence, so a namespace
+            # with none is BROKEN here and the next hop then stops; G400 keeps the break as the answer. With no
+            # workload, and on a fragment, KN-N001 abstains itself and the walk stops here with nothing judged.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              the namespace has at least one NetworkPolicy; with none, every pod in it accepts every connection.
+              KN-N001 counts networking.k8s.io policies only, so a namespace whose one policy is a
+              CiliumNetworkPolicy is reported as having none
+            rules: [KN-N001]
+          - id: policy-selects-pods-here
+            title: Every NetworkPolicy here selects a pod that is here
+            # Measured (G421): fires on a podSelector matching no pod template, and on a fragment too -- where
+            # the pod may be in the file nobody passed, hence `absent`. Silent on a second workload that no
+            # policy selects: that is the other direction, and no rule in this build reads it.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              every NetworkPolicy here selects at least one pod template in this namespace, so none of them is a
+              label typo that protects nothing. KN-N012 does not read the other direction: a workload no policy
+              selects stays open to every source, and nothing here reports it
+            rules: [KN-N012]
+            absent: [KN-N012]
+          - id: cni-enforces-the-policy
+            title: The cluster's network plugin turns the policy into rules on each node
+            observable: false
+            holds: >-
+              the API server only stores a NetworkPolicy. The CNI's agent on each node turns it into an allow-list
+              for each selected pod, and a CNI that does not implement NetworkPolicy leaves it stored and inert.
+              Nothing in a manifest records which CNI runs, so kube-noob does not check it and does not count it
+              as passed.
+          - id: no-rule-admits-every-source
+            title: No NetworkPolicy here carries an ingress rule that is open to every source
+            # Measured (G421): fires on a rule of {}, on `from: []`, on `namespaceSelector: {}` and on an ipBlock
+            # of 0.0.0.0/0. Silent on a rule that names ports and no `from` (every source, on those ports) and on
+            # `from: [{podSelector: {}}]` (every pod of this namespace). The sentence says so.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              no NetworkPolicy here has an ingress rule that is empty, lists no peer, selects every namespace or
+              allows 0.0.0.0/0. KN-N007 reads those shapes: a rule that names ports and no `from` still admits
+              every source on those ports, and is not reported
+            rules: [KN-N007]
+          - id: packet-is-admitted-or-dropped
+            title: The node admits the packet a rule allows and drops the rest
+            observable: false
+            holds: >-
+              a packet from a pod a rule's `from` selects, to a port that rule names, is let through and its
+              reply follows it back; anything else sent to a selected pod is discarded on the node, with no
+              answer. Which pod is calling, and on which port, is decided per packet, so kube-noob does not check
+              it and does not count it as passed; and no rule in this build compares a policy's ports with the
+              ports the containers declare.
+          - id: egress-keeps-dns
+            title: No network policy here stops the pods it selects from reaching cluster DNS
+            # Measured (G420, again for G421): silent on an ingress-only policy and on an Egress policy allowing
+            # UDP and TCP 53; fires on a default-deny over Egress with no route to 53.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              no NetworkPolicy here restricts egress without leaving a route to port 53, so a pod it selects can
+              still resolve a name before it sends a packet. KN-N013 reads the policies in this input; one
+              applied by the cluster (an AdminNetworkPolicy, a CNI's own) is not read
+            rules: [KN-N013]
       - id: mech-sec-rbac-and-serviceaccounts
         title: RBAC and ServiceAccounts
         layer: security
         docs: [k8s-rbac]
+        examples: [mechanism/rbac/complete, mechanism/rbac/broken]
         objectives:
           - Follow what stands between a pod's identity and the API, from the token it holds to the grants behind it
           - See which of those your own manifests answer for, and which only a running API server decides
