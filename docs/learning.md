@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 21 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 22 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -149,6 +149,26 @@ workload that no policy selects, KN-N007 is silent about a rule that names ports
 compares a policy's ports with the ports the containers declare -- a policy naming port 9999 in front of a
 container on 8080 is nobody's finding. The hops say so in their own sentences, and none of them says a packet
 gets in: a default-deny walks `complete`, because a policy is here, it selects pods and no rule in it is open.
+
+### Deploy an app
+
+```
+kube-noob learn mechanism mech-cp-deploy-an-app -f ./manifests
+```
+
+Nine hops from the manifest to a pod that is ready, five of them in the manifest: nothing here is refused for
+its identity, its API version, its selector or a request above its limit (KN-V001, KN-V002, KN-V005, KN-V009,
+KN-V010, KN-C006); every container declares the CPU and memory it asks the scheduler for (KN-C004); every
+ConfigMap, Secret, claim and ServiceAccount a pod names is in this namespace (KN-C017); every container names
+its image by digest (KN-S012); and the containers declare a readiness probe (KN-C001). The four between them --
+the API server admitting and storing the object, the controllers creating the pods, the scheduler binding one,
+the kubelet starting it -- are **not checked**, because a running cluster decides them.
+
+Pass a directory. A single file is part of a namespace, so a name it does not define is not a missing object:
+KN-C017 declines, and the walk stops at that hop at exit 5 instead of calling it found. It stops the same way
+when a pod names a Secret and the bundle defines no Secret at all, since an operator may create it. One gap was
+measured and is not this lesson's to close: a pod template with `containers: []` is silent on every rule and on
+the schema stage, so it walks `complete` (G422).
 
 ### RBAC and ServiceAccounts
 

@@ -55,6 +55,102 @@ tracks:
               filter, score, bind: the remaining nodes have the room, the taints tolerate it and the affinity
               allows it. That decision belongs to a running scheduler and no manifest records it, so kube-noob
               does not check it and does not count it as passed.
+      - id: mech-cp-deploy-an-app
+        title: Deploy an app
+        layer: control-plane
+        docs: [kubernetes]
+        objectives:
+          - Follow a Deployment from the manifest you send to a pod that is ready for traffic
+          - See which steps your manifests decide, and which belong to the API server, the controllers, the
+            scheduler and the kubelet
+        keyPoints:
+          - Five of the nine steps are in the manifest; the four that are not are where a running cluster decides.
+          - A step about what the pod names stops when the bundle defines no object of that kind at all, because
+            an operator may create it -- that is not the same as the name being found.
+        steps:
+          - id: manifest-is-not-refused
+            title: Nothing here is refused for its identity, its API version, its selector or a request above its limit
+            # Measured (G422): each of these fires on its violation and is silent and evaluated on the healthy
+            # Deployment -- KN-V001 (no metadata.name), KN-V002 (apps/v2), KN-V005 (apps/v1beta1), KN-V009
+            # (Orders_API), KN-V010 (selector not matching the template, or absent), KN-C006 (request above the
+            # limit). KN-V010 is here and not on a later hop: it is a validation finding about the Deployment, and
+            # a hop that reads a Deployment does not hold beside one (G406). A Deployment with no pod template
+            # leaves KN-C006 with "no pod spec in the input", and the hop stops.
+            needs: [Deployment]
+            holds: >-
+              every object here states its apiVersion, kind and name, is sent to an API version that serves its
+              kind and has not been removed, has a valid name, selects its own pod template and requests no more
+              than its limit. These six rules are not the whole of the API server's validation, so a field none
+              of them reads can still be refused
+            rules: [KN-V001, KN-V002, KN-V005, KN-V009, KN-V010, KN-C006]
+          - id: api-server-admits-and-stores-it
+            title: The API server authenticates, authorizes, admits and stores the Deployment
+            observable: false
+            holds: >-
+              the API server checks who is asking and whether they may create Deployments in this namespace,
+              fills in defaults, runs admission, and writes the object to etcd. Who applies the manifest and what
+              the cluster's admission chain refuses are not in it, so kube-noob does not check this and does not
+              count it as passed.
+          - id: controllers-create-the-pods
+            title: The Deployment controller creates a ReplicaSet, and it creates the Pods
+            observable: false
+            holds: >-
+              the Deployment controller writes a ReplicaSet and the ReplicaSet controller writes one Pod per
+              replica, each with no node yet. That happens in the controller manager of a running cluster and no
+              manifest records it, so kube-noob does not check it and does not count it as passed.
+          - id: containers-declare-requests
+            title: Every container declares the CPU and memory it asks the scheduler for
+            # Measured (G422): fires with no requests and with no resources at all, on a fragment too (it reads
+            # the pod spec in front of it); "no pod spec in the input" without a workload.
+            needs: [Deployment]
+            holds: >-
+              every container here declares a CPU and a memory request, which is what the scheduler fits to a
+              node. Whether any node has that much free is the next hop's question, and not this one's
+            rules: [KN-C004]
+          - id: scheduler-binds-the-pod
+            title: The scheduler picks a node for each Pod
+            observable: false
+            holds: >-
+              filter, score, bind: a node with room for the requests, whose taints the Pod tolerates and whose
+              labels its affinity allows. That decision belongs to a running scheduler and no manifest records
+              it, so kube-noob does not check it and does not count it as passed.
+          - id: pod-names-objects-that-are-here
+            title: Every ConfigMap, Secret, claim and ServiceAccount a pod names is in this namespace
+            # Measured (G422): silent and evaluated when the pod names a ConfigMap that is here, or names
+            # nothing; fires on a name that is missing BESIDE another object of that kind. When the bundle
+            # defines no object of that kind at all it abstains ("may be an object created outside the bundle"),
+            # and on a fragment it abstains too -- so the hop stops in both cases and is never BROKEN on a
+            # fragment, without an `absent:` entry.
+            needs: [Deployment]
+            holds: >-
+              every ConfigMap, Secret, PersistentVolumeClaim and ServiceAccount a pod spec names is defined in
+              this namespace, so the kubelet will not hold the Pod in ContainerCreating waiting for one. KN-C017
+              reads names against the objects in this input; one the cluster already holds is not read
+            rules: [KN-C017]
+          - id: image-is-named-by-digest
+            title: Every container names its image by digest
+            # Measured (G422): fires on `:latest`, on a version tag and on a container with no image; silent on
+            # a digest. It does not read whether the registry can be reached or the pull is authorized.
+            needs: [Deployment]
+            holds: >-
+              every container names its image by digest, so the node pulls the bytes that were reviewed and
+              every replica runs the same ones. Whether the registry answers and the pull is authorized is the
+              kubelet's to find out
+            rules: [KN-S012]
+          - id: kubelet-starts-the-container
+            title: The kubelet starts the Pod on its node
+            observable: false
+            holds: >-
+              the kubelet has the runtime create a sandbox, the network plugin gives it an address, the image
+              is pulled and the container starts. None of that is in a manifest, so kube-noob does not check it
+              and does not count it as passed.
+          - id: containers-declare-readiness
+            title: The containers declare a readiness probe
+            needs: [Deployment]
+            holds: >-
+              the containers declare a readiness probe, so the Pod is marked Ready, and added to a Service's
+              endpoints, only when it can serve. Whether the probe succeeds is runtime state no manifest holds
+            rules: [KN-C001]
       - id: mech-net-request-to-pod
         title: A request finds your Pod
         layer: network
