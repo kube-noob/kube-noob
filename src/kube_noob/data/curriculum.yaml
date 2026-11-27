@@ -189,6 +189,85 @@ tracks:
               kube-proxy (iptables, IPVS or nftables) or the CNI's own replacement rewrites the ClusterIP to a
               ready endpoint. Nothing in a manifest records this, so kube-noob does not check it and does not
               count it as passed.
+      - id: mech-net-network-policy
+        title: A packet meets a NetworkPolicy
+        layer: network
+        docs: [kubernetes]
+        objectives:
+          - Follow what decides whether a packet to one of your pods is admitted or dropped
+          - See which of those decisions are in your manifests, and which only the node makes
+        keyPoints:
+          - A namespace with no NetworkPolicy admits everything, and a policy isolates only the pods it selects.
+          - The API server stores a policy; the CNI enforces it, per packet, and neither of those is in a manifest.
+          - No rule here compares a policy's ports with the ports your containers declare, so the walk does not
+            claim it.
+        steps:
+          - id: namespace-has-a-policy
+            title: The namespace has a NetworkPolicy
+            # Measured (G421): first, because every rule below reads a NetworkPolicy and abstains without one
+            # ("no networking.k8s.io NetworkPolicy in the input"). KN-N001 FIRES on that absence, so a namespace
+            # with none is BROKEN here and the next hop then stops; G400 keeps the break as the answer. With no
+            # workload, and on a fragment, KN-N001 abstains itself and the walk stops here with nothing judged.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              the namespace has at least one NetworkPolicy; with none, every pod in it accepts every connection.
+              KN-N001 counts networking.k8s.io policies only, so a namespace whose one policy is a
+              CiliumNetworkPolicy is reported as having none
+            rules: [KN-N001]
+          - id: policy-selects-pods-here
+            title: Every NetworkPolicy here selects a pod that is here
+            # Measured (G421): fires on a podSelector matching no pod template, and on a fragment too -- where
+            # the pod may be in the file nobody passed, hence `absent`. Silent on a second workload that no
+            # policy selects: that is the other direction, and no rule in this build reads it.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              every NetworkPolicy here selects at least one pod template in this namespace, so none of them is a
+              label typo that protects nothing. KN-N012 does not read the other direction: a workload no policy
+              selects stays open to every source, and nothing here reports it
+            rules: [KN-N012]
+            absent: [KN-N012]
+          - id: cni-enforces-the-policy
+            title: The cluster's network plugin turns the policy into rules on each node
+            observable: false
+            holds: >-
+              the API server only stores a NetworkPolicy. The CNI's agent on each node turns it into an allow-list
+              for each selected pod, and a CNI that does not implement NetworkPolicy leaves it stored and inert.
+              Nothing in a manifest records which CNI runs, so kube-noob does not check it and does not count it
+              as passed.
+          - id: no-rule-admits-every-source
+            title: No NetworkPolicy here carries an ingress rule that is open to every source
+            # Measured (G421): fires on a rule of {}, on `from: []`, on `namespaceSelector: {}` and on an ipBlock
+            # of 0.0.0.0/0. Silent on a rule that names ports and no `from` (every source, on those ports) and on
+            # `from: [{podSelector: {}}]` (every pod of this namespace). The sentence says so.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              no NetworkPolicy here has an ingress rule that is empty, lists no peer, selects every namespace or
+              allows 0.0.0.0/0. KN-N007 reads those shapes: a rule that names ports and no `from` still admits
+              every source on those ports, and is not reported
+            rules: [KN-N007]
+          - id: packet-is-admitted-or-dropped
+            title: The node admits the packet a rule allows and drops the rest
+            observable: false
+            holds: >-
+              a packet from a pod a rule's `from` selects, to a port that rule names, is let through and its
+              reply follows it back; anything else sent to a selected pod is discarded on the node, with no
+              answer. Which pod is calling, and on which port, is decided per packet, so kube-noob does not check
+              it and does not count it as passed; and no rule in this build compares a policy's ports with the
+              ports the containers declare.
+          - id: egress-keeps-dns
+            title: No network policy here stops the pods it selects from reaching cluster DNS
+            # Measured (G420, again for G421): silent on an ingress-only policy and on an Egress policy allowing
+            # UDP and TCP 53; fires on a default-deny over Egress with no route to 53.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              no NetworkPolicy here restricts egress without leaving a route to port 53, so a pod it selects can
+              still resolve a name before it sends a packet. KN-N013 reads the policies in this input; one
+              applied by the cluster (an AdminNetworkPolicy, a CNI's own) is not read
+            rules: [KN-N013]
       - id: mech-sec-rbac-and-serviceaccounts
         title: RBAC and ServiceAccounts
         layer: security

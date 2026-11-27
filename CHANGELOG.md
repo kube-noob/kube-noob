@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **A fifth mechanism lesson: a packet meets a NetworkPolicy (G421).** `kube-noob learn mechanism mech-net-network-policy -f ./manifests` follows what decides whether a packet to one of your pods is admitted or dropped -- the namespace has a policy, each policy selects a pod that is here, no ingress rule is open to every source, the selected pods keep a route to DNS -- and marks the two hops no manifest records (which CNI enforces the policy, and the per-packet decision) as not checked. Measuring the rules first found three things nothing reads, and the hops say so rather than hold on them: a workload no policy selects, a rule with ports and no `from`, and a policy port no container declares.
 - **A fourth mechanism lesson: a Pod calls a Service (G420).** `kube-noob learn mechanism mech-net-pod-calls-a-service -f ./manifests` follows a call by name -- the namespace's policy, egress to cluster DNS, the DNS answer, the Service and its ports, the workload, readiness and the ClusterIP translation -- and marks the two hops no manifest records as not checked. Each rule was measured with its object absent before the hop was written.
 ## 0.11.0 - 2026-11-26
 

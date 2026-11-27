@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 20 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 21 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -130,6 +130,25 @@ which is **not checked**; the Service selects pods here and its ports are ones t
 KN-V023); the workload owns its pods (KN-V010); the containers declare readiness (KN-C001); and the node sends
 the ClusterIP to an endpoint, which is **not checked**. A namespace with no NetworkPolicy is BROKEN at the first
 hop and stops at the DNS hop, because KN-N013 has no policy to read (G420).
+
+### A packet meets a NetworkPolicy
+
+```
+kube-noob learn mechanism mech-net-network-policy -f ./manifests
+```
+
+Six hops, four of them in a manifest: the namespace has a NetworkPolicy (KN-N001); every policy here selects a
+pod that is here (KN-N012); the cluster's network plugin turns the policy into rules on each node, which is
+**not checked**; no policy carries an ingress rule that is open to every source (KN-N007); the node admits the
+packet a rule allows and drops the rest, which is **not checked**; and no policy stops the pods it selects from
+reaching cluster DNS (KN-N013). A namespace with no NetworkPolicy is BROKEN at the first hop and stops at the
+second, because every later rule has no policy to read.
+
+Read the titles literally here too. Measured before the lesson was written (G421): KN-N012 is silent about a
+workload that no policy selects, KN-N007 is silent about a rule that names ports and no `from`, and no rule
+compares a policy's ports with the ports the containers declare -- a policy naming port 9999 in front of a
+container on 8080 is nobody's finding. The hops say so in their own sentences, and none of them says a packet
+gets in: a default-deny walks `complete`, because a policy is here, it selects pods and no rule in it is open.
 
 ### RBAC and ServiceAccounts
 
