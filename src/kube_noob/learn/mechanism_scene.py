@@ -198,6 +198,37 @@ LAYOUTS: dict[str, Layout] = {
             "the-api-server-authorizes-the-request": Spot((40.0, 66.0), "api", "API server"),
         },
     ),
+    "mech-net-network-policy": Layout(
+        floor=_PLATE,
+        origin=Spot(_TRAFFIC_NEAR, "rack", "Sending pod", word="SRC"),
+        steps={
+            # Every judged hop reads the same NetworkPolicy, so they share its card; the two hops no manifest
+            # shows are where they happen: the CNI on the node, and the packet at the destination pod.
+            "namespace-has-a-policy": Spot(_POLICY),
+            "policy-selects-pods-here": Spot(_POLICY),
+            "cni-enforces-the-policy": Spot(_NODES[0], "node", "CNI on the node", slots=("other", "v1")),
+            "no-rule-admits-every-source": Spot(_POLICY),
+            "packet-is-admitted-or-dropped": Spot(
+                _NODES[1], "node", "The destination pod", slots=("v1", "other", "v1")
+            ),
+            "egress-keeps-dns": Spot(_POLICY),
+        },
+    ),
+    "mech-cp-deploy-an-app": Layout(
+        floor=_PLATE,
+        steps={
+            # The Deployment's own hops share its card; the control plane and the node are the hops between.
+            "manifest-is-not-refused": Spot(_WORKLOAD),
+            "api-server-admits-and-stores-it": Spot((40.0, 66.0), "api", "API server"),
+            "controllers-create-the-pods": Spot(_EDGE_FRONT, "rack", "Controller manager", word="CTRL"),
+            "containers-declare-requests": Spot(_WORKLOAD),
+            "scheduler-binds-the-pod": Spot(_EDGE, "sched", "Scheduler"),
+            "pod-names-objects-that-are-here": Spot(_WORKLOAD),
+            "image-is-named-by-digest": Spot(_WORKLOAD),
+            "kubelet-starts-the-container": Spot(_NODES[0], "node", "kubelet on the node", slots=("other", "starting")),
+            "containers-declare-readiness": Spot(_WORKLOAD),
+        },
+    ),
 }
 
 #: The plain row: how far apart along the floor's x axis, how many to a row, how far apart the rows.

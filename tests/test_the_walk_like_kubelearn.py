@@ -39,6 +39,8 @@ REQUEST = "mech-net-request-to-pod"
 SERVICE = "mech-net-pod-calls-a-service"
 RBAC = "mech-sec-rbac-and-serviceaccounts"
 NODE_DARK = "mech-cp-a-node-goes-dark"
+NETPOL = "mech-net-network-policy"
+DEPLOY = "mech-cp-deploy-an-app"
 
 #: Every walkable lesson against every fixture written for it, and one fragment that stops.
 CASES = [
@@ -50,6 +52,10 @@ CASES = [
     (RBAC, FIXTURES / "rbac" / "complete"),
     (RBAC, FIXTURES / "rbac" / "broken"),
     (NODE_DARK, FIXTURES / "complete"),
+    (NETPOL, FIXTURES / "networkpolicy" / "complete"),
+    (NETPOL, FIXTURES / "networkpolicy" / "broken"),
+    (DEPLOY, FIXTURES / "deploy" / "complete"),
+    (DEPLOY, FIXTURES / "deploy" / "broken"),
 ]
 IDS = [f"{lesson}:{path.parent.name}/{path.name}" for lesson, path in CASES]
 
@@ -173,7 +179,27 @@ def test_a_kind_this_build_has_no_badge_for_gets_its_capitals_and_never_markup()
 # -- 1. the scene stands on the reader's own objects ---------------------------------------------------------
 
 
-@pytest.mark.parametrize(("lesson", "path"), CASES, ids=IDS)
+def test_a_lesson_whose_hops_read_a_kind_draws_that_kind_on_its_card(capsys: pytest.CaptureFixture[str]) -> None:
+    """The NetworkPolicy lesson's hops read the kind and name no object, so the walk carries no `objects`: each
+    judged hop still stands on a NetworkPolicy card, and a hop no manifest shows stands on scenery."""
+    for path in (FIXTURES / "networkpolicy" / "complete", FIXTURES / "networkpolicy" / "broken"):
+        walked, page, _ = _both(NETPOL, path, capsys)
+        assert not any(s.get("objects") for s in walked["steps"]), "the lesson names objects now: use the test below"
+        view = _view(page)
+        assert view["scene"]["layout"] == NETPOL
+        for step, hop in zip(walked["steps"], view["hops"], strict=False):
+            art = _actor(page, hop["actor"])
+            if step["verdict"] == "not-observable":
+                assert 'data-manifest="no"' in art and SC.NOT_IN_MANIFEST in art, step["step"]
+            else:
+                assert 'class="actor res' in art and ">NP</text>" in art, step["step"]
+
+
+@pytest.mark.parametrize(
+    ("lesson", "path"),
+    [c for c in CASES if c[0] != NETPOL],
+    ids=[i for c, i in zip(CASES, IDS, strict=True) if c[0] != NETPOL],
+)
 def test_the_scene_has_one_card_per_object_a_hop_names(
     lesson: str, path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
