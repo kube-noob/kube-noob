@@ -24,8 +24,11 @@ exceptions:
 - id: EXC-ADM-002
   rule: KN-N007
   # G432 taught KN-N007 that an ingress rule with ports and no `from` admits every source on those ports. The
-  # first object it found was this chart's own admission webhook policy (templates/admission.yaml).
-  scope: {namespace: kube-noob, kind: NetworkPolicy, name: kn-kube-noob-admission}
+  # first object it found was this chart's own admission webhook policy (templates/admission.yaml). The chart
+  # writes no metadata.namespace (helm template -n only sets .Release.Namespace), and kube-noob reads an object
+  # without one as namespace `default`, so that is the namespace this entry names; an install that sets one needs
+  # its own entry.
+  scope: {namespace: default, kind: NetworkPolicy, name: kn-kube-noob-admission}
   owner: kube-noob-maintainer
   reason: >-
     The API server calls the webhook on 8443, and on most clusters it is not a pod a selector can name or an
