@@ -9,7 +9,7 @@ everything else.
 
 ## Project status
 
-**Pre-1.0.** The first release (v0.1.0) was tagged 2026-10-27 and v0.10.0 on 2026-11-21: 18 releases in twenty-six days.
+**Pre-1.0.** The first release (v0.1.0) was tagged 2026-10-27 and v0.11.0 on 2026-11-27: 19 releases in thirty-one days.
 That pace means active development, not a stable contract. Until 1.0:
 
 - Rule ids are stable once published. A rule is deprecated, never silently repurposed.
