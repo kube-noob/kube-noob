@@ -119,6 +119,76 @@ tracks:
             holds: >-
               the veth pair, the bridge and the overlay carry it the last hop. Nothing in a manifest records
               this, so kube-noob does not check it and does not count it as passed.
+      - id: mech-net-pod-calls-a-service
+        title: A Pod calls a Service
+        layer: network
+        docs: [kubernetes]
+        objectives:
+          - Follow one call from a pod to a Service by name, and on to a pod behind it
+          - See where the call needs cluster DNS, and which hops only a running cluster can answer
+        keyPoints:
+          - A call by name is two questions before it is a connection -- may the pod reach DNS, and does the name
+            resolve -- and only the first is in a manifest.
+          - The Service hop judges the Service against the pods it selects in this namespace; a Service with no
+            pod template here is not judged, rather than called fine.
+        steps:
+          - id: namespace-has-a-policy
+            title: The namespace has a network policy, and it is neither open nor inert
+            # Measured (G420): first, because KN-N013 below has nothing to judge when the namespace has no
+            # NetworkPolicy at all. KN-N001 fires on exactly that absence, so a namespace with no policy is
+            # BROKEN here and the DNS hop then stops; G400 keeps both in the answer.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: the namespace has a NetworkPolicy, and none of them is an allow-all or selects nothing
+            rules: [KN-N001, KN-N007, KN-N012]
+            absent: [KN-N012]
+          - id: egress-keeps-dns
+            title: No network policy here stops the calling pods from reaching cluster DNS
+            # Measured (G420): a policy restricting only Ingress -- egress unrestricted -- is evaluated and
+            # silent; an Egress policy with no rule for port 53 fires; one allowing UDP and TCP 53 is silent; no
+            # NetworkPolicy at all is "no networking.k8s.io NetworkPolicy in the input", and the hop stops.
+            needs: []
+            reads: [NetworkPolicy]
+            holds: >-
+              no NetworkPolicy here restricts egress without leaving a route to port 53, so the pods it selects
+              can still resolve a Service name. KN-N013 reads the policies in this input; one applied by the
+              cluster (an AdminNetworkPolicy, a CNI's own) is not read
+            rules: [KN-N013]
+          - id: name-resolves
+            title: Cluster DNS resolves the Service name to its ClusterIP
+            observable: false
+            holds: >-
+              CoreDNS answers my-svc.my-namespace.svc with the Service's ClusterIP. Nothing in a manifest records
+              the answer, so kube-noob does not check it and does not count it as passed.
+          - id: service-selects-pods
+            title: The Service finds pods to send it to, on a port they declare
+            needs: [Service]
+            holds: >-
+              the Service selects at least one pod template in this namespace, no named targetPort is missing
+              from the selected containers, and no numeric targetPort is outside the ports they declare
+            rules: [KN-V011, KN-V012, KN-V023, KN-N008]
+            # Measured (G420): with no pod spec in the input all three abstain ("no pod spec in the input"), from a
+            # directory and from a single file alike. Only KN-V011 fires on an ABSENT object ("selects no pod
+            # template here"), which on a fragment may be in another file. KN-V023 compares a Service with pods
+            # that ARE here, so its finding stands on a fragment too.
+            absent: [KN-V011]
+          - id: workload-selects-its-own-pods
+            title: The workload owns the pods it selects
+            needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
+            holds: the workload's selector matches the labels on its own pod template
+            rules: [KN-V010]
+          - id: pod-reports-ready
+            title: The containers declare a readiness probe
+            needs: [Deployment, StatefulSet, DaemonSet, ReplicaSet]
+            holds: the containers declare a readiness probe, so the endpoint appears only when they can serve
+            rules: [KN-C001]
+          - id: clusterip-is-translated
+            title: The node sends the ClusterIP to one of the endpoints
+            observable: false
+            holds: >-
+              kube-proxy (iptables, IPVS or nftables) or the CNI's own replacement rewrites the ClusterIP to a
+              ready endpoint. Nothing in a manifest records this, so kube-noob does not check it and does not
+              count it as passed.
       - id: mech-sec-rbac-and-serviceaccounts
         title: RBAC and ServiceAccounts
         layer: security

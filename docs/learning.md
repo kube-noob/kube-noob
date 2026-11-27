@@ -13,7 +13,7 @@ that loop offline:
   comes from.
 - **No cluster, no cloud bill, no network.** It runs on a laptop, in a classroom or on an air-gapped machine.
 
-The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 19 lessons, 9 graded
+The curriculum has 6 tracks (Kubernetes, OpenShift, ROSA HCP, Helm, RHACS/StackRox), with 20 lessons, 9 graded
 exercises and 15 quiz questions.
 
 ## Running a class
@@ -117,6 +117,19 @@ lesson marked `observable: false` hop by hop printed exactly that at exit `0` --
 that checked nothing (G395). A hop's **title** is also held to what its rules decide: the network lesson's
 policy hop says the namespace has a policy that is neither open nor inert, because the rules behind it fire on
 an absent, over-permissive or inert policy and none of them can establish that a packet is admitted.
+
+### A Pod calls a Service
+
+```
+kube-noob learn mechanism mech-net-pod-calls-a-service -f ./manifests
+```
+
+The in-cluster call: the namespace has a policy that is neither open nor inert (KN-N001, KN-N007, KN-N012); no
+policy stops the calling pods from reaching cluster DNS on port 53 (KN-N013); cluster DNS answers the Service name,
+which is **not checked**; the Service selects pods here and its ports are ones they declare (KN-V011, KN-V012,
+KN-V023); the workload owns its pods (KN-V010); the containers declare readiness (KN-C001); and the node sends
+the ClusterIP to an endpoint, which is **not checked**. A namespace with no NetworkPolicy is BROKEN at the first
+hop and stops at the DNS hop, because KN-N013 has no policy to read (G420).
 
 ### RBAC and ServiceAccounts
 

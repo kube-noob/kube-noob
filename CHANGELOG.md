@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **A fourth mechanism lesson: a Pod calls a Service (G420).** `kube-noob learn mechanism mech-net-pod-calls-a-service -f ./manifests` follows a call by name -- the namespace's policy, egress to cluster DNS, the DNS answer, the Service and its ports, the workload, readiness and the ClusterIP translation -- and marks the two hops no manifest records as not checked. Each rule was measured with its object absent before the hop was written.
 ## 0.11.0 - 2026-11-26
 
 - **The admission webhook could answer with more warning lines than it documents (G419).** Ten findings plus "not fully audited" made twelve lines against a documented eleven, and the in-cluster load run failed on it. The statements now take their room from the findings, and are never dropped.
