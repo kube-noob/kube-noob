@@ -166,9 +166,10 @@ the kubelet starting it -- are **not checked**, because a running cluster decide
 
 Pass a directory. A single file is part of a namespace, so a name it does not define is not a missing object:
 KN-C017 declines, and the walk stops at that hop at exit 5 instead of calling it found. It stops the same way
-when a pod names a Secret and the bundle defines no Secret at all, since an operator may create it. One gap was
-measured and is not this lesson's to close: a pod template with `containers: []` is silent on every rule and on
-the schema stage, so it walks `complete` (G422).
+when a pod names a Secret and the bundle defines no Secret at all, since an operator may create it. A pod
+template with `containers: []` walked `complete` when this lesson was written (G422); the schema stage now
+reports a pod spec with no regular container (KN-V007, G431), init and ephemeral containers not counted, and
+no hop that reads the workload holds beside it.
 
 ### RBAC and ServiceAccounts
 
