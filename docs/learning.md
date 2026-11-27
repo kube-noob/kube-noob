@@ -145,9 +145,10 @@ reaching cluster DNS (KN-N013). A namespace with no NetworkPolicy is BROKEN at t
 second, because every later rule has no policy to read.
 
 Read the titles literally here too. Measured before the lesson was written (G421): KN-N012 is silent about a
-workload that no policy selects, KN-N007 is silent about a rule that names ports and no `from`, and no rule
-compares a policy's ports with the ports the containers declare -- a policy naming port 9999 in front of a
-container on 8080 is nobody's finding. The hops say so in their own sentences, and none of them says a packet
+workload that no policy selects, KN-N007 is silent about a rule open to every pod of its own namespace
+(`from: [{podSelector: {}}]`), and no rule compares a policy's ports with the ports the containers declare -- a
+policy naming port 9999 in front of a container on 8080 is nobody's finding. A rule that names ports and no
+`from` was silent then too; KN-N007 reports it now (G432). The hops say so in their own sentences, and none of them says a packet
 gets in: a default-deny walks `complete`, because a policy is here, it selects pods and no rule in it is open.
 
 ### Deploy an app

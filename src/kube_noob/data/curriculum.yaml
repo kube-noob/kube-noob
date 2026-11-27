@@ -340,14 +340,15 @@ tracks:
           - id: no-rule-admits-every-source
             title: No NetworkPolicy here carries an ingress rule that is open to every source
             # Measured (G421): fires on a rule of {}, on `from: []`, on `namespaceSelector: {}` and on an ipBlock
-            # of 0.0.0.0/0. Silent on a rule that names ports and no `from` (every source, on those ports) and on
-            # `from: [{podSelector: {}}]` (every pod of this namespace). The sentence says so.
+            # of 0.0.0.0/0. It was silent on a rule that names ports and no `from` (every source, on those
+            # ports) until G432, and fires on it now. Still silent on `from: [{podSelector: {}}]` (every pod of
+            # this namespace). The sentence says so.
             needs: []
             reads: [NetworkPolicy]
             holds: >-
-              no NetworkPolicy here has an ingress rule that is empty, lists no peer, selects every namespace or
-              allows 0.0.0.0/0. KN-N007 reads those shapes: a rule that names ports and no `from` still admits
-              every source on those ports, and is not reported
+              no NetworkPolicy here has an ingress rule that is empty, names ports and no `from`, lists no peer,
+              selects every namespace or allows 0.0.0.0/0. KN-N007 reads those shapes: a rule whose `from` is
+              `podSelector: {}` still admits every pod of this namespace, and is not reported
             rules: [KN-N007]
           - id: packet-is-admitted-or-dropped
             title: The node admits the packet a rule allows and drops the rest

@@ -3694,7 +3694,8 @@ def _n006(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
     "network",
     Severity.MEDIUM,
     "Restrict 'from' to specific namespaceSelector/podSelector peers and ports.",
-    "An ingress rule of {} admits traffic from every pod and every external source.",
+    "An ingress rule of {} admits traffic from every pod and every external source. A rule that names ports and "
+    "no `from`, or an empty one, admits every source on those ports. Egress rules are not read by this rule.",
     ("k8s-networkpolicy",),
     subjects=("NetworkPolicy",),
 )
@@ -3705,8 +3706,17 @@ def _n007(ctx: AuditContext, r: Rule) -> Iterator[Finding]:
                 continue
             peers = rule_.get("from")
             if not peers:
-                if not rule_.get("ports"):
-                    yield r.finding(d, ("spec", "ingress", i), "Ingress rule admits all sources on all ports.")
+                # An absent or empty `from` matches all sources, with ports or without. Naming a port was
+                # read as naming a peer, so `ingress: [{ports: [...]}]` was evaluated and clean (G432).
+                named = rule_.get("ports")
+                yield r.finding(
+                    d,
+                    ("spec", "ingress", i),
+                    f"Ingress rule names ports ({_evidence.ports_shown(named)}) and no `from`: every source may "
+                    "reach them."
+                    if named
+                    else "Ingress rule admits all sources on all ports.",
+                )
                 continue
             for j, peer in enumerate(peers if isinstance(peers, list) else []):
                 if not isinstance(peer, dict):

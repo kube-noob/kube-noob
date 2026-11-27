@@ -837,7 +837,7 @@ def _checks(
                 "!(has(p.ipBlock.except) && p.ipBlock.except.size() > 0)) && "
                 f"!(has(p.namespaceSelector) && {_EMPTY_SELECTOR.format(s='p.namespaceSelector')} && "
                 f"(!has(p.podSelector) || {_EMPTY_SELECTOR.format(s='p.podSelector')}))) : "
-                "(has(r.ports) && r.ports.size() > 0))",
+                "false)",
             ),
         ),
         Check(

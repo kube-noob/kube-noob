@@ -14,8 +14,9 @@ Measured (G421), a Deployment in one namespace beside each shape, as a whole nam
   second workload that no policy selects; with no NetworkPolicy it is "no networking.k8s.io NetworkPolicy in the
   input", and with no workload "no pod spec in the input".
 - KN-N007 fires on an ingress rule of `{}`, on `from: []`, on `namespaceSelector: {}` and on an ipBlock of
-  0.0.0.0/0; it is silent on a rule that names ports and no `from`, and on `from: [{podSelector: {}}]`; with no
-  NetworkPolicy it is "no networking.k8s.io NetworkPolicy in the input".
+  0.0.0.0/0; it is silent on `from: [{podSelector: {}}]`; with no NetworkPolicy it is "no networking.k8s.io
+  NetworkPolicy in the input". It was silent on a rule that names ports and no `from` when this lesson was
+  written, and has fired on it since G432 (`tests/test_an_ingress_rule_with_ports_and_no_from.py`).
 - KN-N013 fires on a default-deny over Ingress and Egress with no route to port 53, and is silent on an
   ingress-only policy and on an Egress policy allowing UDP and TCP 53.
 - No rule compares a policy's ports with the ports the containers declare: a policy naming port 9999 against a
@@ -179,8 +180,8 @@ def test_a_default_deny_holds_and_no_hop_says_a_packet_was_admitted(tmp_path: Pa
 
 def test_the_limits_the_rules_have_are_written_into_the_hops_that_hold(tmp_path: Path) -> None:
     """Three shapes the measurements found silent. Each walks `holds`, so each hop's own sentence must say that it
-    did not read them: a workload no policy selects, a rule with ports and no `from`, and a port no container
-    declares."""
+    did not read them: a workload no policy selects, a rule open to every pod of this namespace, and a port no
+    container declares. A rule with ports and no `from` was the second until G432, and is BROKEN now."""
     unselected = _workload()
     unselected["metadata"]["name"] = "web"
     unselected["spec"]["selector"]["matchLabels"] = {"app": "web"}
@@ -190,10 +191,16 @@ def test_the_limits_the_rules_have_are_written_into_the_hops_that_hold(tmp_path:
     hop = next(s for s in doc["steps"] if s["step"] == "policy-selects-pods-here")
     assert hop["verdict"] == M.HOLDS and "a workload no policy selects" in hop["why"], hop
 
+    any_pod_here = _allow(**{"from": [{"podSelector": {}}]}, ports=[{"protocol": "TCP", "port": 8080}])
+    doc = _walk(_write(tmp_path, "any-pod-here", [_workload(), any_pod_here]))
+    hop = next(s for s in doc["steps"] if s["step"] == "no-rule-admits-every-source")
+    assert hop["verdict"] == M.HOLDS and "every pod of this namespace, and is not reported" in hop["why"], hop
+
     ports_only = _allow(ports=[{"protocol": "TCP", "port": 8080}])
     doc = _walk(_write(tmp_path, "ports-only", [_workload(), ports_only]))
     hop = next(s for s in doc["steps"] if s["step"] == "no-rule-admits-every-source")
-    assert hop["verdict"] == M.HOLDS and "names ports and no `from`" in hop["why"], hop
+    assert hop["verdict"] == M.FAILS and {f["ruleId"] for f in hop["findings"]} == {"KN-N007"}, hop
+    assert doc["verdict"] == "broken" and doc["exitCode"] == 1
 
     lesson = M.lessons()[LESSON]
     packet = next(s for s in lesson["steps"] if s["id"] == "packet-is-admitted-or-dropped")
@@ -263,7 +270,7 @@ CASES: dict[str, tuple[set[str], dict[str, str], bool]] = {
     "rule-from-empty-list": ({"KN-N007"}, {}, False),
     "rule-any-namespace": ({"KN-N007"}, {}, False),
     "rule-any-address": ({"KN-N007"}, {}, False),
-    "rule-ports-and-no-from": (set(), {}, False),
+    "rule-ports-and-no-from": ({"KN-N007"}, {}, False),
     "rule-any-pod-here": (set(), {}, False),
     "port-9999": (set(), {}, False),
     "default-deny-both": ({"KN-N013"}, {}, False),
