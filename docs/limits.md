@@ -104,6 +104,24 @@ rest gives you a confident answer that is wrong in exactly the environments wher
 The same rule applies to malformed input: a policy document that cannot be parsed is **not** the same as a policy
 that does not exist. Skipping it would make the computed connectivity more permissive than reality.
 
+## How much one run reads
+
+`kube-noob audit`, `validate`, `fix`, `gate`, `verify`, `helm-audit`, `posture scan` and every other command that
+reads manifests from `-f`, a directory or standard input read at most **16,000,000 bytes in one run**, all the
+files together. The MCP tools and the REST routes take at most **1,000,000 characters in one argument**, which is
+a request-size guard and is not the command line's limit: until 0.11.1 it was, and a chart that ships its CRDs as
+templates (cloudnative-pg, argo-cd, external-secrets, kyverno) could not be audited from its own render.
+
+The 16,000,000 is measured. Of the 25 charts in `bench/charts.yaml` the largest render is kyverno 3.10.0 at
+5,916,202 bytes; the limit is 2.7 times that. An audit of 15.3 MB took 53 seconds and 361 MB of memory on a
+laptop, so the limit is a bound on time and memory and not a statement about what a chart should be.
+
+Over either limit **nothing is read**. The command exits 4 (a tool call is an error) with one line: the size, the
+limit, and what to do -- split the input, or audit the chart by part with `helm template --show-only`. A limit
+that cut the text instead would audit the objects before the cut and say nothing of the rest, so no limit here
+cuts manifest text. Two other limits can refuse an input that is under the size: more than 1,000 YAML documents
+in one run, and more than 2,000 files under one directory given to `gate` or `verify`.
+
 ## The knowledge ceiling
 
 Rules are checked against Kubernetes versions up to a recorded ceiling (`CHECKED_THROUGH` in

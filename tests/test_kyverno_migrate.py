@@ -16,7 +16,7 @@ import yaml
 
 from kube_noob import kyverno_migrate as km
 from kube_noob.cli import main
-from kube_noob.errors import ManifestError
+from kube_noob.errors import InputTooLarge, ManifestError
 
 FIX = Path(__file__).parent / "fixtures" / "kyverno-migrate"
 
@@ -643,7 +643,8 @@ def test_mcp_tool_is_read_only_and_strict() -> None:
     )
     with pytest.raises(ValidationError):
         tk.PolicyMigrateCheckIn(policies=text, apply=True)  # type: ignore[call-arg]
-    with pytest.raises(ValidationError):
+    # Refused as it always was, and in one line now: the size, the cap and what to do (G447).
+    with pytest.raises(InputTooLarge, match="1,000,001 characters and one request carries at most 1,000,000"):
         tk.PolicyMigrateCheckIn(policies="x" * (tk.MAX_MANIFEST_CHARS + 1))
 
 

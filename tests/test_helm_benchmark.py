@@ -435,6 +435,97 @@ def test_an_audit_whose_answer_is_not_json_is_not_a_row_with_zero_findings(tmp_p
     assert data["totals"]["audited"] == 0 and data["rules"] == []
 
 
+def _refused(tmp_path: Path, chart_id: str, exit_code: int, stderr: str) -> Path:
+    out = tmp_path / "out"
+    if not out.exists():
+        shutil.copytree(FIXTURE / "out", out)
+    meta = json.loads((out / chart_id / "audit-meta.json").read_text(encoding="utf-8"))
+    meta["exitCode"] = exit_code
+    meta["stderr"] = stderr
+    (out / chart_id / "audit-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    (out / chart_id / "audit.json").write_text("", encoding="utf-8")
+    return out
+
+
+#: What `kube-noob audit` has said on stderr about a render it would not read for its size: today's one line
+#: (`kube_noob.limits`), pydantic's report from before it (the four charts of the first run, G447), and the
+#: loader's older sentence.
+TOO_LARGE = (
+    "error: the input is 16,010,735 bytes and one run reads at most 16,000,000, so none of it was audited: "
+    "split it into smaller files and audit each, or audit the chart by part",
+    "error: 1 validation error for AuditIn\nmanifests\n  String should have at most 1000000 characters "
+    "[type=string_too_long, input_value='---\\n# Source: cloudnati...', input_type=str]\n    For further "
+    "information visit https://errors.pydantic.dev/2.14/v/string_too_long",
+    "error: Input exceeds 5000000 bytes; split it into smaller files.",
+)
+
+
+@pytest.mark.parametrize("stderr", TOO_LARGE)
+def test_a_render_the_audit_refused_for_its_size_is_a_row_that_says_too_large(tmp_path: Path, stderr: str) -> None:
+    """Four of the 25 charts were "audit did not answer", and the reader could not tell a chart kube-noob crashed
+    on from one that was only bigger than it reads. The reason is on stderr, and the row now carries it."""
+    out = _refused(tmp_path, "web", 4, stderr)
+    (tmp_path / "r").mkdir()
+    md, data = _report(tmp_path / "r", out=out)
+    row = _row(data, "web")
+    assert row["verdict"] == "too large for the audit"
+    assert row["score"] is None and row["findings"] is None
+    assert "kube-noob exit 4" in row["detail"]
+    line = _table_line(md, "web")
+    assert "too large for the audit" in line and "audit did not answer" not in line
+    assert data["totals"]["byVerdict"]["too large for the audit"] == 1
+    assert "| too large for the audit | 1 |" in md
+    assert "web" not in [c for rule in data["rules"] for c in rule["chartIds"]]
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "stderr"),
+    [
+        (4, "error: More than 1000 YAML documents; split the input."),
+        (4, "error: unexpected KeyError: 'x' (a bug in kube-noob; set KUBE_NOOB_DEBUG=1 for the traceback)"),
+        (2, "error: nothing here is a Kubernetes manifest"),
+        (None, ""),
+        # The words of a size refusal in a run that did answer, or in one that died another way, are not a
+        # refusal for size: the exit code is read first.
+        (137, "error: the input is 16,010,735 bytes and one run reads at most 16,000,000"),
+    ],
+)
+def test_another_refusal_is_not_called_too_large_and_keeps_what_the_audit_said(
+    tmp_path: Path, exit_code: int | None, stderr: str
+) -> None:
+    out = _refused(tmp_path, "web", exit_code, stderr)  # type: ignore[arg-type]
+    (tmp_path / "r").mkdir()
+    md, data = _report(tmp_path / "r", out=out)
+    row = _row(data, "web")
+    assert row["verdict"] == "audit did not answer"
+    if exit_code == 4:
+        assert stderr.removeprefix("error: ")[:40] in row["detail"]
+    assert "too large" not in _table_line(md, "web")
+
+
+def test_a_chart_that_was_audited_is_not_too_large_whatever_its_stderr_says(tmp_path: Path) -> None:
+    """Present but unrelated: a warning on stderr that happens to use the words, beside a report that was read."""
+    out = tmp_path / "out"
+    shutil.copytree(FIXTURE / "out", out)
+    meta = json.loads((out / "web" / "audit-meta.json").read_text(encoding="utf-8"))
+    meta["stderr"] = "note: one run reads at most 16,000,000 bytes"
+    (out / "web" / "audit-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    (tmp_path / "r").mkdir()
+    _, data = _report(tmp_path / "r", out=out)
+    assert _row(data, "web")["verdict"] == "findings"
+
+
+def test_the_cli_s_own_refusal_for_size_is_one_the_benchmark_recognises() -> None:
+    """The two ends of one sentence: if the command line rewords its refusal, the benchmark must not fall back to
+    "did not answer" for the charts it is there to explain."""
+    from kube_noob import limits
+
+    assert hb.too_large(4, f"error: {limits.too_large_local(17_000_000)}")
+    assert hb.too_large(4, f"error: {limits.too_large_request(1_000_001, '`manifests`')}")
+    assert not hb.too_large(4, "error: More than 1000 YAML documents; split the input.")
+    assert not hb.too_large(1, f"error: {limits.too_large_local(17_000_000)}")
+
+
 # -- the render mode, through a stand-in helm ------------------------------------------------------------------------
 
 _FAKE_HELM = r"""#!{python}

@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-from kube_noob import __version__, completion, sanitize
+from kube_noob import __version__, completion, limits, sanitize
 from kube_noob import receipt as receipt_module
 
 # Re-exported: they lived here, `gate.py` and `report_html.py` imported them FROM here, and following that
@@ -28,7 +28,7 @@ from kube_noob.audit.caveats import (
     caveat_lines,
 )
 from kube_noob.config import Settings, load_settings
-from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError
+from kube_noob.errors import ClarificationNeeded, ConfigError, KubeNoobError, ManifestError, refused_arguments
 from kube_noob.server import tool_profiles
 from kube_noob.yamlio import json_document
 
@@ -85,6 +85,7 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     bad: list[dict[str, str]] = []
     every = [f for f in sorted(d.rglob("*")) if f.is_file()]
     opened = {ident for f in every if f.suffix in {".yaml", ".yml"} and (ident := _identity(f)) is not None}
+    total = 0
     for f in every:
         rel = str(f.relative_to(d))
         if f.suffix not in {".yaml", ".yml"}:
@@ -96,6 +97,11 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
                 bad.append({"path": rel, "why": why})
             continue
         try:
+            # Counted before the file is opened: the files are joined into one text for the audit, and a directory
+            # that is too large in all is refused here rather than after every file in it has been parsed.
+            total += f.stat().st_size
+            if total > limits.MAX_LOCAL_BYTES:
+                raise limits.too_large_local(total, f"the manifests under {d}")
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
             bad.append({"path": rel, "why": f"not readable as UTF-8 text: {exc}"})
@@ -123,7 +129,7 @@ def _manifest_sources(a: argparse.Namespace) -> tuple[str, list[dict[str, str]],
     """
     p = Path(a.file) if a.file != "-" else None
     if p is None or not p.is_dir():
-        return _read(a.file), [], ([] if p is None else [(str(a.file), 1)])
+        return limits.check(_read(a.file)), [], ([] if p is None else [(str(a.file), 1)])
     ok, bad = _dir_yaml(p)
     if not ok:
         named = "; ".join(f"{b['path']}: {b['why']}" for b in bad)
@@ -3484,6 +3490,17 @@ class _VisibleStream:
 _UNWRAPPED = {("serve",), ("mcp",), ("admission", "serve")}
 
 
+def _is_server(a: argparse.Namespace) -> bool:
+    return (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED
+
+
+def _input_limit(a: argparse.Namespace) -> contextlib.AbstractContextManager[None]:
+    """How much manifest text this command may read. A server's input arrives in requests, and a request keeps
+    the request's cap. Every other command reads files that are already on this machine, so the megabyte that
+    guards a request body does not apply to it: one run reads `limits.MAX_LOCAL_BYTES` (G447)."""
+    return limits.request() if _is_server(a) else limits.local_files()
+
+
 def _unexpected(exc: BaseException) -> int:
     """An error kube-noob did not anticipate: one cleaned line on stderr and exit 4 (a kube-noob error, AGENTS.md),
     never a raw traceback a pipeline reads as exit 1 (G279, third review). The traceback is printed only with
@@ -3518,7 +3535,7 @@ def main(argv: list[str] | None = None) -> int:
             with contextlib.suppress(OSError, ValueError):
                 sys.stderr.write("kube-noob hook failed; the command is blocked.\n")
             return 2
-    if (a.cmd,) in _UNWRAPPED or (a.cmd, getattr(a, "admission_cmd", None)) in _UNWRAPPED:
+    if _is_server(a):
         try:
             return _main(a)
         except Exception as exc:  # noqa: BLE001 -- the outermost entry point: see _unexpected
@@ -3588,7 +3605,8 @@ def _main(a: argparse.Namespace) -> int:
             from kube_noob.knowledge_status import line as knowledge_line
 
             _MODEL_KNOWLEDGE["line"] = knowledge_line(s.data_dir)
-        return _dispatch(a, s)
+        with _input_limit(a):
+            return _dispatch(a, s)
     except _UnreadInput as exc:
         _refuse_unread_input(exc)
         return 5
@@ -3606,6 +3624,9 @@ def _main(a: argparse.Namespace) -> int:
         if not isinstance(exc, KubeNoobError) and not _is_validation_error(exc) and _debug():
             raise
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+        if _is_validation_error(exc):
+            # pydantic's own text is four lines, quotes the value it refused and links to its documentation.
+            msg = refused_arguments(exc)
         print(_error_line(f"error: {msg}"), file=sys.stderr)
         return 4
     except KeyboardInterrupt:

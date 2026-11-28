@@ -35,6 +35,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 
 from kube_noob import sanitize
 from kube_noob.config import Settings
+from kube_noob.errors import InputTooLarge
 from kube_noob.versions import MAX_SHOWN, VERSION_FIELD_PATTERN, strict_field
 
 MAX_CASES = 2_000
@@ -280,7 +281,7 @@ def run_cases(settings: Settings, cases: list[Case], gate: float | None = None) 
             status = ("pass" if not misses else "fail") if case.expect.labelled() else "unlabelled"
             if status == "pass" and (why := undetermined(case, said)):
                 status, misses = "not-determined", [why]
-        except (ValueError, ValidationError) as exc:
+        except (InputTooLarge, ValueError, ValidationError) as exc:
             said, misses, status = {}, [f"could not run: {str(exc)[:300]}"], "error"
         rows.append(
             {

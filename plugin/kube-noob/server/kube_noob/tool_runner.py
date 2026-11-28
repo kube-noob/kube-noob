@@ -10,15 +10,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from kube_noob import sanitize
+from kube_noob import limits, sanitize
 from kube_noob.toolkit import ToolSpec
 
 
 def call(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str) -> dict[str, Any]:
     """The tool's result for ``kwargs``. Raises pydantic's ValidationError for bad arguments and the tool's own errors
     (KubeNoobError, ValueError, KeyError) unchanged: each surface turns them into its own error shape."""
-    validated = spec.model.model_validate(kwargs)
-    result: dict[str, Any] = spec.fn(validated)
+    # The arguments came in a request, whoever started this process: `kube-noob serve` is a command-line command,
+    # and the command line reads far more from its own files than one request may carry (`kube_noob.limits`).
+    with limits.request():
+        validated = spec.model.model_validate(kwargs)
+        result: dict[str, Any] = spec.fn(validated)
     if isinstance(result, dict):
         # Every answer says how current kube-noob's knowledge is, so the model can tell the user.
         result.setdefault("knowledgeAsOf", knowledge)

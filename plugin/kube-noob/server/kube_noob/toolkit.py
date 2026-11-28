@@ -51,6 +51,7 @@ from kube_noob.knowledge_status import status as knowledge_status
 from kube_noob.known_issues import match as known_issue_match
 from kube_noob.learn.memory import LearningStore
 from kube_noob.learn.tutor import Tutor
+from kube_noob.limits import MAX_REQUEST_CHARS, Sized, too_large_request
 from kube_noob.signals import alertmanager, for_text, playbooks_for
 from kube_noob.upgrade_risks import parse_version
 from kube_noob.upgrade_risks import risks as upgrade_risk_match
@@ -58,7 +59,8 @@ from kube_noob.versions import MAX_SHOWN as MAX_VERSION
 from kube_noob.versions import VERSION_FIELD_PATTERN, same_release, strict_field
 
 PlatformT = Literal["kubernetes", "openshift", "rosa-classic", "rosa-hcp"]
-MAX_MANIFEST_CHARS = 1_000_000
+#: The request cap, under the name the rest of the code knows it by (`kube_noob.limits`).
+MAX_MANIFEST_CHARS = MAX_REQUEST_CHARS
 RHACS_CACHE_SECONDS = 300
 MAX_BUILD_LOG = 2_000_000
 MAX_SCAN_REPORT = 20_000_000  # one scanner report or SBOM given inline
@@ -103,10 +105,9 @@ def _normalised_cni(value: str | None) -> str | None:
 
 
 class ManifestsIn(_In):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="One or more YAML documents (Kubernetes/OpenShift objects).",
     )
     platform: PlatformT = Field("kubernetes", description="Target platform.")
@@ -116,8 +117,8 @@ class ManifestsIn(_In):
 class VerifyIn(_In):
     """A change to check before it is applied: manifests, or the command line that would apply them."""
 
-    manifests: str | None = Field(
-        None, max_length=MAX_MANIFEST_CHARS, description="The proposed manifests (YAML), when the change is files."
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
+        None, description="The proposed manifests (YAML), when the change is files."
     )
     command: str | None = Field(
         None,
@@ -131,12 +132,11 @@ class VerifyIn(_In):
         description="The text of each file the command names, keyed by the path as the command writes it "
         "(`k8s/deploy.yaml`). A named file missing here makes the verdict not-determined.",
     )
-    stdin: str | None = Field(
-        None, max_length=MAX_MANIFEST_CHARS, description="What the command reads with -f - (if anything)."
+    stdin: Annotated[str, Sized("stdin")] | None = Field(
+        None, description="What the command reads with -f - (if anything)."
     )
-    against: str | None = Field(
+    against: Annotated[str, Sized("against")] | None = Field(
         None,
-        max_length=MAX_MANIFEST_CHARS,
         description="The current state of the same objects (YAML): only findings the change ADDS count.",
     )
     platform: PlatformT = Field("kubernetes", description="Target platform.")
@@ -149,8 +149,9 @@ class VerifyIn(_In):
     @field_validator("files")
     @classmethod
     def _files_bounded(cls, v: dict[str, str]) -> dict[str, str]:
-        if sum(len(k) + len(t) for k, t in v.items()) > MAX_MANIFEST_CHARS:
-            raise ValueError(f"files: more than {MAX_MANIFEST_CHARS:,} characters in all")
+        total = sum(len(k) + len(t) for k, t in v.items())
+        if total > MAX_MANIFEST_CHARS:
+            raise too_large_request(total, "`files`, all of them together,")
         return v
 
     @model_validator(mode="after")
@@ -163,9 +164,8 @@ class VerifyIn(_In):
 class KsiIn(_In):
     """The FedRAMP 20x KSI view. ``manifests`` is optional: without it this is the crosswalk itself."""
 
-    manifests: str | None = Field(
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
         None,
-        max_length=MAX_MANIFEST_CHARS,
         description="One or more YAML documents to audit first. Omit to get the crosswalk with no findings.",
     )
     platform: PlatformT | None = Field(
@@ -272,15 +272,13 @@ class VerifyReceiptIn(_In):
     # leaving the key out would keep `_In`'s stripping and silently defeat the paragraph above.
     model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=False)
 
-    receipt: str = Field(
+    receipt: Annotated[str, Sized("receipt", local=False)] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="The receipt document itself (the JSON `kube-noob audit --receipt PATH` wrote), as text.",
     )
-    manifests: str | None = Field(
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
         None,
-        max_length=MAX_MANIFEST_CHARS,
         description="The manifests the receipt was written for, as text. Without them the answer is "
         "'cannot be checked': the inputs cannot be re-read here, so only the document's own consistency, the "
         "kube-noob version and the rule set are checked, which is not a reproduced verdict.",
@@ -293,7 +291,7 @@ class FixIn(ManifestsIn):
 
 class ProtocolIn(_In):
     request: str = Field(..., min_length=1, max_length=8000, description="What the user wants, in their words.")
-    manifests: str | None = Field(None, max_length=MAX_MANIFEST_CHARS, description="Existing manifests to review.")
+    manifests: Annotated[str, Sized("manifests")] | None = Field(None, description="Existing manifests to review.")
     blueprint: dict[str, Any] | None = Field(None, description="Generator blueprint (see generate_manifests).")
     platform: PlatformT | None = None
     version: str | None = Field(None, max_length=16)
@@ -592,10 +590,9 @@ class PolicyGenerateIn(_In):
 
 
 class PolicyMigrateCheckIn(_In):
-    policies: str = Field(
+    policies: Annotated[str, Sized("policies")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="One or more legacy Kyverno policies (YAML): kyverno.io ClusterPolicy, Policy, "
         "ClusterCleanupPolicy, CleanupPolicy or PolicyException. Other documents are listed and skipped; Secrets are "
         "not read.",
@@ -650,10 +647,9 @@ class TrafficIn(_In):
 
 
 class NetpolCheckIn(TrafficIn):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="The NetworkPolicies and the workloads they apply to (Deployments, Pods ...); add Namespace "
         "objects when policies select namespaces by label.",
     )
@@ -685,10 +681,9 @@ class NamespaceCheckIn(_In):
 
 
 class PostureScanIn(_In):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="Routes, Ingresses, Services, workloads, ServiceAccounts and RBAC objects (YAML). Secret objects "
         "are dropped unread.",
     )
@@ -732,10 +727,9 @@ class _ReachAnchor(_In):
 
 
 class PostureReachIn(_ReachAnchor):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="The workload, its ServiceAccount and the RBAC objects (YAML). Secret objects are dropped unread.",
     )
     whole_bundle: bool = Field(
@@ -756,10 +750,9 @@ class ClusterPostureReachIn(_ReachAnchor):
 
 
 class OperatorInventoryIn(_In):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="OLM objects as YAML: ClusterServiceVersions, Subscriptions, InstallPlans, OperatorGroups (a "
         "List, or `oc get csv,sub,ip,og -A -o yaml` output, works). Other kinds are ignored; Secret objects are "
         "dropped unread.",
@@ -787,10 +780,9 @@ _strict_ocp_version = strict_field("openshift_version")
 
 
 class OperatorKnownIssuesIn(_In):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="OLM objects as YAML, as for operator_inventory (`oc get csv,sub -A -o yaml` output works). Secret "
         "objects are dropped unread.",
     )
@@ -821,10 +813,9 @@ class ClusterOperatorKnownIssuesIn(_In):
 
 
 class ComplianceResultsIn(_In):
-    manifests: str = Field(
+    manifests: Annotated[str, Sized("manifests")] = Field(
         ...,
         min_length=1,
-        max_length=MAX_MANIFEST_CHARS,
         description="Compliance Operator objects as YAML: ComplianceCheckResults, ComplianceScans, "
         "ComplianceSuites, Rules, Profiles and TailoredProfiles (a List, or `oc get "
         "compliancecheckresults,compliancescans,compliancesuites,rules,profiles,tailoredprofiles "
@@ -852,22 +843,20 @@ class BuildDiagnoseIn(_In):
 
 
 class ContainerfileIn(_In):
-    containerfile: str = Field(
-        ..., min_length=4, max_length=MAX_MANIFEST_CHARS, description="The Containerfile or Dockerfile text."
+    containerfile: Annotated[str, Sized("containerfile", local=False)] = Field(
+        ..., min_length=4, description="The Containerfile or Dockerfile text."
     )
-    manifests: str | None = Field(
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
         None,
-        max_length=MAX_MANIFEST_CHARS,
         description="Optional: the workload YAML that runs the image; its readiness or liveness probes satisfy the "
         "health check.",
     )
 
 
 class RhacsCompareIn(_In):
-    policies: str = Field(
+    policies: Annotated[str, Sized("policies")] = Field(
         ...,
         min_length=2,
-        max_length=MAX_MANIFEST_CHARS,
         description='An RHACS policy export as JSON: {"policies": [...]} from the RHACS portal (Export policy to '
         "JSON) or POST /v1/policies/export, a list of policies, or one policy.",
     )
@@ -906,9 +895,8 @@ class VulnReportIn(_In):
         max_length=20_000_000,
         description="Optional: the CISA KEV catalog JSON (known_exploited_vulnerabilities.json, CC0).",
     )
-    manifests: str | None = Field(
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
         None,
-        max_length=MAX_MANIFEST_CHARS,
         description="Optional: the YAML that runs the images; findings are then ranked by exposure and privileges "
         "and shown with their attack path.",
     )
@@ -977,8 +965,8 @@ class CodeReportIn(_In):
     containerfiles: list[CodeBuildIn] = Field(
         default_factory=list, max_length=20, description="Containerfiles, to know which images ship each file."
     )
-    manifests: str | None = Field(
-        None, max_length=MAX_MANIFEST_CHARS, description="YAML that runs the images: ranks by exposure and privileges."
+    manifests: Annotated[str, Sized("manifests")] | None = Field(
+        None, description="YAML that runs the images: ranks by exposure and privileges."
     )
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
         default_factory=list,
@@ -1005,7 +993,7 @@ class CodeReportIn(_In):
 
 
 class ThreatModelIn(_In):
-    manifests: str = Field(..., min_length=10, max_length=MAX_MANIFEST_CHARS, description="The application's YAML.")
+    manifests: Annotated[str, Sized("manifests")] = Field(..., min_length=10, description="The application's YAML.")
     platform: PlatformT | None = None
     version: VersionT = Field(None, max_length=MAX_VERSION, pattern=VERSION_FIELD_PATTERN)
     reports: list[Annotated[str, Field(min_length=2, max_length=MAX_SCAN_REPORT)]] = Field(
@@ -1074,7 +1062,7 @@ class ExerciseIn(_In):
 
 class SubmitIn(_In):
     exercise_id: str = Field(..., max_length=100)
-    answer: str = Field(..., min_length=1, max_length=MAX_MANIFEST_CHARS)
+    answer: Annotated[str, Sized("answer", local=False)] = Field(..., min_length=1)
     learner: str = Field("local", max_length=64)
 
 
@@ -1090,7 +1078,7 @@ class LearnerIn(_In):
 
 class MechanismIn(_In):
     mechanism_id: str = Field(..., max_length=100)
-    manifests: str = Field(..., min_length=1, max_length=MAX_MANIFEST_CHARS)
+    manifests: Annotated[str, Sized("manifests")] = Field(..., min_length=1)
     platform: str | None = Field(None, max_length=32)
     version: str | None = Field(None, max_length=32)
     partial_bundle: bool = Field(
