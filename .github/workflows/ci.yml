@@ -763,7 +763,7 @@ jobs:
               --set "networkPolicy.egress.apiServerCIDRs={172.30.0.1/32}" --set "admission.enforce={KN-S001}" \
               | kube-noob audit -f - --platform openshift --version "${v%%:*}" --fail-on medium $exc
           done
-          at --kube-version 1.33.0 --api-versions security.openshift.io/v1 > /tmp/adm-sca.yaml
+          at --kube-version 1.33.0 --api-versions security.openshift.io/v1 --api-versions config.openshift.io/v1 > /tmp/adm-sca.yaml
           at --kube-version 1.33.0 --set admission.certificates=cert-manager \
             --set admission.certManager.issuerRef.name=ca-issuer > /tmp/adm-cm.yaml
           at --kube-version 1.29.0 --set admission.certificates=secret --set admission.tls.secretName=kn-tls \
@@ -781,8 +781,11 @@ jobs:
               return hits[0]
 
           name = "kn-kube-noob-admission"
-          system = {"kube-system", "kube-public", "kube-node-lease", "openshift", "kube-noob"}
+          # G440: `openshift` is excluded only where the cluster serves config.openshift.io/v1. The SCA render is
+          # given that API; the other two are plain Kubernetes renders and must send openshift-* to the webhook.
+          base = {"kube-system", "kube-public", "kube-node-lease", "kube-noob"}
           for path in ("/tmp/adm-sca.yaml", "/tmp/adm-cm.yaml", "/tmp/adm-secret.yaml"):
+              system = base | {"openshift"} if path == "/tmp/adm-sca.yaml" else base
               docs = load(path)
               vwc = one(docs, "ValidatingWebhookConfiguration")
               assert not [d for d in docs if d["kind"] == "MutatingWebhookConfiguration"]
