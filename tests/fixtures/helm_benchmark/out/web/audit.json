@@ -1,0 +1,1384 @@
+{
+  "platform": "openshift",
+  "platformVersion": "4.22",
+  "kubernetesVersion": "1.35",
+  "resources": [
+    "Deployment/bench/bench-web",
+    "Service/bench/bench-web"
+  ],
+  "summary": {
+    "counts": {
+      "info": 0,
+      "low": 6,
+      "medium": 6,
+      "high": 2,
+      "critical": 1
+    },
+    "maxSeverity": "critical",
+    "score": 25.0
+  },
+  "assumptions": [],
+  "notAudited": [],
+  "findings": [
+    {
+      "ruleId": "KN-S001",
+      "title": "Privileged container",
+      "severity": "critical",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].securityContext.privileged",
+      "fingerprint": "a27b6422a6f3aed74255f5230f4f5069",
+      "line": 23,
+      "message": "Container 'web' is privileged.",
+      "remediation": "Remove securityContext.privileged; grant only the specific capability required.",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Privileged Container"
+      ],
+      "controls": [
+        "AC-6",
+        "CM-7",
+        "SC-39"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S009",
+      "title": "Host namespaces shared",
+      "severity": "high",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.hostNetwork",
+      "fingerprint": "61592de4dfbbc8170cf9ec89d2c04e1e",
+      "line": 18,
+      "message": "Pod sets hostNetwork: true.",
+      "remediation": "Remove hostNetwork/hostPID/hostIPC unless this is a node agent that truly needs it.",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Docker CIS 5.9 and 5.20: Ensure that the host's network namespace is not shared",
+        "Docker CIS 5.15: Ensure that the host's process namespace is not shared",
+        "Docker CIS 5.16: Ensure that the host's IPC namespace is not shared"
+      ],
+      "controls": [
+        "SC-39",
+        "AC-6"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S003",
+      "title": "Container may run as root",
+      "severity": "high",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].securityContext.runAsUser",
+      "fingerprint": "2a6b0f21f32a88d4da68c110dd99e13b",
+      "line": 24,
+      "message": "Container 'web' runs as UID 0.",
+      "remediation": "Set runAsNonRoot: true (pod or container securityContext) and build images with a non-root USER.",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Docker CIS 4.1: Ensure That a User for the Container Has Been Created"
+      ],
+      "controls": [
+        "AC-6",
+        "CM-6"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-N001",
+      "title": "Namespace has workloads but no NetworkPolicy",
+      "severity": "medium",
+      "stage": "audit",
+      "category": "network",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "metadata",
+      "fingerprint": "ac39016bd0ee5841a905589d5cc27d60",
+      "line": 5,
+      "message": "No NetworkPolicy for namespace bench in this bundle.",
+      "remediation": "Add a default-deny ingress NetworkPolicy plus explicit allows (router/ingress controller, monitoring, same-app traffic).",
+      "citations": [
+        {
+          "sourceId": "k8s-networkpolicy",
+          "title": "Network Policies",
+          "url": "https://kubernetes.io/docs/concepts/services-networking/network-policies/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Deployments should have at least one ingress Network Policy"
+      ],
+      "controls": [
+        "SC-7",
+        "SC-7(5)",
+        "AC-4"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-C007",
+      "title": "Single replica",
+      "severity": "medium",
+      "stage": "calibrate",
+      "category": "availability",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.replicas",
+      "fingerprint": "16021a04b5931eef95633ccd69b06df3",
+      "line": 9,
+      "message": "Deployment runs 1 replica(s).",
+      "remediation": "Run at least 2 replicas (3 across zones for production) with a PodDisruptionBudget.",
+      "citations": [
+        {
+          "sourceId": "k8s-pdb",
+          "title": "Specifying a Disruption Budget for your Application",
+          "url": "https://kubernetes.io/docs/tasks/run-application/configure-pdb/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [],
+      "controls": [
+        "CP-10",
+        "SC-36"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-C001",
+      "title": "No readiness probe",
+      "severity": "medium",
+      "stage": "calibrate",
+      "category": "reliability",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0]",
+      "fingerprint": "016b5141fc8d559a24e3b274f0d1f8be",
+      "line": 20,
+      "message": "Container 'web' has no readinessProbe.",
+      "remediation": "Add a readinessProbe (httpGet on a /ready endpoint, or tcpSocket) so traffic only reaches ready pods.",
+      "citations": [
+        {
+          "sourceId": "k8s-probes",
+          "title": "Configure Liveness, Readiness and Startup Probes",
+          "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [],
+      "controls": [
+        "CP-10"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-C004",
+      "title": "Missing CPU/memory requests",
+      "severity": "medium",
+      "stage": "calibrate",
+      "category": "resources",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].resources",
+      "fingerprint": "ab1773bc0b636b4471257d45dbe6efaf",
+      "line": 20,
+      "message": "Container 'web' has no cpu/memory request.",
+      "remediation": "Set resources.requests.cpu and resources.requests.memory from observed usage (p95).",
+      "citations": [
+        {
+          "sourceId": "k8s-resources",
+          "title": "Resource Management for Pods and Containers",
+          "url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "No CPU request or memory limit specified"
+      ],
+      "controls": [
+        "SC-6"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-C005",
+      "title": "Missing memory limit",
+      "severity": "medium",
+      "stage": "calibrate",
+      "category": "resources",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].resources",
+      "fingerprint": "a33a81a3e93a3e7a750b743de284ea8e",
+      "line": 20,
+      "message": "Container 'web' has no memory limit.",
+      "remediation": "Set resources.limits.memory (typically 1-2x the request).",
+      "citations": [
+        {
+          "sourceId": "k8s-resources",
+          "title": "Resource Management for Pods and Containers",
+          "url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "No CPU request or memory limit specified"
+      ],
+      "controls": [
+        "SC-5",
+        "SC-6"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S012",
+      "title": "Mutable image reference",
+      "severity": "medium",
+      "stage": "audit",
+      "category": "supply-chain",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].image",
+      "fingerprint": "ab8d4c9fc6bccc0d002726a91c930f07",
+      "line": 21,
+      "message": "Container 'web' uses mutable image 'docker.io/library/nginx:latest'.",
+      "remediation": "Pin an explicit version tag, ideally an immutable digest (image@sha256:...).",
+      "citations": [
+        {
+          "sourceId": "k8s-images",
+          "title": "Images",
+          "url": "https://kubernetes.io/docs/concepts/containers/images/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Latest tag"
+      ],
+      "controls": [
+        "CM-2",
+        "SI-7"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S008",
+      "title": "Seccomp profile not set to RuntimeDefault",
+      "severity": "low",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.securityContext.seccompProfile",
+      "fingerprint": "7604cffd516b2b8191b75162e06bf71d",
+      "line": 17,
+      "message": "Container 'web' has no RuntimeDefault seccomp profile.",
+      "remediation": "Set securityContext.seccompProfile.type: RuntimeDefault at pod level.",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        },
+        {
+          "sourceId": "k8s-cve-2023-2431",
+          "title": "Kubernetes CVE feed: CVE-2023-2431 bypass of seccomp profile enforcement (empty localhostProfile)",
+          "url": "https://github.com/kubernetes/kubernetes/issues/118690",
+          "license": "link only",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Docker CIS 5.21: Ensure the default seccomp profile is not disabled"
+      ],
+      "controls": [
+        "CM-6",
+        "CM-7",
+        "SC-39"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S014",
+      "title": "ServiceAccount token automounted",
+      "severity": "low",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec",
+      "fingerprint": "7d445e9403e498c6dedf39754f209ff2",
+      "line": 17,
+      "message": "Pod automounts the token of ServiceAccount 'default'.",
+      "remediation": "Set automountServiceAccountToken: false on the pod (or ServiceAccount) unless the app calls the API.",
+      "citations": [
+        {
+          "sourceId": "k8s-rbac-good-practices",
+          "title": "Role Based Access Control Good Practices",
+          "url": "https://kubernetes.io/docs/concepts/security/rbac-good-practices/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Pod Service Account Token Automatically Mounted"
+      ],
+      "controls": [
+        "AC-6",
+        "IA-5",
+        "CM-7"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-C002",
+      "title": "No liveness probe",
+      "severity": "low",
+      "stage": "calibrate",
+      "category": "reliability",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0]",
+      "fingerprint": "634b756adf36a5969e04236e9da90e90",
+      "line": 20,
+      "message": "Container 'web' has no livenessProbe.",
+      "remediation": "Add a livenessProbe that checks the process itself (not its dependencies); use a startupProbe for slow starts.",
+      "citations": [
+        {
+          "sourceId": "k8s-probes",
+          "title": "Configure Liveness, Readiness and Startup Probes",
+          "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [],
+      "controls": [
+        "CP-10"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S002",
+      "title": "Privilege escalation not disabled",
+      "severity": "low",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation",
+      "fingerprint": "4bde6f503079f73110f6d1a2e8b18f4c",
+      "line": 22,
+      "message": "Container 'web' does not set allowPrivilegeEscalation: false.",
+      "remediation": "Set securityContext.allowPrivilegeEscalation: false on every container.",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Container with privilege escalation allowed"
+      ],
+      "controls": [
+        "AC-6",
+        "AC-6(10)",
+        "CM-7"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S006",
+      "title": "Capabilities not dropped",
+      "severity": "low",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].securityContext.capabilities",
+      "fingerprint": "5ae8534b76395165c8a21f5650b64c99",
+      "line": 22,
+      "message": "Container 'web' does not drop ALL capabilities.",
+      "remediation": "Set securityContext.capabilities.drop: [\"ALL\"].",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        },
+        {
+          "sourceId": "ocp-scc",
+          "title": "OpenShift - Managing security context constraints",
+          "url": "https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/authentication_and_authorization/managing-pod-security-policies",
+          "license": "CC-BY-SA-3.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Drop All Capabilities"
+      ],
+      "controls": [
+        "AC-6",
+        "CM-7"
+      ],
+      "file": "manifests.yaml"
+    },
+    {
+      "ruleId": "KN-S007",
+      "title": "Writable root filesystem",
+      "severity": "low",
+      "stage": "audit",
+      "category": "security",
+      "resource": "Deployment/bench/bench-web",
+      "docIndex": 0,
+      "path": "spec.template.spec.containers[0].securityContext",
+      "fingerprint": "130d8bb6c6fe42c4d2bf14b378355a41",
+      "line": 22,
+      "message": "Container 'web' has a writable root filesystem.",
+      "remediation": "Set readOnlyRootFilesystem: true and mount emptyDir volumes for paths the app writes (e.g. /tmp).",
+      "citations": [
+        {
+          "sourceId": "k8s-pss",
+          "title": "Kubernetes Pod Security Standards",
+          "url": "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+          "license": "CC-BY-4.0",
+          "version": null
+        }
+      ],
+      "stackroxPolicies": [
+        "Container using read-write root filesystem"
+      ],
+      "controls": [
+        "CM-7",
+        "SI-7"
+      ],
+      "file": "manifests.yaml"
+    }
+  ],
+  "controlSummary": {
+    "catalog": "NIST SP 800-53 Rev. 5",
+    "controls": [
+      {
+        "id": "AC-6",
+        "title": "Least Privilege",
+        "findings": 6,
+        "clean": 3,
+        "notEvaluated": 9,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S015",
+          "KN-S016",
+          "KN-S017",
+          "KN-S019",
+          "KN-S027",
+          "KN-S028",
+          "KN-S031",
+          "KN-S032",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "CM-7",
+        "title": "Least Functionality",
+        "findings": 6,
+        "clean": 7,
+        "notEvaluated": 5,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N009",
+          "KN-N010",
+          "KN-N011",
+          "KN-S019",
+          "KN-S030"
+        ]
+      },
+      {
+        "id": "CP-10",
+        "title": "System Recovery and Reconstitution",
+        "findings": 3,
+        "clean": 3,
+        "notEvaluated": 3,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-C009",
+          "KN-N013",
+          "KN-ST002"
+        ]
+      },
+      {
+        "id": "SC-39",
+        "title": "Process Isolation",
+        "findings": 3,
+        "clean": 6,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S019"
+        ]
+      },
+      {
+        "id": "CM-6",
+        "title": "Configuration Settings",
+        "findings": 2,
+        "clean": 18,
+        "notEvaluated": 18,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-C013",
+          "KN-C014",
+          "KN-N010",
+          "KN-S032",
+          "KN-S037",
+          "KN-S038",
+          "KN-ST001",
+          "KN-ST002",
+          "KN-ST003",
+          "KN-ST004",
+          "KN-ST005",
+          "KN-V003"
+        ],
+        "moreNotEvaluated": 6
+      },
+      {
+        "id": "SC-6",
+        "title": "Resource Availability",
+        "findings": 2,
+        "clean": 0,
+        "notEvaluated": 4,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-C012",
+          "KN-C014",
+          "KN-C016",
+          "KN-ST005"
+        ]
+      },
+      {
+        "id": "SI-7",
+        "title": "Software, Firmware, and Information Integrity",
+        "findings": 2,
+        "clean": 0,
+        "notEvaluated": 2,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S030",
+          "KN-S036"
+        ]
+      },
+      {
+        "id": "AC-4",
+        "title": "Information Flow Enforcement",
+        "findings": 1,
+        "clean": 2,
+        "notEvaluated": 4,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N006",
+          "KN-N007",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "AC-6(10)",
+        "title": "Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions",
+        "findings": 1,
+        "clean": 0,
+        "notEvaluated": 0,
+        "withheld": 0
+      },
+      {
+        "id": "CM-2",
+        "title": "Baseline Configuration",
+        "findings": 1,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S036"
+        ]
+      },
+      {
+        "id": "IA-5",
+        "title": "Authenticator Management",
+        "findings": 1,
+        "clean": 0,
+        "notEvaluated": 2,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S027",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "SC-36",
+        "title": "Distributed Processing and Storage",
+        "findings": 1,
+        "clean": 1,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-ST003"
+        ]
+      },
+      {
+        "id": "SC-5",
+        "title": "Denial-of-service Protection",
+        "findings": 1,
+        "clean": 1,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-C016"
+        ]
+      },
+      {
+        "id": "SC-7",
+        "title": "Boundary Protection",
+        "findings": 1,
+        "clean": 5,
+        "notEvaluated": 7,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N006",
+          "KN-N007",
+          "KN-N009",
+          "KN-N012",
+          "KN-N013",
+          "KN-N014",
+          "KN-V015"
+        ]
+      },
+      {
+        "id": "SC-7(5)",
+        "title": "Boundary Protection | Deny by Default \u2014 Allow by Exception",
+        "findings": 1,
+        "clean": 0,
+        "notEvaluated": 4,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N006",
+          "KN-N007",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "AC-14",
+        "title": "Permitted Actions Without Identification or Authentication",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 2,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S028",
+          "KN-S038"
+        ]
+      },
+      {
+        "id": "AC-3",
+        "title": "Access Enforcement",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S015",
+          "KN-S017",
+          "KN-S028",
+          "KN-S038",
+          "KN-S039"
+        ]
+      },
+      {
+        "id": "AC-5",
+        "title": "Separation of Duties",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S017"
+        ]
+      },
+      {
+        "id": "AC-6(5)",
+        "title": "Least Privilege | Privileged Accounts",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S016"
+        ]
+      },
+      {
+        "id": "AU-12",
+        "title": "Audit Record Generation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "AU-2",
+        "title": "Event Logging",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "CM-3(2)",
+        "title": "Configuration Change Control | Testing, Validation, and Documentation of Changes",
+        "findings": 0,
+        "clean": 15,
+        "notEvaluated": 5,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S034",
+          "KN-V003",
+          "KN-V024",
+          "KN-V025",
+          "KN-V027"
+        ]
+      },
+      {
+        "id": "IA-5(7)",
+        "title": "Authenticator Management | No Embedded Unencrypted Static Authenticators",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 2,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S018",
+          "KN-S026"
+        ]
+      },
+      {
+        "id": "SA-22",
+        "title": "Unsupported System Components",
+        "findings": 0,
+        "clean": 4,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-V008"
+        ]
+      },
+      {
+        "id": "SC-28",
+        "title": "Protection of Information at Rest",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 3,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S018",
+          "KN-S026",
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-28(1)",
+        "title": "Protection of Information at Rest | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-4",
+        "title": "Information in Shared System Resources",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-S031"
+        ]
+      },
+      {
+        "id": "SC-8",
+        "title": "Transmission Confidentiality and Integrity",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 6,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041",
+          "KN-V016"
+        ]
+      },
+      {
+        "id": "SC-8(1)",
+        "title": "Transmission Confidentiality and Integrity | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "SI-10",
+        "title": "Information Input Validation",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 2,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-N011",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "SI-2",
+        "title": "Flaw Remediation",
+        "findings": 0,
+        "clean": 5,
+        "notEvaluated": 6,
+        "withheld": 0,
+        "notEvaluatedRules": [
+          "KN-C009",
+          "KN-N009",
+          "KN-N010",
+          "KN-N011",
+          "KN-S033",
+          "KN-ST006"
+        ]
+      }
+    ],
+    "rulesNotEvaluated": [
+      {
+        "ruleId": "KN-C009",
+        "why": "no policy PodDisruptionBudget in the input"
+      },
+      {
+        "ruleId": "KN-C012",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input"
+      },
+      {
+        "ruleId": "KN-C013",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-C014",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input"
+      },
+      {
+        "ruleId": "KN-C016",
+        "why": "no Namespace in the input"
+      },
+      {
+        "ruleId": "KN-N002",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-N003",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N006",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-N007",
+        "why": "no networking.k8s.io NetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-N009",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N010",
+        "why": "no ConfigMap in the input"
+      },
+      {
+        "ruleId": "KN-N011",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N012",
+        "why": "no networking.k8s.io NetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-N013",
+        "why": "no networking.k8s.io NetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-N014",
+        "why": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-S015",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S016",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S017",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S018",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S019",
+        "why": "no security.openshift.io SecurityContextConstraints in the input"
+      },
+      {
+        "ruleId": "KN-S026",
+        "why": "no ConfigMap in the input"
+      },
+      {
+        "ruleId": "KN-S027",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S028",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S030",
+        "why": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input"
+      },
+      {
+        "ruleId": "KN-S031",
+        "why": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input"
+      },
+      {
+        "ruleId": "KN-S032",
+        "why": "no Namespace in the input"
+      },
+      {
+        "ruleId": "KN-S033",
+        "why": "no machineconfiguration.openshift.io MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-S034",
+        "why": "no operators.coreos.com Subscription in the input"
+      },
+      {
+        "ruleId": "KN-S035",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S036",
+        "why": "no registry allowlist is configured (audit.allowedRegistries), and without the policy no image can be judged"
+      },
+      {
+        "ruleId": "KN-S037",
+        "why": "no apiregistration.k8s.io APIService in the input"
+      },
+      {
+        "ruleId": "KN-S038",
+        "why": "not evaluated; this record carries no reason"
+      },
+      {
+        "ruleId": "KN-S039",
+        "why": "not evaluated; this record carries no reason"
+      },
+      {
+        "ruleId": "KN-S040",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S041",
+        "why": "no config.openshift.io OAuth in the input"
+      },
+      {
+        "ruleId": "KN-ST001",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST002",
+        "why": "no PersistentVolumeClaim in the input"
+      },
+      {
+        "ruleId": "KN-ST003",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST004",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST005",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST006",
+        "why": "no PersistentVolume in the input"
+      },
+      {
+        "ruleId": "KN-V003",
+        "why": "does not apply on openshift: every OpenShift-only kind is served on this platform"
+      },
+      {
+        "ruleId": "KN-V008",
+        "why": "no apps.openshift.io DeploymentConfig in the input"
+      },
+      {
+        "ruleId": "KN-V015",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-V016",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-V017",
+        "why": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-V024",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-V025",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input"
+      },
+      {
+        "ruleId": "KN-V027",
+        "why": "no apps StatefulSet in the input"
+      }
+    ],
+    "partlyEvaluatedRules": [],
+    "rulesEvaluatedWithout": [
+      {
+        "ruleId": "KN-C007",
+        "absent": [
+          "autoscaling HorizontalPodAutoscaler"
+        ]
+      },
+      {
+        "ruleId": "KN-C008",
+        "absent": [
+          "policy PodDisruptionBudget"
+        ]
+      },
+      {
+        "ruleId": "KN-C015",
+        "absent": [
+          "resource.k8s.io ResourceClaim",
+          "resource.k8s.io ResourceClaimTemplate"
+        ]
+      },
+      {
+        "ruleId": "KN-C017",
+        "absent": [
+          "ConfigMap",
+          "PersistentVolumeClaim",
+          "Secret",
+          "ServiceAccount"
+        ]
+      },
+      {
+        "ruleId": "KN-N001",
+        "absent": [
+          "networking.k8s.io NetworkPolicy"
+        ]
+      },
+      {
+        "ruleId": "KN-S014",
+        "absent": [
+          "ServiceAccount"
+        ]
+      }
+    ],
+    "note": "Findings are evidence about these controls; an assessment decides whether a control is met. A rule under `notEvaluated` had nothing to decide on: `rulesNotEvaluated` says why for each, and a kind that is not in the input is not a kind that is clean."
+  },
+  "redTeam": [
+    {
+      "scenarioId": "RT-NODE-CRASH",
+      "question": "What happens if a worker node crashes mid-operation?",
+      "verdict": "exposed",
+      "severity": "medium",
+      "evidence": [
+        "KN-C001 Deployment/bench/bench-web spec.template.spec.containers[0]: Container 'web' has no readinessProbe.",
+        "KN-C007 Deployment/bench/bench-web spec.replicas: Deployment runs 1 replica(s)."
+      ],
+      "blastRadius": "Single-replica or co-located workloads go down until rescheduled (~5 min default eviction for unreachable nodes); RWO volumes stay attached to the dead node and block replacement pods (Multi-Attach) until the attachment times out.",
+      "safeguards": [
+        "replicas >= 2 (3 for production) with topologySpreadConstraints across zones and hostnames",
+        "PodDisruptionBudget maxUnavailable: 1",
+        "StatefulSet + volumeClaimTemplates (or RWX storage) instead of a shared RWO claim",
+        "readinessProbe so traffic shifts only to healthy replicas"
+      ],
+      "verification": [
+        "oc get pods -o wide -l <app-label>   # replicas on distinct nodes/zones",
+        "oc adm drain <node> --ignore-daemonsets --delete-emptydir-data --dry-run=server",
+        "oc get pdb -n <ns>"
+      ]
+    },
+    {
+      "scenarioId": "RT-ZONE-OUTAGE",
+      "question": "What happens if an entire availability zone fails?",
+      "verdict": "mitigated",
+      "severity": "info",
+      "evidence": [],
+      "blastRadius": "Replicas concentrated in one zone all fail together; zonal block volumes cannot follow pods to another zone.",
+      "safeguards": [
+        "topologySpreadConstraints on topology.kubernetes.io/zone with maxSkew: 1",
+        "StorageClass volumeBindingMode: WaitForFirstConsumer",
+        "application-level replication for stateful services (do not rely on a single zonal volume)"
+      ],
+      "verification": [
+        "oc get pods -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName -l <app-label>",
+        "oc get nodes -L topology.kubernetes.io/zone"
+      ]
+    },
+    {
+      "scenarioId": "RT-EXPOSURE",
+      "question": "Is there an exposed route, insecure ingress path or open lateral-movement path?",
+      "verdict": "exposed",
+      "severity": "medium",
+      "evidence": [
+        "KN-N001 Deployment/bench/bench-web metadata: No NetworkPolicy for namespace bench in this bundle."
+      ],
+      "blastRadius": "Plain-HTTP routes leak credentials; public load balancers and NodePorts expose services to the internet; missing NetworkPolicies let any compromised pod reach this workload.",
+      "safeguards": [
+        "Route tls.termination edge/reencrypt with insecureEdgeTerminationPolicy: Redirect",
+        "default-deny NetworkPolicy + allow from the ingress router namespace only",
+        "internal load balancers / loadBalancerSourceRanges"
+      ],
+      "verification": [
+        "oc get routes -A -o custom-columns=NAME:.metadata.name,TLS:.spec.tls.termination,INSECURE:.spec.tls.insecureEdgeTerminationPolicy",
+        "oc get networkpolicy -n <ns>",
+        "curl -sv http://<route-host>/   # must redirect to https"
+      ]
+    },
+    {
+      "scenarioId": "RT-PRIVESC",
+      "question": "If an attacker gets code execution in this pod, can they escalate to the node or the cluster?",
+      "verdict": "exposed",
+      "severity": "critical",
+      "evidence": [
+        "KN-S001 Deployment/bench/bench-web spec.template.spec.containers[0].securityContext.privileged: Container 'web' is privileged.",
+        "KN-S003 Deployment/bench/bench-web spec.template.spec.containers[0].securityContext.runAsUser: Container 'web' runs as UID 0.",
+        "KN-S009 Deployment/bench/bench-web spec.template.spec.hostNetwork: Pod sets hostNetwork: true.",
+        "not evaluated, so this scenario cannot be called mitigated: KN-S038, KN-S039"
+      ],
+      "blastRadius": "Privileged containers, host namespaces/paths, dangerous capabilities and broad RBAC each turn a single compromised pod into node or cluster takeover.",
+      "safeguards": [
+        "Pod Security 'restricted' (restricted-v2 SCC on OpenShift)",
+        "automountServiceAccountToken: false; least-privilege Roles without wildcards",
+        "RHACS/StackRox deploy-time enforcement of the matching default policies"
+      ],
+      "verification": [
+        "oc auth can-i --list --as=system:serviceaccount:<ns>:<sa>",
+        "oc get pod <pod> -o jsonpath='{.metadata.annotations.openshift\\.io/scc}'"
+      ]
+    },
+    {
+      "scenarioId": "RT-SECRET-LEAK",
+      "question": "Can secrets leak through manifests, Git history, env dumps or mounted tokens?",
+      "verdict": "exposed",
+      "severity": "low",
+      "evidence": [
+        "KN-S014 Deployment/bench/bench-web spec.template.spec: Pod automounts the token of ServiceAccount 'default'."
+      ],
+      "blastRadius": "Literal credentials end up in Git, CI logs and `oc get -o yaml`; mounted SA tokens give API access to any attacker with RCE.",
+      "safeguards": [
+        "secretKeyRef / external secret store",
+        "automountServiceAccountToken: false",
+        "rotate any credential that was ever committed"
+      ],
+      "verification": [
+        "git log -p | grep -iE 'password|token|secret'   # audit history",
+        "oc set env deployment/<name> --list -n <ns>"
+      ]
+    },
+    {
+      "scenarioId": "RT-RESOURCE-STARVATION",
+      "question": "Can a traffic spike or memory leak take down neighbours or trigger restart storms?",
+      "verdict": "exposed",
+      "severity": "medium",
+      "evidence": [
+        "KN-C004 Deployment/bench/bench-web spec.template.spec.containers[0].resources: Container 'web' has no cpu/memory request.",
+        "KN-C005 Deployment/bench/bench-web spec.template.spec.containers[0].resources: Container 'web' has no memory limit."
+      ],
+      "blastRadius": "Unbounded memory triggers node OOM kills of unrelated pods; BestEffort pods are evicted first; aggressive liveness probes amplify slowness into restarts; a manifest that sets spec.replicas under an HPA scales the workload back down on every apply, peak or not.",
+      "safeguards": [
+        "requests + memory limits on every container",
+        "namespace LimitRange and ResourceQuota",
+        "liveness checks only the process; failureThreshold >= 3",
+        "no spec.replicas on a workload an HPA scales; minReplicas sets the floor"
+      ],
+      "verification": [
+        "oc adm top pods -n <ns>",
+        "oc get events -n <ns> --field-selector reason=OOMKilling"
+      ]
+    },
+    {
+      "scenarioId": "RT-SUPPLY-CHAIN",
+      "question": "Could a different (malicious or broken) image run than the one that was reviewed?",
+      "verdict": "exposed",
+      "severity": "medium",
+      "evidence": [
+        "KN-S012 Deployment/bench/bench-web spec.template.spec.containers[0].image: Container 'web' uses mutable image 'docker.io/library/nginx:latest'."
+      ],
+      "blastRadius": "Mutable tags can be re-pushed; rollbacks become non-deterministic and scans/signatures no longer apply to what runs.",
+      "safeguards": [
+        "pin images by digest",
+        "verify signatures (sigstore/cosign) via admission policy",
+        "RHACS 'Latest tag' and image-signature policies in enforce mode"
+      ],
+      "verification": [
+        "oc get pods -n <ns> -o jsonpath='{range .items[*]}{.status.containerStatuses[*].imageID}{\"\\n\"}{end}'"
+      ]
+    }
+  ],
+  "notEvaluated": {
+    "KN-C009": "no policy PodDisruptionBudget in the input",
+    "KN-C012": "no autoscaling HorizontalPodAutoscaler in the input",
+    "KN-C013": "no Secret in the input",
+    "KN-C014": "no autoscaling HorizontalPodAutoscaler in the input",
+    "KN-C016": "no Namespace in the input",
+    "KN-N002": "no route.openshift.io Route in the input",
+    "KN-N003": "no networking.k8s.io Ingress in the input",
+    "KN-N006": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-N007": "no networking.k8s.io NetworkPolicy in the input",
+    "KN-N009": "no networking.k8s.io Ingress in the input",
+    "KN-N010": "no ConfigMap in the input",
+    "KN-N011": "no networking.k8s.io Ingress in the input",
+    "KN-N012": "no networking.k8s.io NetworkPolicy in the input",
+    "KN-N013": "no networking.k8s.io NetworkPolicy in the input",
+    "KN-N014": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input",
+    "KN-S015": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S016": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S017": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S018": "no Secret in the input",
+    "KN-S019": "no security.openshift.io SecurityContextConstraints in the input",
+    "KN-S026": "no ConfigMap in the input",
+    "KN-S027": "no Secret in the input",
+    "KN-S028": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S030": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input",
+    "KN-S031": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input",
+    "KN-S032": "no Namespace in the input",
+    "KN-S033": "no machineconfiguration.openshift.io MachineConfigPool in the input",
+    "KN-S034": "no operators.coreos.com Subscription in the input",
+    "KN-S035": "no config.openshift.io APIServer in the input",
+    "KN-S036": "no registry allowlist is configured (audit.allowedRegistries), and without the policy no image can be judged",
+    "KN-S037": "no apiregistration.k8s.io APIService in the input",
+    "KN-S038": "not evaluated; this record carries no reason",
+    "KN-S039": "not evaluated; this record carries no reason",
+    "KN-S040": "no config.openshift.io APIServer in the input",
+    "KN-S041": "no config.openshift.io OAuth in the input",
+    "KN-ST001": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST002": "no PersistentVolumeClaim in the input",
+    "KN-ST003": "no storage.k8s.io StorageClass in the input",
+    "KN-ST004": "no storage.k8s.io StorageClass in the input",
+    "KN-ST005": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST006": "no PersistentVolume in the input",
+    "KN-V003": "does not apply on openshift: every OpenShift-only kind is served on this platform",
+    "KN-V008": "no apps.openshift.io DeploymentConfig in the input",
+    "KN-V015": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-V016": "no route.openshift.io Route in the input",
+    "KN-V017": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input",
+    "KN-V024": "no networking.k8s.io Ingress in the input",
+    "KN-V025": "no autoscaling HorizontalPodAutoscaler in the input",
+    "KN-V027": "no apps StatefulSet in the input"
+  },
+  "unreadable": []
+}

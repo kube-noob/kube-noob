@@ -1,0 +1,19 @@
+{
+  "command": [
+    "kube-noob",
+    "audit",
+    "-f",
+    "web/rendered",
+    "--platform",
+    "openshift",
+    "--version",
+    "4.22",
+    "--format",
+    "json"
+  ],
+  "documents": 2,
+  "exitCode": 1,
+  "id": "web",
+  "kubeNoobVersion": "0.11.1",
+  "stderr": ""
+}

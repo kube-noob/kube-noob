@@ -1,0 +1,38 @@
+{
+  "helmVersion": "v4.3.2",
+  "id": "operator",
+  "pull": {
+    "command": [
+      "helm",
+      "pull",
+      "operator",
+      "--repo",
+      "https://charts.example.com/operator",
+      "--version",
+      "0.4.0",
+      "--destination",
+      "operator/pulled"
+    ],
+    "exitCode": 0,
+    "stderr": ""
+  },
+  "recorded": "written by hand: there is no helm on the machine that made this fixture",
+  "template": [
+    {
+      "command": [
+        "helm",
+        "template",
+        "bench",
+        "operator/pulled/operator-0.4.0.tgz",
+        "--namespace",
+        "bench",
+        "--kube-version",
+        "1.35.0"
+      ],
+      "exitCode": 0,
+      "set": [],
+      "stderr": "",
+      "values": "defaults"
+    }
+  ]
+}
