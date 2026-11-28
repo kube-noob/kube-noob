@@ -224,10 +224,17 @@ def _src(source_id: str) -> str:
     return SOURCES[source_id].url
 
 
+def _dependencies(meta: dict[str, Any]) -> list[Any]:
+    """`dependencies` when it is the list Helm reads; anything else is no list of dependencies (`dependencies: 3`
+    raised TypeError where the string `image:` raised AttributeError, G442)."""
+    deps = meta.get("dependencies")
+    return deps if isinstance(deps, list) else []
+
+
 def _chart_names(chart: Path, meta: dict[str, Any]) -> list[tuple[str, str]]:
     """(where, name) for the chart, its declared dependencies (name and alias) and the subcharts in charts/."""
     out = [("Chart.yaml name", str(meta.get("name") or ""))]
-    for dep in meta.get("dependencies") or []:
+    for dep in _dependencies(meta):
         if isinstance(dep, dict):
             out += [(f"Chart.yaml dependency {key}", str(dep[key])) for key in ("name", "alias") if dep.get(key)]
     charts = chart / "charts"
@@ -271,6 +278,56 @@ def _template_issues(chart: Path) -> list[str]:
     return issues
 
 
+def _chart_yaml(path: Path, name: str) -> Any:
+    """One of the chart's own YAML files, parsed; a file that cannot be read is a refusal that names it.
+
+    The lint runs after the render, so a `values.yaml` YAML cannot parse has usually stopped `helm template`
+    first. Where it has not (the render is cached, stubbed, or helm was more lenient than this parser), the
+    parser's own exception left `helm-audit` as a traceback's last line with no file in it (G442)."""
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise KubeNoobError(f"{name} is not UTF-8 text, so the chart was not checked ({exc.reason})") from exc
+    except yaml.YAMLError as exc:
+        first = str(exc).strip().splitlines()[0] if str(exc).strip() else exc.__class__.__name__
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1})" if mark is not None else ""
+        raise KubeNoobError(f"{name} cannot be read as YAML, so the chart was not checked: {first}{where}") from exc
+
+
+def _values_image_issues(v: Any) -> list[str]:
+    """What `values.yaml` says about the default image, in each shape charts write it.
+
+    The check read `image.tag` and nothing else, as `(v.get("image") or {}).get("tag")`: a chart whose values say
+    `image: registry.example.com/api@sha256:...` -- one string, which is how a small chart writes it -- raised
+    `AttributeError: 'str' object has no attribute 'get'`, and `helm-audit` exited 4 with that as its whole answer
+    (G442). A string is read as the image reference it is. A shape this does not read is SAID: silence from a
+    check that did not look is the same line of output as a pinned image."""
+    if v is None:
+        return []
+    if not isinstance(v, dict):
+        return [f"values.yaml is not a mapping (it is a {type(v).__name__}), so its image was not checked."]
+    image = v.get("image")
+    if image is None:
+        return []
+    if isinstance(image, str):
+        ref = image.strip()
+        if "@" in ref:
+            return []
+        tag = ref.rsplit("/", 1)[-1].partition(":")[2]  # a colon before the last slash is a registry port
+        if tag == "latest":
+            return [f"values.yaml image {ref[:200]!r} has the tag 'latest'; pin a version or digest."]
+        if not tag:
+            return [f"values.yaml image {ref[:200]!r} has no tag or digest, which pulls latest; pin one."]
+        return []
+    if isinstance(image, dict):
+        field = image.get("tag")
+        if field is None or isinstance(field, str | int | float):
+            return ["values.yaml image.tag is 'latest'; pin a version or digest."] if field == "latest" else []
+        return [f"values.yaml image.tag is a {type(field).__name__}, not a tag, so it was not checked."]
+    return [f"values.yaml image is a {type(image).__name__}, a shape this check does not read, so it was not checked."]
+
+
 def lint_chart_metadata(chart_dir: str | Path) -> list[str]:
     """Static checks that need no helm binary."""
     issues: list[str] = []
@@ -278,7 +335,7 @@ def lint_chart_metadata(chart_dir: str | Path) -> list[str]:
     cy = chart / "Chart.yaml"
     if not cy.is_file():
         return [f"{chart}: missing Chart.yaml"]
-    meta = yaml.safe_load(cy.read_text(encoding="utf-8")) or {}
+    meta = _chart_yaml(cy, "Chart.yaml") or {}
     if not isinstance(meta, dict):
         return ["Chart.yaml is not a mapping."]
     for lock in _LOCK_FILES:
@@ -297,7 +354,7 @@ def lint_chart_metadata(chart_dir: str | Path) -> list[str]:
                 f"--untar write into the output directory itself. Use a plain chart name. Source: "
                 f"{_src('ghsa-cve-2024-25620')} {_src('ghsa-cve-2026-35206')}"
             )
-    for dep in meta.get("dependencies") or []:
+    for dep in _dependencies(meta):
         repo = str(dep.get("repository") or "") if isinstance(dep, dict) else ""
         if repo.lower().startswith("http://"):
             issues.append(
@@ -322,10 +379,7 @@ def lint_chart_metadata(chart_dir: str | Path) -> list[str]:
         issues.append('Chart.yaml appVersion should be a quoted string (e.g. "1.10" not 1.1).')
     values = chart / "values.yaml"
     if values.is_file():
-        v = yaml.safe_load(values.read_text(encoding="utf-8")) or {}
-        tag = (v.get("image") or {}).get("tag") if isinstance(v, dict) else None
-        if tag in ("latest",):
-            issues.append("values.yaml image.tag is 'latest'; pin a version or digest.")
+        issues += _values_image_issues(_chart_yaml(values, "values.yaml"))
     if not (chart / "values.schema.json").is_file():
         issues.append("No values.schema.json; add one so invalid values fail at install time.")
     return issues

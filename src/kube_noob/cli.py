@@ -79,15 +79,24 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     UTF-8 or not YAML then decided the outcome for every other file in the directory, and said so against a line of
     the combined text rather than against a path anyone could open.
     """
-    from kube_noob.gate import _identity, not_opened_reason, unreadable_reason
+    from kube_noob.gate import (
+        KUSTOMIZATION_NAMES,
+        _identity,
+        not_opened_reason,
+        unreadable_reason,
+        unrendered_reason,
+        walk,
+    )
 
     ok: list[tuple[str, str]] = []
     bad: list[dict[str, str]] = []
-    every = [f for f in sorted(d.rglob("*")) if f.is_file()]
+    # The gate's own walk, so the two cannot answer differently about a link neither follows: `sub -> ../outside`
+    # was in no list here, and `audit -f k8s/` scored 100.0 over the privileged Pod behind it (G444).
+    every, gaps = walk(d)
     opened = {ident for f in every if f.suffix in {".yaml", ".yml"} and (ident := _identity(f)) is not None}
     for f in every:
         rel = str(f.relative_to(d))
-        if f.suffix not in {".yaml", ".yml"}:
+        if f.suffix not in {".yaml", ".yml"} and f.name not in KUSTOMIZATION_NAMES:
             # A manifest this walk does not open is a file nobody read, and it is named as one: `pod.json` beside
             # a clean `ok.yaml` used to leave `audit -f k8s/` at score 100.0, exit 0, with no word about it. The
             # decision is the gate's own, so the two walks cannot answer differently about one directory (G351).
@@ -100,11 +109,15 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
         except (UnicodeDecodeError, OSError) as exc:
             bad.append({"path": rel, "why": f"not readable as UTF-8 text: {exc}"})
             continue
-        why = unreadable_reason(text)
+        # Before YAML is asked: a chart template is not YAML yet, and "while constructing a mapping (line 4)" is
+        # the parser's answer to a question nobody should have put to it. The gate's own decision, so `audit -f`
+        # and `gate -f` say the same thing about a chart or a kustomization in a directory (G445, G446).
+        why = unrendered_reason(f, text) or (unreadable_reason(text) if f.suffix in {".yaml", ".yml"} else None)
         if why:
             bad.append({"path": rel, "why": why})
         else:
             ok.append((rel, text))
+    bad += [{"path": str(entry.relative_to(d)), "why": why} for entry, why in gaps]
     return ok, bad
 
 
@@ -1371,6 +1384,10 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             default_namespace=_dns_label(a.namespace),
             skip_unreadable=a.skip_unreadable,
         )
+    except gate.Unrendered as exc:
+        # Not a usage error: there was something to check and it was not read, which is 5 (G445).
+        print(_error_line(f"error: {exc}"), file=sys.stderr)
+        return 5
     except (gate.GateError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
     gate.write(report, sarif_path=a.sarif, summary=a.summary, quality=a.codequality)
@@ -1412,8 +1429,8 @@ def _gate_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
         for entry in blocked:
             print(f"error: {entry['file']}: {entry['why']}", file=sys.stderr)
         print(
-            f"error: {len(blocked)} file(s) were not read as manifests, so this is not a clean result; correct the "
-            "key the message names and run the gate again",
+            f"error: {len(blocked)} file(s) were not read as manifests, so this is not a clean result; each line "
+            "above says what to correct or what to pass instead",
             file=sys.stderr,
         )
     return rc
@@ -1445,6 +1462,9 @@ def _verify_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             result = verify.evaluate(plan.sources, against=against, command=plan, from_command=True, **common)
         else:
             result = verify.evaluate(verify.collect(a.file, _read), against=against, **common)
+    except gate.Unrendered as exc:
+        print(_error_line(f"error: {exc}"), file=sys.stderr)
+        return 5
     except (gate.GateError, verify.VerifyError, ExceptionsError) as exc:
         raise ConfigError(str(exc)) from exc
     if a.format == "text":
@@ -3647,10 +3667,11 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if unreadable and not getattr(a, "skip_unreadable", False):
             _refuse_unreadable(unreadable)
             return 5
-        if a.cmd in {"audit", "validate", "redteam"}:
-            from kube_noob.audit.engine import refuse_if_not_manifests
+        # Every command of this family, `fix` included: it was the one left out, so `fix -f values.yaml` printed
+        # the file back with `score: 90.0` and `fix` on a comment scored 100.0 at exit 0 (G443).
+        from kube_noob.audit.engine import refuse_if_not_manifests
 
-            refuse_if_not_manifests(text)
+        refuse_if_not_manifests(text)
         if a.cmd == "audit":
             from kube_noob.audit.exceptions import ExceptionsError
 
@@ -4805,11 +4826,13 @@ def _yaml_files(paths: list[str]) -> list[tuple[str, str]]:
         if f == "-":
             out.append(("-", sys.stdin.read()))
         elif p.is_dir():
-            out += [
-                (str(x), x.read_text(encoding="utf-8"))
-                for x in sorted(p.rglob("*"))
-                if x.suffix in {".yaml", ".yml"} and x.is_file()
-            ]
+            # The audit family's own read of a directory, so a policy behind a link the walk does not follow, or
+            # in a chart nobody rendered, is a policy nobody checked: "every policy migrates" over the rest is the
+            # answer about less (G350, G444, G445).
+            found, bad = _dir_yaml(p)
+            if bad:
+                raise _UnreadInput(f, bad)
+            out += [(str(p / rel), text) for rel, text in found]
         else:
             out.append((str(p), p.read_text(encoding="utf-8")))
     return out
@@ -4852,9 +4875,13 @@ def _snapshot_from_args(a: argparse.Namespace, s: Settings) -> dict[str, Any]:
         raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
     if a.namespaces:
         raise ConfigError("-n works with --live; with -f every namespace in the files is recorded")
+    from kube_noob.attack_paths import refuse_if_no_objects
     from kube_noob.yamlio import load_documents
 
     docs = load_documents("\n---\n".join(_read(f) for f in a.file))
+    # A snapshot of "0 objects, 0 findings" is a baseline every later diff is measured against, and it was
+    # written for an empty file, a comment and a Helm values file (G443).
+    refuse_if_no_objects(docs)
     return drift.snapshot(
         (d.data for d in docs), source="manifests", platform=platform, version=a.pversion, exceptions=rev
     )
@@ -5088,6 +5115,15 @@ def _operator_files(
                 unreadable.append({"path": rel, "reason": " ".join(str(exc).split())[:300]})
                 continue
             sources.append((rel, docs))
+        from kube_noob.gate import walk
+
+        # A link to a directory is in no suffix filter, so the loop above never saw it (G444). A link to a file
+        # is already listed by the loop, whether or not it resolves.
+        unreadable += [
+            {"path": str(entry.relative_to(d)), "reason": " ".join(why.split(": ", 1)[-1].split())[:300]}
+            for entry, why in walk(d)[1]
+            if not (entry.is_symlink() and entry.name.lower().endswith(_OPERATOR_SUFFIXES))
+        ]
     return sources, unreadable, refused
 
 

@@ -147,8 +147,10 @@ def test_a_helm_template_keeps_its_own_reason_and_is_not_reclassified(tmp_path: 
     tpl = chart / "templates" / "pod.yaml"
     tpl.write_text(PRIVILEGED.format(key="apiversion"))
     why = gate._classify(tpl, tpl.read_text())
-    assert why == "a Helm template: render the chart with --chart"
-    assert not gate.forbids_verdict(why)
+    assert why is not None and why.startswith(gate.UNRENDERED_HELM + ":") and "--chart" in why
+    # It kept its own reason and lost its silence: this asserted `not forbids_verdict`, which is the assertion
+    # that let a chart nobody rendered gate `passed` (G445).
+    assert gate.forbids_verdict(why)
 
 
 # -- the verdict it forbids, in gate -----------------------------------------------------------------------------
@@ -284,25 +286,38 @@ def test_the_report_is_the_same_whatever_the_order_and_the_hash_seed(tmp_path: P
 # -- the structural guard ----------------------------------------------------------------------------------------
 
 
+#: The functions a skip reason is written in: `_classify` and the three it asks.
+_REASON_FUNCTIONS = {"_classify", "_near_miss_reason", "unrendered_reason", "not_opened_reason"}
+
+
 def _classify_reasons() -> list[str]:
-    """Every literal reason ``_classify`` can return, read out of its own source."""
-    src = (ROOT / "src" / "kube_noob" / "gate.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    fn = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in {"_classify", "_near_miss_reason"}
-    )
+    """Every reason ``_classify`` can return, read out of its own source and the functions it asks.
+
+    A literal anywhere in a returned expression, and the start of a returned f-string: a literal, or a module
+    constant (`f"{UNRENDERED_HELM}: ..."`), resolved on the module. It read only a bare `return "..."`, which
+    was one reason of five, and when that one became an f-string (G445) it found none."""
+    tree = ast.parse((ROOT / "src" / "kube_noob" / "gate.py").read_text(encoding="utf-8"))
     found: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef) or node.name not in {"_classify", "_near_miss_reason"}:
+        if not isinstance(node, ast.FunctionDef) or node.name not in _REASON_FUNCTIONS:
             continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Constant) and isinstance(sub.value.value, str):
-                found.append(sub.value.value)
-            if isinstance(sub, ast.Return) and isinstance(sub.value, ast.JoinedStr):
-                head = sub.value.values[0]
-                if isinstance(head, ast.Constant) and isinstance(head.value, str):
-                    found.append(head.value)
-    assert fn is not None and found, "no reason strings found: this guard would pass vacuously"
+        for ret in (r for r in ast.walk(node) if isinstance(r, ast.Return) and r.value is not None):
+            for sub in ast.walk(ret.value):
+                if isinstance(sub, ast.JoinedStr):
+                    head = sub.values[0]
+                    if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                        found.append(head.value)
+                    elif isinstance(head, ast.FormattedValue) and isinstance(head.value, ast.Name):
+                        found.append(str(getattr(gate, head.value.id)))
+            found += [
+                sub.value
+                for sub in ast.walk(ret.value)
+                if isinstance(sub, ast.Constant)
+                and isinstance(sub.value, str)
+                and not any(sub in j.values for j in ast.walk(ret.value) if isinstance(j, ast.JoinedStr))
+            ]
+    found = [r for r in found if len(r) > 12]  # a reason, not a separator inside one
+    assert len(set(found)) >= 5, f"too few reason strings found, so this guard would pass vacuously: {found}"
     return found
 
 

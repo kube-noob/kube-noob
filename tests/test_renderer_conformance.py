@@ -281,6 +281,12 @@ class Fixture:
     #: so those rows are listed with `acceptedBy` and withhold nothing. Whatever ELSE the input withholds still
     #: does, which is the whole point of the one fixture that sets it.
     skip_unreadable: bool = False
+    #: Symbolic links to make under the fixture's root, name -> target. A target that leaves the root is written
+    #: from `outside`, beside the root, so a fixture can hold the one entry type a directory walk never descends.
+    links: Mapping[str, str] = field(default_factory=dict)
+    outside: Mapping[str, str] = field(default_factory=dict)
+    #: The entry a file-level fixture withholds, which every renderer of a report must NAME.
+    names: str = BROKEN
 
 
 FIXTURES: tuple[Fixture, ...] = (
@@ -312,6 +318,64 @@ FIXTURES: tuple[Fixture, ...] = (
         files={"deployment.yaml": _PRIVILEGED_DEPLOYMENT, BROKEN: _UNPARSEABLE},
         withheld=True,
         file_level=True,
+    ),
+    Fixture(
+        name="link-to-a-directory-the-walk-does-not-follow",
+        proves="A clean bundle beside `base -> ../outside`, which holds a privileged Deployment. No walk follows "
+        "a link out of the directory it was given, and until G444 none of them said so: zero findings, score "
+        "100.0, `passed`, `satisfied`. The entry withheld is neither a file that would not parse nor an object "
+        "nothing read, so no fixture above reaches a renderer with it.",
+        files={"pod.yaml": _HARDENED_POD, "netpol.yaml": _DNS_POLICY},
+        links={"base": "{outside}"},
+        outside={"deployment.yaml": _PRIVILEGED_DEPLOYMENT},
+        withheld=True,
+        file_level=True,
+        names="base",
+    ),
+    Fixture(
+        name="unrendered-helm-chart-beside-a-clean-bundle",
+        proves="A clean bundle beside a chart whose template is `privileged: true` under `{{ .Release.Name }}`. "
+        "The gate listed the template as skipped and said `passed`; `skipped` was a list no renderer read as a "
+        "gap, so every one of them agreed with it (G445).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "chart/Chart.yaml": "apiVersion: v2\nname: app\nversion: 0.1.0\n",
+            "chart/templates/dep.yaml": _PRIVILEGED_DEPLOYMENT.replace("name: web", "name: {{ .Release.Name }}", 1),
+        },
+        withheld=True,
+        file_level=True,
+        names="dep.yaml",
+    ),
+    Fixture(
+        name="unrendered-kustomization-beside-a-clean-bundle",
+        proves="A clean bundle beside a kustomization whose patch makes the Pod privileged when it is rendered. "
+        "The objects every renderer was handed are not the objects that are deployed (G446).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "kustomization.yaml": "resources: [pod.yaml, netpol.yaml]\n"
+            "patches:\n- target: {kind: Pod, name: ok}\n  patch: |-\n"
+            "    - {op: replace, path: /spec/containers/0/securityContext/privileged, value: true}\n",
+        },
+        withheld=True,
+        file_level=True,
+        names="kustomization.yaml",
+    ),
+    Fixture(
+        name="kustomization-document-beside-a-clean-bundle",
+        proves="The same overlay written as a document, `kustomize.config.k8s.io/v1beta1 Kustomization`. It is "
+        "not declined by the walk -- the audit reads its generators -- so what withholds the verdict is a "
+        "`notAudited` row, and every renderer of text, one object or a report is held to carrying it (G446).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
+            "metadata: {name: overlay}\nresources: [pod.yaml, netpol.yaml]\n"
+            "patches:\n- target: {kind: Pod, name: ok}\n  patch: |-\n"
+            "    - {op: replace, path: /spec/containers/0/securityContext/privileged, value: true}\n",
+        },
+        withheld=True,
     ),
     Fixture(
         name="kind-no-rule-reads",
@@ -454,6 +518,12 @@ def _write(fixture: Fixture, root: Path) -> Path:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    for name, text in fixture.outside.items():
+        path = root.parent / f"{root.name}-outside" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    for name, target in fixture.links.items():
+        (root / name).symlink_to(target.format(outside=f"../{root.name}-outside"))
     return root
 
 
@@ -1206,7 +1276,8 @@ def test_a_file_that_was_not_read_is_named_by_the_renderers(
         request.node.add_marker(pytest.mark.xfail(strict=True, reason=defect))
     adapter = ADAPTERS[renderer]
     text = adapter.as_text(adapter.render(bundles[fixture]))
-    assert BROKEN in text, f"{renderer}: the output does not name {BROKEN}, which nothing in it was audited from"
+    named = BY_NAME[fixture].names
+    assert named in text, f"{renderer}: the output does not name {named}, which nothing in it was audited from"
 
 
 def test_every_fixture_has_the_shape_it_claims(bundles: dict[str, Bundle]) -> None:
@@ -1440,6 +1511,9 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.verdict_word": "THE predicate every renderer here reads; it has no output of its own",
     "gate.render": "renders a Helm chart to manifests; it runs before the audit and reports no verdict",
     "gate.collect": "reads files into Sources; it reports no verdict",
+    "gate.chart_of": "names the chart a template belongs to; a predicate over one path (G445)",
+    "gate.unrendered_reason": "a predicate over one file a walk found: a chart template, a kustomization (G445)",
+    "gate.walk": "lists the files under a directory and the entries no walk goes into; it reports no verdict (G444)",
     "gate.run": "produces the report every adapter above consumes, so it is the subject, not a renderer",
     "gate.sarif": "the shared SARIF emitter; its two callers, sarif_of_audit and sarif_of_gate, are adapted",
     "gate.write": "writes the adapted renderers' output to disk and adds nothing to it",
