@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from kube_noob import limits
 from kube_noob.audit.engine import analyze
 from kube_noob.audit.model import Report
 from kube_noob.errors import KubeNoobError
@@ -18,7 +19,8 @@ from kube_noob.generate.helm import lint_chart_metadata
 
 #: Rendered output larger than this is not read: a chart is not supposed to be a 5 MB bundle, and the audit after it
 #: has to finish inside a hook's time budget.
-MAX_RENDERED = 5_000_000
+#: What one render may be: the command line's own limit, since the audit reads it next (`kube_noob.limits`).
+MAX_RENDERED = limits.MAX_LOCAL_BYTES
 MAX_CHART_FILES = 5_000
 
 
@@ -129,8 +131,8 @@ def render_chart(
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env, check=False)
     if proc.returncode != 0:
         raise KubeNoobError(f"helm template failed: {proc.stderr.strip()[:2000]}")
-    if len(proc.stdout) > MAX_RENDERED:
-        raise KubeNoobError(f"helm template rendered more than {MAX_RENDERED:,} characters; not read")
+    if (size := limits.utf8_len(proc.stdout)) > MAX_RENDERED:
+        raise limits.too_large_local(size, f"what helm template rendered from {chart}", MAX_RENDERED)
     return proc.stdout
 
 

@@ -26,8 +26,11 @@ spelt "clean" or "pass":
                                    values if the list gives any
     not rendered                   there is no record that a render was tried
     rendered nothing               helm exited 0 and the output holds no Kubernetes object
-    audit did not answer           the audit left no report this script can read: an exit code other than 0 or
-                                   1, output that is not the JSON document, or no record of an audit
+    too large for the audit        kube-noob refused the render for its size (exit 4, and its stderr gives the
+                                   size and the limit): nothing in the chart was read
+    audit did not answer           the audit left no report this script can read for any other reason: an exit
+                                   code other than 0 or 1, output that is not the JSON document, or no record
+                                   of an audit. The row keeps the exit code and what kube-noob said
     undetermined                   kube-noob's own verdict: something in the chart was not read
     findings                       at least one finding
     no findings in what was read   no finding, and kube-noob did not call the audit undetermined. The row still
@@ -74,11 +77,29 @@ VERDICTS = (
     "render failed",
     "not rendered",
     "rendered nothing",
+    "too large for the audit",
     "audit did not answer",
     "undetermined",
     "findings",
     "no findings in what was read",
 )
+
+# What `kube-noob audit` says on stderr when it refuses a render for its size, and exits 4: today's one line
+# (`kube_noob.limits`), pydantic's own report from the releases that shared the MCP request cap with the command
+# line (0.11.1 and before), and the YAML loader's older sentence. Four of the 25 charts were "audit did not answer"
+# for this one reason, and a reader could not tell them from a chart kube-noob had crashed on (G447).
+_TOO_LARGE = re.compile(
+    r"one (?:run reads|request carries) at most [\d,]+"
+    r"|String should have at most \d+ characters"
+    r"|Input exceeds \d+ bytes"
+)
+
+
+def too_large(exit_code: object, stderr: object) -> bool:
+    """True when the audit refused the input for its size. The exit code is read first: the same words beside
+    another code are something else that happened."""
+    return exit_code == 4 and isinstance(stderr, str) and _TOO_LARGE.search(stderr) is not None
+
 
 # The rules whose every finding is a pod shape the restricted-v2 SecurityContextConstraints does not admit:
 # restricted-v2 sets allowPrivilegedContainer, allowHostNetwork, allowHostPID, allowHostIPC, allowHostPorts and
@@ -455,7 +476,9 @@ def _chart_row(chart: Chart, out: Path) -> dict[str, Any]:
         return row
     doc = _read_json(home / "audit.json")
     if meta.get("exitCode") not in (0, 1) or not _shape_ok(doc):
-        row["verdict"] = "audit did not answer"
+        row["verdict"] = (
+            "too large for the audit" if too_large(meta.get("exitCode"), meta.get("stderr")) else "audit did not answer"
+        )
         said = _one_line(meta.get("stderr")) or "its output is not the audit document"
         row["detail"] = f"kube-noob exit {_code(meta.get('exitCode'))}: {said}"
         return row

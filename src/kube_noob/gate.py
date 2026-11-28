@@ -24,7 +24,7 @@ from typing import Any
 
 import yaml
 
-from kube_noob import __version__, sanitize
+from kube_noob import __version__, limits, sanitize
 from kube_noob.audit.controls import coverage_line, grouped_reasons
 from kube_noob.audit.model import (
     SKIP_UNREADABLE,
@@ -37,7 +37,8 @@ from kube_noob.audit.model import (
 from kube_noob.yamlio import json_document
 
 MAX_FILES = 2_000
-MAX_TOTAL = 5_000_000
+#: Bytes of manifest text in all the files of one run: the command line's limit (`kube_noob.limits`).
+MAX_TOTAL = limits.MAX_LOCAL_BYTES
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 #: GitHub displays "10 warning annotations, 10 error annotations, and 10 notice annotations per step" and
 #: "50 annotations per job" (actions/toolkit, docs/problem-matchers.md, retrieved 2026-11-05). The eleventh
@@ -544,11 +545,19 @@ def collect(paths: list[str], read: Any) -> list[Source]:
             else:
                 raise GateError(f"{raw}: no such file or directory")
         for uri, text, why in items:
-            total += len(text)
+            total += limits.utf8_len(text)
             out.append(Source(uri, text, skip=why, unreadable=bad.get(uri)))
-            if len(out) > MAX_FILES or total > MAX_TOTAL:
-                raise GateError(f"more than {MAX_FILES} files or {MAX_TOTAL:,} characters: gate one release at a time")
+            within_limits(len(out), total)
     return out
+
+
+def within_limits(files: int, size: int) -> None:
+    """Refuse more files or more text than one run reads. Too many files is a GateError, as it was; too much text
+    is the same refusal every other command gives (`InputTooLarge`, exit 4), with the size and what to do."""
+    if files > MAX_FILES:
+        raise GateError(f"more than {MAX_FILES} files: gate one release at a time")
+    if size > limits.MAX_LOCAL_BYTES:
+        raise limits.too_large_local(size)
 
 
 def _combine(sources: list[Source]) -> str:

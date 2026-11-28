@@ -24,10 +24,10 @@ from pydantic_core import PydanticUndefined
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from kube_noob import __version__, alert_report, sanitize, tool_runner
+from kube_noob import __version__, alert_report, limits, sanitize, tool_runner
 from kube_noob.audit.engine import list_rules
 from kube_noob.config import Settings
-from kube_noob.errors import KubeNoobError, ServerBusy, StoredStateError
+from kube_noob.errors import InputTooLarge, KubeNoobError, ServerBusy, StoredStateError, refused_arguments
 from kube_noob.knowledge.store import get_store
 from kube_noob.knowledge_status import line as knowledge_line
 from kube_noob.learn.tutor import curriculum
@@ -168,7 +168,12 @@ def run_tool(spec: ToolSpec, kwargs: dict[str, Any], knowledge: str, via: str = 
         return tool_runner.call(spec, kwargs, knowledge)
     except ValidationError as exc:
         outcome = "invalid-arguments"
-        raise CallFailed(400, outcome, f"invalid arguments: {str(exc)[:MAX_ERROR_CHARS]}") from None
+        raise CallFailed(400, outcome, f"invalid arguments: {refused_arguments(exc)[:MAX_ERROR_CHARS]}") from None
+    except InputTooLarge as exc:
+        # An argument over the request cap: the caller's to correct, like any other refused argument, and the
+        # message is the whole answer -- the size, the cap and what to do (`kube_noob.limits`).
+        outcome = "invalid-arguments"
+        raise CallFailed(400, outcome, str(exc)[:MAX_ERROR_CHARS]) from None
     except ServerBusy as exc:
         # Nothing about the request is wrong and nothing was done: the REST route answers 503 with Retry-After, and
         # an MCP client sees a tool error that says to retry later.
@@ -279,7 +284,23 @@ def _forbid_unknown_arguments(mcp: MCPServer, name: str) -> None:
     if tool is None:
         raise RuntimeError(f"tool {name} was not registered")
     base = tool.fn_metadata.arg_model
-    strict = type(base.__name__, (base,), {"model_config": ConfigDict(arbitrary_types_allowed=True, extra="forbid")})
+
+    def model_validate(cls: Any, /, obj: Any, **kwargs: Any) -> Any:
+        # The SDK validates its own copy of the arguments before the tool runs, and reports a validator that
+        # raises anything but a ValidationError as a crash with no message. So the size of a manifest is not
+        # measured here: `tool_runner.call` validates the same arguments again, under the request cap, and its
+        # refusal reaches the client as the one line it is (G447).
+        with limits.deferred():
+            return super(strict, cls).model_validate(obj, **kwargs)
+
+    strict: Any = type(
+        base.__name__,
+        (base,),
+        {
+            "model_config": ConfigDict(arbitrary_types_allowed=True, extra="forbid"),
+            "model_validate": classmethod(model_validate),
+        },
+    )
     tool.fn_metadata.arg_model = strict
     tool.parameters["additionalProperties"] = False
 

@@ -1257,7 +1257,10 @@ def test_a_huge_render_and_helms_own_words_are_bounded_and_framed(
     monkeypatch.setattr(helm_render, "MAX_RENDERED", 10)
     _fake_helm(outside, f"cat {BAD}\n")
     big = _verify("helm upgrade --install web ./chart", ws)
-    assert big["verdict"] == "not-determined" and any("rendered more than" in u for u in big["notDetermined"])
+    assert big["verdict"] == "not-determined"
+    assert any(
+        "helm template rendered more than" in u and "none of the chart was audited" in u for u in big["notDetermined"]
+    )
 
 
 def test_verify_f_reads_a_directory_the_way_kubectl_does(ws: Path) -> None:

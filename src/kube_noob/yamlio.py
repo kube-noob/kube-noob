@@ -16,10 +16,13 @@ from typing import Any
 
 import yaml
 
+from kube_noob import limits
 from kube_noob.errors import ManifestError
 from kube_noob.sanitize import has_invisible, replace_surrogates
 
-MAX_INPUT_BYTES = 5_000_000
+#: The most text one call parses. It is the command line's limit, and a request is far under it by the time it
+#: gets here (`kube_noob.limits`); it was 5,000,000, which kyverno 3.10.0's render (5,916,202 bytes) is over.
+MAX_INPUT_BYTES = limits.MAX_LOCAL_BYTES
 MAX_DOCUMENTS = 1000
 MAX_NODE_VISITS = 500_000
 MAX_DEPTH = 100
@@ -139,8 +142,9 @@ def _walk(
 
 def load_documents(text: str) -> list[Document]:
     """Parse one or more YAML documents. Empty documents are skipped. ``List`` kinds are flattened."""
-    if len(text.encode("utf-8", errors="replace")) > MAX_INPUT_BYTES:
-        raise ManifestError(f"Input exceeds {MAX_INPUT_BYTES} bytes; split it into smaller files.")
+    # Read from `limits` at the call, not from the constant above, so the two cannot drift apart.
+    if len(text) * 4 > limits.MAX_LOCAL_BYTES and (size := limits.utf8_len(text)) > limits.MAX_LOCAL_BYTES:
+        raise limits.too_large_local(size)
     try:
         # Inside the try, because the Reader validates the whole string here: a control character (ESC, NUL)
         # raises ReaderError from the constructor, and with this line outside the handler that YAMLError escaped

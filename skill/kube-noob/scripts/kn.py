@@ -175,7 +175,9 @@ def main(argv: list[str]) -> int:
         args = _arguments(argv[1:])
         result = tool_runner.call(specs[name], args, knowledge_line(kit.settings.data_dir))
     except ValidationError as exc:
-        return _error(f"invalid arguments: {str(exc)[:2000]}", 2, name)
+        from kube_noob.errors import refused_arguments
+
+        return _error(f"invalid arguments: {refused_arguments(exc)[:2000]}", 2, name)
     except (KubeNoobError, ValueError, KeyError) as exc:
         detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
         return _error(str(detail)[:2000], 2, name)

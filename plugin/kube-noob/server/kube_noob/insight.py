@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kube_noob import sanitize
+from kube_noob.errors import InputTooLarge
 
 MAX_TEXT = 2_000_000
 ANALYSER_TEXT = 200_000  # characters each text analyser reads (the end of the input, where failures usually are)
@@ -1160,10 +1161,12 @@ def _code(kit: Any, text: str) -> dict[str, Any] | str:
 def _containerfile(kit: Any, text: str) -> dict[str, Any] | str:
     from kube_noob import toolkit as tk
 
+    # The whole text or a refusal, never its first megabyte: the instruction that matters in a Containerfile is as
+    # often the last one (`USER 0`), and an audit of the start reads as an audit of the file (G447).
     try:
-        return dict(kit.containerfile_audit(tk.ContainerfileIn(containerfile=text[: tk.MAX_MANIFEST_CHARS])))
-    except ValueError as exc:
-        return f"not audited: {str(exc).splitlines()[0][:300]}"
+        return dict(kit.containerfile_audit(tk.ContainerfileIn(containerfile=text)))
+    except (InputTooLarge, ValueError) as exc:
+        return f"not audited: {str(exc).splitlines()[0][:400]}"
 
 
 def _upgrade_risk(kit: Any, a: str, b: str) -> dict[str, Any] | str:
@@ -1187,9 +1190,9 @@ def _policy_migrate(kit: Any, manifests: str) -> dict[str, Any] | str:
     from kube_noob import toolkit as tk
 
     try:
-        req = tk.PolicyMigrateCheckIn(policies=manifests[: tk.MAX_MANIFEST_CHARS])
-    except ValueError as exc:
-        return str(exc).splitlines()[0][:300]
+        req = tk.PolicyMigrateCheckIn(policies=manifests)  # whole, or refused with the reason: never cut (G447)
+    except (InputTooLarge, ValueError) as exc:
+        return str(exc).splitlines()[0][:400]
     return dict(kit.policy_migrate_check(req))
 
 
@@ -1388,11 +1391,21 @@ def _specific_terms(text: str, *, kubernetes_words: bool = False) -> set[str]:
     return out
 
 
+def _start_only(total: int) -> dict[str, Any]:
+    return {
+        "characters": total,
+        "read": MAX_TEXT,
+        "why": f"the input is {total:,} characters and only the first {MAX_TEXT:,} were read, so nothing after "
+        "them was looked at; pass the part that matters",
+    }
+
+
 def insight(kit: Any, text: str, platform: str | None = None, version: str | None = None) -> dict[str, Any]:
     """Recognise the input, run every analyser that applies (each on its own size and time budget) and merge
     what they found into one answer."""
     from kube_noob import toolkit as tk
 
+    given = len(text)
     text = text[:MAX_TEXT]
     kinds = recognise(text)
     names = {k.kind for k in kinds}
@@ -1716,9 +1729,11 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
 
         def audit() -> Any:
             try:
-                return kit.audit(tk.AuditIn(manifests=manifests[: tk.MAX_MANIFEST_CHARS], **where))
+                # Whole, or refused: cut to the cap, the audit read the objects before the cut, `ran` listed
+                # `audit`, and an object after it was never looked at (G447). `InputTooLarge` is a ManifestError.
+                return kit.audit(tk.AuditIn(manifests=manifests, **where))
             except (ManifestError, ValueError) as exc:
-                return ManifestError(str(exc).splitlines()[0][:300])
+                return ManifestError(str(exc).splitlines()[0][:400])
 
         rep = budget.run("audit", audit)
         if isinstance(rep, ManifestError):
@@ -1835,6 +1850,9 @@ def insight(kit: Any, text: str, platform: str | None = None, version: str | Non
         "answeredBy": answered_by,
         "context": context,
         "skipped": skipped,
+        # Every surface refuses or reports a text this long before it gets here, so this is for a caller that
+        # does not: the start was read, and an answer about the start does not pass for one about the whole.
+        **({"inputTruncated": _start_only(given)} if given > MAX_TEXT else {}),
         **({"knownIssuesCoverage": ki_coverage} if ki_coverage else {}),
         **{k: v for k, v in payload_input.items() if k in {"payloadVersion", "payloadVersionFrom", "versionConflict"}},
         # What to paste instead, for a caller that reads JSON as well as for the text view (G277).

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from kube_noob import sanitize
+from kube_noob import limits, sanitize
 from kube_noob.debug import shell
 from kube_noob.debug.steps import (
     DRY_RUN_VERBS,
@@ -52,15 +52,17 @@ from kube_noob.debug.steps import (
     runs_local_code,
     takes_value,
 )
-from kube_noob.errors import ManifestError
+from kube_noob.errors import InputTooLarge, ManifestError
 
 VERDICTS = ("allow", "deny", "not-determined")
 #: Least to most consequential. `connects`: a local listening port to the cluster (`port-forward`, `proxy`), which
 #: changes no cluster state and runs nothing in it; asked about only when the port is reachable from other hosts.
 CLASSES = ("none", "read-only", "local", "connects", "runs-code", "changes-state", "destructive")
-MAX_FILE_BYTES = 5_000_000
+#: One file a command names, and all of them together: the command line's limit (`kube_noob.limits`), so a file
+#: `audit -f` reads is not one `verify --command 'kubectl apply -f'` calls too large to read.
+MAX_FILE_BYTES = limits.MAX_LOCAL_BYTES
 MAX_FILES = 2_000
-MAX_TOTAL_BYTES = 5_000_000
+MAX_TOTAL_BYTES = limits.MAX_LOCAL_BYTES
 MAX_KUSTOMIZE_DEPTH = 5
 MAX_SHOWN = 50  # findings in the text view; the JSON has all of them and the count withheld is stated
 MAX_PREEXISTING = 20  # findings the baseline already had, listed most severe first; the count covers all of them
@@ -2642,6 +2644,14 @@ def _helm(
             set_values=sets,
             project=tree.root,
         )
+    except InputTooLarge:
+        # helm rendered it; kube-noob would not read it. Said in verify's own words, with the limit and no path:
+        # the refusal's sentence names the chart directory, which pushed the limit out of a framed 200 characters.
+        out.undetermined.append(
+            f"{shown}: helm template rendered more than the {limits.MAX_LOCAL_BYTES:,} bytes one run reads, so "
+            "none of the chart was audited; check its templates by part"
+        )
+        return
     except Exception as exc:  # noqa: BLE001 - a chart that does not render is not read
         out.undetermined.append(
             f"{shown}: helm template did not render the chart; its message, as text from the repository: "
@@ -2780,18 +2790,16 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                         why = None
                     bad = gate.unreadable_reason(text) if why is None else None
                     out.append(gate.Source(gate._uri(f), text, skip=why, unreadable=bad))
-                    total += len(text)
-                    if len(out) > gate.MAX_FILES or total > gate.MAX_TOTAL:
-                        raise gate.GateError(f"more than {gate.MAX_FILES} files or {gate.MAX_TOTAL:,} characters")
+                    total += limits.utf8_len(text)
+                    gate.within_limits(len(out), total)
             continue
         if p.is_file():
             text = read(raw)
             out.append(gate.Source(gate._uri(p), text))
-            total += len(text)
+            total += limits.utf8_len(text)
             continue
         raise gate.GateError(f"{raw}: no such file or directory")
-    if len(out) > gate.MAX_FILES or total > gate.MAX_TOTAL:
-        raise gate.GateError(f"more than {gate.MAX_FILES} files or {gate.MAX_TOTAL:,} characters")
+    gate.within_limits(len(out), total)
     return out
 
 
