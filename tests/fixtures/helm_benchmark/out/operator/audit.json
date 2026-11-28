@@ -1,0 +1,1075 @@
+{
+  "platform": "openshift",
+  "platformVersion": "4.22",
+  "kubernetesVersion": "1.35",
+  "resources": [
+    "Rollout/bench/bench-operator",
+    "Kafka/bench/bench-kafka",
+    "ServiceAccount/bench/bench-operator"
+  ],
+  "summary": {
+    "counts": {
+      "info": 0,
+      "low": 0,
+      "medium": 0,
+      "high": 0,
+      "critical": 0
+    },
+    "maxSeverity": null,
+    "score": null,
+    "verdict": "undetermined",
+    "verdictReason": "2 rules not evaluated in full and 1 Rollout not audited: KN-S038, KN-S039; not read in full: Rollout/bench/bench-operator"
+  },
+  "assumptions": [
+    "1 pod spec(s) are in kinds kube-noob has no reader for, so their containers were NOT audited: Rollout/bench/bench-operator at spec path spec.template.spec. Audit the Deployments the operator creates from them, or ask for the kind to be added with its published schema.",
+    "Rollout/bench/bench-operator pods are in a kind kube-noob has no reader for; it was not audited, so this verdict is undetermined.",
+    "KN-S038 was not evaluated in full, so it is not counted as clean: Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read.",
+    "KN-S039 was not evaluated in full, so it is not counted as clean: Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read.",
+    "No bundled schema for argoproj.io/v1alpha1 Rollout (Rollout/bench/bench-operator); structural checks skipped.",
+    "No bundled schema for kafka.strimzi.io/v1beta2 Kafka (Kafka/bench/bench-kafka); structural checks skipped."
+  ],
+  "notAudited": [
+    {
+      "object": "Rollout/bench/bench-operator",
+      "kind": "Rollout",
+      "apiGroup": "argoproj.io",
+      "why": "pods are in a kind kube-noob has no reader for",
+      "line": 3,
+      "file": "manifests.yaml"
+    }
+  ],
+  "findings": [],
+  "controlSummary": {
+    "catalog": "NIST SP 800-53 Rev. 5",
+    "controls": [
+      {
+        "id": "AC-14",
+        "title": "Permitted Actions Without Identification or Authentication",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 2,
+        "notEvaluatedRules": [
+          "KN-S028",
+          "KN-S038"
+        ]
+      },
+      {
+        "id": "AC-3",
+        "title": "Access Enforcement",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-S015",
+          "KN-S017",
+          "KN-S028",
+          "KN-S038",
+          "KN-S039"
+        ]
+      },
+      {
+        "id": "AC-4",
+        "title": "Information Flow Enforcement",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 7,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N004",
+          "KN-N006",
+          "KN-N007",
+          "KN-N008",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "AC-5",
+        "title": "Separation of Duties",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S017"
+        ]
+      },
+      {
+        "id": "AC-6",
+        "title": "Least Privilege",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 18,
+        "notEvaluatedRules": [
+          "KN-S001",
+          "KN-S002",
+          "KN-S003",
+          "KN-S004",
+          "KN-S005",
+          "KN-S006",
+          "KN-S009",
+          "KN-S010",
+          "KN-S014",
+          "KN-S015",
+          "KN-S016",
+          "KN-S017"
+        ],
+        "moreNotEvaluated": 6
+      },
+      {
+        "id": "AC-6(10)",
+        "title": "Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S002"
+        ]
+      },
+      {
+        "id": "AC-6(5)",
+        "title": "Least Privilege | Privileged Accounts",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S016"
+        ]
+      },
+      {
+        "id": "AU-12",
+        "title": "Audit Record Generation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "AU-2",
+        "title": "Event Logging",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "CM-2",
+        "title": "Baseline Configuration",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 2,
+        "notEvaluatedRules": [
+          "KN-S012",
+          "KN-S036"
+        ]
+      },
+      {
+        "id": "CM-3(2)",
+        "title": "Configuration Change Control | Testing, Validation, and Documentation of Changes",
+        "findings": 0,
+        "clean": 7,
+        "notEvaluated": 13,
+        "notEvaluatedRules": [
+          "KN-S034",
+          "KN-V003",
+          "KN-V010",
+          "KN-V011",
+          "KN-V012",
+          "KN-V020",
+          "KN-V021",
+          "KN-V022",
+          "KN-V023",
+          "KN-V024",
+          "KN-V025",
+          "KN-V026"
+        ],
+        "moreNotEvaluated": 1
+      },
+      {
+        "id": "CM-6",
+        "title": "Configuration Settings",
+        "findings": 0,
+        "clean": 6,
+        "notEvaluated": 32,
+        "notEvaluatedRules": [
+          "KN-C006",
+          "KN-C013",
+          "KN-C014",
+          "KN-C015",
+          "KN-C017",
+          "KN-N010",
+          "KN-S003",
+          "KN-S004",
+          "KN-S008",
+          "KN-S032",
+          "KN-S037",
+          "KN-S038"
+        ],
+        "moreNotEvaluated": 20
+      },
+      {
+        "id": "CM-7",
+        "title": "Least Functionality",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 18,
+        "notEvaluatedRules": [
+          "KN-N005",
+          "KN-N009",
+          "KN-N010",
+          "KN-N011",
+          "KN-S001",
+          "KN-S002",
+          "KN-S005",
+          "KN-S006",
+          "KN-S007",
+          "KN-S008",
+          "KN-S011",
+          "KN-S014"
+        ],
+        "moreNotEvaluated": 6
+      },
+      {
+        "id": "CP-10",
+        "title": "System Recovery and Reconstitution",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 9,
+        "notEvaluatedRules": [
+          "KN-C001",
+          "KN-C002",
+          "KN-C003",
+          "KN-C007",
+          "KN-C008",
+          "KN-C009",
+          "KN-C011",
+          "KN-N013",
+          "KN-ST002"
+        ]
+      },
+      {
+        "id": "IA-5",
+        "title": "Authenticator Management",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S014",
+          "KN-S027",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "IA-5(7)",
+        "title": "Authenticator Management | No Embedded Unencrypted Static Authenticators",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S013",
+          "KN-S018",
+          "KN-S026"
+        ]
+      },
+      {
+        "id": "SA-22",
+        "title": "Unsupported System Components",
+        "findings": 0,
+        "clean": 2,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S024",
+          "KN-V008",
+          "KN-V019"
+        ]
+      },
+      {
+        "id": "SC-28",
+        "title": "Protection of Information at Rest",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 4,
+        "notEvaluatedRules": [
+          "KN-S013",
+          "KN-S018",
+          "KN-S026",
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-28(1)",
+        "title": "Protection of Information at Rest | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-36",
+        "title": "Distributed Processing and Storage",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-C007",
+          "KN-C010",
+          "KN-ST003"
+        ]
+      },
+      {
+        "id": "SC-39",
+        "title": "Process Isolation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 10,
+        "notEvaluatedRules": [
+          "KN-S001",
+          "KN-S008",
+          "KN-S009",
+          "KN-S010",
+          "KN-S019",
+          "KN-S020",
+          "KN-S021",
+          "KN-S022",
+          "KN-S023",
+          "KN-S025"
+        ]
+      },
+      {
+        "id": "SC-4",
+        "title": "Information in Shared System Resources",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S031"
+        ]
+      },
+      {
+        "id": "SC-5",
+        "title": "Denial-of-service Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-C003",
+          "KN-C005",
+          "KN-C016"
+        ]
+      },
+      {
+        "id": "SC-6",
+        "title": "Resource Availability",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 6,
+        "notEvaluatedRules": [
+          "KN-C004",
+          "KN-C005",
+          "KN-C012",
+          "KN-C014",
+          "KN-C016",
+          "KN-ST005"
+        ]
+      },
+      {
+        "id": "SC-7",
+        "title": "Boundary Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 13,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N004",
+          "KN-N005",
+          "KN-N006",
+          "KN-N007",
+          "KN-N008",
+          "KN-N009",
+          "KN-N012",
+          "KN-N013",
+          "KN-N014",
+          "KN-S011",
+          "KN-S029"
+        ],
+        "moreNotEvaluated": 1
+      },
+      {
+        "id": "SC-7(5)",
+        "title": "Boundary Protection | Deny by Default \u2014 Allow by Exception",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N006",
+          "KN-N007",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "SC-8",
+        "title": "Transmission Confidentiality and Integrity",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 7,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-N008",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041",
+          "KN-V016"
+        ]
+      },
+      {
+        "id": "SC-8(1)",
+        "title": "Transmission Confidentiality and Integrity | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "SI-10",
+        "title": "Information Input Validation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-N011",
+          "KN-S025",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "SI-2",
+        "title": "Flaw Remediation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 11,
+        "notEvaluatedRules": [
+          "KN-C009",
+          "KN-N009",
+          "KN-N010",
+          "KN-N011",
+          "KN-S021",
+          "KN-S022",
+          "KN-S023",
+          "KN-S024",
+          "KN-S025",
+          "KN-S033",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "SI-7",
+        "title": "Software, Firmware, and Information Integrity",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 4,
+        "notEvaluatedRules": [
+          "KN-S007",
+          "KN-S012",
+          "KN-S030",
+          "KN-S036"
+        ]
+      }
+    ],
+    "rulesNotEvaluated": [
+      {
+        "ruleId": "KN-C001",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C002",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C003",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C004",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C005",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C006",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C007",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C008",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C009",
+        "why": "no policy PodDisruptionBudget and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C010",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C011",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C012",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C013",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-C014",
+        "why": "no autoscaling HorizontalPodAutoscaler and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C015",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C016",
+        "why": "no Namespace in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-C017",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-N001",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, serving.kserve.io InferenceService, core Pod, ray.io RayCluster, ray.io RayService, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-N002",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-N003",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N004",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N005",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N006",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-N007",
+        "why": "no networking.k8s.io NetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-N008",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N009",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N010",
+        "why": "no ConfigMap in the input"
+      },
+      {
+        "ruleId": "KN-N011",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N012",
+        "why": "no networking.k8s.io NetworkPolicy in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-N013",
+        "why": "no networking.k8s.io NetworkPolicy in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-N014",
+        "why": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-S001",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S002",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S003",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S004",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S005",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S006",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S007",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S008",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S009",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S010",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S011",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S012",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S013",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S014",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S015",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S016",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S017",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S018",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S019",
+        "why": "no security.openshift.io SecurityContextConstraints in the input"
+      },
+      {
+        "ruleId": "KN-S020",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S021",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S022",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S023",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S024",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S025",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S026",
+        "why": "no ConfigMap in the input"
+      },
+      {
+        "ruleId": "KN-S027",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S028",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S029",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S030",
+        "why": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input"
+      },
+      {
+        "ruleId": "KN-S031",
+        "why": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input"
+      },
+      {
+        "ruleId": "KN-S032",
+        "why": "no Namespace in the input"
+      },
+      {
+        "ruleId": "KN-S033",
+        "why": "no machineconfiguration.openshift.io MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-S034",
+        "why": "no operators.coreos.com Subscription in the input"
+      },
+      {
+        "ruleId": "KN-S035",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S036",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-S037",
+        "why": "no apiregistration.k8s.io APIService in the input"
+      },
+      {
+        "ruleId": "KN-S038",
+        "why": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read"
+      },
+      {
+        "ruleId": "KN-S039",
+        "why": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read"
+      },
+      {
+        "ruleId": "KN-S040",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S041",
+        "why": "no config.openshift.io OAuth in the input"
+      },
+      {
+        "ruleId": "KN-ST001",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST002",
+        "why": "no apps Deployment or apps.openshift.io DeploymentConfig and no PersistentVolumeClaim in the input"
+      },
+      {
+        "ruleId": "KN-ST003",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST004",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST005",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST006",
+        "why": "no PersistentVolume in the input"
+      },
+      {
+        "ruleId": "KN-V003",
+        "why": "does not apply on openshift: every OpenShift-only kind is served on this platform"
+      },
+      {
+        "ruleId": "KN-V008",
+        "why": "no apps.openshift.io DeploymentConfig in the input"
+      },
+      {
+        "ruleId": "KN-V010",
+        "why": "no apps DaemonSet, Deployment, ReplicaSet or StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-V011",
+        "why": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V012",
+        "why": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V015",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-V016",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-V017",
+        "why": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-V019",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V020",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V021",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V022",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V023",
+        "why": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V024",
+        "why": "no networking.k8s.io Ingress and no Service in the input"
+      },
+      {
+        "ruleId": "KN-V025",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input"
+      },
+      {
+        "ruleId": "KN-V026",
+        "why": "1 object not audited (pods are in a kind kube-noob has no reader for)"
+      },
+      {
+        "ruleId": "KN-V027",
+        "why": "no apps StatefulSet and no Service in the input"
+      }
+    ],
+    "partlyEvaluatedRules": [],
+    "note": "Findings are evidence about these controls; an assessment decides whether a control is met. A rule under `notEvaluated` had nothing to decide on: `rulesNotEvaluated` says why for each, and a kind that is not in the input is not a kind that is clean."
+  },
+  "redTeam": [
+    {
+      "scenarioId": "RT-PRIVESC",
+      "question": "If an attacker gets code execution in this pod, can they escalate to the node or the cluster?",
+      "verdict": "undecided",
+      "severity": "info",
+      "evidence": [
+        "not evaluated, so this scenario cannot be called mitigated: KN-S038, KN-S039, KN-S001, KN-S005, KN-S009, KN-S010, KN-S020, KN-S021, KN-S022, KN-S023, KN-S025, KN-S002, KN-S003 (1 object not audited (pods are in a kind kube-noob has no reader for))"
+      ],
+      "blastRadius": "Privileged containers, host namespaces/paths, dangerous capabilities and broad RBAC each turn a single compromised pod into node or cluster takeover.",
+      "safeguards": [
+        "Pod Security 'restricted' (restricted-v2 SCC on OpenShift)",
+        "automountServiceAccountToken: false; least-privilege Roles without wildcards",
+        "RHACS/StackRox deploy-time enforcement of the matching default policies"
+      ],
+      "verification": [
+        "oc auth can-i --list --as=system:serviceaccount:<ns>:<sa>",
+        "oc get pod <pod> -o jsonpath='{.metadata.annotations.openshift\\.io/scc}'"
+      ]
+    },
+    {
+      "scenarioId": "RT-SECRET-LEAK",
+      "question": "Can secrets leak through manifests, Git history, env dumps or mounted tokens?",
+      "verdict": "undecided",
+      "severity": "info",
+      "evidence": [
+        "not evaluated, so this scenario cannot be called mitigated: KN-S013, KN-S014 (1 object not audited (pods are in a kind kube-noob has no reader for))"
+      ],
+      "blastRadius": "Literal credentials end up in Git, CI logs and `oc get -o yaml`; mounted SA tokens give API access to any attacker with RCE.",
+      "safeguards": [
+        "secretKeyRef / external secret store",
+        "automountServiceAccountToken: false",
+        "rotate any credential that was ever committed"
+      ],
+      "verification": [
+        "git log -p | grep -iE 'password|token|secret'   # audit history",
+        "oc set env deployment/<name> --list -n <ns>"
+      ]
+    },
+    {
+      "scenarioId": "RT-RESOURCE-STARVATION",
+      "question": "Can a traffic spike or memory leak take down neighbours or trigger restart storms?",
+      "verdict": "undecided",
+      "severity": "info",
+      "evidence": [
+        "not evaluated, so this scenario cannot be called mitigated: KN-C004, KN-C005, KN-C006 (1 object not audited (pods are in a kind kube-noob has no reader for))"
+      ],
+      "blastRadius": "Unbounded memory triggers node OOM kills of unrelated pods; BestEffort pods are evicted first; aggressive liveness probes amplify slowness into restarts; a manifest that sets spec.replicas under an HPA scales the workload back down on every apply, peak or not.",
+      "safeguards": [
+        "requests + memory limits on every container",
+        "namespace LimitRange and ResourceQuota",
+        "liveness checks only the process; failureThreshold >= 3",
+        "no spec.replicas on a workload an HPA scales; minReplicas sets the floor"
+      ],
+      "verification": [
+        "oc adm top pods -n <ns>",
+        "oc get events -n <ns> --field-selector reason=OOMKilling"
+      ]
+    },
+    {
+      "scenarioId": "RT-SUPPLY-CHAIN",
+      "question": "Could a different (malicious or broken) image run than the one that was reviewed?",
+      "verdict": "undecided",
+      "severity": "info",
+      "evidence": [
+        "not evaluated, so this scenario cannot be called mitigated: KN-S012 (1 object not audited (pods are in a kind kube-noob has no reader for))"
+      ],
+      "blastRadius": "Mutable tags can be re-pushed; rollbacks become non-deterministic and scans/signatures no longer apply to what runs.",
+      "safeguards": [
+        "pin images by digest",
+        "verify signatures (sigstore/cosign) via admission policy",
+        "RHACS 'Latest tag' and image-signature policies in enforce mode"
+      ],
+      "verification": [
+        "oc get pods -n <ns> -o jsonpath='{range .items[*]}{.status.containerStatuses[*].imageID}{\"\\n\"}{end}'"
+      ]
+    }
+  ],
+  "declined": {
+    "KN-S038": {
+      "entries": [
+        {
+          "resource": "Rollout/bench/bench-operator",
+          "reason": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read"
+        }
+      ],
+      "withheld": 0,
+      "decided": 0
+    },
+    "KN-S039": {
+      "entries": [
+        {
+          "resource": "Rollout/bench/bench-operator",
+          "reason": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read"
+        }
+      ],
+      "withheld": 0,
+      "decided": 0
+    }
+  },
+  "notEvaluated": {
+    "KN-C001": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C002": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C003": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C004": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C005": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C006": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C007": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C008": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C009": "no policy PodDisruptionBudget and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C010": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C011": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C012": "no autoscaling HorizontalPodAutoscaler in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C013": "no Secret in the input",
+    "KN-C014": "no autoscaling HorizontalPodAutoscaler and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C015": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C016": "no Namespace in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-C017": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-N001": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, serving.kserve.io InferenceService, core Pod, ray.io RayCluster, ray.io RayService, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-N002": "no route.openshift.io Route in the input",
+    "KN-N003": "no networking.k8s.io Ingress in the input",
+    "KN-N004": "no Service in the input",
+    "KN-N005": "no Service in the input",
+    "KN-N006": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-N007": "no networking.k8s.io NetworkPolicy in the input",
+    "KN-N008": "no Service in the input",
+    "KN-N009": "no networking.k8s.io Ingress in the input",
+    "KN-N010": "no ConfigMap in the input",
+    "KN-N011": "no networking.k8s.io Ingress in the input",
+    "KN-N012": "no networking.k8s.io NetworkPolicy in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-N013": "no networking.k8s.io NetworkPolicy in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-N014": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input",
+    "KN-S001": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S002": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S003": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S004": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S005": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S006": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S007": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S008": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S009": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S010": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S011": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S012": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S013": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S014": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S015": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S016": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S017": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S018": "no Secret in the input",
+    "KN-S019": "no security.openshift.io SecurityContextConstraints in the input",
+    "KN-S020": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S021": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S022": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S023": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S024": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S025": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S026": "no ConfigMap in the input",
+    "KN-S027": "no Secret in the input",
+    "KN-S028": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S029": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S030": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input",
+    "KN-S031": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input",
+    "KN-S032": "no Namespace in the input",
+    "KN-S033": "no machineconfiguration.openshift.io MachineConfigPool in the input",
+    "KN-S034": "no operators.coreos.com Subscription in the input",
+    "KN-S035": "no config.openshift.io APIServer in the input",
+    "KN-S036": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-S037": "no apiregistration.k8s.io APIService in the input",
+    "KN-S038": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read",
+    "KN-S039": "Rollout/bench/bench-operator holds 1 pod spec(s) in a kind kube-noob has no reader for, which may run a control-plane binary, so they were not read",
+    "KN-S040": "no config.openshift.io APIServer in the input",
+    "KN-S041": "no config.openshift.io OAuth in the input",
+    "KN-ST001": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST002": "no apps Deployment or apps.openshift.io DeploymentConfig and no PersistentVolumeClaim in the input",
+    "KN-ST003": "no storage.k8s.io StorageClass in the input",
+    "KN-ST004": "no storage.k8s.io StorageClass in the input",
+    "KN-ST005": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST006": "no PersistentVolume in the input",
+    "KN-V003": "does not apply on openshift: every OpenShift-only kind is served on this platform",
+    "KN-V008": "no apps.openshift.io DeploymentConfig in the input",
+    "KN-V010": "no apps DaemonSet, Deployment, ReplicaSet or StatefulSet in the input",
+    "KN-V011": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V012": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V015": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-V016": "no route.openshift.io Route in the input",
+    "KN-V017": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input",
+    "KN-V019": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V020": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V021": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V022": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V023": "no Service in the input; 1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V024": "no networking.k8s.io Ingress and no Service in the input",
+    "KN-V025": "no autoscaling HorizontalPodAutoscaler in the input",
+    "KN-V026": "1 object not audited (pods are in a kind kube-noob has no reader for)",
+    "KN-V027": "no apps StatefulSet and no Service in the input"
+  },
+  "unreadable": []
+}
