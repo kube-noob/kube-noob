@@ -1606,10 +1606,26 @@ a created or updated object comes back to `kubectl` and `oc` as an admission war
 container: ...`, at most `admission.maxWarnings`, each at most 256 characters), so developers see them where they
 work. It denies nothing until you list a rule in `admission.enforce`, and then only that rule, and on an update only
 a finding the old object did not have: turning a rule on never freezes a Deployment that already breaks it. The
-webhook has `failurePolicy: Ignore` and a 3-second timeout, so a dead or slow webhook never blocks the cluster; it
-never mutates, stores nothing but counters, and fetches nothing. The system namespaces, `openshift-*`, its own
-namespace, `admission.excludedNamespaces` and namespaces labelled `kube-noob.io/admission=disabled` are skipped, and
-so are Pods, ReplicaSets and Jobs a controller owns (their owner was checked). Rules about other objects of the
+API server waits `admission.timeoutSeconds` (3) for it, and the webhook answers before that runs out: a request it
+has not finished judging at three fifths of the timeout, an object of more than 20,000 values (a megabyte of
+containers; a megabyte of annotation is one value and is judged) or a request over 4 MB is answered "not
+evaluated" at once -- a denial that says why when a rule is enforced, an admission with a warning when none is --
+rather than late. What happens when it gives no answer at all is `admission.failurePolicy`. The default,
+`Ignore`, is availability: a webhook that is down or unreachable never blocks the cluster, and every request it
+does not answer is admitted without being judged and without a warning, so the rules in `enforce` are not
+enforced for as long as it is down. `Fail` is enforcement: such a request is refused, and a webhook that is down
+blocks creates and updates of the kinds it matches. Use `Ignore` in warn mode; if `enforce` is a control rather
+than advice, set `Fail`. It
+never mutates, stores nothing but counters, and fetches nothing. `kube-system`, `kube-public`, `kube-node-lease`,
+its own namespace, `admission.excludedNamespaces` and namespaces labelled `kube-noob.io/admission=disabled` are
+skipped; `openshift` and `openshift-*` are skipped only when `config.defaultPlatform` is in the OpenShift family
+and the cluster serves `config.openshift.io/v1`, which the chart reads from the cluster at install (with
+`helm template`, pass `--api-versions config.openshift.io/v1`). The platform value by itself reserves nothing,
+because it is the chart's default and on Kubernetes anyone who may create a namespace may name it `openshift-x`. So are the Pods,
+ReplicaSets and Jobs that kube-controller-manager's own controllers make from a Deployment, StatefulSet, DaemonSet,
+CronJob, ReplicaSet or Job, because that owner was checked. Who sent the request decides that, never the object's
+`ownerReferences`: the requester writes those, so a Pod that merely names an owner is judged like any other, and
+so is whatever a ReplicationController or an operator's custom resource creates. Rules about other objects of the
 namespace (a PodDisruptionBudget for a Deployment, a NetworkPolicy, a claim's StorageClass) warn only with
 `admission.lookups`, which lists those kinds read-only in the background, and can never be enforced. Exceptions use
 the same ExceptionList as `kube-noob audit --exceptions`.

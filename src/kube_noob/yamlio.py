@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -181,6 +182,55 @@ def load_documents(text: str) -> list[Document]:
         raise ManifestError(f"YAML nesting is too deep to process safely (limit {MAX_DEPTH} levels).") from exc
     finally:
         loader.dispose()
+    return _flatten_lists(docs)
+
+
+def _from_json(value: Any, depth: int, budget: list[int]) -> Any:
+    """``value`` as ``load_documents`` would have built it from its JSON text: the same node budget and depth
+    limit as ``_walk``, lone surrogates replaced, a fresh structure the audit may write to."""
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ManifestError("The object is too complex to process safely (node budget exceeded).")
+    if depth > MAX_DEPTH:
+        raise ManifestError(f"The object is nested too deeply: more than {MAX_DEPTH} levels; refusing to process.")
+    if isinstance(value, str):
+        return value if value.isascii() else replace_surrogates(value)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ManifestError("The object has a mapping key that is not a string, so it is not JSON.")
+            out[key if key.isascii() else replace_surrogates(key)] = _from_json(item, depth + 1, budget)
+        return out
+    if isinstance(value, list | tuple):
+        return [_from_json(item, depth + 1, budget) for item in value]
+    return value
+
+
+def documents_from_objects(objects: Sequence[Any], *, max_nodes: int = MAX_NODE_VISITS) -> list[Document]:
+    """One document per already-parsed JSON object, as ``load_documents`` gives for the same objects written out
+    as JSON and separated by ``---`` -- without writing them out and parsing them again.
+
+    The admission webhook receives its object parsed. It used to ``json.dumps`` it and hand the text to
+    ``load_documents``, whose YAML composer is pure Python: measured on a 711 KB Pod, 9.2 s of a 13.4 s profile
+    was that second parse of text the process had just produced, all of it to build a line map in which every
+    path is line 1 (G441). What the round trip did do is kept here: the node budget and the depth limit (shared
+    across the objects, raising ``ManifestError``), a lone surrogate replaced, list wrappers opened, the document
+    cap. ``null`` and non-objects are kept or dropped exactly as ``load_documents`` does (an empty document is
+    skipped). A JSON object has no line numbers, so ``lines`` is empty and every finding is on line 1, as before.
+    """
+    budget = [max_nodes]
+    docs: list[Document] = []
+    try:
+        for obj in objects:
+            data = _from_json(obj, 0, budget)
+            if data is None:
+                continue
+            if len(docs) >= MAX_DOCUMENTS:
+                raise ManifestError(f"More than {MAX_DOCUMENTS} YAML documents; split the input.")
+            docs.append(Document(index=len(docs), data=data))
+    except RecursionError as exc:
+        raise ManifestError(f"The object is nested too deeply to process safely (limit {MAX_DEPTH} levels).") from exc
     return _flatten_lists(docs)
 
 

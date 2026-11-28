@@ -1,0 +1,2 @@
+admission:
+  enforce: [KN-S001, KN-S009]

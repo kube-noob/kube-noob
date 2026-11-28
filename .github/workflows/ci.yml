@@ -765,7 +765,7 @@ jobs:
               --set "networkPolicy.egress.apiServerCIDRs={172.30.0.1/32}" --set "admission.enforce={KN-S001}" \
               | kube-noob audit -f - --platform openshift --version "${v%%:*}" --fail-on medium $exc
           done
-          at --kube-version 1.33.0 --api-versions security.openshift.io/v1 > /tmp/adm-sca.yaml
+          at --kube-version 1.33.0 --api-versions security.openshift.io/v1 --api-versions config.openshift.io/v1 > /tmp/adm-sca.yaml
           at --kube-version 1.33.0 --set admission.certificates=cert-manager \
             --set admission.certManager.issuerRef.name=ca-issuer > /tmp/adm-cm.yaml
           at --kube-version 1.29.0 --set admission.certificates=secret --set admission.tls.secretName=kn-tls \
@@ -783,8 +783,11 @@ jobs:
               return hits[0]
 
           name = "kn-kube-noob-admission"
-          system = {"kube-system", "kube-public", "kube-node-lease", "openshift", "kube-noob"}
+          # G440: `openshift` is excluded only where the cluster serves config.openshift.io/v1. The SCA render is
+          # given that API; the other two are plain Kubernetes renders and must send openshift-* to the webhook.
+          base = {"kube-system", "kube-public", "kube-node-lease", "kube-noob"}
           for path in ("/tmp/adm-sca.yaml", "/tmp/adm-cm.yaml", "/tmp/adm-secret.yaml"):
+              system = base | {"openshift"} if path == "/tmp/adm-sca.yaml" else base
               docs = load(path)
               vwc = one(docs, "ValidatingWebhookConfiguration")
               assert not [d for d in docs if d["kind"] == "MutatingWebhookConfiguration"]
@@ -815,7 +818,7 @@ jobs:
           assert vwc["metadata"]["annotations"] == {"service.beta.openshift.io/inject-cabundle": "true"}
           assert "caBundle" not in vwc["webhooks"][0]["clientConfig"]
           assert [m["name"] for m in vwc["webhooks"][0]["matchConditions"]] == ["not-an-openshift-namespace",
-                                                                                 "not-owned-by-a-controller"]
+                                                                                 "not-a-controllers-own-child"]
           svc = one(sca, "Service", name)
           assert svc["metadata"]["annotations"] == {"service.beta.openshift.io/serving-cert-secret-name": name + "-tls"}
           assert "fsGroup" not in one(sca, "Deployment", name)["spec"]["template"]["spec"]["securityContext"]
@@ -1494,6 +1497,47 @@ jobs:
           grep -q 'Warning: \[KN-' /tmp/plain.out || { echo "::error title=enforce::other findings stopped warning"; exit 1; }
           kubectl -n shop label deployment priv touched=yes --dry-run=server > /tmp/update.out 2>&1 \
             || { echo "::error title=enforce::updating a Deployment that already broke KN-S001 was denied: $(tr '\n' ' ' < /tmp/update.out)"; exit 1; }
+          # G440: `ownerReferences` is the requester's to write, so it skips nothing. This Pod names a ReplicaSet
+          # that does not exist; before, the matchCondition kept it from the webhook and it was admitted.
+          cat > /tmp/forged.yaml <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: forged
+            namespace: shop
+            ownerReferences:
+              - {apiVersion: apps/v1, kind: ReplicaSet, name: anything, uid: 00000000-0000-0000-0000-000000000000, controller: true}
+          spec:
+            containers:
+              - name: c
+                image: registry.k8s.io/pause:3.10
+                securityContext: {privileged: true}
+          Y
+          if kubectl apply --dry-run=server -f /tmp/forged.yaml > /tmp/forged.out 2>&1; then
+            echo "::error title=enforce::a privileged Pod with a forged owner was admitted: $(tr '\n' ' ' < /tmp/forged.out)"; exit 1; fi
+          grep -q 'kube-noob denied Pod/shop/forged: \[KN-S001\]' /tmp/forged.out \
+            || { echo "::error title=enforce::the forged Pod was refused by something else: $(tr '\n' ' ' < /tmp/forged.out)"; exit 1; }
+          # ... and neither does a namespace anyone may name `openshift-*` on Kubernetes (config.defaultPlatform)
+          kubectl create namespace openshift-made-up
+          if sed 's/namespace: shop/namespace: openshift-made-up/' /tmp/priv2.yaml \
+               | kubectl apply --dry-run=server -f - > /tmp/madeup.out 2>&1; then
+            echo "::error title=enforce::an openshift-* namespace was skipped on Kubernetes: $(tr '\n' ' ' < /tmp/madeup.out)"; exit 1; fi
+          grep -q 'KN-S001' /tmp/madeup.out \
+            || { echo "::error title=enforce::refused by something else: $(tr '\n' ' ' < /tmp/madeup.out)"; exit 1; }
+          # The ReplicaSet controller's own Pod is still not judged: `priv` broke the rule before it was enforced,
+          # so its Pod must come back after it is deleted (a node drain does the same).
+          old=$(kubectl -n shop get pods -l app=priv -o jsonpath='{.items[*].metadata.uid}')
+          kubectl -n shop delete pod -l app=priv --wait=false
+          fresh=""
+          for i in $(seq 1 45); do
+            for u in $(kubectl -n shop get pods -l app=priv -o jsonpath='{.items[*].metadata.uid}'); do
+              case " $old " in *" $u "*) ;; *) fresh=$u ;; esac
+            done
+            [ -n "$fresh" ] && break
+            sleep 2
+          done
+          [ -n "$fresh" ] || { echo "::error title=enforce::the ReplicaSet controller's Pod did not come back: $(kubectl -n shop get events -o jsonpath='{.items[*].message}' | cut -c1-800)"; exit 1; }
+          echo "::notice title=enforce::forged owner denied, made-up openshift namespace denied, the controller's own Pod admitted"
       - name: A webhook scaled to zero blocks nothing (failurePolicy Ignore)
         run: |
           set -euo pipefail

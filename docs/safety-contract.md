@@ -239,6 +239,7 @@ Defaults of `kube_noob.config.Settings`, evaluated with no configuration file an
 | `llm.allowInsecureBaseUrl` | `false` | off | model |
 | `llm.provider` | `none` | off | model |
 | `admission.lookups` | `false` | off | opt-in feature |
+| `admission.openshiftNamespacesReserved` | `false` | off | opt-in feature |
 | `ci.githubEnabled` | `false` | off | opt-in feature |
 | `jira.syncEnabled` | `false` | off | opt-in feature |
 | `memory.paths` | `[]` | off | opt-in feature |
@@ -294,6 +295,7 @@ kube-noob calls no model, but the model that calls kube-noob reads its results, 
 
 Where it is applied (found in the code):
 
+- `kube_noob/admission.py` `_uid_of` calls `sanitize.loads_bounded`
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
 - `kube_noob/alert_report.py` `_str` calls `sanitize.clean`
 - `kube_noob/alert_report.py` `build` calls `sanitize.result`

@@ -8,3 +8,19 @@ Token: {{ with (include "kube-noob.tokenSecret" .) }}clients send "Authorization
   kubectl -n {{ $.Release.Namespace }} get secret {{ . }} -o jsonpath='{.data.token}' | base64 -d{{ else }}NONE (auth.allowUnauthenticated=true: put an authenticating proxy in front){{ end }}
 
 Health: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kube-noob.fullname" . }} 8080 && curl localhost:8080/readyz
+{{- if .Values.admission.enabled }}
+{{- $a := .Values.admission }}
+
+Admission webhook: {{ if $a.enforce }}enforcing {{ join ", " $a.enforce }}{{ else }}warn mode (nothing is denied){{ end }}; admission.failurePolicy is {{ $a.failurePolicy }}.
+{{- if and (has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp")) (not (.Capabilities.APIVersions.Has "config.openshift.io/v1")) }}
+  WARNING: config.defaultPlatform is {{ .Values.config.defaultPlatform }}, and this cluster does not serve config.openshift.io/v1.
+  The webhook therefore judges the openshift and openshift-* namespaces like any other (nothing reserves those names
+  here), and its rules are evaluated for OpenShift. On Kubernetes set config.defaultPlatform=kubernetes. If this IS
+  OpenShift and the chart was rendered without the cluster (helm template), add --api-versions config.openshift.io/v1.
+{{- end }}
+{{- if and $a.enforce (eq $a.failurePolicy "Ignore") }}
+  With Ignore, a request the webhook does not answer (it is down, unreachable or slower than {{ $a.timeoutSeconds }}s) is
+  admitted without being judged, so the rules above are enforced only while it answers. Set admission.failurePolicy=Fail
+  to refuse such a request instead; a webhook that is down then blocks creates and updates of the kinds it matches.
+{{- end }}
+{{- end }}
