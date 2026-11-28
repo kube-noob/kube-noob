@@ -1,0 +1,822 @@
+# DISA Kubernetes STIG, Version 2 Release 6: the rule list kube-noob's crosswalk is written against.
+# One entry per rule: `id` (the Group/Vuln id), `rule_id` (with its revision), `stig_id`, `severity` (high is
+# CAT I, medium CAT II, low CAT III), DISA's `title`, and `check`, which is ONE LINE IN KUBE-NOOB'S OWN WORDS
+# saying what the check reads and when it is a finding. DISA's check, fix and discussion text is not shipped.
+#
+# Provenance. The authoritative source is DISA's XCCDF, which NIST's National Checklist Program lists at
+# `source.checklist`. Neither ncp.nist.gov nor public.cyber.mil could be read when this was written
+# (2026-11-28), so the ids, rule ids, severities and titles were parsed from MITRE SAF's two InSpec profiles for
+# this release, which carry DISA's metadata as tags, at the commits in `source.parsed_from`.
+# `source.parsed_sha256` is the sha256 over those `controls/SV-*.rb` files (cluster then node, each sorted by
+# name, each as `<profile>/controls/<name>\n` followed by the file's bytes). Every id, rule id and severity
+# was then compared with the two mirrors in `source.cross_checked`, which agreed on all 92; `source.published`
+# is the date both give. `source.rules_sha256` is the sha256 of the `rules` list as canonical JSON, which
+# `scripts/stig_crosswalk.py --check` and `tests/test_stig_crosswalk.py` recompute.
+#
+# Do not edit by hand to add a rule: an id that is not DISA's is an invented control. A new release replaces
+# the file, and `python scripts/stig_crosswalk.py --verify-source CLUSTER_DIR NODE_DIR` compares it with
+# checkouts of the two profiles.
+version: 1
+source:
+  benchmark: Kubernetes Security Technical Implementation Guide
+  publisher: Defense Information Systems Agency (DISA)
+  stig_version: 2
+  stig_release: 6
+  published: '2026-02-12'
+  checklist: https://ncp.nist.gov/checklist/revision/6655
+  parsed_from:
+    cluster: https://github.com/mitre/k8s-cluster-stig-baseline/tree/e88e074e5732b6fd74f1a81cab62b45f237b61cd/controls
+    node: https://github.com/mitre/k8s-node-stig-baseline/tree/be9be05bb2f402f099c40e6803b7fa2de0291b74/controls
+  parsed_sha256: b2524d154e5a3f9aa017248d5274b4bbc5d72d1b59bc3044464885dd4301f5c1
+  cross_checked:
+  - https://cyber.trackr.live/api/stig/Kubernetes/2/6
+  - https://www.stigviewer.com/stigs/kubernetes
+  retrieved: '2026-11-28'
+  rule_count: 92
+  rules_sha256: e1658a307e225ca8b1e0c153bdba0ed3d3ed0407dd583162c07700fe312f6e7d
+rules:
+- id: V-242376
+  rule_id: SV-242376r960759_rule
+  stig_id: CNTR-K8-000150
+  severity: medium
+  title: The Kubernetes Controller Manager must use TLS 1.2, at a minimum, to protect the confidentiality of sensitive
+    data during electronic dissemination.
+  check: 'The kube-controller-manager static pod manifest: a finding when `--tls-min-version` is absent, VersionTLS10
+    or VersionTLS11.'
+  profiles:
+  - node
+- id: V-242377
+  rule_id: SV-242377r960759_rule
+  stig_id: CNTR-K8-000160
+  severity: medium
+  title: The Kubernetes Scheduler must use TLS 1.2, at a minimum, to protect the confidentiality of sensitive data
+    during electronic dissemination.
+  check: 'The kube-scheduler static pod manifest: a finding when `--tls-min-version` is absent, VersionTLS10 or
+    VersionTLS11.'
+  profiles:
+  - node
+- id: V-242378
+  rule_id: SV-242378r960759_rule
+  stig_id: CNTR-K8-000170
+  severity: medium
+  title: The Kubernetes API Server must use TLS 1.2, at a minimum, to protect the confidentiality of sensitive data
+    during electronic dissemination.
+  check: 'The kube-apiserver static pod manifest: a finding when `--tls-min-version` is absent, VersionTLS10 or
+    VersionTLS11.'
+  profiles:
+  - node
+- id: V-242379
+  rule_id: SV-242379r960759_rule
+  stig_id: CNTR-K8-000180
+  severity: medium
+  title: The Kubernetes etcd must use TLS to protect the confidentiality of sensitive data during electronic dissemination.
+  check: 'The etcd static pod manifest: a finding when `--auto-tls` is absent or true.'
+  profiles:
+  - node
+- id: V-242380
+  rule_id: SV-242380r960759_rule
+  stig_id: CNTR-K8-000190
+  severity: medium
+  title: The Kubernetes etcd must use TLS to protect the confidentiality of sensitive data during electronic dissemination.
+  check: 'The etcd static pod manifest: a finding when `--peer-auto-tls` is absent or true.'
+  profiles:
+  - node
+- id: V-242381
+  rule_id: SV-242381r1043176_rule
+  stig_id: CNTR-K8-000220
+  severity: high
+  title: The Kubernetes Controller Manager must create unique service accounts for each work payload.
+  check: 'The kube-controller-manager static pod manifest: a finding when `--use-service-account-credentials` is
+    absent or false.'
+  profiles:
+  - node
+- id: V-242382
+  rule_id: SV-242382r1137638_rule
+  stig_id: CNTR-K8-000270
+  severity: medium
+  title: The Kubernetes API Server must enable Node,RBAC as the authorization mode.
+  check: 'The kube-apiserver static pod manifest: a finding when `--authorization-mode` is absent or names AlwaysAllow.'
+  profiles:
+  - node
+- id: V-242383
+  rule_id: SV-242383r1137641_rule
+  stig_id: CNTR-K8-000290
+  severity: high
+  title: User-managed resources must be created in dedicated namespaces.
+  check: 'Objects in the cluster: a finding when anything but the `kubernetes` Service lives in the `default`, `kube-public`
+    or `kube-node-lease` namespace.'
+  profiles:
+  - cluster
+- id: V-242384
+  rule_id: SV-242384r1137638_rule
+  stig_id: CNTR-K8-000300
+  severity: medium
+  title: The Kubernetes Scheduler must have secure binding.
+  check: 'The kube-scheduler static pod manifest: a finding when `--bind-address` is absent or not 127.0.0.1.'
+  profiles:
+  - node
+- id: V-242385
+  rule_id: SV-242385r1137638_rule
+  stig_id: CNTR-K8-000310
+  severity: medium
+  title: The Kubernetes Controller Manager must have secure binding.
+  check: 'The kube-controller-manager static pod manifest: a finding when `--bind-address` is absent or not 127.0.0.1.'
+  profiles:
+  - node
+- id: V-242387
+  rule_id: SV-242387r1137639_rule
+  stig_id: CNTR-K8-000330
+  severity: high
+  title: The Kubernetes Kubelet must have the "readOnlyPort" flag disabled.
+  check: 'The kubelet on each node: a finding when `--read-only-port` is on the command line, or `readOnlyPort`
+    is set to anything but 0 in its configuration file.'
+  profiles:
+  - node
+- id: V-242389
+  rule_id: SV-242389r1137640_rule
+  stig_id: CNTR-K8-000350
+  severity: medium
+  title: The Kubernetes API server must have the secure port set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--secure-port` is absent or 0.'
+  profiles:
+  - node
+- id: V-242390
+  rule_id: SV-242390r1137640_rule
+  stig_id: CNTR-K8-000360
+  severity: high
+  title: The Kubernetes API server must have anonymous authentication disabled.
+  check: 'The kube-apiserver static pod manifest: a finding when `--anonymous-auth` is true.'
+  profiles:
+  - node
+- id: V-242391
+  rule_id: SV-242391r1137638_rule
+  stig_id: CNTR-K8-000370
+  severity: high
+  title: The Kubernetes Kubelet must have anonymous authentication disabled.
+  check: 'The kubelet on each node: a finding when `--anonymous-auth` is on the command line, or `authentication.anonymous.enabled`
+    is absent or true in its configuration file.'
+  profiles:
+  - node
+- id: V-242392
+  rule_id: SV-242392r1137639_rule
+  stig_id: CNTR-K8-000380
+  severity: high
+  title: The Kubernetes kubelet must enable explicit authorization.
+  check: 'The kubelet on each node: a finding when its authorization mode is absent or not Webhook.'
+  profiles:
+  - node
+- id: V-242393
+  rule_id: SV-242393r1137639_rule
+  stig_id: CNTR-K8-000400
+  severity: medium
+  title: Kubernetes Worker Nodes must not have sshd service running.
+  check: 'Service state on each worker node: a finding when sshd is running.'
+  profiles:
+  - node
+- id: V-242394
+  rule_id: SV-242394r1137639_rule
+  stig_id: CNTR-K8-000410
+  severity: medium
+  title: Kubernetes Worker Nodes must not have the sshd service enabled.
+  check: 'Service state on each worker node: a finding when sshd is enabled.'
+  profiles:
+  - node
+- id: V-242395
+  rule_id: SV-242395r1137639_rule
+  stig_id: CNTR-K8-000420
+  severity: medium
+  title: Kubernetes dashboard must not be enabled.
+  check: 'Objects in the cluster: a finding when any pod carries the label `k8s-app=kubernetes-dashboard`.'
+  profiles:
+  - cluster
+- id: V-242396
+  rule_id: SV-242396r1137638_rule
+  stig_id: CNTR-K8-000430
+  severity: medium
+  title: Kubernetes Kubectl cp command must give expected access and results.
+  check: 'The kubectl binary on each node: a finding when it is older than 1.12.9.'
+  profiles:
+  - node
+- id: V-242397
+  rule_id: SV-242397r1137638_rule
+  stig_id: CNTR-K8-000440
+  severity: high
+  title: The Kubernetes kubelet static PodPath must not enable static pods.
+  check: 'The kubelet on each worker node: a finding when `staticPodPath` is set in its configuration file or `--pod-manifest-path`
+    in its systemd unit.'
+  profiles:
+  - node
+- id: V-242398
+  rule_id: SV-242398r1137640_rule
+  stig_id: CNTR-K8-000450
+  severity: medium
+  title: Kubernetes DynamicAuditing must not be enabled.
+  check: 'The control plane static pod manifests and each kubelet: a finding when the DynamicAuditing feature gate
+    is true.'
+  profiles:
+  - node
+- id: V-242399
+  rule_id: SV-242399r1137639_rule
+  stig_id: CNTR-K8-000460
+  severity: medium
+  title: Kubernetes DynamicKubeletConfig must not be enabled.
+  check: 'The control plane static pod manifests and each kubelet: a finding when the DynamicKubeletConfig feature
+    gate is absent or true.'
+  profiles:
+  - node
+- id: V-242400
+  rule_id: SV-242400r1137638_rule
+  stig_id: CNTR-K8-000470
+  severity: medium
+  title: The Kubernetes API server must have Alpha APIs disabled.
+  check: 'The kube-apiserver static pod manifest: a finding when `--feature-gates` sets AllAlpha to true.'
+  profiles:
+  - node
+- id: V-242402
+  rule_id: SV-242402r960888_rule
+  stig_id: CNTR-K8-000610
+  severity: medium
+  title: The Kubernetes API Server must have an audit log path set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-log-path` is absent.'
+  profiles:
+  - node
+- id: V-242403
+  rule_id: SV-242403r986135_rule
+  stig_id: CNTR-K8-000700
+  severity: medium
+  title: Kubernetes API Server must generate audit records that identify what type of event has occurred, identify
+    the source of the event, contain the event results, identify any users, and identify any containers associated
+    with the event.
+  check: 'The kube-apiserver static pod manifest and the audit policy file it names: a finding when `--audit-policy-file`
+    is absent, or the policy does not log every request at RequestResponse.'
+  profiles:
+  - node
+- id: V-242404
+  rule_id: SV-242404r960960_rule
+  stig_id: CNTR-K8-000850
+  severity: medium
+  title: Kubernetes Kubelet must deny hostname override.
+  check: 'The kubelet on each node: a finding when `--hostname-override` is on the command line.'
+  profiles:
+  - node
+- id: V-242405
+  rule_id: SV-242405r960960_rule
+  stig_id: CNTR-K8-000860
+  severity: medium
+  title: The Kubernetes manifests must be owned by root.
+  check: 'File metadata on the node: a finding when a file under `/etc/kubernetes/manifests` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242406
+  rule_id: SV-242406r960960_rule
+  stig_id: CNTR-K8-000880
+  severity: medium
+  title: The Kubernetes KubeletConfiguration file must be owned by root.
+  check: 'File metadata on the node: a finding when the KubeletConfiguration file is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242407
+  rule_id: SV-242407r960960_rule
+  stig_id: CNTR-K8-000890
+  severity: medium
+  title: The Kubernetes KubeletConfiguration files must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when the KubeletConfiguration file is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242408
+  rule_id: SV-242408r960960_rule
+  stig_id: CNTR-K8-000900
+  severity: medium
+  title: The Kubernetes manifest files must have least privileges.
+  check: 'File metadata on the node: a finding when a file under `/etc/kubernetes/manifests` is more permissive
+    than 644.'
+  profiles:
+  - node
+- id: V-242409
+  rule_id: SV-242409r960963_rule
+  stig_id: CNTR-K8-000910
+  severity: medium
+  title: Kubernetes Controller Manager must disable profiling.
+  check: 'The kube-controller-manager static pod manifest: a finding when `--profiling` is absent or true.'
+  profiles:
+  - node
+- id: V-242410
+  rule_id: SV-242410r1043177_rule
+  stig_id: CNTR-K8-000920
+  severity: medium
+  title: The Kubernetes API Server must enforce ports, protocols, and services (PPS) that adhere to the Ports, Protocols,
+    and Services Management Category Assurance List (PPSM CAL).
+  check: The API server's ports, protocols and services compared with the PPSM Category Assurance List and the system's
+    documentation.
+  profiles:
+  - cluster
+- id: V-242411
+  rule_id: SV-242411r1043177_rule
+  stig_id: CNTR-K8-000930
+  severity: medium
+  title: The Kubernetes Scheduler must enforce ports, protocols, and services (PPS) that adhere to the Ports, Protocols,
+    and Services Management Category Assurance List (PPSM CAL).
+  check: The scheduler's ports, protocols and services compared with the PPSM Category Assurance List and the system's
+    documentation.
+  profiles:
+  - cluster
+- id: V-242412
+  rule_id: SV-242412r1043177_rule
+  stig_id: CNTR-K8-000940
+  severity: medium
+  title: The Kubernetes Controllers must enforce ports, protocols, and services (PPS) that adhere to the Ports,
+    Protocols, and Services Management Category Assurance List (PPSM CAL).
+  check: The controllers' ports, protocols and services compared with the PPSM Category Assurance List and the system's
+    documentation.
+  profiles:
+  - cluster
+- id: V-242413
+  rule_id: SV-242413r1043177_rule
+  stig_id: CNTR-K8-000950
+  severity: medium
+  title: The Kubernetes etcd must enforce ports, protocols, and services (PPS) that adhere to the Ports, Protocols,
+    and Services Management Category Assurance List (PPSM CAL).
+  check: etcd's ports, protocols and services compared with the PPSM Category Assurance List and the system's documentation.
+  profiles:
+  - cluster
+- id: V-242414
+  rule_id: SV-242414r1043177_rule
+  stig_id: CNTR-K8-000960
+  severity: medium
+  title: The Kubernetes cluster must use non-privileged host ports for user pods.
+  check: 'Pods in user namespaces: a finding when one uses a privileged host port.'
+  profiles:
+  - cluster
+- id: V-242415
+  rule_id: SV-242415r1069466_rule
+  stig_id: CNTR-K8-001160
+  severity: high
+  title: Secrets in Kubernetes must not be stored as environment variables.
+  check: 'Pods and their controllers: a finding when an environment variable is set from a Secret (`secretKeyRef`).'
+  profiles:
+  - cluster
+- id: V-242417
+  rule_id: SV-242417r1137643_rule
+  stig_id: CNTR-K8-001360
+  severity: medium
+  title: Kubernetes must separate user functionality.
+  check: 'Pods in the cluster: a finding when a user pod runs in `kube-system`, `kube-public` or `kube-node-lease`.'
+  profiles:
+  - cluster
+- id: V-242418
+  rule_id: SV-242418r1043178_rule
+  stig_id: CNTR-K8-001400
+  severity: medium
+  title: The Kubernetes API server must use approved cipher suites.
+  check: 'The kube-apiserver static pod manifest: a finding when `--tls-cipher-suites` is absent, empty, or lacks
+    the four approved suites.'
+  profiles:
+  - node
+- id: V-242419
+  rule_id: SV-242419r1043178_rule
+  stig_id: CNTR-K8-001410
+  severity: medium
+  title: Kubernetes API Server must have the SSL Certificate Authority set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--client-ca-file` is absent or empty.'
+  profiles:
+  - node
+- id: V-242420
+  rule_id: SV-242420r1043178_rule
+  stig_id: CNTR-K8-001420
+  severity: medium
+  title: Kubernetes Kubelet must have the SSL Certificate Authority set.
+  check: 'The kubelet on each node: a finding when `--client-ca-file` is on the command line, or `authentication.x509.clientCAFile`
+    is absent or empty in its configuration file.'
+  profiles:
+  - node
+- id: V-242421
+  rule_id: SV-242421r1043178_rule
+  stig_id: CNTR-K8-001430
+  severity: medium
+  title: Kubernetes Controller Manager must have the SSL Certificate Authority set.
+  check: 'The kube-controller-manager static pod manifest: a finding when `--root-ca-file` is absent or empty.'
+  profiles:
+  - node
+- id: V-242422
+  rule_id: SV-242422r1043178_rule
+  stig_id: CNTR-K8-001440
+  severity: medium
+  title: Kubernetes API Server must have a certificate for communication.
+  check: 'The kube-apiserver static pod manifest: a finding when `--tls-cert-file` and `--tls-private-key-file`
+    are absent or empty.'
+  profiles:
+  - node
+- id: V-242423
+  rule_id: SV-242423r1043178_rule
+  stig_id: CNTR-K8-001450
+  severity: medium
+  title: Kubernetes etcd must enable client authentication to secure service.
+  check: 'The etcd static pod manifest: a finding when `--client-cert-auth` is absent or false.'
+  profiles:
+  - node
+- id: V-242424
+  rule_id: SV-242424r1043178_rule
+  stig_id: CNTR-K8-001460
+  severity: medium
+  title: Kubernetes Kubelet must enable tlsPrivateKeyFile for client authentication to secure service.
+  check: 'The kubelet on each node: a finding when `--tls-private-key-file` is on the command line, or `tlsPrivateKeyFile`
+    is absent or empty in its configuration file.'
+  profiles:
+  - node
+- id: V-242425
+  rule_id: SV-242425r1043178_rule
+  stig_id: CNTR-K8-001470
+  severity: medium
+  title: Kubernetes Kubelet must enable tlsCertFile for client authentication to secure service.
+  check: 'The kubelet on each node: a finding when `--tls-cert-file` is on the command line, or `tlsCertFile` is
+    absent or empty in its configuration file.'
+  profiles:
+  - node
+- id: V-242426
+  rule_id: SV-242426r1043178_rule
+  stig_id: CNTR-K8-001480
+  severity: medium
+  title: Kubernetes etcd must enable client authentication to secure service.
+  check: 'The etcd static pod manifest: a finding when `--peer-client-cert-auth` is absent or false.'
+  profiles:
+  - node
+- id: V-242427
+  rule_id: SV-242427r1043178_rule
+  stig_id: CNTR-K8-001490
+  severity: medium
+  title: Kubernetes etcd must have a key file for secure communication.
+  check: 'The etcd static pod manifest: a finding when `--key-file` is absent.'
+  profiles:
+  - node
+- id: V-242428
+  rule_id: SV-242428r1043178_rule
+  stig_id: CNTR-K8-001500
+  severity: medium
+  title: Kubernetes etcd must have a certificate for communication.
+  check: 'The etcd static pod manifest: a finding when `--cert-file` is absent.'
+  profiles:
+  - node
+- id: V-242429
+  rule_id: SV-242429r1043178_rule
+  stig_id: CNTR-K8-001510
+  severity: medium
+  title: Kubernetes etcd must have the SSL Certificate Authority set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--etcd-cafile` is absent.'
+  profiles:
+  - node
+- id: V-242430
+  rule_id: SV-242430r1043178_rule
+  stig_id: CNTR-K8-001520
+  severity: medium
+  title: Kubernetes etcd must have a certificate for communication.
+  check: 'The kube-apiserver static pod manifest: a finding when `--etcd-certfile` is absent.'
+  profiles:
+  - node
+- id: V-242431
+  rule_id: SV-242431r1043178_rule
+  stig_id: CNTR-K8-001530
+  severity: medium
+  title: Kubernetes etcd must have a key file for secure communication.
+  check: 'The kube-apiserver static pod manifest: a finding when `--etcd-keyfile` is absent.'
+  profiles:
+  - node
+- id: V-242432
+  rule_id: SV-242432r1043178_rule
+  stig_id: CNTR-K8-001540
+  severity: medium
+  title: Kubernetes etcd must have peer-cert-file set for secure communication.
+  check: 'The etcd static pod manifest: a finding when `--peer-cert-file` is absent.'
+  profiles:
+  - node
+- id: V-242433
+  rule_id: SV-242433r1043178_rule
+  stig_id: CNTR-K8-001550
+  severity: medium
+  title: Kubernetes etcd must have a peer-key-file set for secure communication.
+  check: 'The etcd static pod manifest: a finding when `--peer-key-file` is absent.'
+  profiles:
+  - node
+- id: V-242434
+  rule_id: SV-242434r961131_rule
+  stig_id: CNTR-K8-001620
+  severity: high
+  title: Kubernetes Kubelet must enable kernel protection.
+  check: 'The kubelet on each node: a finding when `--protect-kernel-defaults` is on the command line, or `protectKernelDefaults`
+    is absent or false in its configuration file.'
+  profiles:
+  - node
+- id: V-242436
+  rule_id: SV-242436r961359_rule
+  stig_id: CNTR-K8-002000
+  severity: high
+  title: The Kubernetes API server must have the ValidatingAdmissionWebhook enabled.
+  check: 'The kube-apiserver static pod manifest: a finding when `--enable-admission-plugins` does not name ValidatingAdmissionWebhook.'
+  profiles:
+  - node
+- id: V-242437
+  rule_id: SV-242437r961359_rule
+  stig_id: CNTR-K8-002010
+  severity: high
+  title: Kubernetes must have a pod security policy set.
+  check: 'Before Kubernetes 1.25: a finding when no PodSecurityPolicy exists, or one does not set `runAsUser` to
+    MustRunAsNonRoot and non-zero `supplementalGroups` and `fsGroup` ranges.'
+  profiles:
+  - cluster
+- id: V-242438
+  rule_id: SV-242438r961620_rule
+  stig_id: CNTR-K8-002600
+  severity: medium
+  title: Kubernetes API Server must configure timeouts to limit attack surface.
+  check: 'The kube-apiserver static pod manifest: a finding when `--request-timeout` is absent or 0.'
+  profiles:
+  - node
+- id: V-242442
+  rule_id: SV-242442r1188293_rule
+  stig_id: CNTR-K8-002700
+  severity: medium
+  title: Kubernetes must remove old components after updated versions have been installed.
+  check: 'Pod images in the cluster: a finding when more than one version of the same image is running.'
+  profiles:
+  - cluster
+- id: V-242443
+  rule_id: SV-242443r1137649_rule
+  stig_id: CNTR-K8-002720
+  severity: medium
+  title: Kubernetes must contain the latest updates as authorized by IAVMs, CTOs, DTMs, and STIGs.
+  check: 'The running Kubernetes version: a finding when it is outside the version skew policy or behind what IAVMs,
+    CTOs, DTMs and STIGs authorize.'
+  profiles:
+  - cluster
+  - node
+- id: V-242444
+  rule_id: SV-242444r961863_rule
+  stig_id: CNTR-K8-003110
+  severity: medium
+  title: The Kubernetes component manifests must be owned by root.
+  check: 'File metadata on the node: a finding when a file under `/etc/kubernetes/manifests` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242445
+  rule_id: SV-242445r961863_rule
+  stig_id: CNTR-K8-003120
+  severity: medium
+  title: The Kubernetes component etcd must be owned by etcd.
+  check: 'File metadata on the node: a finding when a file under `/var/lib/etcd` is not owned by etcd:etcd.'
+  profiles:
+  - node
+- id: V-242446
+  rule_id: SV-242446r961863_rule
+  stig_id: CNTR-K8-003130
+  severity: medium
+  title: The Kubernetes conf files must be owned by root.
+  check: 'File metadata on the node: a finding when `admin.conf`, `scheduler.conf` or `controller-manager.conf`
+    under `/etc/kubernetes` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242447
+  rule_id: SV-242447r961863_rule
+  stig_id: CNTR-K8-003140
+  severity: medium
+  title: The Kubernetes Kube Proxy kubeconfig must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when the kube-proxy kubeconfig is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242448
+  rule_id: SV-242448r961863_rule
+  stig_id: CNTR-K8-003150
+  severity: medium
+  title: The Kubernetes Kube Proxy kubeconfig must be owned by root.
+  check: 'File metadata on the node: a finding when the kube-proxy kubeconfig is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242449
+  rule_id: SV-242449r961863_rule
+  stig_id: CNTR-K8-003160
+  severity: medium
+  title: The Kubernetes Kubelet certificate authority file must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when the kubelet''s client CA file is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242450
+  rule_id: SV-242450r961863_rule
+  stig_id: CNTR-K8-003170
+  severity: medium
+  title: The Kubernetes Kubelet certificate authority must be owned by root.
+  check: 'File metadata on the node: a finding when the kubelet''s client CA file is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242451
+  rule_id: SV-242451r961863_rule
+  stig_id: CNTR-K8-003180
+  severity: medium
+  title: The Kubernetes component PKI must be owned by root.
+  check: 'File metadata on the node: a finding when a file under `/etc/kubernetes/pki` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242452
+  rule_id: SV-242452r961863_rule
+  stig_id: CNTR-K8-003190
+  severity: medium
+  title: The Kubernetes kubelet KubeConfig must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when `/etc/kubernetes/kubelet.conf` is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242453
+  rule_id: SV-242453r961863_rule
+  stig_id: CNTR-K8-003200
+  severity: medium
+  title: The Kubernetes kubelet KubeConfig file must be owned by root.
+  check: 'File metadata on the node: a finding when `/etc/kubernetes/kubelet.conf` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242454
+  rule_id: SV-242454r961863_rule
+  stig_id: CNTR-K8-003210
+  severity: medium
+  title: The Kubernetes kubeadm.conf must be owned by root.
+  check: 'File metadata on the node: a finding when the kubeadm configuration file is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242455
+  rule_id: SV-242455r961863_rule
+  stig_id: CNTR-K8-003220
+  severity: medium
+  title: The Kubernetes kubeadm.conf must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when the kubeadm configuration file is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242456
+  rule_id: SV-242456r961863_rule
+  stig_id: CNTR-K8-003230
+  severity: medium
+  title: The Kubernetes kubelet config must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when `/var/lib/kubelet/config.yaml` is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242457
+  rule_id: SV-242457r961863_rule
+  stig_id: CNTR-K8-003240
+  severity: medium
+  title: The Kubernetes kubelet config must be owned by root.
+  check: 'File metadata on the node: a finding when `/var/lib/kubelet/config.yaml` is not owned by root:root.'
+  profiles:
+  - node
+- id: V-242459
+  rule_id: SV-242459r961863_rule
+  stig_id: CNTR-K8-003260
+  severity: medium
+  title: The Kubernetes etcd must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when a file under `/var/lib/etcd` is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242460
+  rule_id: SV-242460r961863_rule
+  stig_id: CNTR-K8-003270
+  severity: medium
+  title: The Kubernetes admin kubeconfig must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when `admin.conf`, `scheduler.conf` or `controller-manager.conf`
+    under `/etc/kubernetes` is more permissive than 644.'
+  profiles:
+  - node
+- id: V-242461
+  rule_id: SV-242461r961863_rule
+  stig_id: CNTR-K8-003280
+  severity: medium
+  title: Kubernetes API Server audit logs must be enabled.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-policy-file` is absent or names a file
+    without valid content.'
+  profiles:
+  - node
+- id: V-242462
+  rule_id: SV-242462r961863_rule
+  stig_id: CNTR-K8-003290
+  severity: medium
+  title: The Kubernetes API Server must be set to audit log max size.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-log-maxsize` is absent or below 100.'
+  profiles:
+  - node
+- id: V-242463
+  rule_id: SV-242463r961863_rule
+  stig_id: CNTR-K8-003300
+  severity: medium
+  title: The Kubernetes API Server must be set to audit log maximum backup.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-log-maxbackup` is absent or below 10.'
+  profiles:
+  - node
+- id: V-242464
+  rule_id: SV-242464r961863_rule
+  stig_id: CNTR-K8-003310
+  severity: medium
+  title: The Kubernetes API Server audit log retention must be set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-log-maxage` is absent or below 30.'
+  profiles:
+  - node
+- id: V-242465
+  rule_id: SV-242465r961863_rule
+  stig_id: CNTR-K8-003320
+  severity: medium
+  title: The Kubernetes API Server audit log path must be set.
+  check: 'The kube-apiserver static pod manifest: a finding when `--audit-log-path` is absent or not a valid path.'
+  profiles:
+  - node
+- id: V-242466
+  rule_id: SV-242466r961863_rule
+  stig_id: CNTR-K8-003330
+  severity: medium
+  title: The Kubernetes PKI CRT must have file permissions set to 644 or more restrictive.
+  check: 'File metadata on the node: a finding when a `.crt` file under `/etc/kubernetes/pki` is more permissive
+    than 644.'
+  profiles:
+  - node
+- id: V-242467
+  rule_id: SV-242467r961863_rule
+  stig_id: CNTR-K8-003340
+  severity: medium
+  title: The Kubernetes PKI keys must have file permissions set to 600 or more restrictive.
+  check: 'File metadata on the node: a finding when a `.key` file under `/etc/kubernetes/pki` is more permissive
+    than 600.'
+  profiles:
+  - node
+- id: V-245541
+  rule_id: SV-245541r1069469_rule
+  stig_id: CNTR-K8-001300
+  severity: medium
+  title: Kubernetes Kubelet must not disable timeouts.
+  check: 'The kubelet on each node: a finding when `--streaming-connection-idle-timeout` is on the command line,
+    or `streamingConnectionIdleTimeout` is absent or below 5m in its configuration file.'
+  profiles:
+  - node
+- id: V-245542
+  rule_id: SV-245542r961632_rule
+  stig_id: CNTR-K8-002620
+  severity: high
+  title: Kubernetes API Server must disable basic authentication to protect information in transit.
+  check: 'The kube-apiserver static pod manifest: a finding when `--basic-auth-file` is set.'
+  profiles:
+  - node
+- id: V-245543
+  rule_id: SV-245543r961632_rule
+  stig_id: CNTR-K8-002630
+  severity: high
+  title: Kubernetes API Server must disable token authentication to protect information in transit.
+  check: 'The kube-apiserver static pod manifest: a finding when `--token-auth-file` is set.'
+  profiles:
+  - node
+- id: V-245544
+  rule_id: SV-245544r961632_rule
+  stig_id: CNTR-K8-002640
+  severity: high
+  title: Kubernetes endpoints must use approved organizational certificate and key pair to protect information in
+    transit.
+  check: 'The kube-apiserver static pod manifest: a finding when `--kubelet-client-certificate` and `--kubelet-client-key`
+    are absent or empty.'
+  profiles:
+  - node
+- id: V-254800
+  rule_id: SV-254800r961359_rule
+  stig_id: CNTR-K8-002011
+  severity: high
+  title: Kubernetes must have a Pod Security Admission control file configured.
+  check: 'The kube-apiserver static pod manifest and the admission configuration file it names: a finding when `--admission-control-config-file`
+    is absent, or its PodSecurity defaults are not least privilege.'
+  profiles:
+  - cluster
+  - node
+- id: V-254801
+  rule_id: SV-254801r961359_rule
+  stig_id: CNTR-K8-002001
+  severity: high
+  title: Kubernetes must enable PodSecurity admission controller on static pods and Kubelets.
+  check: 'The control plane static pod manifests and each kubelet: a finding when the PodSecurity feature gate is
+    absent or false.'
+  profiles:
+  - cluster
+  - node
+- id: V-274882
+  rule_id: SV-274882r1137640_rule
+  stig_id: CNTR-K8-001162
+  severity: high
+  title: Kubernetes Secrets must be encrypted at rest.
+  check: 'The kube-apiserver static pod manifest and the encryption configuration file it names: a finding when
+    `--encryption-provider-config` is absent, the file does not cover Secrets, or `identity` is the first provider.'
+  profiles:
+  - cluster
+  - node
+- id: V-274883
+  rule_id: SV-274883r1107239_rule
+  stig_id: CNTR-K8-001161
+  severity: high
+  title: Sensitive information must be stored using Kubernetes Secrets or an external Secret store provider.
+  check: 'Every workload and ConfigMap in the cluster, read by a person: a finding when one holds sensitive information
+    outside a Secret.'
+  profiles:
+  - cluster
+- id: V-274884
+  rule_id: SV-274884r1107245_rule
+  stig_id: CNTR-K8-001163
+  severity: medium
+  title: Kubernetes must limit Secret access on a need-to-know basis.
+  check: 'RBAC and workloads: a finding when an account can read Secrets, or a workload mounts one, without a documented
+    requirement.'
+  profiles:
+  - cluster
