@@ -8,24 +8,33 @@ is denied only for a rule the operator listed in ``admission.enforce``. It never
 - Warn mode (no rule enforced) cannot deny: the only path to ``allowed: false`` needs a finding of an enforced rule.
 - On UPDATE, an enforced rule denies only a finding the old object did not have, so turning a rule to enforce never
   freezes the workloads that already break it; they keep getting warnings.
-- Skipped: DELETE and CONNECT, subresources (status, scale, exec), objects being deleted, Pods, ReplicaSets and Jobs
-  owned by a controller (their Deployment, StatefulSet, DaemonSet, CronJob or Job was checked), the system namespaces
-  (``kube-system``, ``kube-public``, ``kube-node-lease``, ``openshift`` and ``openshift-*``) and
-  ``admission.excludedNamespaces``.
+- Skipped: DELETE and CONNECT, subresources (status, scale, exec), objects being deleted (an UPDATE), the system
+  namespaces (``kube-system``, ``kube-public``, ``kube-node-lease``; also ``openshift`` and ``openshift-*``, only
+  when the platform is in the OpenShift family AND the chart found the OpenShift APIs on the cluster),
+  ``admission.excludedNamespaces``, and the Pods, ReplicaSets and Jobs that kube-controller-manager's
+  own controllers make from a Deployment, StatefulSet, DaemonSet, CronJob, ReplicaSet or Job (that owner was checked).
+- Nothing the requester writes decides whether the webhook looks. ``ownerReferences`` is the requester's to write, so
+  it skips nothing by itself: the child is skipped only when ``request.userInfo``, which the API server writes from
+  the authenticated identity, is one of ``CONTROLLER_USERS`` (G440).
 - Rules about a whole bundle or that the API server already enforces are not evaluated (``SKIPPED_RULES``); rules
   that need other objects of the namespace (``CROSS_OBJECT``) run only with ``admission.lookups`` (a cache of the
   namespace's PodDisruptionBudgets, NetworkPolicies, PersistentVolumeClaims, HorizontalPodAutoscalers and the
   StorageClasses, read through the read-only backend and refreshed in the background with jitter) and can never be
   enforced: whether the other object exists yet depends on the order of a ``kubectl apply``.
-- Any error while evaluating admits the object with a warning that says so: the webhook fails open, like its
-  ``failurePolicy: Ignore``.
+- A request the webhook did not evaluate is never answered ``allowed: true`` and nothing else (G441). Not
+  evaluated means: larger than ``MAX_BODY``, not an AdmissionReview, an object of more than ``MAX_OBJECT_NODES``
+  values, an evaluation that raised, or one that did not finish inside ``Config.deadline`` (three fifths of the
+  chart's ``timeoutSeconds``, so the answer leaves before the API server stops waiting). In warn mode, which cannot
+  deny, it is admitted with a warning that says it was not judged; with a rule enforced it is denied with the
+  reason, because an object nobody judged has not passed. What the webhook cannot answer at all -- it is down, or
+  the network is -- is the chart's ``admission.failurePolicy``: ``Ignore`` admits, ``Fail`` refuses.
 - Active entries of ``admission.exceptionsFile`` (the same ExceptionList as ``kube-noob audit --exceptions``) hide the
   findings they cover.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import random
 import threading
 import time
@@ -35,14 +44,56 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kube_noob import sanitize
+from kube_noob.catalog import OPENSHIFT_FAMILY
 
 API_VERSION = "admission.k8s.io/v1"
 MAX_BODY = 4_000_000  # bytes: the API server's object limit plus the review envelope
+#: The most values (mappings, lists and scalars, each counted once) an object may hold and still be evaluated.
+#: Bytes are the wrong measure: a megabyte of annotation is one value and costs nothing, while a megabyte of
+#: containers is 16,000 of them and every container rule visits each. Measured on the build machine after G441,
+#: the worst shape found -- a Pod of nothing but privileged containers, nine findings apiece -- costs about 26
+#: microseconds a value, so an object at this budget is evaluated in about half a second and an update (the old
+#: object is evaluated too) in about one: inside the 1.8 s deadline of the default `timeoutSeconds: 3` with room
+#: for a machine three times slower. For scale: a Deployment of twenty containers with a hundred environment
+#: variables each is about 6,000 values. The budget is not a claim about bytes; it is the largest object whose
+#: answer can be promised in time.
+MAX_OBJECT_NODES = 20_000
+#: How much of the API server's `timeoutSeconds` the webhook may use before it answers "not evaluated". The rest
+#: is the connection, the TLS handshake, the request and the response on the wire, and a queue.
+DEADLINE_FRACTION = 0.6
+#: Every answer for a request that was not evaluated carries a warning that starts with this.
+NOT_EVALUATED = "kube-noob: not evaluated"
 WARNING_CHARS = 256
-SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease", "openshift"})
-SYSTEM_PREFIXES = ("openshift-",)
+SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+#: Reserved on the OpenShift family only, where the platform refuses the name and the prefix to its users (a project
+#: request for `openshift-x` is forbidden) and its operators live there. Plain Kubernetes reserves neither, so
+#: whoever may create a namespace there could name it `openshift-x` and step outside every enforced rule (G440).
+#: "On OpenShift" needs evidence, not the configured platform alone: see `Config.openshift_reserved`.
+OPENSHIFT_NAMESPACES = frozenset({"openshift"})
+OPENSHIFT_PREFIXES = ("openshift-",)
 SKIP_OPERATIONS = frozenset({"DELETE", "CONNECT"})
 OWNED_KINDS = frozenset({"Pod", "ReplicaSet", "Job"})
+#: Who may be believed about `ownerReferences`: the controllers of kube-controller-manager that make the three
+#: kinds above from a workload the webhook is sent -- under their own ServiceAccounts, and under the manager's one
+#: identity when it runs without `--use-service-account-credentials`. `request.userInfo` is written by the API
+#: server from the authenticated identity; holding one of these means a kube-system ServiceAccount token, the
+#: manager's client certificate or the right to impersonate it, each of which already is the cluster. Deliberately
+#: absent: `replication-controller` (a ReplicationController is not a kind the webhook is sent, so nothing judged
+#: its template) and every operator's ServiceAccount (its custom resource was not judged either: G234).
+CONTROLLER_USERS = frozenset(
+    {
+        "system:kube-controller-manager",
+        "system:serviceaccount:kube-system:replicaset-controller",
+        "system:serviceaccount:kube-system:statefulset-controller",
+        "system:serviceaccount:kube-system:daemon-set-controller",
+        "system:serviceaccount:kube-system:job-controller",
+        "system:serviceaccount:kube-system:deployment-controller",
+        "system:serviceaccount:kube-system:cronjob-controller",
+    }
+)
+#: The owners whose pod template those controllers copy, every one of them a resource in the chart's webhook rules.
+CHECKED_OWNERS = frozenset({"ReplicaSet", "StatefulSet", "DaemonSet", "Job", "Deployment", "CronJob"})
+OWNER_API_VERSIONS = frozenset({"apps/v1", "batch/v1"})
 #: The one subresource worth evaluating. `kubectl debug` adds an ephemeral container through
 #: `pods/ephemeralcontainers`, which is a different admission request from the Pod's own creation: a policy that
 #: matches `pods` never sees it, so a privileged debug container from an unapproved registry walked past every
@@ -121,6 +172,21 @@ class Config:
     #: policy rather than a property of the object, so with no list the rule declines (it reports nothing and is
     #: not recorded as checked) and enforcing it is refused below rather than enforcing nothing (R3c, G243).
     allowed_registries: tuple[str, ...] = ()
+    #: The webhook configuration's `timeoutSeconds`: how long the API server waits. The chart writes the same value
+    #: into both, so the server knows when its answer stops being read (G441).
+    timeout_seconds: float = 3.0
+    #: Whether `openshift` and `openshift-*` are namespaces the platform reserves on THIS cluster. `platform` cannot
+    #: say: it is a declaration, and the chart's default one, so a default install on plain Kubernetes declared
+    #: `openshift` and the prefix was skipped there for whoever could name a namespace. The server cannot find out
+    #: either -- it is offline, read-only and holds no credential unless lookups are on -- so it does not guess:
+    #: False, which judges those namespaces, unless the chart writes `admission.openshiftNamespacesReserved: true`
+    #: from what the cluster served at install (`.Capabilities.APIVersions`). Both are required (G440).
+    openshift_reserved: bool = False
+
+    @property
+    def deadline(self) -> float:
+        """Seconds from a request's arrival after which the answer is "not evaluated" rather than late."""
+        return self.timeout_seconds * DEADLINE_FRACTION
 
     @classmethod
     def build(
@@ -134,6 +200,8 @@ class Config:
         exceptions_text: str | None = None,
         lookups: bool = False,
         allowed_registries: list[str] | tuple[str, ...] = (),
+        timeout_seconds: float = 3.0,
+        openshift_reserved: bool = False,
     ) -> Config:
         from kube_noob.audit.rules import RULES
 
@@ -155,6 +223,8 @@ class Config:
             )
         if not 1 <= max_warnings <= 50:
             raise AdmissionConfigError("admission.maxWarnings must be 1-50")
+        if not 1 <= timeout_seconds <= 30:
+            raise AdmissionConfigError("admission.timeoutSeconds must be 1-30 (the API server's own limits)")
         review = None
         if exceptions_text is not None:
             from kube_noob.audit import exceptions as exc
@@ -175,6 +245,8 @@ class Config:
             review,
             lookups,
             tuple(allowed_registries),
+            float(timeout_seconds),
+            openshift_reserved is True,
         )
 
 
@@ -192,13 +264,79 @@ def _warning(text: str) -> str:
     return clean if len(clean) <= WARNING_CHARS else clean[: WARNING_CHARS - 3].rstrip() + "..."
 
 
+#: The clock deadlines are read from. A name of its own so a test can move it.
+_now = time.monotonic
+
+
+def _not_evaluated(uid: str, cfg: Config, why: str) -> dict[str, Any]:
+    """The answer for a request that was not judged: a denial when a rule is enforced, a warning when none is.
+
+    Every such path used to end in "...; admitted", whatever was enforced, so anything that kept the webhook from
+    reading a request -- a megabyte of containers, a body over the limit, a rule that raised on a shape the
+    requester chose -- was a way past `admission.enforce` (G441). Warn mode keeps its promise that it never
+    denies. `why` is this module's own wording, never the request's."""
+    if not cfg.enforce:
+        return _response(
+            uid,
+            True,
+            [_warning(f"{NOT_EVALUATED}, so this is not a clean result: {why}; admitted, no rule is enforced")],
+        )
+    rules = ", ".join(sorted(cfg.enforce))
+    message = (
+        f"kube-noob did not evaluate this request ({why}), and an object that was not judged has not passed. "
+        f"Denied because rules are enforced here (enforced rules: {rules}). If the object is as intended, an "
+        "administrator can exclude its namespace (admission.excludedNamespaces, or the label "
+        "kube-noob.io/admission=disabled); kube-noob audit reads an object of any size."
+    )
+    return _response(uid, False, [_warning(f"{NOT_EVALUATED}: {why}; denied, rules are enforced")], message)
+
+
+def _over_node_budget(value: Any) -> bool:
+    """Whether ``value`` holds more than ``MAX_OBJECT_NODES`` values. Stops counting one past the budget, and
+    keeps its own stack, so neither a huge object nor a deep one costs more than the budget to refuse."""
+    seen = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        seen += 1
+        if seen > MAX_OBJECT_NODES:
+            return True
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list | tuple):
+            stack.extend(item)
+    return False
+
+
 def excluded_namespace(ns: str, cfg: Config) -> bool:
-    return ns in SYSTEM_NAMESPACES or ns.startswith(SYSTEM_PREFIXES) or ns in cfg.excluded
+    if ns in SYSTEM_NAMESPACES or ns in cfg.excluded:
+        return True
+    reserved = cfg.openshift_reserved and cfg.platform in OPENSHIFT_FAMILY
+    return reserved and (ns in OPENSHIFT_NAMESPACES or ns.startswith(OPENSHIFT_PREFIXES))
 
 
-def _owned(obj: dict[str, Any]) -> bool:
-    refs = (obj.get("metadata") or {}).get("ownerReferences")
-    return isinstance(refs, list) and any(isinstance(r, dict) and r.get("controller") is True for r in refs)
+def _controllers_child(request: dict[str, Any], obj: dict[str, Any]) -> bool:
+    """Whether a kube-controller-manager controller made this object from an owner the webhook was sent.
+
+    Both halves, and the first is the one that matters: the stanza below is ordinary object content, and before
+    G440 it was the whole test, so any Pod that named an owner -- a ReplicaSet that did not exist, a ConfigMap --
+    was admitted unjudged with an enforced rule switched on. The chart's `matchConditions` state the same
+    condition in CEL (`tests/test_admission_cannot_be_bypassed.py` holds the two equal)."""
+    user = request.get("userInfo")
+    username = user.get("username") if isinstance(user, dict) else None
+    if not isinstance(username, str) or username not in CONTROLLER_USERS:
+        return False
+    if obj.get("kind") not in OWNED_KINDS:
+        return False
+    meta = obj.get("metadata")
+    refs = meta.get("ownerReferences") if isinstance(meta, dict) else None
+    return isinstance(refs, list) and any(
+        isinstance(r, dict)
+        and r.get("controller") is True
+        and r.get("kind") in CHECKED_OWNERS
+        and r.get("apiVersion") in OWNER_API_VERSIONS
+        for r in refs
+    )
 
 
 def _findings(
@@ -207,7 +345,7 @@ def _findings(
     """(rule, path, warning text, resource) for the admitted object only."""
     from kube_noob.audit.engine import analyze
     from kube_noob.audit.model import Stage
-    from kube_noob.yamlio import load_documents
+    from kube_noob.yamlio import documents_from_objects
 
     obj = dict(obj)
     meta = dict(obj.get("metadata") or {})
@@ -216,10 +354,9 @@ def _findings(
     if not meta.get("name") and meta.get("generateName"):
         meta["name"] = f"{meta['generateName']}x"
     obj["metadata"] = meta
-    text = json.dumps(obj)
-    if context:
-        text += "\n---\n" + "\n---\n".join(json.dumps(c) for c in context)
-    docs = load_documents(text)
+    # Not `load_documents(json.dumps(obj))`: the object arrived parsed, and writing it out to parse it again with
+    # a YAML composer was two thirds of the time a large object took (G441).
+    docs = documents_from_objects([obj, *context])
     report = analyze(
         docs,
         platform=cfg.platform,
@@ -258,14 +395,25 @@ def review(
     doc: Any,
     cfg: Config,
     context: Callable[[str], list[dict[str, Any]]] | None = None,
+    *,
+    deadline: float | None = None,
+    seen: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """An AdmissionReview response for any input. Never raises: an input it cannot evaluate is admitted."""
+    """An AdmissionReview response for any input. Never raises, and never answers a bare ``allowed: true`` for a
+    request it did not evaluate: see ``_not_evaluated``.
+
+    ``deadline`` is a reading of ``_now()`` after which no further evaluation is started; None (the offline
+    ``kube-noob admission review``) evaluates however long it takes, so that command's answer does not depend on
+    the machine. ``seen`` receives the request's uid as soon as it is known, for a caller that may have to answer
+    for this request before this function returns."""
     uid = ""
     try:
         request = doc.get("request") if isinstance(doc, dict) else None
         if not isinstance(request, dict):
-            return _response("", True, [_warning("kube-noob: not an AdmissionReview request; admitted")])
+            return _not_evaluated("", cfg, "the body is not an AdmissionReview request")
         uid = str(request.get("uid") or "")[:128]
+        if seen is not None:
+            seen["uid"] = uid
         op = str(request.get("operation") or "")
         ns = str(request.get("namespace") or "")
         obj = request.get("object")
@@ -276,12 +424,27 @@ def review(
             return _response(uid, True, [])
         raw_meta = obj.get("metadata")
         meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+        # An object on its way out is skipped so that its finalizers can still be removed -- which is an UPDATE.
+        # The API server clears `deletionTimestamp` on every create, so a CREATE carrying one is not a request
+        # it sent, and the field is no reason to look away from it (G440).
+        if op == "UPDATE" and meta.get("deletionTimestamp"):
+            return _response(uid, True, [])
         # The owner check deliberately does NOT apply to a subresource. A Pod owned by a ReplicaSet is skipped
         # because its owner was audited and carries the same spec -- but no owner carries an ephemeral
         # container, which is added straight to the Pod. Skipping it here would have made `kubectl debug` on
         # any managed workload the one request nothing checks (G250).
-        if meta.get("deletionTimestamp") or (not sub and obj.get("kind") in OWNED_KINDS and _owned(obj)):
+        if not sub and _controllers_child(request, obj):
             return _response(uid, True, [])
+        # Everything above is a request the webhook does not judge, and costs nothing. From here on the object is
+        # evaluated, so this is where the budgets are: what cannot be answered in time is answered now (G441).
+        old = request.get("oldObject") if op == "UPDATE" else None
+        if _over_node_budget(obj) or (isinstance(old, dict) and _over_node_budget(old)):
+            return _not_evaluated(
+                uid, cfg, f"the object holds more than {MAX_OBJECT_NODES:,} values, the most that is evaluated"
+            )
+        late = "it could not be evaluated in time for the API server's timeout"
+        if deadline is not None and _now() >= deadline:
+            return _not_evaluated(uid, cfg, late)
         extra = context(ns) if (cfg.lookups and context is not None and ns) else []
         # A cross-object rule over a list that was never read, or whose last refresh failed, would read "none
         # exist" -- a NetworkPolicy list forbidden from the start made KN-N001 deny a clean Deployment (G279).
@@ -293,8 +456,10 @@ def review(
         if unread_lists:
             found = [f for f in found if f[0] not in CROSS_OBJECT]
         before: set[tuple[str, str]] | None = None
-        if op == "UPDATE" and isinstance(request.get("oldObject"), dict):
-            before = {(r, p) for r, p, _, _ in _findings(request["oldObject"], ns, cfg, extra)[0]}
+        if isinstance(old, dict):
+            if deadline is not None and _now() >= deadline:
+                return _not_evaluated(uid, cfg, late)
+            before = {(r, p) for r, p, _, _ in _findings(old, ns, cfg, extra)[0]}
         if sub and before is not None:
             # On a subresource the request IS the change, so the Pod's existing findings are not this
             # request's business: they were reported when it was created and repeating them here would bury
@@ -331,22 +496,43 @@ def review(
             message = f"kube-noob denied {enforced[0][3]}: " + "; ".join(w for _, _, w, _ in enforced[:3])
             return _response(uid, False, warnings, message[:1000] + f" (enforced rules: {', '.join(rules)})")
         return _response(uid, True, warnings)
-    except Exception as exc:  # noqa: BLE001 - fail open, like failurePolicy: Ignore
-        return _response(
-            uid, True, [_warning(f"kube-noob could not evaluate this object ({type(exc).__name__}); admitted")]
-        )
+    except Exception as exc:  # noqa: BLE001 - never raises; the type is named, the text may be the requester's
+        return _not_evaluated(uid, cfg, f"evaluating it raised {type(exc).__name__}")
+
+
+def _too_large(cfg: Config) -> dict[str, Any]:
+    return _not_evaluated("", cfg, f"the request is larger than {MAX_BODY:,} bytes")
 
 
 def review_bytes(
-    body: bytes, cfg: Config, context: Callable[[str], list[dict[str, Any]]] | None = None
+    body: bytes,
+    cfg: Config,
+    context: Callable[[str], list[dict[str, Any]]] | None = None,
+    *,
+    deadline_seconds: float | None = None,
+    deadline: float | None = None,
+    seen: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """``review`` for a request body. ``deadline_seconds`` counts from this call; ``deadline`` is a reading of
+    the clock taken earlier (when the request arrived, before it waited for a worker). Neither: no time limit."""
+    if deadline is None and deadline_seconds is not None:
+        deadline = _now() + deadline_seconds
     if len(body) > MAX_BODY:
-        return _response("", True, [_warning(f"kube-noob: request larger than {MAX_BODY} bytes; admitted")])
+        return _too_large(cfg)
     try:
         doc = sanitize.loads_bounded(body)
     except (ValueError, RecursionError):
-        return _response("", True, [_warning("kube-noob: the request is not JSON; admitted")])
-    return review(doc, cfg, context)
+        return _not_evaluated("", cfg, "the request is not JSON")
+    return review(doc, cfg, context, deadline=deadline, seen=seen)
+
+
+def _uid_of(body: bytes) -> str:
+    """The request's uid, for an answer given before the evaluation got as far as reading it."""
+    try:
+        doc = sanitize.loads_bounded(body)
+        return str(doc["request"].get("uid") or "")[:128]
+    except Exception:  # noqa: BLE001 - not a request: there is no uid to answer with
+        return ""
 
 
 # -- lookups: the namespace's other objects, cached and refreshed in the background --------------------------------
@@ -466,6 +652,7 @@ BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0)
 @dataclass
 class Metrics:
     counts: dict[str, int] = field(default_factory=lambda: {"allowed": 0, "warned": 0, "denied": 0})
+    not_evaluated: int = 0
     buckets: list[int] = field(default_factory=lambda: [0] * (len(BUCKETS) + 1))
     total_seconds: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -473,8 +660,10 @@ class Metrics:
     def observe(self, response: dict[str, Any], seconds: float) -> None:
         r = response.get("response") or {}
         outcome = "denied" if not r.get("allowed", True) else ("warned" if r.get("warnings") else "allowed")
+        unjudged = any(str(w).startswith(NOT_EVALUATED) for w in r.get("warnings") or [])
         with self.lock:
             self.counts[outcome] += 1
+            self.not_evaluated += unjudged
             self.total_seconds += seconds
             i = next((n for n, b in enumerate(BUCKETS) if seconds <= b), len(BUCKETS))
             self.buckets[i] += 1
@@ -483,6 +672,10 @@ class Metrics:
         with self.lock:
             lines = ["# TYPE kube_noob_admission_requests_total counter"]
             lines += [f'kube_noob_admission_requests_total{{outcome="{k}"}} {v}' for k, v in self.counts.items()]
+            # Requests answered without a verdict: over a budget, late, unreadable, or a rule that raised. In warn
+            # mode they are among `warned`, with a rule enforced among `denied`; this is how many of either (G441).
+            lines.append("# TYPE kube_noob_admission_not_evaluated_total counter")
+            lines.append(f"kube_noob_admission_not_evaluated_total {self.not_evaluated}")
             lines.append("# TYPE kube_noob_admission_duration_seconds histogram")
             running = 0
             for b, n in zip((*BUCKETS, float("inf")), self.buckets, strict=True):
@@ -496,25 +689,45 @@ class Metrics:
 
 def app(cfg: Config, context: Callable[[str], list[dict[str, Any]]] | None = None) -> Any:
     """The ASGI app: POST /validate, GET /healthz, /readyz and /metrics."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import JSONResponse, PlainTextResponse, Response
     from starlette.routing import Route
 
     metrics = Metrics()
+    # One worker: requests are evaluated one at a time, as they always were, but no longer ON the event loop --
+    # where an evaluation of several seconds also held up the liveness probe and every other connection. The loop
+    # stays free to answer at the deadline. A request still queued when its deadline passes is cancelled, or finds
+    # its time gone when it starts and evaluates nothing, so a burst cannot build a backlog of late work (G441).
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kube-noob-admission")
 
     async def validate(request: Request) -> Response:
         start = time.perf_counter()
+        deadline = _now() + cfg.deadline
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > MAX_BODY:
-            out = _response("", True, [_warning(f"kube-noob: request larger than {MAX_BODY} bytes; admitted")])
+            out = _too_large(cfg)
         else:
             body = bytearray()
             async for chunk in request.stream():
                 body += chunk
                 if len(body) > MAX_BODY:
                     break
-            out = review_bytes(bytes(body), cfg, context)
+            raw = bytes(body)
+            seen: dict[str, str] = {}
+            job = asyncio.get_running_loop().run_in_executor(
+                worker, lambda: review_bytes(raw, cfg, context, deadline=deadline, seen=seen)
+            )
+            try:
+                out = await asyncio.wait_for(job, timeout=max(0.0, deadline - _now()))
+            except TimeoutError:
+                # The evaluation cannot be interrupted; the answer can still leave on time. It carries the
+                # request's own uid, because the API server treats any other as a failed call -- which
+                # `failurePolicy: Ignore` would turn back into the silent admission this is here to prevent.
+                uid = seen.get("uid") or (_uid_of(raw) if len(raw) <= MAX_BODY else "")
+                out = _not_evaluated(uid, cfg, "it could not be evaluated in time for the API server's timeout")
         metrics.observe(out, time.perf_counter() - start)
         return JSONResponse(out)
 

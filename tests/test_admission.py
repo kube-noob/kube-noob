@@ -19,9 +19,10 @@ from kube_noob.audit.engine import analyze
 from kube_noob.cli import main
 from tests import bounds
 
-#: Measured: `adm.review` on a Deployment padded with 4,000 privileged containers, warm.
+#: Measured: `adm.review` on a Deployment padded with 3,000 privileged containers, warm: 0.39 s since G441 took
+#: the second parse out (4,000 took 1.5 s before it, and holds more values than `MAX_OBJECT_NODES` now).
 #: Re-measure with KUBE_NOOB_TEST_BOUNDS_REPORT=1 (tests/bounds.py).
-HONEST_PADDED_4000 = 1.5
+HONEST_PADDED_3000 = 0.39
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "tests" / "fixtures" / "rules"
@@ -201,7 +202,7 @@ def test_enforce_denies_only_the_listed_rule(rule: str) -> None:
 def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
     data = yaml.safe_load((RULES / "KN-S001.yaml").read_text())
     good, bad = yaml.safe_load(data["good"]), yaml.safe_load(data["bad"])
-    cfg = adm.Config.build(enforce=["KN-S001"], platform="openshift", version="4.20")
+    cfg = adm.Config.build(enforce=["KN-S001"], platform="openshift", version="4.20", openshift_reserved=True)
     assert adm.review(_review(bad, "UPDATE", old=good), cfg)["response"]["allowed"] is False
     kept = adm.review(_review(bad, "UPDATE", old=bad), cfg)["response"]
     assert kept["allowed"] is True and any(w.startswith("[KN-S001]") for w in kept["warnings"]), "warned, not frozen"
@@ -217,7 +218,10 @@ def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
         assert r == {"uid": "0b1c2d3e-uid", "allowed": True}, case["request"].get("namespace")
     gone = copy.deepcopy(bad)
     gone["metadata"]["deletionTimestamp"] = "2026-10-28T00:00:00Z"
-    assert adm.review(_review(gone), cfg)["response"] == {"uid": "0b1c2d3e-uid", "allowed": True}
+    skipped = {"uid": "0b1c2d3e-uid", "allowed": True}
+    assert adm.review(_review(gone, "UPDATE", old=gone), cfg)["response"] == skipped
+    # ... which is an UPDATE: the API server clears the field on a create, so a CREATE carrying it is judged (G440)
+    assert adm.review(_review(gone), cfg)["response"]["allowed"] is False
     pod = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -229,7 +233,11 @@ def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
     owned["metadata"]["ownerReferences"] = [
         {"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "x", "uid": "1", "controller": True}
     ]
-    assert adm.review(_review(owned), cfg)["response"] == {"uid": "0b1c2d3e-uid", "allowed": True}
+    # The owner stanza is the requester's to write, so it skips nothing by itself; the ReplicaSet controller's
+    # own Pod is skipped, because the API server says who sent it (G440).
+    assert adm.review(_review(owned), cfg)["response"]["allowed"] is False
+    theirs = _review(owned, userInfo={"username": "system:serviceaccount:kube-system:replicaset-controller"})
+    assert adm.review(theirs, cfg)["response"] == skipped
     mine = adm.Config.build(enforce=["KN-S001"], excluded=["shop"], platform="openshift")
     assert adm.review(_review(bad), mine)["response"]["allowed"] is True
     gen = copy.deepcopy(bad)
@@ -330,13 +338,19 @@ def test_asgi_app_metrics_and_limits() -> None:
     client = TestClient(adm.app(cfg))
     r = client.post("/validate", json=_review(bad))
     assert r.status_code == 200 and r.json()["response"]["allowed"] is False
-    assert client.post("/validate", content=b"nope").json()["response"]["allowed"] is True
+    # A request that cannot be read is not judged, and with a rule enforced an unjudged request is denied; in
+    # warn mode it is admitted with a warning (G441, tests/test_admission_answers_inside_its_timeout.py).
+    assert client.post("/validate", content=b"nope").json()["response"]["allowed"] is False
     huge = client.post("/validate", content=b"x", headers={"content-length": str(adm.MAX_BODY + 1)})
-    assert huge.json()["response"]["allowed"] is True
+    assert huge.json()["response"]["allowed"] is False
+    warn = TestClient(adm.app(adm.Config.build(platform="openshift")))
+    lax = warn.post("/validate", content=b"nope").json()["response"]
+    assert lax["allowed"] is True and lax["warnings"][0].startswith(adm.NOT_EVALUATED)
     assert client.get("/validate").status_code == 405
     assert client.get("/healthz").text == "ok\n" and client.get("/readyz").status_code == 200
     m = client.get("/metrics").text
-    assert 'kube_noob_admission_requests_total{outcome="denied"} 1' in m
+    assert 'kube_noob_admission_requests_total{outcome="denied"} 3' in m
+    assert "kube_noob_admission_not_evaluated_total 2" in m, "and two of the three were never judged"
     assert 'kube_noob_admission_duration_seconds_bucket{le="+Inf"} 3' in m
 
 
@@ -378,25 +392,28 @@ def test_a_padded_object_does_not_outrun_the_webhooks_timeout() -> None:
     # 0.2 s warm -- so warm up before timing anything, or the small sample carries the startup and the ratio
     # reads as sub-linear.
     took(200)
+    # 3,000 containers is 15,000 values, inside `MAX_OBJECT_NODES`: 4,000 is past it since G441 and would be
+    # refused in milliseconds, which would make this ratio a measurement of nothing.
     # The property this test is named for is the SHAPE of the curve, not a number of seconds: quadratic in
     # four times the input is about sixteen times the time, linear is about four. A wall-clock budget is a
     # proxy for that, and it is the proxy that depends on the runner -- 5.0 s held for months and then failed
     # at 5.44 s on one shared 3.11 runner, on a release commit, while 3.12, 3.13 and 3.14 passed the same
     # code (G263). Both halves of a ratio run back to back on the same machine, so a slow runner slows both
     # and the verdict stays about the code.
-    small, _ = took(1000)
+    small, _ = took(750)
     with bounds.bounded(
-        bounds.NO_HANG, honest_seconds=HONEST_PADDED_4000, guards="4,000 padded containers through review"
+        bounds.NO_HANG, honest_seconds=HONEST_PADDED_3000, guards="3,000 padded containers through review"
     ):
-        elapsed, out = took(4000)
+        elapsed, out = took(3000)
     assert elapsed < small * 8, (
-        f"{elapsed:.2f}s for 4,000 against {small:.2f}s for 1,000 -- growing faster than linear "
+        f"{elapsed:.2f}s for 3,000 against {small:.2f}s for 750 -- growing faster than linear "
         f"(quadratic would be about 16x, linear about 4x)"
     )
     # The ceiling above is far enough past any plausible runner that only a catastrophe trips it. This is not a
     # performance budget; the ratio here is. G326 took the hand-set 60.0 into the shape, which clamps at 30 s --
     # twenty times the measured 1.5 s, and the ratio is what this test is named for.
     assert out["allowed"] is False, "and it still decides: the denial is the point of being fast enough"
+    assert "[KN-S001]" in out["status"]["message"], "for the rule, not for the budget"
     # The sibling memo must not change what a locator says: a shared name is still ambiguous, a unique one
     # still identifies its item.
     from kube_noob.yamlio import load_documents, locator
@@ -476,6 +493,7 @@ def test_chart_values_and_schema() -> None:
     a = values["admission"]
     assert a["enabled"] is False and a["enforce"] == [] and a["lookups"] is False, "off and warn-only by default"
     assert a["timeoutSeconds"] == 3 and a["certificates"] == "openshift-service-ca"
+    assert a["failurePolicy"] == "Ignore", "availability by default; Fail is the operator's choice (G441)"
     for bad in (
         {"enforce": ["KN-X"]},
         {"enforce": ["KN-S001", "KN-S001"]},
@@ -497,7 +515,7 @@ def test_chart_webhook_matches_the_server() -> None:
 
     text = (CHART / "templates" / "admission.yaml").read_text()
     for line in (
-        "failurePolicy: Ignore",
+        "failurePolicy: {{ $a.failurePolicy }}",
         "sideEffects: None",
         "admissionReviewVersions: [v1]",
         "matchPolicy: Equivalent",
@@ -510,9 +528,12 @@ def test_chart_webhook_matches_the_server() -> None:
     ):
         assert line in text, line
     assert "mutating" not in text.lower() and "patch" not in text.lower(), "a validating webhook only"
-    excluded = text.split("concat (list ", 1)[1].split(" $ns)", 1)[0].replace('"', "").split()
+    excluded = text.split("$always := list ", 1)[1].split("}}", 1)[0].replace('"', "").split()
     assert set(excluded) == adm.SYSTEM_NAMESPACES, "the namespaceSelector skips what the server skips"
-    assert 'startsWith("openshift-")' in text and adm.SYSTEM_PREFIXES == ("openshift-",)
+    assert "$excluded := concat $always $platformNs (list $ns) ($a.excludedNamespaces | default list)" in text
+    # `openshift` and `openshift-*` on the OpenShift family only, and never on `ownerReferences` alone: both held,
+    # with the CEL evaluated, in tests/test_admission_cannot_be_bypassed.py (G440)
+    assert 'startsWith("openshift-")' in text and adm.OPENSHIFT_PREFIXES == ("openshift-",)
     owned = text.split("request.kind.kind in [", 1)[1].split("]", 1)[0].replace('"', "").replace(",", "").split()
     assert set(owned) == adm.OWNED_KINDS
     lookups = text.split("kind: ClusterRole\n", 1)[1].split("---", 1)[0]

@@ -250,10 +250,17 @@ audit:
 admission:
   # Tier A: kube-noob-admission, a validating webhook. Every kube-noob finding of a created or updated object becomes
   # an admission warning (kubectl prints them); a request is denied only for a rule listed in enforce, and on UPDATE
-  # only for a finding the old object did not have. failurePolicy Ignore and timeoutSeconds 3: a dead or slow webhook
-  # never blocks the cluster. The system namespaces, openshift-*, the release namespace, excludedNamespaces and any
-  # namespace labelled kube-noob.io/admission=disabled are skipped, as are Pods, ReplicaSets and Jobs owned by a
-  # controller (their owner was checked). It never mutates and fetches nothing; lookups add read-only lists.
+  # only for a finding the old object did not have. Skipped: kube-system, kube-public, kube-node-lease, the release namespace,
+  # excludedNamespaces, any namespace labelled kube-noob.io/admission=disabled, and openshift and openshift-* --
+  # only when config.defaultPlatform is openshift, rosa-classic or rosa-hcp AND the cluster serves
+  # config.openshift.io/v1 (read from the cluster at install; with helm template pass
+  # --api-versions config.openshift.io/v1). The platform value alone reserves nothing: it is this chart's default,
+  # and on Kubernetes anyone who can create a namespace can name it openshift-x. Also skipped: the Pods, ReplicaSets and Jobs that kube-controller-manager's own controllers make
+  # from a workload this webhook was sent (the owner was checked). That is decided by who sent the request
+  # (request.userInfo, written by the API server), never by ownerReferences, which the requester writes: the same
+  # object from anyone else is judged. Whoever may label a namespace kube-noob.io/admission=disabled, or holds a
+  # kube-system controller's identity, is outside the webhook; keep both to cluster administrators.
+  # It never mutates and fetches nothing; lookups add read-only lists.
   enabled: false
   replicaCount: 2
   enforce: []                # rule ids to deny, e.g. [KN-S001]; empty = warnings only
@@ -265,7 +272,27 @@ admission:
   lookups: false
   maxWarnings: 10            # 1-50 per request; each is at most 256 characters
   platformVersion: ""        # e.g. "4.20" or "1.33": version-specific rules (deprecated APIs)
-  timeoutSeconds: 3          # 1-30
+  # How long the API server waits for the webhook, 1-30. The server is told the same number and answers at three
+  # fifths of it: a request it has not finished judging by then -- or will not start, because the object holds more
+  # than 20,000 values or the request is over 4 MB -- is answered "not evaluated" instead of late. With a rule in
+  # enforce that answer is a denial that says why; with none it is an admission with a warning.
+  timeoutSeconds: 3
+
+  # What the API server does when the webhook gives no answer at all: it is down, unreachable, or slower than
+  # timeoutSeconds. This is a trade, and no value has both halves.
+  #   Ignore = availability. The request is admitted without being judged and without a warning. A webhook that is
+  #            down never blocks a deploy, including the one that would fix it -- and while it is down, or for any
+  #            request it does not answer, the rules in enforce are NOT enforced. Nothing in the cluster says so at
+  #            the time; kube_noob_admission_requests_total stops counting, and the API server's
+  #            apiserver_admission_webhook_fail_open_count counts each one.
+  #   Fail = enforcement. The request is refused until the webhook answers. Nothing gets past the rules in
+  #          enforce, and a webhook that is down blocks every create and update of the kinds it matches, in
+  #          every namespace it is sent. kube-system, the release namespace and excludedNamespaces are never
+  #          sent, so the webhook itself can always be restarted; keep replicaCount at 2 or more.
+  # The default is Ignore because the default is warn mode (enforce: []), where there is nothing to enforce and an
+  # outage must not cost anything. If you list a rule in enforce and mean it as a control rather than as advice,
+  # set Fail. With Ignore, enforce is best effort and kube-noob's own KN-S030 reports this webhook, correctly.
+  failurePolicy: Ignore
   # Serving certificate: openshift-service-ca (the service CA operator writes it and injects the CA bundle),
   # cert-manager (a Certificate from certManager.issuerRef; cainjector injects the CA) or secret (your
   # kubernetes.io/tls Secret and its CA as base64 PEM). The webhook restarts when the certificate rotates.
