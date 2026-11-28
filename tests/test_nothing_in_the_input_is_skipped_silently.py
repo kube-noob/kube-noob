@@ -511,3 +511,320 @@ def test_a_directory_that_cannot_be_listed_is_named(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(os, "scandir", scandir)
     _, gaps = gate.walk(root)
     assert [(p.name, "cannot be listed" in why) for p, why in gaps] == [("locked", True)]
+
+
+# -- G445: an unrendered Helm chart is input nobody read, not a file that is "not a manifest" ---------------------
+
+HARDENED = (INPUTS / "chart-beside-a-manifest" / "ok.yaml").read_text()
+
+
+def _helm_dir(tmp_path: Path) -> Path:
+    return _copy("chart-beside-a-manifest", tmp_path / "repo")
+
+
+@pytest.mark.parametrize("command", sorted(_cli_over_a_directory("x", Path("."))))
+def test_an_unrendered_chart_in_a_directory_is_not_a_clean_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """The repro: a hardened Deployment beside `chart/templates/dep.yaml`, which is `privileged: true` under
+    `{{ .Release.Name }}`. `gate -f dir` printed "gate passed" at exit 0 with the template under "Skipped", and
+    `verify` said `allow`; `audit` exited 5 on a YAML parser's sentence that never said Helm."""
+    root = _helm_dir(tmp_path)
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    _assert_not_read(code, out, err, "dep.yaml", command)
+    said = out + err
+    assert "Helm" in said and "--chart" in said and "helm template" in said, said[:600]
+    assert "constructing a mapping" not in said, "the YAML parser's sentence, about a file that is not YAML yet"
+
+
+@pytest.mark.parametrize("command", ["audit", "validate", "fix", "gate", "verify", "posture scan", "ksi"])
+def test_a_chart_directory_given_alone_is_recognised_as_a_chart(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """`gate -f chart/` said "nothing to check" at exit 2 and `audit -f chart/` gave a parser error at exit 5:
+    same input, two codes, and neither named the command that works."""
+    chart = _helm_dir(tmp_path) / "chart"
+    code, out, err = _run(_cli_over_a_directory(str(chart), tmp_path)[command], capsys)
+    assert code == 5, f"{command}: exit {code}\n{out}\n{err}"
+    assert out.strip() == "", f"{command} printed an answer about a chart it did not render: {out[:200]}"
+    assert "Helm" in err and "gate --chart" in err and "helm-audit" in err, err
+    assert "nothing to check" not in err
+
+
+def test_the_command_printed_for_a_chart_names_that_chart(tmp_path: Path) -> None:
+    """The exact command, not a placeholder: the chart's own directory as the caller would type it, quoted when
+    it must be, and the outermost chart when the template is a subchart's (`--chart` renders dependencies)."""
+    root = tmp_path / "my repo"
+    sub = root / "chart" / "charts" / "db" / "templates"
+    sub.mkdir(parents=True)
+    (root / "chart" / "Chart.yaml").write_text("apiVersion: v2\nname: app\nversion: 0.1.0\n")
+    (root / "chart" / "templates").mkdir()
+    (root / "chart" / "charts" / "db" / "Chart.yaml").write_text("apiVersion: v2\nname: db\nversion: 0.1.0\n")
+    (sub / "sts.yaml").write_text("kind: StatefulSet\n{{- if .Values.x }}\n")
+    why = gate.unrendered_reason(sub / "sts.yaml", (sub / "sts.yaml").read_text())
+    assert why is not None and why.startswith(gate.UNRENDERED_HELM) and gate.forbids_verdict(why)
+    assert "kube-noob gate --chart 'my repo/chart'" in why.replace(str(tmp_path) + "/", ""), why
+    assert "charts/db" not in why.split("`")[1], "the command names the subchart, which is not what is installed"
+
+
+def test_the_gate_report_says_incomplete_for_a_chart_nobody_rendered(tmp_path: Path) -> None:
+    rep = gate.run(gate.collect([str(_helm_dir(tmp_path))], read=lambda _: ""), fail_on="never")
+    assert rep["incomplete"] is True and rep["passed"] is False and gate.verdict_word(rep) == "incomplete"
+    rows = [s for s in rep["skipped"] if s.get("forbidsVerdict")]
+    assert [Path(r["file"]).name for r in rows] == ["dep.yaml"]
+    assert any("dep.yaml" in f and "--chart" in f for f in rep["failures"])
+    assert any("dep.yaml" in n for n in rep["notRun"]), "scripts/ci/gate.sh reads `notRun` for `evidence`"
+    assert gate.markdown(rep).startswith("## kube-noob gate incomplete")
+
+
+def _stub_render(monkeypatch: pytest.MonkeyPatch, rendered: str) -> None:
+    monkeypatch.setattr("kube_noob.generate.helm_render.render_chart", lambda *a, **k: rendered)
+
+
+def test_rendering_the_chart_in_the_same_run_is_what_makes_the_directory_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--chart` is the waiver, and it is one by doing the work: the template is still listed, as audited through
+    its render, and it withholds nothing."""
+    root = _helm_dir(tmp_path)
+    _stub_render(monkeypatch, HARDENED.replace("name: api", "name: rendered").replace("app: api", "app: rendered"))
+    argv = ["--format", "json", "gate", "-f", str(root), "--chart", str(root / "chart"), "--fail-on", "high"]
+    code, out, err = _run(argv, capsys)
+    doc = json.loads(out)
+    assert code == 0 and doc["passed"] and not doc["incomplete"], (doc["failures"], err)
+    row = next(s for s in doc["skipped"] if s["file"].endswith("dep.yaml"))
+    assert "forbidsVerdict" not in row and row["why"].startswith(gate.RENDERED_HELM), row
+
+
+def test_a_rendered_chart_with_a_finding_fails_for_the_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _helm_dir(tmp_path)
+    _stub_render(monkeypatch, PRIVILEGED_POD)
+    code, out, _ = _run(["gate", "-f", str(root), "--chart", str(root / "chart")], capsys)
+    assert code == 1 and "KN-S001" in out, "exit 1 is the verdict; 5 would say the chart was not read"
+
+
+def test_rendering_another_chart_does_not_excuse_this_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _helm_dir(tmp_path)
+    other = _copy("chart-image-string", tmp_path / "other")
+    _stub_render(monkeypatch, HARDENED)
+    code, out, err = _run(["gate", "-f", str(root), "--chart", str(other)], capsys)
+    _assert_not_read(code, out, err, "dep.yaml", "gate --chart other")
+
+
+def test_verify_still_checks_a_template_kubectl_would_send_as_it_stands(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """G354, kept: `kubectl apply -R -f .` knows nothing about charts, so a file under `templates/` that is a
+    manifest already is sent, and `verify` denies for what is in it rather than withholding."""
+    root = _helm_dir(tmp_path)
+    (root / "chart" / "templates" / "dep.yaml").write_text(PRIVILEGED_POD)
+    code, out, _ = _run(["--format", "json", "verify", "-f", str(root)], capsys)
+    assert code == 1 and json.loads(out)["verdict"] == "deny"
+
+
+def test_a_directory_named_templates_without_a_chart_is_just_a_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other direction: `templates/` with no `Chart.yaml` beside it is a name, and its manifests are read."""
+    root = tmp_path / "k8s"
+    (root / "templates").mkdir(parents=True)
+    (root / "templates" / "pod.yaml").write_text(PRIVILEGED_POD)
+    for argv in (["audit", "-f", str(root)], ["gate", "-f", str(root)]):
+        code, out, _ = _run(argv, capsys)
+        assert code == 1 and "KN-S001" in out, argv
+
+
+# -- G446: a Kustomization rewrites the objects beside it, so those files are not what is deployed ---------------
+
+KUSTOMIZATION = (INPUTS / "kustomize-overlay" / "kustomization.yaml").read_text()
+KUSTOMIZATION_BARE = "resources:\n- deployment.yaml\npatches:\n- path: privileged.yaml\n"
+FLUX_KUSTOMIZATION = """\
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata: {name: apps, namespace: flux-system}
+spec: {interval: 10m, path: ./apps, prune: true, sourceRef: {kind: GitRepository, name: flux-system}}
+"""
+
+
+def _overlay(tmp_path: Path, name: str = "kustomization.yaml", body: str = KUSTOMIZATION) -> Path:
+    root = _copy("kustomize-overlay", tmp_path / "overlay")
+    (root / "kustomization.yaml").unlink()
+    (root / name).write_text(body)
+    return root
+
+
+#: What each command answers for a directory holding a Kustomization written as a document, by exit code. The
+#: codes differ and that is G272, not disagreement: an object nothing read is an undetermined verdict (1) for a
+#: command that prints a score, and no verdict at all (5) for one whose answer is a decision or that was asked
+#: for a complete one. None of them is 0 beside a clean word, which is what every one of them was.
+KUSTOMIZATION_DOCUMENT_EXITS = {
+    "audit": 1,
+    "audit --format json": 1,
+    "audit --format sarif": 1,
+    "audit --oscal": 1,
+    "validate": 1,
+    "fix": 1,
+    "ksi": 1,
+    "gate": 1,
+    "gate --format json": 1,
+    "gate --oscal": 1,
+    "gate --quiet": 1,
+    "verify": 5,
+    "posture scan --require-complete": 5,
+}
+
+
+@pytest.mark.parametrize("command", sorted(KUSTOMIZATION_DOCUMENT_EXITS))
+def test_a_kustomization_in_a_directory_withholds_the_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """The repro: a hardened Deployment beside a Kustomization whose inline patch adds `privileged: true`. The
+    gate passed at exit 0 and `verify` allowed; `kustomize build` deploys a privileged container. The
+    Kustomization is a document the audit reads (its generators are how KN-C017 knows a generated Secret is not a
+    missing one), so it stays in the input and is listed as not audited: the verdict is undetermined."""
+    root = _overlay(tmp_path)
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    assert code == KUSTOMIZATION_DOCUMENT_EXITS[command], f"{command}: exit {code}\n{out[:400]}\n{err[:400]}"
+    said = [w for w in CLEAN_WORDS if w in out and not (w == "0 attack paths" and out.startswith("not determined"))]
+    assert not said, f"{command}: stdout reads as clean ({said})"
+    if "oscal" in command:
+        return  # an excluded objective names its control, not the object: the assertion above is the one that counts
+    if command in {"fix"}:
+        assert "Kustomization" in out + err
+        return
+    assert "Kustomization" in out + err and "kubectl kustomize" in out + err, (out + err)[:600]
+
+
+def test_the_commands_that_do_not_fail_on_an_unread_object_still_name_the_kustomization(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Three commands have no failing exit for an object nothing read unless asked for one, and that is their
+    contract for a Rollout too (G353). They are held to saying it."""
+    root = str(_overlay(tmp_path))
+    code, out, _ = _run(["posture", "scan", "-f", root], capsys)
+    assert out.startswith("not determined") and "Kustomization" in out and "kubectl kustomize" in out, out
+    code, out, _ = _run(["--format", "json", "vuln", "threat", "-f", root], capsys)
+    assert any("kubectl kustomize" in line for line in json.loads(out)["notRead"])
+    code, out, _ = _run(["posture", "snapshot", "-f", root, "-o", str(tmp_path / "snap.json")], capsys)
+    assert code == 0
+    rows = json.loads((tmp_path / "snap.json").read_text())["coverage"]["notAudited"]
+    assert [r["kind"] for r in rows] == ["Kustomization"], "the baseline a later diff reads does not carry the gap"
+
+
+def test_the_kustomization_stays_in_the_input_for_the_rule_that_reads_its_generators(tmp_path: Path) -> None:
+    """Why the document is not declined by the walk: declining it would hide `secretGenerator` from the rule that
+    tells a generated Secret from a missing one, and turn a correct overlay into a false finding."""
+    from kube_noob.cli import _dir_yaml
+
+    ok, bad = _dir_yaml(_overlay(tmp_path))
+    assert bad == [] and sorted(name for name, _ in ok) == ["deployment.yaml", "kustomization.yaml"]
+
+
+@pytest.mark.parametrize("command", sorted(_cli_over_a_directory("x", Path("."))))
+def test_a_kustomization_that_is_no_document_is_declined_by_the_walk(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """`apiVersion` and `kind` are optional in a kustomization, and kustomize finds the file by its name. Without
+    them there is no document for the audit to list: the gate called the file "not a Kubernetes manifest", the
+    silent class, and passed, and the audit reported KN-V001 on it -- the wrong reason, and silent about the
+    overlay. Known by its name, it is unrendered input and the run reaches no verdict."""
+    root = _overlay(tmp_path, "kustomization.yaml", KUSTOMIZATION_BARE)
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    _assert_not_read(code, out, err, "kustomization.yaml", command)
+    assert "kubectl kustomize" in out + err, (out + err)[:600]
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [
+        ("kustomization.yml", KUSTOMIZATION_BARE),
+        ("Kustomization", KUSTOMIZATION_BARE),
+        ("Kustomization", KUSTOMIZATION),
+        ("kustomization.yaml", "resources: [unclosed\n"),
+    ],
+)
+@pytest.mark.parametrize("command", ["audit", "gate", "verify", "posture scan"])
+def test_a_kustomization_is_one_by_its_file_name_as_kustomize_reads_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str, name: str, body: str
+) -> None:
+    """The three names kustomize looks for. The third has no extension, so it is a file no walk opens whatever
+    is in it; one YAML cannot parse is not a document either."""
+    root = _overlay(tmp_path, name, body)
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    _assert_not_read(code, out, err, name, command)
+
+
+def test_a_flux_kustomization_is_a_cluster_object_and_not_a_kustomize_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other direction. Flux's `kustomize.toolkit.fluxcd.io` Kustomization is applied to the cluster as it
+    stands, whatever its file is called: nothing renders it, so nothing is withheld for it."""
+    root = _overlay(tmp_path, "kustomization.yaml", FLUX_KUSTOMIZATION)
+    assert gate.unrendered_reason(root / "kustomization.yaml", FLUX_KUSTOMIZATION) is None
+    code, out, err = _run(["--format", "json", "gate", "-f", str(root), "--fail-on", "high"], capsys)
+    doc = json.loads(out)
+    assert code == 0 and not [s for s in doc["skipped"] if s.get("forbidsVerdict")], (doc["skipped"], err)
+    rep = Toolkit(_settings()).audit(tk.AuditIn(manifests=FLUX_KUSTOMIZATION + "---\n" + HARDENED))
+    assert not [r for r in rep.get("notAudited") or [] if r["kind"] == "Kustomization"]
+
+
+def _settings() -> Any:
+    from kube_noob.config import load_settings
+
+    return load_settings()
+
+
+def test_a_kustomization_handed_over_as_text_withholds_the_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where there is no file name -- stdin, one file named with -f, an MCP tool's `manifests` -- the document
+    itself is the evidence: it is named under `notAudited`, and the verdict is undetermined (exit 1 for a score,
+    5 for `verify`'s decision: G272)."""
+    text = HARDENED + "---\n" + KUSTOMIZATION
+    rep = Toolkit(_settings()).audit(tk.AuditIn(manifests=text))
+    rows = [r for r in rep["notAudited"] if r["kind"] == "Kustomization"]
+    assert len(rows) == 1 and "kubectl kustomize" in rows[0]["why"], rep.get("notAudited")
+    assert rep["summary"]["verdict"] == "undetermined"
+    both = tmp_path / "both.yaml"
+    both.write_text(text)
+    code, out, _ = _run(["audit", "-f", str(both), "--fail-on", "critical"], capsys)
+    assert code == 1 and "Kustomization" in out and "undetermined" in out
+    code, out, _ = _run(["gate", "-f", str(both), "--fail-on", "never"], capsys)
+    assert code == 1 and out.startswith("## kube-noob gate incomplete")
+    code, out, _ = _run(["--format", "json", "verify", "-f", str(both)], capsys)
+    assert code == 5 and json.loads(out)["verdict"] == "not-determined"
+    # The attack-path scan withholds a pass for exactly the objects the audit does not audit (G370).
+    code, out, err = _run(["posture", "scan", "-f", str(both), "--require-complete"], capsys)
+    assert code == 5 and "Kustomization" in out and not out.startswith("0 attack paths"), (out, err)
+    scanned = Toolkit(_settings()).posture_scan(tk.PostureScanIn(manifests=text))
+    assert any("kubectl kustomize" in line for line in scanned["notRead"]), scanned["notRead"]
+
+
+def test_a_kustomization_named_on_its_own_is_not_a_score_of_100(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`audit -f overlay/kustomization.yaml` scored 100.0 at exit 0."""
+    code, out, err = _run(["audit", "-f", str(INPUTS / "kustomize-overlay" / "kustomization.yaml")], capsys)
+    assert code == 1 and "score=100" not in out and "kubectl kustomize" in out, (out, err)
+
+
+def test_the_rendered_output_is_audited_like_any_manifest(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The control, and the remedy the message gives: what `kubectl kustomize` prints holds no Kustomization, so
+    it is read and judged for what it deploys."""
+    rendered = tmp_path / "rendered.yaml"
+    rendered.write_text(HARDENED)
+    code, out, _ = _run(["gate", "-f", str(rendered), "--fail-on", "high"], capsys)
+    assert code == 0 and out.startswith("## kube-noob gate passed")
+
+
+def test_every_reason_for_unrendered_input_forbids_a_verdict() -> None:
+    """Held beside `test_every_skip_reason_decides_whether_it_forbids_a_verdict`: these two prefixes are the ones
+    that used to be classed with a CI workflow, as files that are read, understood and hold no object."""
+    assert gate.forbids_verdict(gate.UNRENDERED_HELM + ": x") and gate.forbids_verdict(
+        gate.UNRENDERED_KUSTOMIZE + ": x"
+    )
+    assert not gate.forbids_verdict(gate.RENDERED_HELM + ": x")

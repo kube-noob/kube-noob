@@ -224,7 +224,11 @@ def test_directory_walks_skip_what_is_not_a_manifest(tmp_path: Path) -> None:
     rep = gate.run(gate.collect([str(tmp_path)], _read), platform="openshift", version="4.20")
     assert rep["files"] == [gate._uri(tmp_path / "k8s" / "route.yaml")]
     whys = {Path(x["file"]).name: x["why"] for x in rep["skipped"]}
-    assert whys["deploy.yaml"].startswith("a Helm template") and "not a Kubernetes manifest" in whys["values.yaml"]
+    # The template is input nobody read, not a file that is no manifest: G445 moved it out of the silent class.
+    assert whys["deploy.yaml"].startswith(gate.UNRENDERED_HELM) and "not a Kubernetes manifest" in whys["values.yaml"]
+    assert rep["incomplete"] and [Path(s["file"]).name for s in rep["skipped"] if s.get("forbidsVerdict")] == [
+        "deploy.yaml"
+    ]
     assert "ci.yml" not in whys, "dot directories are not walked"
     named = gate.collect([str(chart / "values.yaml")], _read)
     with pytest.raises(gate.GateError, match="nothing here is a Kubernetes manifest"):

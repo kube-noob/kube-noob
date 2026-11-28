@@ -333,6 +333,51 @@ FIXTURES: tuple[Fixture, ...] = (
         names="base",
     ),
     Fixture(
+        name="unrendered-helm-chart-beside-a-clean-bundle",
+        proves="A clean bundle beside a chart whose template is `privileged: true` under `{{ .Release.Name }}`. "
+        "The gate listed the template as skipped and said `passed`; `skipped` was a list no renderer read as a "
+        "gap, so every one of them agreed with it (G445).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "chart/Chart.yaml": "apiVersion: v2\nname: app\nversion: 0.1.0\n",
+            "chart/templates/dep.yaml": _PRIVILEGED_DEPLOYMENT.replace("name: web", "name: {{ .Release.Name }}", 1),
+        },
+        withheld=True,
+        file_level=True,
+        names="dep.yaml",
+    ),
+    Fixture(
+        name="unrendered-kustomization-beside-a-clean-bundle",
+        proves="A clean bundle beside a kustomization whose patch makes the Pod privileged when it is rendered. "
+        "The objects every renderer was handed are not the objects that are deployed (G446).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "kustomization.yaml": "resources: [pod.yaml, netpol.yaml]\n"
+            "patches:\n- target: {kind: Pod, name: ok}\n  patch: |-\n"
+            "    - {op: replace, path: /spec/containers/0/securityContext/privileged, value: true}\n",
+        },
+        withheld=True,
+        file_level=True,
+        names="kustomization.yaml",
+    ),
+    Fixture(
+        name="kustomization-document-beside-a-clean-bundle",
+        proves="The same overlay written as a document, `kustomize.config.k8s.io/v1beta1 Kustomization`. It is "
+        "not declined by the walk -- the audit reads its generators -- so what withholds the verdict is a "
+        "`notAudited` row, and every renderer of text, one object or a report is held to carrying it (G446).",
+        files={
+            "pod.yaml": _HARDENED_POD,
+            "netpol.yaml": _DNS_POLICY,
+            "kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"
+            "metadata: {name: overlay}\nresources: [pod.yaml, netpol.yaml]\n"
+            "patches:\n- target: {kind: Pod, name: ok}\n  patch: |-\n"
+            "    - {op: replace, path: /spec/containers/0/securityContext/privileged, value: true}\n",
+        },
+        withheld=True,
+    ),
+    Fixture(
         name="kind-no-rule-reads",
         proves="A Tekton Task with a privileged `docker:24-dind` step: a container in a field no pod-spec "
         "detector looked at. It used to reach every renderer in this file as a PASS -- gate `passed`, "
@@ -1466,6 +1511,8 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.verdict_word": "THE predicate every renderer here reads; it has no output of its own",
     "gate.render": "renders a Helm chart to manifests; it runs before the audit and reports no verdict",
     "gate.collect": "reads files into Sources; it reports no verdict",
+    "gate.chart_of": "names the chart a template belongs to; a predicate over one path (G445)",
+    "gate.unrendered_reason": "a predicate over one file a walk found: a chart template, a kustomization (G445)",
     "gate.walk": "lists the files under a directory and the entries no walk goes into; it reports no verdict (G444)",
     "gate.run": "produces the report every adapter above consumes, so it is the subject, not a renderer",
     "gate.sarif": "the shared SARIF emitter; its two callers, sarif_of_audit and sarif_of_gate, are adapted",

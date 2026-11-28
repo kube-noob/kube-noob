@@ -2740,6 +2740,12 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                 dirnames.sort()
                 for name in sorted(filenames):
                     f = Path(dirpath) / name
+                    if name == "Kustomization" and not f.is_symlink():
+                        # kustomize's third file name has no extension, so kubectl's filter never reaches it:
+                        # the directory is an overlay, and the files beside it are not what is deployed (G446).
+                        bare = f.read_text(encoding="utf-8", errors="replace")
+                        out.append(gate.Source(gate._uri(f), bare, skip=gate.unrendered_reason(f, bare)))
+                        continue
                     if os.path.splitext(name)[1] not in KUBECTL_EXTENSIONS:
                         continue
                     if f.is_symlink():
@@ -2764,7 +2770,7 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                         out.append(gate.Source(gate._uri(f), "", unreadable="not UTF-8 text"))
                         continue
                     why = gate._classify(f, text)
-                    if why is not None and not gate.forbids_verdict(why) and gate._holds_a_manifest(f):
+                    if why is not None and why.startswith(gate.UNRENDERED_HELM) and gate._holds_a_manifest(f):
                         # kubectl knows nothing about charts: a file under `templates/` that IS a manifest as it
                         # stands is sent like any other, so it is audited like any other. The gate's "a Helm
                         # template" answer is about a chart somebody will render; taking it here made
@@ -2841,6 +2847,8 @@ def evaluate(
             )
         except (gate.GateError, ManifestError) as exc:
             # ManifestError: the YAML reader's own limits (documents, size, depth) -- input it refuses to read.
+            if isinstance(exc, gate.Unrendered) and not from_command:
+                raise  # a chart or a kustomization and nothing else: not a usage error, exit 5 (G445)
             if not from_command:
                 raise VerifyError(str(exc)) from exc
             undetermined.append(f"the manifests could not be checked: {frame(str(exc), 300)}")
@@ -2854,8 +2862,10 @@ def evaluate(
                 # `allow` on a privileged pod whose `apiVersion` key was mis-spelled is the defect G325 fixes.
                 # Same mechanism as the ~40 command shapes verify cannot model, and no new field.
                 undetermined.append(
-                    f"{frame(s['file'])} was not read as a manifest ({frame(s['why'])}), so what it would create "
-                    "is not known"
+                    # 600, not the default 200: the reason for unrendered input ends with the command that
+                    # renders it, and a reason cut before its remedy is half an answer (G445).
+                    f"{frame(s['file'])} was not read as a manifest ({frame(s['why'], 600)}), so what it would "
+                    "create is not known"
                 )
             elif from_command:
                 # kubectl sends every .yaml it is pointed at; a file the audit skipped is one it would still send.

@@ -51,7 +51,9 @@ from kube_noob.audit.podspec import (
     EMBEDDED_CONTAINER_KEYS,
     EMBEDDED_POD_SPEC_PATHS,
     INJECTED_CONTAINERS,
+    KUSTOMIZE_GROUP,
     POD_SPEC_PATHS,
+    UNRENDERED_KUSTOMIZATION,
     PodTemplate,
     pod_templates,
     selector_decides,
@@ -568,6 +570,13 @@ class Inventory:
                 self.legacy_accounts[(_ns(obj), _name(obj))] = str(account or "")
             else:
                 self.other_secrets.add((_ns(obj), _name(obj)))
+            return
+        if group == KUSTOMIZE_GROUP:
+            # Agreement with the audit, which lists this document under `notAudited`: a kustomize file rewrites the
+            # workloads beside it when it is rendered, so a ranking of them as they stand is a ranking of objects
+            # that are not deployed. It fell past every branch below as "a kind this scan does not model, nothing
+            # to say", and `posture scan --require-complete` exited 0 on an overlay (G446).
+            self.unread(f"{_ref(obj)}: {UNRENDERED_KUSTOMIZATION}, so the scan is of objects as written", "unmodelled")
             return
         if k in UNMODELLED_EXPOSURE.get(group, ()):
             self.unmodelled.append(_ref(obj))

@@ -16,7 +16,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 from dataclasses import dataclass
+from dataclasses import replace as _replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,13 @@ class GateError(ValueError):
     """Nothing to check, too much input, or a file that cannot be read."""
 
 
+class Unrendered(GateError):
+    """Everything given was a template for manifests -- a Helm chart, a kustomization -- and nothing rendered it.
+
+    Its own class because its exit code is not `GateError`'s: "nothing to check" is a usage error (2), and a chart
+    is something to check that was not read (5). `gate -f chart/` said the first about the second (G445)."""
+
+
 @dataclass
 class Source:
     uri: str
@@ -80,8 +89,23 @@ NOT_OPENED_PREFIX = "not opened by the directory walk"
 #: saying so must stay silent, or every repository scanned with `gate -f .` turns red (G325).
 #: `tests/test_near_miss_manifest.py::test_every_skip_reason_decides_whether_it_forbids_a_verdict` fails when a
 #: reason reaches `_classify` without an entry here.
+#: A template inside a Helm chart nobody rendered in this run. It was `("a Helm template:", False)`: classed with a
+#: CI workflow, as a file that was read and understood and holds no object. It is the opposite -- every workload the
+#: chart deploys, unread -- and a directory holding a hardened Deployment beside a chart whose template is
+#: `privileged: true` printed "gate passed" at exit 0 with the template under "Skipped" (G445).
+UNRENDERED_HELM = "an unrendered Helm template"
+#: The same template when `--chart` rendered its chart in this run: listed, and withholding nothing.
+RENDERED_HELM = "a Helm template, audited as rendered"
+#: A kustomization file: the objects beside it are rewritten when it is rendered, so they are not what is deployed
+#: (G446).
+UNRENDERED_KUSTOMIZE = "an unrendered Kustomization"
+#: The three names kustomize looks for, in the order it looks (api/konfig/general.go RecognizedKustomizationFileNames).
+KUSTOMIZATION_NAMES = ("kustomization.yaml", "kustomization.yml", "Kustomization")
+KUSTOMIZE_GROUP = "kustomize.config.k8s.io"
 SKIP_REASONS: tuple[tuple[str, bool], ...] = (
-    ("a Helm template:", False),
+    (UNRENDERED_HELM, True),
+    (RENDERED_HELM, False),
+    (UNRENDERED_KUSTOMIZE, True),
     ("not a Kubernetes manifest", False),
     (NEAR_MISS_PREFIX, True),
     # Raised by the bounded loader, returned by `_classify`: the file was not read at all, so it cannot be the
@@ -314,8 +338,8 @@ def _classify(path: Path | None, text: str) -> str | None:
 
     Only files picked up from a directory are classified; a file named on the command line is always audited, so a
     broken manifest cannot slip through as "not a manifest"."""
-    if path is not None and any(_in_chart_templates(path, parent) for parent in path.parents):
-        return "a Helm template: render the chart with --chart"
+    if path is not None and (why := unrendered_reason(path, text)) is not None:
+        return why
     try:
         docs = [d for d in sanitize.safe_load_all_bounded(text) if d is not None]
     except sanitize.YamlTooDeep as exc:
@@ -362,6 +386,77 @@ def _unreadable_failure(unread: list[dict[str, str]]) -> str:
 
 def _in_chart_templates(path: Path, parent: Path) -> bool:
     return parent.name == "templates" and (parent.parent / "Chart.yaml").is_file() and path.is_relative_to(parent)
+
+
+def chart_of(path: Path) -> Path | None:
+    """The chart whose render would fill ``path`` in: the OUTERMOST one, or None when it is not a chart template.
+
+    A subchart's template (`chart/charts/db/templates/x.yaml`) belongs to `chart/`: that is what is installed, and
+    `--chart chart/` renders its dependencies with it."""
+    chart = next((parent.parent for parent in path.parents if _in_chart_templates(path, parent)), None)
+    while chart is not None and chart.parent.name == "charts" and (chart.parent.parent / "Chart.yaml").is_file():
+        chart = chart.parent.parent
+    return chart
+
+
+def _kustomize_file(path: Path, text: str) -> bool:
+    """Whether a file under one of kustomize's names has to be declined by the walk, as a file.
+
+    Not every kustomization does. One that carries `apiVersion: kustomize.config.k8s.io/...` and `kind` in a file
+    the walk reads is a document, and the audit takes it from there: it is listed under `notAudited`, which
+    withholds the verdict in every renderer, can be accepted by a `notAudited` exception, and leaves the document
+    in the input for the rule that reads its generators (KN-C017, G410). What is left for the walk is what never becomes
+    such a document:
+
+    * a kustomization with no `apiVersion` or `kind`, which kustomize permits. Read as a document it is "not a
+      Kubernetes manifest", the silent class;
+    * one YAML cannot parse;
+    * the third name, `Kustomization`, which has no extension and so is not a file any walk opens.
+
+    A file of this name holding only objects of another group is not kustomize's: Flux's
+    `kustomize.toolkit.fluxcd.io` Kustomization is a cluster object applied as it stands.
+    """
+    try:
+        docs = [d for d in sanitize.safe_load_all_bounded(text) if isinstance(d, dict)]
+    except (sanitize.YamlTooDeep, yaml.YAMLError, RecursionError):
+        return True  # named for kustomize and not readable as anything else
+    ours = any(str(d.get("apiVersion") or "").split("/")[0] == KUSTOMIZE_GROUP and "kind" in d for d in docs)
+    if ours:
+        return path.suffix not in {".yaml", ".yml"}
+    return not any("apiVersion" in d and "kind" in d for d in docs)
+
+
+def unrendered_reason(path: Path, text: str) -> str | None:
+    """Why a file is a template for manifests rather than a manifest, with the command that renders it; or None.
+
+    The ONE decision about unrendered input, asked by every directory walk (`_classify` for the gate and
+    `verify`, `cli._dir_yaml` for the audit family). Two shapes, one fact: what is deployed is not what is in
+    this file, so no verdict over the directory can be stated from it.
+
+    * a file under `templates/` of a Helm chart. `{{ .Values.privileged }}` is not a value;
+    * a kustomization (`KUSTOMIZATION_NAMES`) the walk has to decline as a file (`_kustomize_file`). It may
+      patch `privileged: true` into the hardened Deployment beside it, and that Deployment, read as it stands,
+      passes. One written as a document is the audit's to list under `notAudited` (`rules.unrendered`).
+
+    The reason carries the exact command, with the directory as the caller would type it, because "render the
+    chart with --chart" leaves the reader to work out which chart and which command.
+    """
+    chart = chart_of(path)
+    if chart is not None:
+        c = shlex.quote(_uri(chart))
+        return (
+            f"{UNRENDERED_HELM}: not audited. Run `kube-noob gate --chart {c}` or `kube-noob helm-audit {c}`, or "
+            f"`helm template <release> {c} | kube-noob gate -f -`: Helm fills this file in when the chart is "
+            "installed, so what it deploys is not in it yet"
+        )
+    if path.name in KUSTOMIZATION_NAMES and _kustomize_file(path, text):
+        d = shlex.quote(_uri(path.parent))
+        return (
+            f"{UNRENDERED_KUSTOMIZE}: run `kubectl kustomize {d} | kube-noob gate -f -` and gate that. Rendering "
+            "rewrites the objects it names (patches, images, namespaces, generators), so the files beside it are "
+            "not what is deployed"
+        )
+    return None
 
 
 def render(
@@ -432,7 +527,10 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                     # repository, so it made every real gate run incomplete: an alert on every repository is one
                     # nobody reads, which is a worse outcome than the gap it replaces. Reading the file to decide
                     # does not audit it and does not change which files are audited (G332).
-                    why = not_opened_reason(p, f, opened)
+                    text = f.read_text(encoding="utf-8", errors="replace") if f.name in KUSTOMIZATION_NAMES else ""
+                    why = (unrendered_reason(f, text) if text and not hidden else None) or not_opened_reason(
+                        p, f, opened
+                    )
                     if why is not None:
                         items.append((_uri(f), f.read_text(encoding="utf-8", errors="replace"), why))
                 # What the walk could not go into: a link out of this directory, a link to nothing, a directory
@@ -591,6 +689,18 @@ def run(
     sarif_reports = sarif_reports or []
     # One list, one marker: `forbidsVerdict` on the entry rather than a second list of files that could disagree
     # with this one (docs/review-classes.md class 9). Everything below derives from it.
+    # A chart template stops withholding the verdict when THIS run rendered its chart (`--chart`, whose Sources
+    # carry `chart`): the render is what is audited, and the template stays listed with that said. Any other
+    # chart's template still withholds it (G445).
+    rendered = [(Path(s.chart).resolve(), s.chart) for s in sources if s.chart and not s.skip]
+    sources = [
+        _replace(s, skip=f"{RENDERED_HELM} by --chart {shown}")
+        if s.skip
+        and s.skip.startswith(UNRENDERED_HELM)
+        and (shown := next((c for root, c in rendered if Path(s.uri).resolve().is_relative_to(root)), None))
+        else s
+        for s in sources
+    ]
     skipped = [
         {"file": s.uri, "why": s.skip, **({"forbidsVerdict": True} if forbids_verdict(s.skip) else {})}
         for s in sources
@@ -604,6 +714,16 @@ def run(
     if not sources and not containerfiles and not scanner_reports and not sarif_reports:
         if unreadable:
             raise GateError("nothing could be read: " + "; ".join(f"{u['file']}: {u['why']}" for u in unreadable))
+        unrendered = [s for s in blocking if str(s["why"]).startswith((UNRENDERED_HELM, UNRENDERED_KUSTOMIZE))]
+        if unrendered:
+            # `gate -f chart/` answered "nothing to check: pass manifests with -f", exit 2, about a directory
+            # that is a chart: there IS something to check, and the message did not say how (G445).
+            more = f"; and {len(unrendered) - 3} more" if len(unrendered) > 3 else ""
+            raise Unrendered(
+                "nothing was audited, because what was given has to be rendered first: "
+                + "; ".join(f"{s['file']}: {s['why']}" for s in unrendered[:3])
+                + more
+            )
         if blocking:
             # Beside the `unreadable` refusal, for the same reason: there is nothing to report a verdict on, and
             # an empty clean report would be the defect this fixes with the files removed.

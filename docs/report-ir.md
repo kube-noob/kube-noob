@@ -174,8 +174,9 @@ Until step 2 lands, G363 is the right patch to keep: it makes the two compliance
 - **Fixed in the same change (G365).** `policy reach` and MCP `check_network_policy` matched `kind: NetworkPolicy`
   without its group, so a `projectcalico.org/v3 NetworkPolicy` was evaluated as a Kubernetes one and answered
   DENIED while `audit` refused the object. A reader, not a renderer; it now asks `rules.refusal`.
-- **Not fixed: a decision.** `gate -f dir/` skips every file under a chart's `templates/` ("a Helm template",
-  `forbidsVerdict` false). A refused, privileged Deployment in plain YAML there, beside a clean Pod, gives
+- **Decided since (G445): an unrendered chart forbids a verdict, in every command, unless `--chart` renders it in
+  the same run.** What follows is the measurement that was left open here. `gate -f dir/` skipped every file under
+  a chart's `templates/` ("a Helm template", `forbidsVerdict` false). A refused, privileged Deployment in plain YAML there, beside a clean Pod, gives
   `gate` `passed`, exit 0, "gate passed", 16 OSCAL objectives satisfied and a receipt with `exitCode: 0`; `audit -f`
   on the same directory exits 1 undetermined and `verify -f` exits 5 not-determined. The file is named under
   `skipped` and `notRun`. Whether an unrendered chart forbids a verdict is the muted-alert question G325 recorded

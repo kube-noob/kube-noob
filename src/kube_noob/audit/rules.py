@@ -40,6 +40,7 @@ from kube_noob.audit.podspec import (
     selector_decides,
     selector_matches,
     unread_pod_specs,
+    unrendered,
 )
 from kube_noob.audit.quantity import parse_quantity
 from kube_noob.audit.rbac_legacy import OPENSHIFT_RBAC_GROUP, legacy_rbac
@@ -477,7 +478,7 @@ class AuditContext:
                 # `unread_reason` last and for EVERY kind. It used to be asked only of a kind outside
                 # WORKLOAD_KINDS, so a kind with a reader was never asked whether the reader had read all of it
                 # (G360).
-                why = refusal(d) or kind_refusal(d) or unread_reason(d)
+                why = refusal(d) or kind_refusal(d) or unread_reason(d) or unrendered(d)
                 if why is not None:
                     out.append((d, why))
             self._not_audited = out
