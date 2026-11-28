@@ -1320,9 +1320,11 @@ def reach_result(
 def reach_manifests(text: str, workload: str, namespace: str | None = None, **kw: Any) -> dict[str, Any]:
     from kube_noob.yamlio import load_documents
 
+    docs = load_documents(text)
+    ap.refuse_if_no_objects(docs)  # as `scan_manifests`: text with no object in it is refused, not answered (G443)
     # `-n` places objects without a namespace there, as `kubectl apply -n` does (fourth review, D1).
     return reach(
-        ap.Inventory.from_documents((d.data for d in load_documents(text)), default_namespace=namespace),
+        ap.Inventory.from_documents((d.data for d in docs), default_namespace=namespace),
         workload,
         namespace,
         **kw,

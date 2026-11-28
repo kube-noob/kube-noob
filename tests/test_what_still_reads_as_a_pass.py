@@ -292,9 +292,12 @@ def _verify(d: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str,
 def test_a_template_that_is_not_yet_yaml_keeps_the_gate_s_answer(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The control: kubectl cannot send this file, so it is not a change `verify` has to judge."""
+    """kubectl cannot send this file, and the gate's answer about it is `verify`'s too. That answer was "skipped,
+    and the verdict stands", so this asserted `allow`, exit 0, over a chart nobody rendered: the assertion was
+    the defect (G445). The gate withholds its verdict for an unrendered template, and so does `verify`."""
     code, out = _verify(_chart(tmp_path / "repo", "apiVersion: v1\nkind: Pod\n{{- if .Values.x }}\n"), capsys)
-    assert (code, out["verdict"]) == (0, "allow"), out
+    assert (code, out["verdict"]) == (5, "not-determined"), out
+    assert any("pod.yaml" in u and "--chart" in u for u in out["notDetermined"]), out["notDetermined"]
 
 
 def test_a_manifest_under_templates_is_checked_because_kubectl_would_send_it(
@@ -311,7 +314,7 @@ def test_the_gate_s_own_answer_about_a_chart_is_unchanged(tmp_path: Path) -> Non
     reason is about a chart someone will render with `--chart`; `verify` is about what kubectl sends."""
     d = _chart(tmp_path / "repo", PRIVILEGED_YAML)
     whys = {Path(s.uri).name: s.skip for s in gate.collect([str(d)], lambda p: Path(p).read_text()) if s.skip}
-    assert whys["pod.yaml"] == "a Helm template: render the chart with --chart"
+    assert whys["pod.yaml"].startswith(gate.UNRENDERED_HELM + ":") and "--chart" in whys["pod.yaml"]
     seen = {Path(s.uri).name: s.skip for s in verify.collect([str(d)], lambda p: Path(p).read_text())}
     assert seen["pod.yaml"] is None and seen["Chart.yaml"] is not None
 

@@ -767,3 +767,23 @@ def pdb_allows_no_disruption(spec: dict[str, Any], replica_count: int) -> bool:
         return mu <= 0
     ma = _scaled(spec.get("minAvailable"), replica_count)
     return ma is not None and ma >= replica_count
+
+
+#: A document in kustomize's own API group: a kustomization (or a Component) that reached the audit as a document.
+#: It is not an object any cluster stores. It is an instruction to rewrite the objects it names, so those objects,
+#: as they stand in this input, are not what is deployed: a hardened Deployment beside a Kustomization whose patch
+#: adds `privileged: true` passed the gate (G446). A fixed phrase (class 7), written to follow the object's name,
+#: with the command first because every view bounds the row. Here beside `unread_pod_specs` -- the other reason an
+#: object in the input is one no rule read -- and not in `rules`, which is at the plugin directory's file size cap.
+KUSTOMIZE_GROUP = "kustomize.config.k8s.io"
+UNRENDERED_KUSTOMIZATION = (
+    "is a kustomize file: audit the output of `kubectl kustomize <dir>` instead, because rendering rewrites the "
+    "objects it names and this input is not what is deployed"
+)
+
+
+def unrendered(doc: Document) -> str | None:
+    """The fixed phrase for a kustomize file given as a document, or `None`. Flux's Kustomization is in another
+    group (`kustomize.toolkit.fluxcd.io`) and is an object applied as it stands."""
+    raw = doc.data.get("apiVersion") if isinstance(doc.data, dict) else None
+    return UNRENDERED_KUSTOMIZATION if isinstance(raw, str) and raw.split("/")[0] == KUSTOMIZE_GROUP else None

@@ -1212,6 +1212,11 @@ class Toolkit:
         )
 
     def validate(self, p: ManifestsIn) -> dict[str, Any]:
+        from kube_noob.audit.engine import refuse_if_not_manifests
+
+        # `kube-noob validate` refuses text with no object in it and this tool, its other front door, scored it
+        # (G443). One guard, the audit's own, in every tool that states an answer over `manifests`.
+        refuse_if_not_manifests(p.manifests)
         r = analyze(p.manifests, p.platform, p.version, stages={Stage.VALIDATE})
         return r.as_dict()
 
@@ -1548,6 +1553,9 @@ class Toolkit:
         return answer
 
     def red_team(self, p: ManifestsIn) -> dict[str, Any]:
+        from kube_noob.audit.engine import refuse_if_not_manifests
+
+        refuse_if_not_manifests(p.manifests)  # `scenarios: []` for a comment was an empty list, not an answer (G443)
         r = analyze(p.manifests, p.platform, p.version)
         return {
             "platform": r.platform,
@@ -1587,6 +1595,11 @@ class Toolkit:
             raise ValueError(str(exc)) from exc
 
     def fix(self, p: FixIn) -> dict[str, Any]:
+        from kube_noob.audit.engine import refuse_if_not_manifests
+
+        # `after.score: 100.0` for a comment and 90.0 for a Helm values file: G133's defect, alive in the one
+        # tool that kept its own way in (G443).
+        refuse_if_not_manifests(p.manifests)
         k8s = k8s_version_for(p.platform, p.version)
         res = fix_manifests(p.manifests, platform=p.platform, k8s_version=k8s, harden=p.harden)
         after = analyze(res.yaml(), p.platform, p.version)
@@ -2066,10 +2079,10 @@ class Toolkit:
         from kube_noob import attack_paths, blast_radius
         from kube_noob.yamlio import load_documents
 
+        docs = load_documents(p.manifests)
+        attack_paths.refuse_if_no_objects(docs)  # as `blast_radius.reach_manifests`, the command's (G443)
         # `namespace` places objects without one there, as `kubectl apply -n` does (G273, fourth review D1).
-        inv = attack_paths.Inventory.from_documents(
-            (d.data for d in load_documents(p.manifests)), default_namespace=p.namespace
-        )
+        inv = attack_paths.Inventory.from_documents((d.data for d in docs), default_namespace=p.namespace)
         out = blast_radius.reach_result(inv, p.workload, p.namespace, mermaid=p.mermaid, whole_bundle=p.whole_bundle)
         self._observe([f"posture-reach:{len(out['notDetermined'])}"])
         return out
