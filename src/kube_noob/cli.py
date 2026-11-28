@@ -79,11 +79,13 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     UTF-8 or not YAML then decided the outcome for every other file in the directory, and said so against a line of
     the combined text rather than against a path anyone could open.
     """
-    from kube_noob.gate import _identity, not_opened_reason, unreadable_reason
+    from kube_noob.gate import _identity, not_opened_reason, unreadable_reason, walk
 
     ok: list[tuple[str, str]] = []
     bad: list[dict[str, str]] = []
-    every = [f for f in sorted(d.rglob("*")) if f.is_file()]
+    # The gate's own walk, so the two cannot answer differently about a link neither follows: `sub -> ../outside`
+    # was in no list here, and `audit -f k8s/` scored 100.0 over the privileged Pod behind it (G444).
+    every, gaps = walk(d)
     opened = {ident for f in every if f.suffix in {".yaml", ".yml"} and (ident := _identity(f)) is not None}
     for f in every:
         rel = str(f.relative_to(d))
@@ -105,6 +107,7 @@ def _dir_yaml(d: Path) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
             bad.append({"path": rel, "why": why})
         else:
             ok.append((rel, text))
+    bad += [{"path": str(entry.relative_to(d)), "why": why} for entry, why in gaps]
     return ok, bad
 
 
@@ -4804,11 +4807,13 @@ def _yaml_files(paths: list[str]) -> list[tuple[str, str]]:
         if f == "-":
             out.append(("-", sys.stdin.read()))
         elif p.is_dir():
-            out += [
-                (str(x), x.read_text(encoding="utf-8"))
-                for x in sorted(p.rglob("*"))
-                if x.suffix in {".yaml", ".yml"} and x.is_file()
-            ]
+            # The audit family's own read of a directory, so a policy behind a link the walk does not follow, or
+            # in a chart nobody rendered, is a policy nobody checked: "every policy migrates" over the rest is the
+            # answer about less (G350, G444, G445).
+            found, bad = _dir_yaml(p)
+            if bad:
+                raise _UnreadInput(f, bad)
+            out += [(str(p / rel), text) for rel, text in found]
         else:
             out.append((str(p), p.read_text(encoding="utf-8")))
     return out
@@ -5091,6 +5096,15 @@ def _operator_files(
                 unreadable.append({"path": rel, "reason": " ".join(str(exc).split())[:300]})
                 continue
             sources.append((rel, docs))
+        from kube_noob.gate import walk
+
+        # A link to a directory is in no suffix filter, so the loop above never saw it (G444). A link to a file
+        # is already listed by the loop, whether or not it resolves.
+        unreadable += [
+            {"path": str(entry.relative_to(d)), "reason": " ".join(why.split(": ", 1)[-1].split())[:300]}
+            for entry, why in walk(d)[1]
+            if not (entry.is_symlink() and entry.name.lower().endswith(_OPERATOR_SUFFIXES))
+        ]
     return sources, unreadable, refused
 
 

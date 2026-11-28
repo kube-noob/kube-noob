@@ -14,6 +14,7 @@ not run until the scanner reader (requirements R5.1) is built.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +189,98 @@ def _json_stream(text: str) -> list[Any]:
         return []
 
 
+#: The suffixes a manifest is written under: what `not_opened_reason` opens to look, and what makes a link that
+#: points at nothing worth naming.
+MANIFEST_SUFFIXES = frozenset({".yaml", ".yml", ".json"})
+
+
+def _resolves_inside(link: Path, real_root: Path) -> bool:
+    try:
+        return link.resolve(strict=True).is_relative_to(real_root)
+    except (OSError, RuntimeError):  # dangling, or a loop of links: it resolves to nothing, so not inside
+        return False
+
+
+def _unresolved_uri(path: Path) -> str:
+    """`_uri` for a link: its own name under its real parent, never the name of what it points at."""
+    return _uri(path.parent) + "/" + path.name if _uri(path.parent) != "." else path.name
+
+
+def walk(root: Path, also: tuple[Path, ...] = ()) -> tuple[list[Path], list[tuple[Path, str]]]:
+    """Every file under ``root`` in sorted order, and every entry the walk could not go into, with the reason.
+
+    The ONE directory walk for commands that state an answer over a directory: the gate's (`collect`), the audit
+    family's (`cli._dir_yaml`, so `audit`, `validate`, `redteam`, `fix`, `ksi`, `posture`, `policy reach`, `vuln
+    threat`, `protocol`), `policy migrate`'s and, for what it does not follow, `verify`'s. Each used to build its
+    own list -- `[f for f in sorted(d.rglob("*")) if f.is_file()]` twice, `os.walk` twice -- and none of them had
+    a word for the one entry type a walk never descends: `rglob` does not enter a symbolic link to a directory,
+    and the link itself fails `is_file()`, so it reached no list at all. A ConfigMap beside `sub -> ../outside`,
+    a privileged hostPID Pod, scored 100.0, gated `passed`, verified `allow`, read `satisfied` in OSCAL and gave
+    "0 attack paths" under `--require-complete` (G444).
+
+    The rule, stated once so every command gives the same answer: **a link is never followed out of the directory
+    that was named.** Following is what makes a walk unbounded and lets it loop, and a directory given to a gate
+    is often somebody else's pull request -- `sub -> /` would have this process read the machine. So:
+
+    * a link to a directory that resolves INSIDE ``root`` is another name for a directory the walk reads under
+      its real name. Nothing is lost, nothing is said, and a loop (`loop -> .`) is this case;
+    * a link to a directory that resolves OUTSIDE ``root`` is not entered, and is returned here as a gap. Always,
+      without looking inside to see whether it holds a manifest: looking is following;
+    * a link to a FILE is one file, the one it names, and is read like any other (a ConfigMap volume mount is
+      made of them, G332). `verify` alone refuses those too, because it answers for `kubectl apply`;
+    * a link that points at nothing is a gap when it is named like a manifest (`broken.yaml -> nowhere.yaml`),
+      and otherwise is not: `node_modules/.bin/x` dangling in a checkout nobody installed is not unread input;
+    * a directory that cannot be listed is a gap. `os.walk` drops it without a word unless it is given an
+      ``onerror``.
+
+    ``also``: the other directories named in the same command. A link into one of them is read there, under its
+    real name, so it is not a gap -- which is what makes the remedy in the message work: `gate -f k8s -f base`
+    for `k8s/base -> ../base`.
+
+    Every gap's reason starts with `NOT_OPENED_PREFIX`, which forbids a verdict (`SKIP_REASONS`).
+    """
+    files: list[Path] = []
+    gaps: list[tuple[Path, str]] = []
+    real_root = root.resolve()
+    read_elsewhere = tuple(d.resolve() for d in also)
+
+    def unlisted(exc: OSError) -> None:
+        where = Path(exc.filename) if isinstance(exc.filename, str) else root
+        gaps.append(
+            (
+                where,
+                f"{NOT_OPENED_PREFIX}: this directory cannot be listed ({exc.__class__.__name__}), so nothing under "
+                "it was read",
+            )
+        )
+
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False, onerror=unlisted):
+        for name in dirnames:
+            entry = Path(dirpath, name)
+            if entry.is_symlink() and not any(_resolves_inside(entry, r) for r in (real_root, *read_elsewhere)):
+                gaps.append(
+                    (
+                        entry,
+                        f"{NOT_OPENED_PREFIX}: a symbolic link to a directory outside the one named, which the "
+                        "walk does not follow, so nothing under it was read; name the directory it points at "
+                        "with -f as well to read it",
+                    )
+                )
+        for name in filenames:
+            entry = Path(dirpath, name)
+            if entry.is_file():
+                files.append(entry)
+            elif entry.is_symlink() and not entry.exists() and entry.suffix.lower() in MANIFEST_SUFFIXES:
+                gaps.append(
+                    (
+                        entry,
+                        f"{NOT_OPENED_PREFIX}: a symbolic link that points at nothing, so the manifest it is "
+                        "named for was not read; restore what it points at, or remove the link",
+                    )
+                )
+    return sorted(files), sorted(gaps)
+
+
 def not_opened_reason(root: Path, f: Path, opened: set[tuple[int, int]], *, reads_hidden: bool = False) -> str | None:
     """Why a file a directory walk left alone is a gap in the answer, or None when it is not one.
 
@@ -201,7 +294,7 @@ def not_opened_reason(root: Path, f: Path, opened: set[tuple[int, int]], *, read
     repository with a `.github/workflows/ci.yml` incomplete (G332). `reads_hidden` is for a walk that enters
     dot-directories and reads dot-files, so that only the extension can be why it left a file alone.
     """
-    if f.suffix.lower() not in {".yaml", ".yml", ".json"} or not _holds_a_manifest(f):
+    if f.suffix.lower() not in MANIFEST_SUFFIXES or not _holds_a_manifest(f):
         return None
     if _identity(f) in opened:
         return None  # the same file under another name: already audited, so not a gap
@@ -302,6 +395,7 @@ def collect(paths: list[str], read: Any) -> list[Source]:
     out: list[Source] = []
     total = 0
     bad: dict[str, str | None] = {}
+    named = tuple(d for d in (Path(raw) for raw in paths if raw != "-") if d.is_dir())
     for raw in paths:
         items: list[tuple[str, str, str | None]]
         if raw == "-":
@@ -317,7 +411,7 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                 # comment names as the reason it skips dot-directories (G332).
                 # Two passes, because `sorted` puts `..data/` and `..2026_.../` BEFORE `gate.yaml`: the dot
                 # copy is reached first, and a set filled as we go would still be empty for it.
-                every = [f for f in sorted(p.rglob("*")) if f.is_file()]
+                every, gaps = walk(p, named)
                 opened: set[tuple[int, int]] = {
                     ident
                     for f in every
@@ -341,6 +435,9 @@ def collect(paths: list[str], read: Any) -> list[Source]:
                     why = not_opened_reason(p, f, opened)
                     if why is not None:
                         items.append((_uri(f), f.read_text(encoding="utf-8", errors="replace"), why))
+                # What the walk could not go into: a link out of this directory, a link to nothing, a directory
+                # it could not list. No text, because none was read; the reason forbids the verdict (G444).
+                items += [(_unresolved_uri(entry), "", why) for entry, why in gaps]
                 for uri, text, why in items:
                     if why is None:
                         bad[uri] = unreadable_reason(text)

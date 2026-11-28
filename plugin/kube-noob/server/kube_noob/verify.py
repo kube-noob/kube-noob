@@ -2720,6 +2720,7 @@ def collect(paths: list[str], read: Any) -> list[Any]:
 
     out: list[Any] = []
     total = 0
+    named = tuple(d for d in (Path(raw) for raw in paths if raw != "-") if d.is_dir())
     for raw in paths:
         if raw == "-":
             text = read("-")
@@ -2728,6 +2729,13 @@ def collect(paths: list[str], read: Any) -> list[Any]:
             continue
         p = Path(raw)
         if p.is_dir() and not p.is_symlink():
+            # What no walk goes into, from the walk every other command uses: a link to a directory outside this
+            # one was in `dirnames`, which this loop sorts and never reads, so `verify -f k8s/` answered `allow`
+            # with a privileged Pod behind `sub -> ../outside` (G444). A link to a FILE is listed by the loop
+            # below, in `verify`'s own words, so it is not listed twice.
+            for entry, gap in gate.walk(p, named)[1]:
+                if not (entry.is_symlink() and os.path.splitext(entry.name)[1] in KUBECTL_EXTENSIONS):
+                    out.append(gate.Source(gate._unresolved_uri(entry), "", unreadable=gap))
             for dirpath, dirnames, filenames in os.walk(p, followlinks=False):
                 dirnames.sort()
                 for name in sorted(filenames):
@@ -2735,8 +2743,12 @@ def collect(paths: list[str], read: Any) -> list[Any]:
                     if os.path.splitext(name)[1] not in KUBECTL_EXTENSIONS:
                         continue
                     if f.is_symlink():
+                        # Named as the link, not as what it points at: `_uri` resolves, so `broken.yaml ->
+                        # nowhere.yaml` was reported as `nowhere.yaml`, a file that is not there to open (G444).
                         out.append(
-                            gate.Source(gate._uri(f), "", unreadable="a symbolic link, which verify does not follow")
+                            gate.Source(
+                                gate._unresolved_uri(f), "", unreadable="a symbolic link, which verify does not follow"
+                            )
                         )
                         continue
                     try:

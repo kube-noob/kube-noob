@@ -20,12 +20,14 @@ already right in at least one command: the defect was that the others did not ag
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from kube_noob import gate, verify
 from kube_noob import toolkit as tk
 from kube_noob.cli import main
 from kube_noob.errors import KubeNoobError
@@ -305,3 +307,207 @@ def test_a_values_block_above_a_manifest_does_not_refuse_the_manifest(settings: 
     """`refuse_if_not_manifests` needs ONE object: the guard must not become a refusal of mixed input."""
     out = Toolkit(settings).posture_scan(tk.PostureScanIn(manifests="replicas: 2\n---\n" + EXPOSED))
     assert out["total"] >= 1
+
+
+# -- G444: a symbolic link the walk does not follow is named, in every command that walks a directory ------------
+
+CONFIGMAP = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: cm, namespace: default}\ndata: {a: b}\n"
+
+
+def _linked_out(tmp_path: Path, target: str = "outside", body: str = PRIVILEGED_POD) -> Path:
+    """`k8s/good.yaml` beside `k8s/sub -> ../outside`, which holds the manifest nothing would have read."""
+    root = tmp_path / "k8s"
+    root.mkdir()
+    (root / "good.yaml").write_text(CONFIGMAP)
+    (tmp_path / target).mkdir()
+    (tmp_path / target / "bad.yaml").write_text(body)
+    os.symlink(f"../{target}", root / "sub")
+    return root
+
+
+def _cli_over_a_directory(d: str, tmp_path: Path) -> dict[str, list[str]]:
+    """Every command that walks a directory given with -f and states an answer over what it found."""
+    return {
+        **_cli_over_one_file(d, tmp_path),
+        "audit --format json": ["--format", "json", "audit", "-f", d],
+        "audit --format sarif": ["--format", "sarif", "audit", "-f", d],
+        "audit --oscal": ["audit", "-f", d, "--oscal"],
+        "gate --format json": ["--format", "json", "gate", "-f", d],
+        "gate --oscal": ["gate", "-f", d, "--oscal"],
+        "gate --quiet": ["gate", "-f", d, "--quiet"],
+        "policy migrate-check": ["policy", "migrate-check", "-f", d],
+    }
+
+
+#: What a reader of stdout takes for a clean answer, per command. Exit 5 beside one of these is still a false pass
+#: for whoever reads the report and not the code (G340).
+CLEAN_WORDS = ("gate passed", "verify: allow", "score=100", '"satisfied"', "0 attack paths", '"passed": true')
+
+
+def _assert_not_read(code: int, out: str, err: str, name: str, command: str) -> None:
+    assert code == 5, f"{command}: exit {code}, want 5 (no verdict reached)\n{out[:400]}\n{err[:400]}"
+    assert name in out + err, f"{command}: `{name}` is not named anywhere in the output\n{out[:400]}\n{err[:400]}"
+    said = [w for w in CLEAN_WORDS if w in out]
+    assert not said, f"{command}: stdout reads as clean ({said}) beside exit 5"
+
+
+@pytest.mark.parametrize("command", sorted(_cli_over_a_directory("x", Path("."))))
+def test_a_link_to_a_directory_outside_the_one_named_is_not_a_clean_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """The repro: a ConfigMap beside `sub -> ../outside`, a privileged hostPID Pod. `audit` scored 100.0, the
+    gate passed, `verify` allowed, OSCAL said `satisfied`, and `posture scan --require-complete` exited 0."""
+    root = _linked_out(tmp_path)
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    _assert_not_read(code, out, err, "sub", command)
+    assert "symbolic link" in out + err
+
+
+def test_posture_scan_does_not_report_zero_paths_past_a_link(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The red team's second layout: an internet-facing LoadBalancer in front of a privileged hostPID Deployment,
+    behind `base -> ../ex_out`. The same objects named directly are two attack paths."""
+    root = _linked_out(tmp_path, "ex_out", EXPOSED)
+    code, out, err = _run(["posture", "scan", "-f", str(root), "--require-complete"], capsys)
+    _assert_not_read(code, out, err, "sub", "posture scan")
+    code, out, _ = _run(["posture", "scan", "-f", str(tmp_path / "ex_out")], capsys)
+    assert code == 0 and "attack path" in out and not out.startswith("0 "), out
+
+
+@pytest.mark.parametrize("command", ["audit", "gate", "verify", "posture scan", "fix", "validate"])
+def test_a_dangling_link_named_like_a_manifest_is_not_a_clean_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """`broken.yaml -> nowhere.yaml`: `verify` said not-determined and `audit` and `gate` said clean -- three
+    commands, two answers about one directory."""
+    root = tmp_path / "k8s"
+    root.mkdir()
+    (root / "good.yaml").write_text(CONFIGMAP)
+    os.symlink("nowhere.yaml", root / "broken.yaml")
+    code, out, err = _run(_cli_over_a_directory(str(root), tmp_path)[command], capsys)
+    _assert_not_read(code, out, err, "broken.yaml", command)
+
+
+def test_the_gate_report_carries_the_link_for_every_renderer(tmp_path: Path) -> None:
+    """In the report, not only on stderr: `skipped` with `forbidsVerdict`, so the Markdown, the SARIF, the code
+    quality file, the HTML page and OSCAL all read it from the rows they already read (G325, G338)."""
+    root = _linked_out(tmp_path)
+    rep = gate.run(gate.collect([str(root)], read=lambda _: ""), fail_on="never")
+    assert rep["incomplete"] is True and rep["passed"] is False and gate.verdict_word(rep) == "incomplete"
+    rows = [s for s in rep["skipped"] if s.get("forbidsVerdict")]
+    assert len(rows) == 1 and rows[0]["file"].endswith("k8s/sub") and "symbolic link" in rows[0]["why"]
+    assert "gate incomplete" in gate.markdown(rep) and "k8s/sub" in gate.markdown(rep)
+    sarif = json.dumps(gate.sarif_of_gate(rep))
+    assert "k8s/sub" in sarif and gate.NOT_READ_RULE in sarif
+    assert any("sub" in n for n in rep["notRun"]), "the CI wrappers read `notRun`"
+
+
+def test_a_link_that_stays_inside_the_directory_is_another_name_and_not_a_gap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control, and the rule: a link is not followed, and one that resolves INSIDE the directory named needs
+    no following -- the walk reads what it points at under its real name. Reported once, exit 1 for the findings,
+    never 5: an alias is not an unread file."""
+    root = tmp_path / "k8s"
+    (root / "real").mkdir(parents=True)
+    (root / "real" / "bad.yaml").write_text(PRIVILEGED_POD)
+    (root / "good.yaml").write_text(CONFIGMAP)
+    os.symlink("real", root / "alias")
+    os.symlink(".", root / "loop")
+    code, out, err = _run(["--format", "json", "audit", "-f", str(root)], capsys)
+    assert code == 1, err
+    doc = json.loads(out)
+    assert doc["unreadable"] == [] if "unreadable" in doc else True
+    assert len([f for f in doc["findings"] if f["ruleId"] == "KN-S001"]) == 1, "the alias was read as a second copy"
+    code, out, err = _run(["--format", "json", "gate", "-f", str(root)], capsys)
+    assert code == 1 and not json.loads(out)["incomplete"], err
+    code, out, err = _run(["--format", "json", "verify", "-f", str(root)], capsys)
+    assert code == 1 and json.loads(out)["verdict"] == "deny", (out, err)
+
+
+@pytest.mark.parametrize("command", ["gate", "verify"])
+def test_naming_the_directory_a_link_points_at_is_the_remedy_the_message_gives(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
+) -> None:
+    """The message says "name the directory it points at with -f as well". Doing so read the directory and still
+    reported the link, so the remedy did not work: a link into another directory of the SAME command is read
+    there, and the answer is the verdict on what is in it -- exit 1 for the privileged Pod, not 5."""
+    root = _linked_out(tmp_path)
+    code, out, err = _run(["--format", "json", command, "-f", str(root), "-f", str(tmp_path / "outside")], capsys)
+    assert code == 1, (code, err)
+    assert any(f["ruleId"] == "KN-S001" for f in json.loads(out)["findings"])
+    assert "symbolic link" not in out + err
+
+
+def test_a_real_subdirectory_is_still_read(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "k8s"
+    (root / "sub").mkdir(parents=True)
+    (root / "good.yaml").write_text(CONFIGMAP)
+    (root / "sub" / "bad.yaml").write_text(PRIVILEGED_POD)
+    for argv in (["audit", "-f", str(root)], ["gate", "-f", str(root)], ["verify", "-f", str(root)]):
+        code, out, err = _run(argv, capsys)
+        assert code == 1 and "KN-S001" in out, (argv, code, err)
+
+
+def test_a_configmap_volume_mount_is_still_one_copy_of_each_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The layout that made G332 dedupe by identity: `key -> ..data/key`, `..data -> ..<timestamp>`. Both links
+    resolve inside the mount, so neither is a gap, and the Tekton Task that gates a mounted ConfigMap still
+    passes."""
+    root = tmp_path / "mount"
+    (root / "..2026_11_28").mkdir(parents=True)
+    (root / "..2026_11_28" / "cm.yaml").write_text(CONFIGMAP)
+    os.symlink("..2026_11_28", root / "..data")
+    os.symlink("..data/cm.yaml", root / "cm.yaml")
+    code, out, err = _run(["--format", "json", "gate", "-f", str(root), "--fail-on", "high"], capsys)
+    doc = json.loads(out)
+    assert code == 0 and doc["passed"] and not doc["incomplete"] and not doc["skipped"], (doc["skipped"], err)
+    from kube_noob.cli import _dir_yaml
+
+    assert _dir_yaml(root)[1] == [], "the audit's walk reported a link that stays inside the mount"
+
+
+def test_a_link_that_cannot_be_a_manifest_and_points_nowhere_is_not_reported(tmp_path: Path) -> None:
+    """The other direction (G332): `node_modules/.bin/x -> ../gone/x.js` is in every checkout that was not
+    installed, and a gate held incomplete by it is one every reader turns off. Dangling AND not named like a
+    manifest: there is nothing there to have read."""
+    root = tmp_path / "k8s"
+    root.mkdir()
+    (root / "good.yaml").write_text(CONFIGMAP)
+    os.symlink("../gone/tool.js", root / "tool")
+    files, gaps = gate.walk(root)
+    assert [f.name for f in files] == ["good.yaml"] and gaps == []
+
+
+def test_every_walk_asks_the_one_function(tmp_path: Path) -> None:
+    """Class 9. Four walks each had their own idea of a link -- `rglob` and `is_file()` twice, `os.walk` twice --
+    and three of them had none. The gate's, the audit family's and `verify`'s all name the link now, from
+    `gate.walk`."""
+    from kube_noob.cli import _dir_yaml
+
+    root = _linked_out(tmp_path)
+    _, gaps = gate.walk(root)
+    assert [(p.name, why.startswith(gate.NOT_OPENED_PREFIX)) for p, why in gaps] == [("sub", True)]
+    assert [b["path"] for b in _dir_yaml(root)[1]] == ["sub"]
+    assert [Path(s.uri).name for s in gate.collect([str(root)], lambda _: "") if s.skip] == ["sub"]
+    assert [Path(s.uri).name for s in verify.collect([str(root)], lambda _: "") if s.unreadable] == ["sub"]
+
+
+def test_a_directory_that_cannot_be_listed_is_named(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The walk's other silence: `os.walk` drops a directory it cannot list unless it is given somewhere to say
+    so. Run as root in CI, so the refusal is injected rather than made with chmod."""
+    root = tmp_path / "k8s"
+    (root / "locked").mkdir(parents=True)
+    (root / "good.yaml").write_text(CONFIGMAP)
+    real = os.scandir
+
+    def scandir(path: Any = ".") -> Any:
+        if str(path).endswith("locked"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    _, gaps = gate.walk(root)
+    assert [(p.name, "cannot be listed" in why) for p, why in gaps] == [("locked", True)]
