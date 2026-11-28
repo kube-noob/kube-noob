@@ -414,11 +414,12 @@ def model(
     """The threat model of every application in ``text`` (YAML manifests). ``vulnerable_images`` maps a workload ref
     to a one-line vulnerability summary (from ``kube-noob vuln report``), or to ``""`` when its report shows nothing
     fixable at high or above or exploited."""
-    from kube_noob.attack_paths import object_ref
+    from kube_noob.attack_paths import object_ref, refuse_if_no_objects
     from kube_noob.audit.rules import RULES
     from kube_noob.yamlio import load_documents
 
     docs = load_documents(text)
+    refuse_if_no_objects(docs)  # `applications: []` for a values file read as "no threats" (G443)
     inv = Inventory.from_documents((d.data for d in docs), default_namespace=default_namespace)
     reach = workload_reach(inv)
     audit = _audit(docs, platform, version)

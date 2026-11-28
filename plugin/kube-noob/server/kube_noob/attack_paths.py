@@ -2827,10 +2827,31 @@ def refused_lines(inv: Inventory) -> list[str]:
     return sorted(set(inv.refused) | {line for _, line in _malformed_fronts(inv)})
 
 
+def refuse_if_no_objects(docs: list[Any]) -> None:
+    """The audit's refusal of text that holds no Kubernetes object, for the readers of an inventory.
+
+    An empty file, a comment or a Helm values file holds no object, so there is no exposure to find and no
+    workload to reach: the scan answered "0 attack paths from 0 exposures" with `notRead: []`, and
+    `--require-complete` exited 0 on it -- the sentence a hardened cluster earns. `audit` refuses the same text
+    (`refuse_if_not_manifests`), and this raises that refusal, in the functions the commands and the MCP tools
+    share (G443).
+
+    One difference from the audit's guard, and it is deliberate: an object with a `kind` and no `apiVersion` is an
+    object here. The in-cluster backend's list items carry none, the inventory ranks them, and `refusal` returns
+    None for them on purpose (G330) -- the audit's guard asks for both keys and would have emptied that input.
+    """
+    from kube_noob.audit.engine import refuse_if_not_manifests
+
+    if any(isinstance(d.data, dict) and isinstance(d.data.get("kind"), str) and d.data["kind"] for d in docs):
+        return
+    refuse_if_not_manifests(docs)
+
+
 def scan_manifests(text: str, *, top: int = DEFAULT_TOP, default_namespace: str | None = None) -> dict[str, Any]:
     from kube_noob.yamlio import load_documents
 
     docs = load_documents(text)
+    refuse_if_no_objects(docs)
     return scan(Inventory.from_documents((d.data for d in docs), default_namespace=default_namespace), top=top)
 
 

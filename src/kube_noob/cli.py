@@ -3645,10 +3645,11 @@ def _dispatch(a: argparse.Namespace, s: Settings) -> int:
         if unreadable and not getattr(a, "skip_unreadable", False):
             _refuse_unreadable(unreadable)
             return 5
-        if a.cmd in {"audit", "validate", "redteam"}:
-            from kube_noob.audit.engine import refuse_if_not_manifests
+        # Every command of this family, `fix` included: it was the one left out, so `fix -f values.yaml` printed
+        # the file back with `score: 90.0` and `fix` on a comment scored 100.0 at exit 0 (G443).
+        from kube_noob.audit.engine import refuse_if_not_manifests
 
-            refuse_if_not_manifests(text)
+        refuse_if_not_manifests(text)
         if a.cmd == "audit":
             from kube_noob.audit.exceptions import ExceptionsError
 
@@ -4850,9 +4851,13 @@ def _snapshot_from_args(a: argparse.Namespace, s: Settings) -> dict[str, Any]:
         raise ConfigError("pass the manifests with -f (repeat for several), or --live with --cluster-enabled")
     if a.namespaces:
         raise ConfigError("-n works with --live; with -f every namespace in the files is recorded")
+    from kube_noob.attack_paths import refuse_if_no_objects
     from kube_noob.yamlio import load_documents
 
     docs = load_documents("\n---\n".join(_read(f) for f in a.file))
+    # A snapshot of "0 objects, 0 findings" is a baseline every later diff is measured against, and it was
+    # written for an empty file, a comment and a Helm values file (G443).
+    refuse_if_no_objects(docs)
     return drift.snapshot(
         (d.data for d in docs), source="manifests", platform=platform, version=a.pversion, exceptions=rev
     )
