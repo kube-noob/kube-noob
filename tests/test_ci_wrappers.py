@@ -421,10 +421,11 @@ def test_a_skipped_input_is_a_gap_in_the_gate_report_and_in_the_wrapper(tmp_path
     _run(tmp_path, 0, _report(), env=real)  # writes the stub; the real binary is first on PATH from here on
     (tmp_path / "bin" / "kube-noob").unlink()
     proc, sinks = _run(tmp_path, 0, _report(), env=real)
-    assert proc.returncode == 0, proc.stderr
+    # An unrendered chart withholds the verdict whatever --fail-on says (G445): exit 5, never "passed".
+    assert proc.returncode == 5, proc.stderr
     out = _outputs(sinks)
-    assert out["result"] == "passed" and out["evidence"] == "incomplete"
-    assert "templates/p.yaml" in out["because"] and "Helm template" in out["because"], out["because"]
+    assert out["result"] == "evidence-incomplete" and out["evidence"] == "incomplete", out
+    assert "templates/p.yaml" in proc.stdout + proc.stderr + out["because"], (proc.stdout, out["because"])
 
 
 def test_markdown_in_a_file_name_cannot_render_in_the_step_summary(tmp_path: Path) -> None:

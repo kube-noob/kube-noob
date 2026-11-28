@@ -8,7 +8,7 @@
  "evals/problems.py": 3,
  "evals/reward.py": 1,
  "evals/selftest.py": 2,
- "generate/helm.py": 3,
+ "generate/helm.py": 2,
  "incidents.py": 1,
  "insight.py": 1,
  "jira_audit.py": 1,
