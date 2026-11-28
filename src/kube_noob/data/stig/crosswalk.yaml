@@ -1,0 +1,586 @@
+# What kube-noob's rules judge of each rule in the DISA Kubernetes STIG (`kubernetes-stig.yaml`, beside this file).
+# Hand-written, and every row is held by `tests/test_stig_crosswalk.py`. Each row has:
+#   status: one of exactly four --
+#     covered                          a kube-noob rule judges this check from manifests; `judged` says how
+#     partly                           a rule judges part of it; `not_judged` names the part it does not
+#     not determinable from manifests  the check reads something no manifest holds; `evidence` names it
+#     not covered                      a manifest could decide it and no rule reads it; `backlog` names the rule
+#   reads: what the check reads -- static-pod-manifest | kubelet | node-files | node-state | cluster-objects |
+#          documentation
+#   rules: the kube-noob rule ids, for covered and partly only. Nothing else may name a rule here: a rule id on
+#          a row reads as coverage.
+# A status is a claim about the rule, not about a cluster. `covered` never means compliant, and no status here
+# is a pass. Change a row only with the fixture that measures it.
+version: 1
+benchmark:
+  stig_version: 2
+  stig_release: 6
+rows:
+  V-242376:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--tls-min-version` from the kube-controller-manager static pod manifest.
+  V-242377:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--tls-min-version` from the kube-scheduler static pod manifest.
+  V-242378:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--tls-min-version` from the kube-apiserver static pod manifest.
+  V-242379:
+    status: partly
+    reads: static-pod-manifest
+    rules:
+    - KN-S039
+    judged: '`--auto-tls=true` with no `--cert-file` or `--key-file`, on an etcd whose client side listens with
+      TLS on a network address: etcd then serves a self-signed certificate and accepts any client.'
+    not_judged: An absent `--auto-tls` (etcd's default is false, and KN-S039 reads the default as off, where this
+      check wants the flag written), `--auto-tls=true` beside a certificate pair (etcd ignores the switch, the check
+      does not), and an etcd that listens on loopback only.
+  V-242380:
+    status: partly
+    reads: static-pod-manifest
+    rules:
+    - KN-S039
+    judged: '`--peer-auto-tls=true` with no `--peer-cert-file` or `--peer-key-file`, on an etcd whose peer side
+      listens with TLS on a network address.'
+    not_judged: An absent `--peer-auto-tls` (the default is false, and this check wants the flag written), `--peer-auto-tls=true`
+      beside a peer certificate pair, and an etcd whose peer listener is loopback only.
+  V-242381:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--use-service-account-credentials` from the kube-controller-manager static pod manifest.
+  V-242382:
+    status: covered
+    reads: static-pod-manifest
+    rules:
+    - KN-S038
+    judged: An absent or empty `--authorization-mode` with no `--authorization-config` (the upstream default is
+      AlwaysAllow), and AlwaysAllow anywhere in the list. An `--authorization-config` file, ABAC and Webhook are
+      declined with the reason, never passed.
+    note: The check text asks only that AlwaysAllow is not in effect; the rule title's Node,RBAC is not what it
+      tests, and KN-S038 does not require Node either.
+  V-242383:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: A rule that reports a workload or Service whose namespace is `default`, `kube-public` or `kube-node-lease`.
+      An object with no `metadata.namespace` lands wherever it is applied, which a manifest does not say.
+  V-242384:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--bind-address` from the kube-scheduler static pod manifest.
+  V-242385:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--bind-address` from the kube-controller-manager static pod manifest.
+  V-242387:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `readOnlyPort`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242389:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--secure-port` from the kube-apiserver static pod manifest.
+  V-242390:
+    status: covered
+    reads: static-pod-manifest
+    rules:
+    - KN-S038
+    judged: '`--anonymous-auth=true`. KN-S038 is stricter than the check: it also reports an absent flag, because
+      the upstream default is true. An `--authentication-config` file with no `--anonymous-auth` is declined, never
+      passed.'
+    note: 'Where AlwaysAllow is also in effect KN-S038 reports that once, as the authorization finding, and does
+      not repeat anonymous access in a second one: the rule fires either way.'
+  V-242391:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `authentication.anonymous.enabled`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242392:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for the
+      authorization mode. No kube-noob rule reads either, and that includes a KubeletConfiguration file given as
+      input.
+  V-242393:
+    status: not determinable from manifests
+    reads: node-state
+    rules: []
+    evidence: '`systemctl status sshd` from every worker node. Nothing in a manifest says which services a node
+      runs.'
+  V-242394:
+    status: not determinable from manifests
+    reads: node-state
+    rules: []
+    evidence: '`systemctl is-enabled sshd` from every worker node.'
+  V-242395:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: 'A rule that reports a workload labelled `k8s-app: kubernetes-dashboard`.'
+  V-242396:
+    status: not determinable from manifests
+    reads: node-state
+    rules: []
+    evidence: '`kubectl version --client` from the control plane and every worker node.'
+  V-242397:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `staticPodPath`,
+      and the kubelet's systemd unit. No kube-noob rule reads either, and that includes a KubeletConfiguration file
+      given as input.
+  V-242398:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--feature-gates` from the control plane static pod manifests.
+    note: The kubelet half of this check needs each node's kubelet command line and configuration file, which no
+      manifest holds.
+  V-242399:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--feature-gates` from the control plane static pod manifests.
+    note: The kubelet half of this check needs each node's kubelet command line and configuration file, which no
+      manifest holds.
+  V-242400:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--feature-gates` from the kube-apiserver static pod manifest.
+  V-242402:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-log-path` from the kube-apiserver static pod manifest.
+  V-242403:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-policy-file` from the kube-apiserver static pod manifest, and an `audit.k8s.io`
+      Policy given as input.
+    note: The policy file is a file on the control plane node; it is judged only if it is given as input.
+  V-242404:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `--hostname-override`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242405:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/etc/kubernetes/manifests` on every node that holds it. A manifest
+      carries no file ownership or mode.'
+  V-242406:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the KubeletConfiguration file on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242407:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the KubeletConfiguration file on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242408:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/etc/kubernetes/manifests` on every node that holds it. A manifest
+      carries no file ownership or mode.'
+  V-242409:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--profiling` from the kube-controller-manager static pod manifest.
+  V-242410:
+    status: not determinable from manifests
+    reads: documentation
+    rules: []
+    evidence: The current PPSM CAL, the system's documented ports, protocols and services, and an interview. kube-noob
+      lists the Services a bundle declares and holds no CAL to compare them with.
+  V-242411:
+    status: not determinable from manifests
+    reads: documentation
+    rules: []
+    evidence: The current PPSM CAL, the system's documented ports, protocols and services, and an interview.
+  V-242412:
+    status: not determinable from manifests
+    reads: documentation
+    rules: []
+    evidence: The current PPSM CAL, the system's documented ports, protocols and services, and an interview.
+  V-242413:
+    status: not determinable from manifests
+    reads: documentation
+    rules: []
+    evidence: The current PPSM CAL, the system's documented ports, protocols and services, and an interview.
+  V-242414:
+    status: partly
+    reads: cluster-objects
+    rules:
+    - KN-S011
+    judged: Every `hostPort` a container declares, with the port number in the finding.
+    not_judged: 'Which of them the check counts. KN-S011 reports a `hostPort` of 1024 and above and one in `kube-system`
+      the same as a privileged one in a user namespace, so a KN-S011 finding is not by itself a finding here: read
+      the port and the namespace. A `hostNetwork` pod that binds a privileged port without declaring `hostPort`
+      is KN-S009''s finding, not this rule''s.'
+  V-242415:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: A rule that reports `env[].valueFrom.secretKeyRef` and `envFrom[].secretRef` in a pod spec.
+    note: KN-S013 reports a different defect, a literal credential in `env`, and its remediation names `secretKeyRef`,
+      which this check counts as a finding. Mounting the Secret as a file satisfies both.
+  V-242417:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: A rule that reports a workload in a system namespace that is not a known system component. Telling
+      a user pod from a system one needs a list kube-noob does not hold.
+  V-242418:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--tls-cipher-suites` from the kube-apiserver static pod manifest.
+  V-242419:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--client-ca-file` from the kube-apiserver static pod manifest.
+  V-242420:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `clientCAFile`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242421:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--root-ca-file` from the kube-controller-manager static pod manifest.
+  V-242422:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--tls-cert-file` and `--tls-private-key-file` from the kube-apiserver static pod
+      manifest.
+  V-242423:
+    status: partly
+    reads: static-pod-manifest
+    rules:
+    - KN-S039
+    judged: 'An absent or false `--client-cert-auth` with no `--trusted-ca-file`, on an etcd whose client side listens
+      with TLS on a network address: any client that reaches the port is accepted without a certificate.'
+    not_judged: An absent or false `--client-cert-auth` beside a `--trusted-ca-file` (etcd requires a client certificate
+      then, so KN-S039 is clean, and this check is still a finding), and an etcd that listens on loopback only.
+  V-242424:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `tlsPrivateKeyFile`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242425:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `tlsCertFile`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242426:
+    status: partly
+    reads: static-pod-manifest
+    rules:
+    - KN-S039
+    judged: An absent or false `--peer-client-cert-auth` with no `--peer-trusted-ca-file`, on an etcd whose peer
+      side listens with TLS on a network address.
+    not_judged: An absent or false `--peer-client-cert-auth` beside a `--peer-trusted-ca-file` (etcd requires a
+      peer certificate then, so KN-S039 is clean, and this check is still a finding), and an etcd whose peer listener
+      is loopback only.
+  V-242427:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--key-file` from the etcd static pod manifest.
+  V-242428:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--cert-file` from the etcd static pod manifest.
+  V-242429:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--etcd-cafile` from the kube-apiserver static pod manifest.
+  V-242430:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--etcd-certfile` from the kube-apiserver static pod manifest.
+  V-242431:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--etcd-keyfile` from the kube-apiserver static pod manifest.
+  V-242432:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--peer-cert-file` from the etcd static pod manifest.
+  V-242433:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--peer-key-file` from the etcd static pod manifest.
+  V-242434:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `protectKernelDefaults`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-242436:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--enable-admission-plugins` from the kube-apiserver static pod manifest.
+  V-242437:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: A rule that reads a PodSecurityPolicy's `runAsUser`, `supplementalGroups` and `fsGroup` on a target
+      below 1.25.
+    note: The PodSecurityPolicy API was removed in Kubernetes 1.25, and the check text is written for earlier versions.
+      KN-V005 reports a PodSecurityPolicy as a removed API on 1.25 and later, and KN-S032 reports a namespace that
+      enforces no pod security level; neither is this check.
+  V-242438:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--request-timeout` from the kube-apiserver static pod manifest.
+  V-242442:
+    status: not covered
+    reads: cluster-objects
+    rules: []
+    backlog: A rule that reports one image repository at two tags or digests across a bundle. What is running, as
+      opposed to what the manifests name, is cluster state.
+  V-242443:
+    status: not determinable from manifests
+    reads: node-state
+    rules: []
+    evidence: '`kubectl version` from the cluster, and the organisation''s list of authorized versions. A manifest
+      names neither.'
+  V-242444:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/etc/kubernetes/manifests` on every node that holds it. A manifest
+      carries no file ownership or mode.'
+  V-242445:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/var/lib/etcd` on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242446:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `admin.conf`, `scheduler.conf` or `controller-manager.conf` under `/etc/kubernetes`
+      on every node that holds it. A manifest carries no file ownership or mode.'
+  V-242447:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kube-proxy kubeconfig on every node that holds it. A manifest carries no file
+      ownership or mode.'
+  V-242448:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kube-proxy kubeconfig on every node that holds it. A manifest carries no file
+      ownership or mode.'
+  V-242449:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kubelet''s client CA file on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242450:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kubelet''s client CA file on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242451:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/etc/kubernetes/pki` on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242452:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `/etc/kubernetes/kubelet.conf` on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242453:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `/etc/kubernetes/kubelet.conf` on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242454:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kubeadm configuration file on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242455:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for the kubeadm configuration file on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242456:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `/var/lib/kubelet/config.yaml` on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242457:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `/var/lib/kubelet/config.yaml` on every node that holds it. A manifest carries
+      no file ownership or mode.'
+  V-242459:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a file under `/var/lib/etcd` on every node that holds it. A manifest carries no
+      file ownership or mode.'
+  V-242460:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for `admin.conf`, `scheduler.conf` or `controller-manager.conf` under `/etc/kubernetes`
+      on every node that holds it. A manifest carries no file ownership or mode.'
+  V-242461:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-policy-file` from the kube-apiserver static pod manifest.
+  V-242462:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-log-maxsize` from the kube-apiserver static pod manifest.
+  V-242463:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-log-maxbackup` from the kube-apiserver static pod manifest.
+  V-242464:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-log-maxage` from the kube-apiserver static pod manifest.
+  V-242465:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--audit-log-path` from the kube-apiserver static pod manifest.
+  V-242466:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a `.crt` file under `/etc/kubernetes/pki` on every node that holds it. A manifest
+      carries no file ownership or mode.'
+  V-242467:
+    status: not determinable from manifests
+    reads: node-files
+    rules: []
+    evidence: '`stat` output for a `.key` file under `/etc/kubernetes/pki` on every node that holds it. A manifest
+      carries no file ownership or mode.'
+  V-245541:
+    status: not determinable from manifests
+    reads: kubelet
+    rules: []
+    evidence: Each node's kubelet command line and the KubeletConfiguration file it loads (`--config`), for `streamingConnectionIdleTimeout`.
+      No kube-noob rule reads either, and that includes a KubeletConfiguration file given as input.
+  V-245542:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--basic-auth-file` from the kube-apiserver static pod manifest.
+  V-245543:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--token-auth-file` from the kube-apiserver static pod manifest.
+  V-245544:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--kubelet-client-certificate` and `--kubelet-client-key` from the kube-apiserver
+      static pod manifest.
+  V-254800:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--admission-control-config-file` from the kube-apiserver static pod manifest, and
+      an AdmissionConfiguration given as input.
+    note: KN-S032 reports a namespace with no `pod-security.kubernetes.io/enforce` label, which is where a cluster
+      with no such file falls back to privileged; it does not read the file or the flag, so it is not this check.
+  V-254801:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--feature-gates` from the control plane static pod manifests.
+    note: The kubelet half of this check needs each node's kubelet command line and configuration file, which no
+      manifest holds.
+  V-274882:
+    status: not covered
+    reads: static-pod-manifest
+    rules: []
+    backlog: A rule that reads `--encryption-provider-config` from the kube-apiserver static pod manifest, and an
+      EncryptionConfiguration given as input.
+    note: KN-S040 judges encryption at rest on OpenShift, from the `APIServer` object named `cluster`. That is a
+      different object on a different platform, and it is not this check.
+  V-274883:
+    status: partly
+    reads: cluster-objects
+    rules:
+    - KN-S013
+    - KN-S026
+    judged: 'A credential kube-noob recognises by name or by shape: a literal value in a credential-named `env`
+      variable or a credential passed in `command` or `args` (KN-S013), and a credential-named key, a URL with a
+      password, a private key or a token in a ConfigMap (KN-S026).'
+    not_judged: 'Sensitive information that is not a credential, or does not look like one: a personal identifier,
+      a customer record, an internal hostname. The check is a manual review against what the organisation calls
+      sensitive, and no pattern stands in for that.'
+  V-274884:
+    status: partly
+    reads: cluster-objects
+    rules:
+    - KN-S015
+    - KN-S017
+    judged: 'Which roles can read Secrets: `list` or `watch` on Secrets, and `get` on Secrets with no `resourceNames`
+      (KN-S017), and a wildcard in `resources` or `verbs`, which includes them (KN-S015).'
+    not_judged: Whether a requirement is documented, which is the whole of the finding. KN-S017 also treats `get`
+      limited to named Secrets as least privilege and says nothing, where this check still wants the requirement
+      on paper; and no rule lists which workloads mount which Secret.
