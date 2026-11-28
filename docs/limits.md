@@ -37,6 +37,15 @@ through, and who can cause each one -- so that "enforced" is not read as more th
 | An object being deleted (`deletionTimestamp`, on an update) | Nobody: the API server sets and clears that field |
 | A finding the old object already had, on an update | By design: turning a rule on never freezes a workload that already breaks it |
 | A kind no rule reads, or a rule that declined | Admitted with a warning that says the object was not fully audited (G337) |
+| Any request, while the webhook is down, unreachable or slower than `admission.timeoutSeconds`, with `admission.failurePolicy: Ignore` (the default) | Whoever can make it so -- and nothing in the response says it happened. `Ignore` is availability, `Fail` is enforcement; with `Fail` such a request is refused |
+
+What the webhook is sent and does not evaluate is a different case, and is never an admission that looks like a
+pass. A request over 4 MB, an object of more than 20,000 values (mappings, lists and scalars; about 4,000 minimal
+containers), an evaluation that raised, or one not finished at three fifths of `admission.timeoutSeconds` is
+answered "not evaluated": with a rule enforced that is a denial with the reason, in warn mode an admission with a
+warning. So a legitimate object past the budget cannot be created in a namespace where a rule is enforced until
+an administrator excludes the namespace; `kube-noob audit` reads an object of any size. The budget counts values,
+not bytes: on the build machine an object at the budget takes about half a second and an update about one.
 
 `ownerReferences` is not on that list. Until G440 a Pod that named any owner was skipped, with a rule enforced.
 

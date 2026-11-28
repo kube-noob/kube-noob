@@ -332,6 +332,9 @@ class AdmissionSettings(_Base):
     exceptions_file: Path | None = None
     lookups: bool = False
     max_warnings: int = Field(default=10, ge=1, le=50)
+    #: The webhook configuration's `timeoutSeconds`, which the chart writes here too: the server answers "not
+    #: evaluated" at three fifths of it rather than after the API server has stopped waiting (G441).
+    timeout_seconds: int = Field(default=3, ge=1, le=30)
     version: str | None = Field(default=None, pattern=r"^\d+\.\d+(\.\d+)?$")
 
 

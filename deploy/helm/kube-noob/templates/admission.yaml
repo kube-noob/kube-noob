@@ -1,7 +1,10 @@
 {{- /*
 kube-noob-admission (requirements R3.3, capability tier A): a validating webhook that turns every kube-noob finding
-of an object into an admission warning and denies only the rules listed in admission.enforce. failurePolicy Ignore:
-a dead or slow webhook never blocks the cluster; it only stops warning. Off by default.
+of an object into an admission warning and denies only the rules listed in admission.enforce. Off by default.
+admission.failurePolicy is the trade between availability and enforcement, and the default is availability: with
+Ignore a webhook that is down, unreachable or late never blocks the cluster, and what it was not asked about is
+admitted without being judged; with Fail such a request is refused. The server answers "not evaluated" before
+timeoutSeconds runs out (it is told the value below), so a large object is a denial or a warning, not a timeout.
 */ -}}
 {{- if .Values.admission.enabled }}
 {{- $a := .Values.admission }}
@@ -10,6 +13,9 @@ a dead or slow webhook never blocks the cluster; it only stops warning. Off by d
 {{- $openshift := .Capabilities.APIVersions.Has "security.openshift.io/v1" }}
 {{- if not (has $a.certificates (list "openshift-service-ca" "cert-manager" "secret")) }}
 {{- fail "admission.certificates must be openshift-service-ca, cert-manager or secret" }}
+{{- end }}
+{{- if not (has $a.failurePolicy (list "Ignore" "Fail")) }}
+{{- fail "admission.failurePolicy must be Ignore (a webhook that is down or late admits the request unjudged) or Fail (it refuses the request)" }}
 {{- end }}
 {{- if and (eq $a.certificates "cert-manager") (not $a.certManager.issuerRef.name) }}
 {{- fail "admission.certificates cert-manager needs admission.certManager.issuerRef.name (an Issuer or ClusterIssuer)" }}
@@ -61,6 +67,7 @@ data:
       excludedNamespaces: {{- toYaml $excluded | nindent 8 }}
       lookups: {{ $a.lookups }}
       maxWarnings: {{ $a.maxWarnings }}
+      timeoutSeconds: {{ $a.timeoutSeconds }}
       {{- with $a.platformVersion }}
       version: {{ . | quote }}
       {{- end }}
@@ -129,7 +136,7 @@ spec:
     metadata:
       labels: {{- include "kube-noob.admissionLabels" . | nindent 8 }}
       annotations:
-        checksum/config: {{ printf "%s|%s|%s|%s|%s" (toJson $a.enforce) (toJson $excluded) (toString $a.lookups) ($a.exceptions | default "") (toJson ((.Values.audit | default dict).allowedRegistries | default list)) | sha256sum }}
+        checksum/config: {{ printf "%s|%s|%s|%s|%s|%s" (toJson $a.enforce) (toJson $excluded) (toString $a.lookups) ($a.exceptions | default "") (toJson ((.Values.audit | default dict).allowedRegistries | default list)) (toString $a.timeoutSeconds) | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: {{ $a.lookups }}
@@ -315,7 +322,9 @@ webhooks:
   - name: rules.admission.kube-noob.io
     admissionReviewVersions: [v1]
     sideEffects: None
-    failurePolicy: Ignore       # never block the cluster: a dead webhook admits everything, without warnings
+    # Ignore: a webhook that is down, unreachable or late admits the request, unjudged and without warnings.
+    # Fail: the API server refuses such a request. See admission.failurePolicy in values.yaml.
+    failurePolicy: {{ $a.failurePolicy }}
     matchPolicy: Equivalent
     timeoutSeconds: {{ $a.timeoutSeconds }}
     clientConfig:

@@ -294,6 +294,7 @@ kube-noob calls no model, but the model that calls kube-noob reads its results, 
 
 Where it is applied (found in the code):
 
+- `kube_noob/admission.py` `_uid_of` calls `sanitize.loads_bounded`
 - `kube_noob/admission.py` `review_bytes` calls `sanitize.loads_bounded`
 - `kube_noob/alert_report.py` `_str` calls `sanitize.clean`
 - `kube_noob/alert_report.py` `build` calls `sanitize.result`
