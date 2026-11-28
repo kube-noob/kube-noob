@@ -90,6 +90,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { notrun+=("$2 -- $1 is not installe
 "$py" scripts/compliance_doc.py --check
 "$py" scripts/doc_numbers.py --check
 "$py" scripts/fedramp_ksi.py --check
+"$py" scripts/stig_crosswalk.py --check
 # Until 2026-11-15 these two ran in release.yml only, so a stale document blocked the release
 # instead of the pull request that made it stale -- which is how the opentelemetry pin reached a
 # pull request with an SBOM that did not list it (G298).

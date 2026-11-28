@@ -290,6 +290,42 @@ GUARDS: tuple[tuple[Path, str, str, str], ...] = (
         "indicators",
         "the KSI indicators",
     ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"Of its (\d+) checks, a kube-noob rule judges",
+        "stig_rules",
+        "the rules in the pinned Kubernetes STIG",
+    ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"a kube-noob rule judges (\d+) in full",
+        "stig_covered",
+        "the STIG rules a kube-noob rule covers",
+    ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"in full and (\d+) in part;",
+        "stig_partly",
+        "the STIG rules a kube-noob rule covers in part",
+    ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"(\d+) read a node's files, its kubelet",
+        "stig_not_determinable",
+        "the STIG rules no manifest can decide",
+    ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"and (\d+) could be decided from a manifest and have no rule yet",
+        "stig_not_covered",
+        "the STIG rules in the backlog",
+    ),
+    (
+        ROOT / "docs" / "compliance.md",
+        r"have no rule yet, (\d+) of those CAT I",
+        "stig_not_covered_cat1",
+        "the CAT I STIG rules in the backlog",
+    ),
 )
 
 
@@ -308,6 +344,13 @@ def counted() -> dict[str, int]:
     from kube_noob.mustgather import analyse
 
     tracks = yaml.safe_load((ROOT / "src" / "kube_noob" / "data" / "curriculum.yaml").read_text())["tracks"]
+    # The STIG crosswalk's counts come from its two data files, the ones scripts/stig_crosswalk.py validates and
+    # renders docs/stig.md from, so the sentence in the compliance document cannot say something the page does not.
+    stig_dir = ROOT / "src" / "kube_noob" / "data" / "stig"
+    stig_rules = yaml.safe_load((stig_dir / "kubernetes-stig.yaml").read_text(encoding="utf-8"))["rules"]
+    stig_rows = yaml.safe_load((stig_dir / "crosswalk.yaml").read_text(encoding="utf-8"))["rows"]
+    stig_status = [stig_rows[r["id"]]["status"] for r in stig_rules]
+    stig_cat1 = [stig_rows[r["id"]]["status"] for r in stig_rules if r["severity"] == "high"]
     # "Bare" is asked of the same function the crosswalk itself asks, `indicator_rules`, rather than worked out
     # here. The hand-rolled intersection looked right and answered 46 of 46: an indicator cites its controls in
     # lower case (`at-2`) and kube-noob names them in upper (`AT-2`), so it never matched, and the number it
@@ -326,6 +369,12 @@ def counted() -> dict[str, int]:
         "per_analyser": analyse.MAX_PER_ANALYSER,
         "findings_cap": analyse.MAX_FINDINGS,
         "event_reasons": analyse.MAX_EVENT_REASONS,
+        "stig_rules": len(stig_rules),
+        "stig_covered": stig_status.count("covered"),
+        "stig_partly": stig_status.count("partly"),
+        "stig_not_determinable": stig_status.count("not determinable from manifests"),
+        "stig_not_covered": stig_status.count("not covered"),
+        "stig_not_covered_cat1": stig_cat1.count("not covered"),
     }
 
 
