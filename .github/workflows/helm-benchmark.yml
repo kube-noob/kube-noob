@@ -1,0 +1,123 @@
+name: helm-benchmark
+
+# Audits the pinned public Helm charts in bench/charts.yaml for OpenShift 4.22 and writes one report:
+# docs/benchmarks/helm-charts-openshift-4.22.md and the JSON it was written from (G438).
+#
+# On demand only. It pulls 25 charts from other projects' servers and names those projects in what it writes, so
+# it runs when the owner asks for it and never on a push, a pull request or a schedule:
+#
+#   gh workflow run helm-benchmark.yml --repo kube-noob/kube-noob
+#   gh workflow run helm-benchmark.yml --repo kube-noob/kube-noob -f open_pr=true
+#
+# A chart that does not pull, does not render, or renders no object is a row in the report that says so. The job
+# fails only when the harness itself could not work (no helm, a chart list it refuses) or when not one chart was
+# audited, because a table of 25 failures is not a benchmark result and must not be uploaded under a green check.
+on:
+  workflow_dispatch:
+    inputs:
+      open_pr:
+        description: "Open a pull request with the generated report (default: only upload it as an artifact)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    # Never run before this file was written, so there is no slowest green run to measure against yet. The work
+    # is 25 chart pulls, at most two `helm template` runs each, and 25 audits; each helm command is cut off by
+    # the script at 10 minutes and each audit at 15. Re-measure after the first run and tighten this:
+    #   gh api 'repos/kube-noob/kube-noob/actions/workflows/helm-benchmark.yml/runs' --jq '.workflow_runs[].id'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # One exact helm: the rendered bytes are part of what the report states, and `latest` renders differently
+      # next month. The version is printed into every chart's render.json and onto the report.
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.2
+      # The kube-noob that audits is this checkout's, so the report can say which commit produced it.
+      - run: pip install -e .
+      - name: Render every pinned chart (a chart that fails is a row, not a failed step)
+        run: python scripts/helm_benchmark.py render --charts bench/charts.yaml --out out/helm-benchmark
+      - name: Audit every chart that rendered, for OpenShift 4.22
+        run: python scripts/helm_benchmark.py audit --charts bench/charts.yaml --out out/helm-benchmark
+      - name: Write the report, and fail if no chart was audited
+        run: |
+          python scripts/helm_benchmark.py report --charts bench/charts.yaml --out out/helm-benchmark \
+            --date "$(date -u +%F)" --min-audited 1
+          {
+            echo "### Helm charts on OpenShift 4.22"
+            echo
+            sed -n '/^| Outcome | Charts |$/,/^$/p' docs/benchmarks/helm-charts-openshift-4.22.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      # always(): the rows and helm's own words for each chart are the evidence when a step above fails.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: helm-benchmark
+          path: |
+            docs/benchmarks/helm-charts-openshift-4.22.md
+            docs/benchmarks/helm-charts-openshift-4.22.json
+            out/helm-benchmark/*/render.json
+            out/helm-benchmark/*/audit.json
+            out/helm-benchmark/*/audit-meta.json
+          if-no-files-found: error
+          retention-days: 90
+
+  open-pr:
+    # Only when the owner asked for it. The benchmark job above holds no write token; this one does, and it runs
+    # no chart and no helm: it commits the two generated files and nothing else.
+    needs: benchmark
+    if: inputs.open_pr
+    runs-on: ubuntu-latest
+    # A checkout, an artifact download, one commit and one API call.
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: helm-benchmark
+          path: benchmark-artifact
+      - name: Commit the report to a branch and open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p docs/benchmarks
+          cp benchmark-artifact/docs/benchmarks/helm-charts-openshift-4.22.md \
+            benchmark-artifact/docs/benchmarks/helm-charts-openshift-4.22.json docs/benchmarks/
+          git add docs/benchmarks/helm-charts-openshift-4.22.md docs/benchmarks/helm-charts-openshift-4.22.json
+          if git diff --cached --quiet; then
+            echo "::notice title=helm-benchmark::the report on ${GITHUB_REF_NAME} is already this one; no pull request to open"
+            exit 0
+          fi
+          branch="bench/helm-charts-openshift-4.22-run-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -s -m "Helm charts on OpenShift 4.22: benchmark report from run ${GITHUB_RUN_ID}"
+          git push origin "HEAD:refs/heads/${branch}"
+          body="Generated by the helm-benchmark workflow, run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Only the two generated files under docs/benchmarks/ are in it. This pull request was opened with GITHUB_TOKEN, which does not start CI: push a commit to the branch with an account token (or close and reopen it from your account) before reading its checks."
+          # A pull request opened with GITHUB_TOKEN does not start CI, and an organisation can forbid Actions from
+          # opening one at all. Either way the branch is pushed, and the job must not be green over a pull
+          # request that is not there (the homebrew job in release.yml, G357).
+          if ! url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base "$GITHUB_REF_NAME" --head "$branch" \
+            --title "Helm charts on OpenShift 4.22: benchmark report" --body "$body"); then
+            echo "::error title=helm-benchmark::the report is on branch ${branch} and no pull request could be opened with GITHUB_TOKEN. Open it with an account token: gh pr create --repo ${GITHUB_REPOSITORY} --base ${GITHUB_REF_NAME} --head ${branch} --fill"
+            exit 1
+          fi
+          echo "::notice title=helm-benchmark::opened ${url}. It was opened with GITHUB_TOKEN, which does not start CI: no check will report on it until a commit is pushed to ${branch} with an account token, or it is closed and reopened from an account."

@@ -1,0 +1,19 @@
+{
+  "command": [
+    "kube-noob",
+    "audit",
+    "-f",
+    "empty/rendered",
+    "--platform",
+    "openshift",
+    "--version",
+    "4.22",
+    "--format",
+    "json"
+  ],
+  "documents": 0,
+  "exitCode": 2,
+  "id": "empty",
+  "kubeNoobVersion": "0.11.1",
+  "stderr": "error: nothing here is a Kubernetes manifest (not a Kubernetes manifest): no document has both apiVersion and kind, so none of the audit rules apply. Pass Kubernetes objects: every document needs apiVersion and kind."
+}

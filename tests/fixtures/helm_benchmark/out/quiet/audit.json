@@ -1,0 +1,963 @@
+{
+  "platform": "openshift",
+  "platformVersion": "4.22",
+  "kubernetesVersion": "1.35",
+  "resources": [
+    "ConfigMap/bench/bench-quiet"
+  ],
+  "summary": {
+    "counts": {
+      "info": 0,
+      "low": 0,
+      "medium": 0,
+      "high": 0,
+      "critical": 0
+    },
+    "maxSeverity": null,
+    "score": 100.0
+  },
+  "assumptions": [],
+  "notAudited": [],
+  "findings": [],
+  "controlSummary": {
+    "catalog": "NIST SP 800-53 Rev. 5",
+    "controls": [
+      {
+        "id": "AC-14",
+        "title": "Permitted Actions Without Identification or Authentication",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 2,
+        "notEvaluatedRules": [
+          "KN-S028",
+          "KN-S038"
+        ]
+      },
+      {
+        "id": "AC-3",
+        "title": "Access Enforcement",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-S015",
+          "KN-S017",
+          "KN-S028",
+          "KN-S038",
+          "KN-S039"
+        ]
+      },
+      {
+        "id": "AC-4",
+        "title": "Information Flow Enforcement",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 7,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N004",
+          "KN-N006",
+          "KN-N007",
+          "KN-N008",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "AC-5",
+        "title": "Separation of Duties",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S017"
+        ]
+      },
+      {
+        "id": "AC-6",
+        "title": "Least Privilege",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 18,
+        "notEvaluatedRules": [
+          "KN-S001",
+          "KN-S002",
+          "KN-S003",
+          "KN-S004",
+          "KN-S005",
+          "KN-S006",
+          "KN-S009",
+          "KN-S010",
+          "KN-S014",
+          "KN-S015",
+          "KN-S016",
+          "KN-S017"
+        ],
+        "moreNotEvaluated": 6
+      },
+      {
+        "id": "AC-6(10)",
+        "title": "Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S002"
+        ]
+      },
+      {
+        "id": "AC-6(5)",
+        "title": "Least Privilege | Privileged Accounts",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S016"
+        ]
+      },
+      {
+        "id": "AU-12",
+        "title": "Audit Record Generation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "AU-2",
+        "title": "Event Logging",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S035"
+        ]
+      },
+      {
+        "id": "CM-2",
+        "title": "Baseline Configuration",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 2,
+        "notEvaluatedRules": [
+          "KN-S012",
+          "KN-S036"
+        ]
+      },
+      {
+        "id": "CM-3(2)",
+        "title": "Configuration Change Control | Testing, Validation, and Documentation of Changes",
+        "findings": 0,
+        "clean": 7,
+        "notEvaluated": 13,
+        "notEvaluatedRules": [
+          "KN-S034",
+          "KN-V003",
+          "KN-V010",
+          "KN-V011",
+          "KN-V012",
+          "KN-V020",
+          "KN-V021",
+          "KN-V022",
+          "KN-V023",
+          "KN-V024",
+          "KN-V025",
+          "KN-V026"
+        ],
+        "moreNotEvaluated": 1
+      },
+      {
+        "id": "CM-6",
+        "title": "Configuration Settings",
+        "findings": 0,
+        "clean": 7,
+        "notEvaluated": 31,
+        "notEvaluatedRules": [
+          "KN-C006",
+          "KN-C013",
+          "KN-C014",
+          "KN-C015",
+          "KN-C017",
+          "KN-S003",
+          "KN-S004",
+          "KN-S008",
+          "KN-S032",
+          "KN-S037",
+          "KN-S038",
+          "KN-ST001"
+        ],
+        "moreNotEvaluated": 19
+      },
+      {
+        "id": "CM-7",
+        "title": "Least Functionality",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 17,
+        "notEvaluatedRules": [
+          "KN-N005",
+          "KN-N009",
+          "KN-N011",
+          "KN-S001",
+          "KN-S002",
+          "KN-S005",
+          "KN-S006",
+          "KN-S007",
+          "KN-S008",
+          "KN-S011",
+          "KN-S014",
+          "KN-S019"
+        ],
+        "moreNotEvaluated": 5
+      },
+      {
+        "id": "CP-10",
+        "title": "System Recovery and Reconstitution",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 9,
+        "notEvaluatedRules": [
+          "KN-C001",
+          "KN-C002",
+          "KN-C003",
+          "KN-C007",
+          "KN-C008",
+          "KN-C009",
+          "KN-C011",
+          "KN-N013",
+          "KN-ST002"
+        ]
+      },
+      {
+        "id": "IA-5",
+        "title": "Authenticator Management",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S014",
+          "KN-S027",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "IA-5(7)",
+        "title": "Authenticator Management | No Embedded Unencrypted Static Authenticators",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 2,
+        "notEvaluatedRules": [
+          "KN-S013",
+          "KN-S018"
+        ]
+      },
+      {
+        "id": "SA-22",
+        "title": "Unsupported System Components",
+        "findings": 0,
+        "clean": 2,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S024",
+          "KN-V008",
+          "KN-V019"
+        ]
+      },
+      {
+        "id": "SC-28",
+        "title": "Protection of Information at Rest",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-S013",
+          "KN-S018",
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-28(1)",
+        "title": "Protection of Information at Rest | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S040"
+        ]
+      },
+      {
+        "id": "SC-36",
+        "title": "Distributed Processing and Storage",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-C007",
+          "KN-C010",
+          "KN-ST003"
+        ]
+      },
+      {
+        "id": "SC-39",
+        "title": "Process Isolation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 10,
+        "notEvaluatedRules": [
+          "KN-S001",
+          "KN-S008",
+          "KN-S009",
+          "KN-S010",
+          "KN-S019",
+          "KN-S020",
+          "KN-S021",
+          "KN-S022",
+          "KN-S023",
+          "KN-S025"
+        ]
+      },
+      {
+        "id": "SC-4",
+        "title": "Information in Shared System Resources",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 1,
+        "notEvaluatedRules": [
+          "KN-S031"
+        ]
+      },
+      {
+        "id": "SC-5",
+        "title": "Denial-of-service Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-C003",
+          "KN-C005",
+          "KN-C016"
+        ]
+      },
+      {
+        "id": "SC-6",
+        "title": "Resource Availability",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 6,
+        "notEvaluatedRules": [
+          "KN-C004",
+          "KN-C005",
+          "KN-C012",
+          "KN-C014",
+          "KN-C016",
+          "KN-ST005"
+        ]
+      },
+      {
+        "id": "SC-7",
+        "title": "Boundary Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 13,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N004",
+          "KN-N005",
+          "KN-N006",
+          "KN-N007",
+          "KN-N008",
+          "KN-N009",
+          "KN-N012",
+          "KN-N013",
+          "KN-N014",
+          "KN-S011",
+          "KN-S029"
+        ],
+        "moreNotEvaluated": 1
+      },
+      {
+        "id": "SC-7(5)",
+        "title": "Boundary Protection | Deny by Default \u2014 Allow by Exception",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-N001",
+          "KN-N006",
+          "KN-N007",
+          "KN-N012",
+          "KN-N014"
+        ]
+      },
+      {
+        "id": "SC-8",
+        "title": "Transmission Confidentiality and Integrity",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 7,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-N008",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041",
+          "KN-V016"
+        ]
+      },
+      {
+        "id": "SC-8(1)",
+        "title": "Transmission Confidentiality and Integrity | Cryptographic Protection",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 5,
+        "notEvaluatedRules": [
+          "KN-N002",
+          "KN-N003",
+          "KN-S037",
+          "KN-S039",
+          "KN-S041"
+        ]
+      },
+      {
+        "id": "SI-10",
+        "title": "Information Input Validation",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 3,
+        "notEvaluatedRules": [
+          "KN-N011",
+          "KN-S025",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "SI-2",
+        "title": "Flaw Remediation",
+        "findings": 0,
+        "clean": 1,
+        "notEvaluated": 10,
+        "notEvaluatedRules": [
+          "KN-C009",
+          "KN-N009",
+          "KN-N011",
+          "KN-S021",
+          "KN-S022",
+          "KN-S023",
+          "KN-S024",
+          "KN-S025",
+          "KN-S033",
+          "KN-ST006"
+        ]
+      },
+      {
+        "id": "SI-7",
+        "title": "Software, Firmware, and Information Integrity",
+        "findings": 0,
+        "clean": 0,
+        "notEvaluated": 4,
+        "notEvaluatedRules": [
+          "KN-S007",
+          "KN-S012",
+          "KN-S030",
+          "KN-S036"
+        ]
+      }
+    ],
+    "rulesNotEvaluated": [
+      {
+        "ruleId": "KN-C001",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C002",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C003",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C004",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C005",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C006",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C007",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C008",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C009",
+        "why": "no policy PodDisruptionBudget and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C010",
+        "why": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C011",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C012",
+        "why": "no autoscaling HorizontalPodAutoscaler and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C013",
+        "why": "no Secret and no ServiceAccount or pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C014",
+        "why": "no autoscaling HorizontalPodAutoscaler and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-C015",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C016",
+        "why": "no pod spec and no Namespace in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-C017",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-N001",
+        "why": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, serving.kserve.io InferenceService, core Pod, ray.io RayCluster, ray.io RayService, apps ReplicaSet or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-N002",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-N003",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N004",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N005",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N006",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-N007",
+        "why": "no networking.k8s.io NetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-N008",
+        "why": "no Service in the input"
+      },
+      {
+        "ruleId": "KN-N009",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N011",
+        "why": "no networking.k8s.io Ingress in the input"
+      },
+      {
+        "ruleId": "KN-N012",
+        "why": "no networking.k8s.io NetworkPolicy and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-N013",
+        "why": "no networking.k8s.io NetworkPolicy and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-N014",
+        "why": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input"
+      },
+      {
+        "ruleId": "KN-S001",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S002",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S003",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S004",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S005",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S006",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S007",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S008",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S009",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S010",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S011",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S012",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S013",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S014",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S015",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S016",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S017",
+        "why": "no rbac.authorization.k8s.io ClusterRole or Role in the input"
+      },
+      {
+        "ruleId": "KN-S018",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S019",
+        "why": "no security.openshift.io SecurityContextConstraints in the input"
+      },
+      {
+        "ruleId": "KN-S020",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S021",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S022",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S023",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S024",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S025",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S027",
+        "why": "no Secret in the input"
+      },
+      {
+        "ruleId": "KN-S028",
+        "why": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input"
+      },
+      {
+        "ruleId": "KN-S029",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S030",
+        "why": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input"
+      },
+      {
+        "ruleId": "KN-S031",
+        "why": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input"
+      },
+      {
+        "ruleId": "KN-S032",
+        "why": "no Namespace in the input"
+      },
+      {
+        "ruleId": "KN-S033",
+        "why": "no machineconfiguration.openshift.io MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-S034",
+        "why": "no operators.coreos.com Subscription in the input"
+      },
+      {
+        "ruleId": "KN-S035",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S036",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-S037",
+        "why": "no apiregistration.k8s.io APIService in the input"
+      },
+      {
+        "ruleId": "KN-S038",
+        "why": "not evaluated; this record carries no reason"
+      },
+      {
+        "ruleId": "KN-S039",
+        "why": "not evaluated; this record carries no reason"
+      },
+      {
+        "ruleId": "KN-S040",
+        "why": "no config.openshift.io APIServer in the input"
+      },
+      {
+        "ruleId": "KN-S041",
+        "why": "no config.openshift.io OAuth in the input"
+      },
+      {
+        "ruleId": "KN-ST001",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST002",
+        "why": "no apps Deployment or apps.openshift.io DeploymentConfig and no PersistentVolumeClaim in the input"
+      },
+      {
+        "ruleId": "KN-ST003",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST004",
+        "why": "no storage.k8s.io StorageClass in the input"
+      },
+      {
+        "ruleId": "KN-ST005",
+        "why": "no core PersistentVolumeClaim or apps StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-ST006",
+        "why": "no PersistentVolume in the input"
+      },
+      {
+        "ruleId": "KN-V003",
+        "why": "does not apply on openshift: every OpenShift-only kind is served on this platform"
+      },
+      {
+        "ruleId": "KN-V008",
+        "why": "no apps.openshift.io DeploymentConfig in the input"
+      },
+      {
+        "ruleId": "KN-V010",
+        "why": "no apps DaemonSet, Deployment, ReplicaSet or StatefulSet in the input"
+      },
+      {
+        "ruleId": "KN-V011",
+        "why": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V012",
+        "why": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V015",
+        "why": "no k8s.ovn.org EgressFirewall in the input"
+      },
+      {
+        "ruleId": "KN-V016",
+        "why": "no route.openshift.io Route in the input"
+      },
+      {
+        "ruleId": "KN-V017",
+        "why": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input"
+      },
+      {
+        "ruleId": "KN-V019",
+        "why": "no networking.k8s.io Ingress or pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V020",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V021",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V022",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V023",
+        "why": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V024",
+        "why": "no networking.k8s.io Ingress and no Service in the input"
+      },
+      {
+        "ruleId": "KN-V025",
+        "why": "no autoscaling HorizontalPodAutoscaler in the input"
+      },
+      {
+        "ruleId": "KN-V026",
+        "why": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)"
+      },
+      {
+        "ruleId": "KN-V027",
+        "why": "no apps StatefulSet and no Service in the input"
+      }
+    ],
+    "partlyEvaluatedRules": [],
+    "note": "Findings are evidence about these controls; an assessment decides whether a control is met. A rule under `notEvaluated` had nothing to decide on: `rulesNotEvaluated` says why for each, and a kind that is not in the input is not a kind that is clean."
+  },
+  "redTeam": [
+    {
+      "scenarioId": "RT-PRIVESC",
+      "question": "If an attacker gets code execution in this pod, can they escalate to the node or the cluster?",
+      "verdict": "undecided",
+      "severity": "info",
+      "evidence": [
+        "not evaluated, so this scenario cannot be called mitigated: KN-S038, KN-S039"
+      ],
+      "blastRadius": "Privileged containers, host namespaces/paths, dangerous capabilities and broad RBAC each turn a single compromised pod into node or cluster takeover.",
+      "safeguards": [
+        "Pod Security 'restricted' (restricted-v2 SCC on OpenShift)",
+        "automountServiceAccountToken: false; least-privilege Roles without wildcards",
+        "RHACS/StackRox deploy-time enforcement of the matching default policies"
+      ],
+      "verification": [
+        "oc auth can-i --list --as=system:serviceaccount:<ns>:<sa>",
+        "oc get pod <pod> -o jsonpath='{.metadata.annotations.openshift\\.io/scc}'"
+      ]
+    }
+  ],
+  "notEvaluated": {
+    "KN-C001": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C002": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C003": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C004": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C005": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C006": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C007": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C008": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C009": "no policy PodDisruptionBudget and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C010": "no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C011": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C012": "no autoscaling HorizontalPodAutoscaler and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C013": "no Secret and no ServiceAccount or pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C014": "no autoscaling HorizontalPodAutoscaler and no apps Deployment, apps.openshift.io DeploymentConfig, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-C015": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C016": "no pod spec and no Namespace in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-C017": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-N001": "no apps DaemonSet, apps Deployment, apps.openshift.io DeploymentConfig, serving.kserve.io InferenceService, core Pod, ray.io RayCluster, ray.io RayService, apps ReplicaSet or apps StatefulSet in the input",
+    "KN-N002": "no route.openshift.io Route in the input",
+    "KN-N003": "no networking.k8s.io Ingress in the input",
+    "KN-N004": "no Service in the input",
+    "KN-N005": "no Service in the input",
+    "KN-N006": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-N007": "no networking.k8s.io NetworkPolicy in the input",
+    "KN-N008": "no Service in the input",
+    "KN-N009": "no networking.k8s.io Ingress in the input",
+    "KN-N011": "no networking.k8s.io Ingress in the input",
+    "KN-N012": "no networking.k8s.io NetworkPolicy and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-N013": "no networking.k8s.io NetworkPolicy and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-N014": "no policy.networking.k8s.io AdminNetworkPolicy or BaselineAdminNetworkPolicy in the input",
+    "KN-S001": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S002": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S003": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S004": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S005": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S006": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S007": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S008": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S009": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S010": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S011": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S012": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S013": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S014": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S015": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S016": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S017": "no rbac.authorization.k8s.io ClusterRole or Role in the input",
+    "KN-S018": "no Secret in the input",
+    "KN-S019": "no security.openshift.io SecurityContextConstraints in the input",
+    "KN-S020": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S021": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S022": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S023": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S024": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S025": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S027": "no Secret in the input",
+    "KN-S028": "no rbac.authorization.k8s.io ClusterRoleBinding or RoleBinding in the input",
+    "KN-S029": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S030": "no admissionregistration.k8s.io MutatingWebhookConfiguration or ValidatingWebhookConfiguration in the input",
+    "KN-S031": "no resource.k8s.io ResourceClaim or ResourceClaimTemplate in the input",
+    "KN-S032": "no Namespace in the input",
+    "KN-S033": "no machineconfiguration.openshift.io MachineConfigPool in the input",
+    "KN-S034": "no operators.coreos.com Subscription in the input",
+    "KN-S035": "no config.openshift.io APIServer in the input",
+    "KN-S036": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-S037": "no apiregistration.k8s.io APIService in the input",
+    "KN-S038": "not evaluated; this record carries no reason",
+    "KN-S039": "not evaluated; this record carries no reason",
+    "KN-S040": "no config.openshift.io APIServer in the input",
+    "KN-S041": "no config.openshift.io OAuth in the input",
+    "KN-ST001": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST002": "no apps Deployment or apps.openshift.io DeploymentConfig and no PersistentVolumeClaim in the input",
+    "KN-ST003": "no storage.k8s.io StorageClass in the input",
+    "KN-ST004": "no storage.k8s.io StorageClass in the input",
+    "KN-ST005": "no core PersistentVolumeClaim or apps StatefulSet in the input",
+    "KN-ST006": "no PersistentVolume in the input",
+    "KN-V003": "does not apply on openshift: every OpenShift-only kind is served on this platform",
+    "KN-V008": "no apps.openshift.io DeploymentConfig in the input",
+    "KN-V010": "no apps DaemonSet, Deployment, ReplicaSet or StatefulSet in the input",
+    "KN-V011": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V012": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V015": "no k8s.ovn.org EgressFirewall in the input",
+    "KN-V016": "no route.openshift.io Route in the input",
+    "KN-V017": "no machineconfiguration.openshift.io MachineConfig or MachineConfigPool in the input",
+    "KN-V019": "no networking.k8s.io Ingress or pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V020": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V021": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V022": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V023": "no Service and no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V024": "no networking.k8s.io Ingress and no Service in the input",
+    "KN-V025": "no autoscaling HorizontalPodAutoscaler in the input",
+    "KN-V026": "no pod spec in the input (no Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, ReplicationController, Job, CronJob, DeploymentConfig, PodTemplate, InferenceService, RayCluster, RayService or RayJob)",
+    "KN-V027": "no apps StatefulSet and no Service in the input"
+  },
+  "unreadable": []
+}

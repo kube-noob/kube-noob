@@ -1,0 +1,69 @@
+# A stand-in for bench/charts.yaml (tests/test_helm_benchmark.py). The charts are not real: `out/` beside this
+# file holds handwritten manifests in place of `helm template` output, because the machine that runs the unit
+# tests has no helm, and the audit JSON that `scripts/helm_benchmark.py audit` recorded from them.
+platform: openshift
+platformVersion: "4.22"
+kubeVersion: "1.35.0"
+release: bench
+namespace: bench
+
+charts:
+  - id: web
+    category: web
+    repo: https://charts.example.com/web
+    chart: web
+    version: "1.2.3"
+    versionSource: "fixture"
+    values: defaults
+
+  - id: operator
+    category: operator
+    repo: https://charts.example.com/operator
+    chart: operator
+    version: "0.4.0"
+    versionSource: "fixture"
+    values: defaults
+
+  - id: quiet
+    category: config
+    repo: https://charts.example.com/quiet
+    chart: quiet
+    version: "2.0.0"
+    versionSource: "fixture"
+    values: defaults
+
+  - id: empty
+    category: library
+    repo: https://charts.example.com/empty
+    chart: empty
+    version: "3.1.0"
+    versionSource: "fixture"
+    values: defaults
+
+  - id: broken
+    category: web
+    repo: https://charts.example.com/broken
+    chart: broken
+    version: "9.9.9"
+    versionSource: "fixture"
+    values: defaults
+    fallback:
+      reason: "the fixture's default render fails, and so does its fallback"
+      set:
+        - mode=deployment
+
+  - id: unreachable
+    category: web
+    repo: https://charts.example.com/unreachable
+    chart: unreachable
+    version: "1.0.0"
+    versionSource: "fixture"
+    values: defaults
+
+  - id: never-run
+    category: web
+    repo: https://charts.example.com/never-run
+    chart: never-run
+    version: "0.0.1"
+    versionSource: "fixture"
+    values: defaults
