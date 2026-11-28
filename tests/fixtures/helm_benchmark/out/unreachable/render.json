@@ -1,0 +1,21 @@
+{
+  "helmVersion": "v4.3.2",
+  "id": "unreachable",
+  "pull": {
+    "command": [
+      "helm",
+      "pull",
+      "unreachable",
+      "--repo",
+      "https://charts.example.com/unreachable",
+      "--version",
+      "1.0.0",
+      "--destination",
+      "unreachable/pulled"
+    ],
+    "exitCode": 1,
+    "stderr": "Error: looks like \"https://charts.example.com/unreachable\" is not a valid chart repository or cannot be reached: failed to fetch https://charts.example.com/unreachable/index.yaml : 404 Not Found"
+  },
+  "recorded": "written by hand: there is no helm on the machine that made this fixture",
+  "template": []
+}

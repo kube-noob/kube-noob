@@ -1,0 +1,38 @@
+{
+  "helmVersion": "v4.3.2",
+  "id": "empty",
+  "pull": {
+    "command": [
+      "helm",
+      "pull",
+      "empty",
+      "--repo",
+      "https://charts.example.com/empty",
+      "--version",
+      "3.1.0",
+      "--destination",
+      "empty/pulled"
+    ],
+    "exitCode": 0,
+    "stderr": ""
+  },
+  "recorded": "written by hand: there is no helm on the machine that made this fixture",
+  "template": [
+    {
+      "command": [
+        "helm",
+        "template",
+        "bench",
+        "empty/pulled/empty-3.1.0.tgz",
+        "--namespace",
+        "bench",
+        "--kube-version",
+        "1.35.0"
+      ],
+      "exitCode": 0,
+      "set": [],
+      "stderr": "",
+      "values": "defaults"
+    }
+  ]
+}

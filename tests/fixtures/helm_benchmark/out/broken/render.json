@@ -1,0 +1,58 @@
+{
+  "helmVersion": "v4.3.2",
+  "id": "broken",
+  "pull": {
+    "command": [
+      "helm",
+      "pull",
+      "broken",
+      "--repo",
+      "https://charts.example.com/broken",
+      "--version",
+      "9.9.9",
+      "--destination",
+      "broken/pulled"
+    ],
+    "exitCode": 0,
+    "stderr": ""
+  },
+  "recorded": "written by hand: there is no helm on the machine that made this fixture",
+  "template": [
+    {
+      "command": [
+        "helm",
+        "template",
+        "bench",
+        "broken/pulled/broken-9.9.9.tgz",
+        "--namespace",
+        "bench",
+        "--kube-version",
+        "1.35.0"
+      ],
+      "exitCode": 1,
+      "set": [],
+      "stderr": "Error: execution error at (broken/templates/deployment.yaml:3:4): mode must be one of daemonset, statefulset\n\nUse --debug flag to render out invalid YAML",
+      "values": "defaults"
+    },
+    {
+      "command": [
+        "helm",
+        "template",
+        "bench",
+        "broken/pulled/broken-9.9.9.tgz",
+        "--namespace",
+        "bench",
+        "--kube-version",
+        "1.35.0",
+        "--set",
+        "mode=deployment"
+      ],
+      "exitCode": 1,
+      "set": [
+        "mode=deployment"
+      ],
+      "stderr": "Error: execution error at (broken/templates/deployment.yaml:3:4): mode must be one of daemonset, statefulset\n\nUse --debug flag to render out invalid YAML",
+      "values": "fallback"
+    }
+  ]
+}
