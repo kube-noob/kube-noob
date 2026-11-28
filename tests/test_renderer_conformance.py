@@ -1511,6 +1511,7 @@ NOT_A_VERDICT_VIEW: dict[str, str] = {
     "gate.verdict_word": "THE predicate every renderer here reads; it has no output of its own",
     "gate.render": "renders a Helm chart to manifests; it runs before the audit and reports no verdict",
     "gate.collect": "reads files into Sources; it reports no verdict",
+    "gate.within_limits": "refuses an input over the files or the size one run reads; it reports no verdict (G447)",
     "gate.chart_of": "names the chart a template belongs to; a predicate over one path (G445)",
     "gate.unrendered_reason": "a predicate over one file a walk found: a chart template, a kustomization (G445)",
     "gate.walk": "lists the files under a directory and the entries no walk goes into; it reports no verdict (G444)",

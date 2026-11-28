@@ -443,15 +443,18 @@ def test_rest_refuses_an_argument_over_the_cap_with_the_same_line(
 # --- an argument a model refuses for another reason is one line too ----------------------------------------------
 
 
-def test_an_argument_a_model_refuses_is_one_line_without_pydantics_report(tmp_path: Path) -> None:
-    """`fix` hands an empty file to its model, which refuses it (`audit` and `validate` have their own sentence
-    for one, exit 2). The refusal was pydantic's four lines; it is the argument and the reason."""
-    f = tmp_path / "empty.yaml"
-    f.write_text("", encoding="utf-8")
-    rc, out, err = run(_argv("fix", f))
+@pytest.mark.parametrize("name", ["audit", "validate", "fix"])
+def test_an_argument_a_model_refuses_is_one_line_without_pydantics_report(name: str, tmp_path: Path) -> None:
+    """A platform version longer than the model takes reaches the model, which refuses it. The refusal was
+    pydantic's four lines; it is the argument and the reason. (An empty file no longer reaches the model on any
+    of these: every command refuses text with no Kubernetes object first, exit 2, G443.)"""
+    f = tmp_path / "cm.yaml"
+    f.write_text("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: a, namespace: n}\n", encoding="utf-8")
+    rc, out, err = run([name, "-f", str(f), "--platform", "openshift", "--version", "4.22." + "1" * 12])
     assert rc == 4
     assert out == ""
-    assert err.strip() == "error: manifests: String should have at least 1 character"
+    assert err.strip() == "error: version: String should have at most 16 characters"
+    assert not any(d in err for d in DUMP)
 
 
 def test_rest_reports_an_argument_a_model_refused_without_quoting_the_input(
