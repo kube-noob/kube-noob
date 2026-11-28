@@ -816,7 +816,7 @@ jobs:
           assert vwc["metadata"]["annotations"] == {"service.beta.openshift.io/inject-cabundle": "true"}
           assert "caBundle" not in vwc["webhooks"][0]["clientConfig"]
           assert [m["name"] for m in vwc["webhooks"][0]["matchConditions"]] == ["not-an-openshift-namespace",
-                                                                                 "not-owned-by-a-controller"]
+                                                                                 "not-a-controllers-own-child"]
           svc = one(sca, "Service", name)
           assert svc["metadata"]["annotations"] == {"service.beta.openshift.io/serving-cert-secret-name": name + "-tls"}
           assert "fsGroup" not in one(sca, "Deployment", name)["spec"]["template"]["spec"]["securityContext"]
