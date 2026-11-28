@@ -1607,9 +1607,14 @@ container: ...`, at most `admission.maxWarnings`, each at most 256 characters), 
 work. It denies nothing until you list a rule in `admission.enforce`, and then only that rule, and on an update only
 a finding the old object did not have: turning a rule on never freezes a Deployment that already breaks it. The
 webhook has `failurePolicy: Ignore` and a 3-second timeout, so a dead or slow webhook never blocks the cluster; it
-never mutates, stores nothing but counters, and fetches nothing. The system namespaces, `openshift-*`, its own
-namespace, `admission.excludedNamespaces` and namespaces labelled `kube-noob.io/admission=disabled` are skipped, and
-so are Pods, ReplicaSets and Jobs a controller owns (their owner was checked). Rules about other objects of the
+never mutates, stores nothing but counters, and fetches nothing. `kube-system`, `kube-public`, `kube-node-lease`,
+its own namespace, `admission.excludedNamespaces` and namespaces labelled `kube-noob.io/admission=disabled` are
+skipped; `openshift` and `openshift-*` are skipped only when `config.defaultPlatform` is in the OpenShift family,
+where the platform reserves them (on Kubernetes set `config.defaultPlatform: kubernetes`). So are the Pods,
+ReplicaSets and Jobs that kube-controller-manager's own controllers make from a Deployment, StatefulSet, DaemonSet,
+CronJob, ReplicaSet or Job, because that owner was checked. Who sent the request decides that, never the object's
+`ownerReferences`: the requester writes those, so a Pod that merely names an owner is judged like any other, and
+so is whatever a ReplicationController or an operator's custom resource creates. Rules about other objects of the
 namespace (a PodDisruptionBudget for a Deployment, a NetworkPolicy, a claim's StorageClass) warn only with
 `admission.lookups`, which lists those kinds read-only in the background, and can never be enforced. Exceptions use
 the same ExceptionList as `kube-noob audit --exceptions`.

@@ -251,9 +251,15 @@ admission:
   # Tier A: kube-noob-admission, a validating webhook. Every kube-noob finding of a created or updated object becomes
   # an admission warning (kubectl prints them); a request is denied only for a rule listed in enforce, and on UPDATE
   # only for a finding the old object did not have. failurePolicy Ignore and timeoutSeconds 3: a dead or slow webhook
-  # never blocks the cluster. The system namespaces, openshift-*, the release namespace, excludedNamespaces and any
-  # namespace labelled kube-noob.io/admission=disabled are skipped, as are Pods, ReplicaSets and Jobs owned by a
-  # controller (their owner was checked). It never mutates and fetches nothing; lookups add read-only lists.
+  # never blocks the cluster. Skipped: kube-system, kube-public, kube-node-lease, the release namespace,
+  # excludedNamespaces, any namespace labelled kube-noob.io/admission=disabled, and -- only when
+  # config.defaultPlatform is openshift, rosa-classic or rosa-hcp, where the platform reserves them -- openshift and
+  # openshift-*. Also skipped: the Pods, ReplicaSets and Jobs that kube-controller-manager's own controllers make
+  # from a workload this webhook was sent (the owner was checked). That is decided by who sent the request
+  # (request.userInfo, written by the API server), never by ownerReferences, which the requester writes: the same
+  # object from anyone else is judged. Whoever may label a namespace kube-noob.io/admission=disabled, or holds a
+  # kube-system controller's identity, is outside the webhook; keep both to cluster administrators.
+  # It never mutates and fetches nothing; lookups add read-only lists.
   enabled: false
   replicaCount: 2
   enforce: []                # rule ids to deny, e.g. [KN-S001]; empty = warnings only

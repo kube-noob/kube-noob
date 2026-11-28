@@ -217,7 +217,10 @@ def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
         assert r == {"uid": "0b1c2d3e-uid", "allowed": True}, case["request"].get("namespace")
     gone = copy.deepcopy(bad)
     gone["metadata"]["deletionTimestamp"] = "2026-10-28T00:00:00Z"
-    assert adm.review(_review(gone), cfg)["response"] == {"uid": "0b1c2d3e-uid", "allowed": True}
+    skipped = {"uid": "0b1c2d3e-uid", "allowed": True}
+    assert adm.review(_review(gone, "UPDATE", old=gone), cfg)["response"] == skipped
+    # ... which is an UPDATE: the API server clears the field on a create, so a CREATE carrying it is judged (G440)
+    assert adm.review(_review(gone), cfg)["response"]["allowed"] is False
     pod = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -229,7 +232,11 @@ def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
     owned["metadata"]["ownerReferences"] = [
         {"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "x", "uid": "1", "controller": True}
     ]
-    assert adm.review(_review(owned), cfg)["response"] == {"uid": "0b1c2d3e-uid", "allowed": True}
+    # The owner stanza is the requester's to write, so it skips nothing by itself; the ReplicaSet controller's
+    # own Pod is skipped, because the API server says who sent it (G440).
+    assert adm.review(_review(owned), cfg)["response"]["allowed"] is False
+    theirs = _review(owned, userInfo={"username": "system:serviceaccount:kube-system:replicaset-controller"})
+    assert adm.review(theirs, cfg)["response"] == skipped
     mine = adm.Config.build(enforce=["KN-S001"], excluded=["shop"], platform="openshift")
     assert adm.review(_review(bad), mine)["response"]["allowed"] is True
     gen = copy.deepcopy(bad)
@@ -510,9 +517,12 @@ def test_chart_webhook_matches_the_server() -> None:
     ):
         assert line in text, line
     assert "mutating" not in text.lower() and "patch" not in text.lower(), "a validating webhook only"
-    excluded = text.split("concat (list ", 1)[1].split(" $ns)", 1)[0].replace('"', "").split()
+    excluded = text.split("$always := list ", 1)[1].split("}}", 1)[0].replace('"', "").split()
     assert set(excluded) == adm.SYSTEM_NAMESPACES, "the namespaceSelector skips what the server skips"
-    assert 'startsWith("openshift-")' in text and adm.SYSTEM_PREFIXES == ("openshift-",)
+    assert "$excluded := concat $always $platformNs (list $ns) ($a.excludedNamespaces | default list)" in text
+    # `openshift` and `openshift-*` on the OpenShift family only, and never on `ownerReferences` alone: both held,
+    # with the CEL evaluated, in tests/test_admission_cannot_be_bypassed.py (G440)
+    assert 'startsWith("openshift-")' in text and adm.OPENSHIFT_PREFIXES == ("openshift-",)
     owned = text.split("request.kind.kind in [", 1)[1].split("]", 1)[0].replace('"', "").replace(",", "").split()
     assert set(owned) == adm.OWNED_KINDS
     lookups = text.split("kind: ClusterRole\n", 1)[1].split("---", 1)[0]

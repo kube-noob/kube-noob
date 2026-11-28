@@ -23,7 +23,23 @@ Treating these as interchangeable is the commonest way to over-read a clean repo
 
 A clean audit is evidence about the first row. It is not evidence about the fourth.
 
-## Rules that cannot be enforced at admission
+## What the admission webhook does not look at
+
+`admission.enforce` denies what the webhook is sent and can judge. These are the requests it is not sent, or lets
+through, and who can cause each one -- so that "enforced" is not read as more than it is.
+
+| Not judged | Who can cause it |
+|---|---|
+| `kube-system`, `kube-public`, `kube-node-lease`, the release namespace, `admission.excludedNamespaces` | Whoever can create objects in those namespaces |
+| `openshift` and `openshift-*`, only when `config.defaultPlatform` is in the OpenShift family | The platform's operators; OpenShift refuses those names to project requests. On Kubernetes nothing reserves them, so they are judged there -- set `config.defaultPlatform: kubernetes` |
+| A namespace labelled `kube-noob.io/admission=disabled` | Whoever can label a namespace |
+| A Pod, ReplicaSet or Job made by kube-controller-manager's own controller from a Deployment, StatefulSet, DaemonSet, CronJob, ReplicaSet or Job | Nobody through the object: the test is `request.userInfo`, which the API server writes. Holding one of those identities takes a `kube-system` ServiceAccount token, the manager's certificate or the right to impersonate it. The owner was judged when it was created or changed; an owner that predates the rule keeps getting its Pods, as an update keeps its old findings |
+| An object being deleted (`deletionTimestamp`, on an update) | Nobody: the API server sets and clears that field |
+| A finding the old object already had, on an update | By design: turning a rule on never freezes a workload that already breaks it |
+| A kind no rule reads, or a rule that declined | Admitted with a warning that says the object was not fully audited (G337) |
+
+`ownerReferences` is not on that list. Until G440 a Pod that named any owner was skipped, with a rule enforced.
+
 
 `kube-noob policy generate` emits admission policies for about half the rules on Kubernetes and rather more on
 OpenShift, and lists the rest in the header of every generated file with the reason for each. The table below is

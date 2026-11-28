@@ -24,7 +24,16 @@ a dead or slow webhook never blocks the cluster; it only stops warning. Off by d
 {{- fail "admission.enforce KN-S036 needs audit.allowedRegistries: with no approved registries the rule declines and would deny nothing (R3c)" }}
 {{- end }}
 {{- $tlsSecret := ternary $a.tls.secretName (printf "%s-tls" $name) (eq $a.certificates "secret") }}
-{{- $excluded := concat (list "kube-system" "kube-public" "kube-node-lease" "openshift" $ns) ($a.excludedNamespaces | default list) | uniq }}
+{{- /*
+The namespaces the webhook is never sent, equal to what the server skips (kube_noob.admission). `openshift` and
+`openshift-*` are reserved by the platform on the OpenShift family only: a plain Kubernetes cluster lets whoever may
+create a namespace name it `openshift-x`, and skipping it there put that namespace outside every enforced rule
+(G440). The platform is the one the server is told, config.defaultPlatform, so the two cannot disagree.
+*/ -}}
+{{- $ocp := has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp") }}
+{{- $always := list "kube-system" "kube-public" "kube-node-lease" }}
+{{- $platformNs := ternary (list "openshift") (list) $ocp }}
+{{- $excluded := concat $always $platformNs (list $ns) ($a.excludedNamespaces | default list) | uniq }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -324,12 +333,31 @@ webhooks:
           values: [disabled]
     {{- if semverCompare ">=1.30-0" .Capabilities.KubeVersion.Version }}
     matchConditions:
+      {{- if $ocp }}
       - name: not-an-openshift-namespace
         expression: '!request.namespace.startsWith("openshift-")'
-      - name: not-owned-by-a-controller
+      {{- end }}
+      # Not sent: the Pods, ReplicaSets and Jobs that kube-controller-manager's own controllers make from an owner
+      # this webhook was sent, so a Deployment's warnings are not repeated on its ReplicaSet and its Pods. WHO made
+      # the request is the test, because `request.userInfo` is written by the API server. `ownerReferences` is
+      # written by whoever creates the object, and until G440 it was the whole test: a privileged Pod naming any
+      # owner never reached the webhook, with a rule enforced. Equal to kube_noob.admission._controllers_child.
+      - name: not-a-controllers-own-child
         expression: >-
-          !(request.kind.kind in ["Pod", "ReplicaSet", "Job"]) || !has(object.metadata.ownerReferences) ||
-          !object.metadata.ownerReferences.exists(r, has(r.controller) && r.controller)
+          !(has(request.userInfo.username) && request.userInfo.username in [
+          "system:kube-controller-manager",
+          "system:serviceaccount:kube-system:replicaset-controller",
+          "system:serviceaccount:kube-system:statefulset-controller",
+          "system:serviceaccount:kube-system:daemon-set-controller",
+          "system:serviceaccount:kube-system:job-controller",
+          "system:serviceaccount:kube-system:deployment-controller",
+          "system:serviceaccount:kube-system:cronjob-controller"]
+          && request.kind.kind in ["Pod", "ReplicaSet", "Job"]
+          && !(has(request.subResource) && request.subResource != "")
+          && has(object.metadata.ownerReferences)
+          && object.metadata.ownerReferences.exists(r, has(r.controller) && r.controller
+          && has(r.kind) && r.kind in ["ReplicaSet", "StatefulSet", "DaemonSet", "Job", "Deployment", "CronJob"]
+          && has(r.apiVersion) && r.apiVersion in ["apps/v1", "batch/v1"]))
     {{- end }}
     rules:
       # `pods/ephemeralcontainers` is how `kubectl debug` adds a container, and it is a different admission

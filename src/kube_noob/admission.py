@@ -8,10 +8,13 @@ is denied only for a rule the operator listed in ``admission.enforce``. It never
 - Warn mode (no rule enforced) cannot deny: the only path to ``allowed: false`` needs a finding of an enforced rule.
 - On UPDATE, an enforced rule denies only a finding the old object did not have, so turning a rule to enforce never
   freezes the workloads that already break it; they keep getting warnings.
-- Skipped: DELETE and CONNECT, subresources (status, scale, exec), objects being deleted, Pods, ReplicaSets and Jobs
-  owned by a controller (their Deployment, StatefulSet, DaemonSet, CronJob or Job was checked), the system namespaces
-  (``kube-system``, ``kube-public``, ``kube-node-lease``, ``openshift`` and ``openshift-*``) and
-  ``admission.excludedNamespaces``.
+- Skipped: DELETE and CONNECT, subresources (status, scale, exec), objects being deleted (an UPDATE), the system
+  namespaces (``kube-system``, ``kube-public``, ``kube-node-lease``; on the OpenShift family also ``openshift`` and
+  ``openshift-*``), ``admission.excludedNamespaces``, and the Pods, ReplicaSets and Jobs that kube-controller-manager's
+  own controllers make from a Deployment, StatefulSet, DaemonSet, CronJob, ReplicaSet or Job (that owner was checked).
+- Nothing the requester writes decides whether the webhook looks. ``ownerReferences`` is the requester's to write, so
+  it skips nothing by itself: the child is skipped only when ``request.userInfo``, which the API server writes from
+  the authenticated identity, is one of ``CONTROLLER_USERS`` (G440).
 - Rules about a whole bundle or that the API server already enforces are not evaluated (``SKIPPED_RULES``); rules
   that need other objects of the namespace (``CROSS_OBJECT``) run only with ``admission.lookups`` (a cache of the
   namespace's PodDisruptionBudgets, NetworkPolicies, PersistentVolumeClaims, HorizontalPodAutoscalers and the
@@ -35,14 +38,40 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kube_noob import sanitize
+from kube_noob.catalog import OPENSHIFT_FAMILY
 
 API_VERSION = "admission.k8s.io/v1"
 MAX_BODY = 4_000_000  # bytes: the API server's object limit plus the review envelope
 WARNING_CHARS = 256
-SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease", "openshift"})
-SYSTEM_PREFIXES = ("openshift-",)
+SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
+#: Reserved on the OpenShift family only, where the platform refuses the name and the prefix to its users (a project
+#: request for `openshift-x` is forbidden) and its operators live there. Plain Kubernetes reserves neither, so
+#: whoever may create a namespace there could name it `openshift-x` and step outside every enforced rule (G440).
+OPENSHIFT_NAMESPACES = frozenset({"openshift"})
+OPENSHIFT_PREFIXES = ("openshift-",)
 SKIP_OPERATIONS = frozenset({"DELETE", "CONNECT"})
 OWNED_KINDS = frozenset({"Pod", "ReplicaSet", "Job"})
+#: Who may be believed about `ownerReferences`: the controllers of kube-controller-manager that make the three
+#: kinds above from a workload the webhook is sent -- under their own ServiceAccounts, and under the manager's one
+#: identity when it runs without `--use-service-account-credentials`. `request.userInfo` is written by the API
+#: server from the authenticated identity; holding one of these means a kube-system ServiceAccount token, the
+#: manager's client certificate or the right to impersonate it, each of which already is the cluster. Deliberately
+#: absent: `replication-controller` (a ReplicationController is not a kind the webhook is sent, so nothing judged
+#: its template) and every operator's ServiceAccount (its custom resource was not judged either: G234).
+CONTROLLER_USERS = frozenset(
+    {
+        "system:kube-controller-manager",
+        "system:serviceaccount:kube-system:replicaset-controller",
+        "system:serviceaccount:kube-system:statefulset-controller",
+        "system:serviceaccount:kube-system:daemon-set-controller",
+        "system:serviceaccount:kube-system:job-controller",
+        "system:serviceaccount:kube-system:deployment-controller",
+        "system:serviceaccount:kube-system:cronjob-controller",
+    }
+)
+#: The owners whose pod template those controllers copy, every one of them a resource in the chart's webhook rules.
+CHECKED_OWNERS = frozenset({"ReplicaSet", "StatefulSet", "DaemonSet", "Job", "Deployment", "CronJob"})
+OWNER_API_VERSIONS = frozenset({"apps/v1", "batch/v1"})
 #: The one subresource worth evaluating. `kubectl debug` adds an ephemeral container through
 #: `pods/ephemeralcontainers`, which is a different admission request from the Pod's own creation: a policy that
 #: matches `pods` never sees it, so a privileged debug container from an unapproved registry walked past every
@@ -193,12 +222,33 @@ def _warning(text: str) -> str:
 
 
 def excluded_namespace(ns: str, cfg: Config) -> bool:
-    return ns in SYSTEM_NAMESPACES or ns.startswith(SYSTEM_PREFIXES) or ns in cfg.excluded
+    if ns in SYSTEM_NAMESPACES or ns in cfg.excluded:
+        return True
+    return cfg.platform in OPENSHIFT_FAMILY and (ns in OPENSHIFT_NAMESPACES or ns.startswith(OPENSHIFT_PREFIXES))
 
 
-def _owned(obj: dict[str, Any]) -> bool:
-    refs = (obj.get("metadata") or {}).get("ownerReferences")
-    return isinstance(refs, list) and any(isinstance(r, dict) and r.get("controller") is True for r in refs)
+def _controllers_child(request: dict[str, Any], obj: dict[str, Any]) -> bool:
+    """Whether a kube-controller-manager controller made this object from an owner the webhook was sent.
+
+    Both halves, and the first is the one that matters: the stanza below is ordinary object content, and before
+    G440 it was the whole test, so any Pod that named an owner -- a ReplicaSet that did not exist, a ConfigMap --
+    was admitted unjudged with an enforced rule switched on. The chart's `matchConditions` state the same
+    condition in CEL (`tests/test_admission_cannot_be_bypassed.py` holds the two equal)."""
+    user = request.get("userInfo")
+    username = user.get("username") if isinstance(user, dict) else None
+    if not isinstance(username, str) or username not in CONTROLLER_USERS:
+        return False
+    if obj.get("kind") not in OWNED_KINDS:
+        return False
+    meta = obj.get("metadata")
+    refs = meta.get("ownerReferences") if isinstance(meta, dict) else None
+    return isinstance(refs, list) and any(
+        isinstance(r, dict)
+        and r.get("controller") is True
+        and r.get("kind") in CHECKED_OWNERS
+        and r.get("apiVersion") in OWNER_API_VERSIONS
+        for r in refs
+    )
 
 
 def _findings(
@@ -276,11 +326,16 @@ def review(
             return _response(uid, True, [])
         raw_meta = obj.get("metadata")
         meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+        # An object on its way out is skipped so that its finalizers can still be removed -- which is an UPDATE.
+        # The API server clears `deletionTimestamp` on every create, so a CREATE carrying one is not a request
+        # it sent, and the field is no reason to look away from it (G440).
+        if op == "UPDATE" and meta.get("deletionTimestamp"):
+            return _response(uid, True, [])
         # The owner check deliberately does NOT apply to a subresource. A Pod owned by a ReplicaSet is skipped
         # because its owner was audited and carries the same spec -- but no owner carries an ephemeral
         # container, which is added straight to the Pod. Skipping it here would have made `kubectl debug` on
         # any managed workload the one request nothing checks (G250).
-        if meta.get("deletionTimestamp") or (not sub and obj.get("kind") in OWNED_KINDS and _owned(obj)):
+        if not sub and _controllers_child(request, obj):
             return _response(uid, True, [])
         extra = context(ns) if (cfg.lookups and context is not None and ns) else []
         # A cross-object rule over a list that was never read, or whose last refresh failed, would read "none
