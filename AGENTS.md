@@ -11,7 +11,7 @@ bash scripts/check.sh
 ```
 
 It runs the gates CI runs on code: the plugin copy, the Agent Skill build, the safety contract, the compliance
-document, the numbers the documents quote, the KSI crosswalk, ruff (lint and format), mypy, the full test suite
+document, the numbers the documents quote, the KSI crosswalk, the STIG crosswalk, ruff (lint and format), mypy, the full test suite
 **with CI's coverage floor**, kube-noob's own self-test, both `pip-audit` runs, `uv lock --check`, the wheel built
 and installed and driven, the MCP and plugin end-to-end runs, `check_publishable.sh`, the Homebrew formula against
 PyPI, the OSCAL document against the pinned NIST schema and the gate's SARIF against the vendored OASIS one. It

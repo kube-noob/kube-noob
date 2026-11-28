@@ -57,6 +57,13 @@ Claude on Google Vertex AI with Assured Workloads, or a model you host inside th
   2026-11-02 and it asserted them anyway: there is no separate `FRMR.KSI.key-security-indicators.json` at 25.11C,
   there are ten families and not eleven, indicators are keyed by mnemonic and not by number, and nothing in the
   consolidated dataset is flagged retired -- the seven ids recorded here as `retired: true` no longer exist as ids.
+- The DISA Kubernetes STIG is mapped check by check in [the STIG crosswalk](stig.md), generated from a pinned
+  copy of the rule list (Version 2, Release 6). It is not a STIG assessment and not an ATO artifact: it says
+  which of DISA's checks a kube-noob rule reads, and most are not read.
+  Of its 92 checks, a kube-noob rule judges 2 in full and 7 in part;
+  40 read a node's files, its kubelet or the system's documentation, which no manifest holds;
+  and 43 could be decided from a manifest and have no rule yet, 11 of those CAT I. The page lists every one,
+  with the evidence each undecidable check needs.
 - `doctor` reports the kernel flag and OpenSSL's mode; it validates nothing, and CI has no FIPS-mode runner (G292).
 - No 3PAO assessment, Iron Bank listing, DISA STIG review of the image, or CISA secure software development
   attestation has been done.
