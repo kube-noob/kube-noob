@@ -9,8 +9,9 @@ is denied only for a rule the operator listed in ``admission.enforce``. It never
 - On UPDATE, an enforced rule denies only a finding the old object did not have, so turning a rule to enforce never
   freezes the workloads that already break it; they keep getting warnings.
 - Skipped: DELETE and CONNECT, subresources (status, scale, exec), objects being deleted (an UPDATE), the system
-  namespaces (``kube-system``, ``kube-public``, ``kube-node-lease``; on the OpenShift family also ``openshift`` and
-  ``openshift-*``), ``admission.excludedNamespaces``, and the Pods, ReplicaSets and Jobs that kube-controller-manager's
+  namespaces (``kube-system``, ``kube-public``, ``kube-node-lease``; also ``openshift`` and ``openshift-*``, only
+  when the platform is in the OpenShift family AND the chart found the OpenShift APIs on the cluster),
+  ``admission.excludedNamespaces``, and the Pods, ReplicaSets and Jobs that kube-controller-manager's
   own controllers make from a Deployment, StatefulSet, DaemonSet, CronJob, ReplicaSet or Job (that owner was checked).
 - Nothing the requester writes decides whether the webhook looks. ``ownerReferences`` is the requester's to write, so
   it skips nothing by itself: the child is skipped only when ``request.userInfo``, which the API server writes from
@@ -67,6 +68,7 @@ SYSTEM_NAMESPACES = frozenset({"kube-system", "kube-public", "kube-node-lease"})
 #: Reserved on the OpenShift family only, where the platform refuses the name and the prefix to its users (a project
 #: request for `openshift-x` is forbidden) and its operators live there. Plain Kubernetes reserves neither, so
 #: whoever may create a namespace there could name it `openshift-x` and step outside every enforced rule (G440).
+#: "On OpenShift" needs evidence, not the configured platform alone: see `Config.openshift_reserved`.
 OPENSHIFT_NAMESPACES = frozenset({"openshift"})
 OPENSHIFT_PREFIXES = ("openshift-",)
 SKIP_OPERATIONS = frozenset({"DELETE", "CONNECT"})
@@ -173,6 +175,13 @@ class Config:
     #: The webhook configuration's `timeoutSeconds`: how long the API server waits. The chart writes the same value
     #: into both, so the server knows when its answer stops being read (G441).
     timeout_seconds: float = 3.0
+    #: Whether `openshift` and `openshift-*` are namespaces the platform reserves on THIS cluster. `platform` cannot
+    #: say: it is a declaration, and the chart's default one, so a default install on plain Kubernetes declared
+    #: `openshift` and the prefix was skipped there for whoever could name a namespace. The server cannot find out
+    #: either -- it is offline, read-only and holds no credential unless lookups are on -- so it does not guess:
+    #: False, which judges those namespaces, unless the chart writes `admission.openshiftNamespacesReserved: true`
+    #: from what the cluster served at install (`.Capabilities.APIVersions`). Both are required (G440).
+    openshift_reserved: bool = False
 
     @property
     def deadline(self) -> float:
@@ -192,6 +201,7 @@ class Config:
         lookups: bool = False,
         allowed_registries: list[str] | tuple[str, ...] = (),
         timeout_seconds: float = 3.0,
+        openshift_reserved: bool = False,
     ) -> Config:
         from kube_noob.audit.rules import RULES
 
@@ -236,6 +246,7 @@ class Config:
             lookups,
             tuple(allowed_registries),
             float(timeout_seconds),
+            openshift_reserved is True,
         )
 
 
@@ -300,7 +311,8 @@ def _over_node_budget(value: Any) -> bool:
 def excluded_namespace(ns: str, cfg: Config) -> bool:
     if ns in SYSTEM_NAMESPACES or ns in cfg.excluded:
         return True
-    return cfg.platform in OPENSHIFT_FAMILY and (ns in OPENSHIFT_NAMESPACES or ns.startswith(OPENSHIFT_PREFIXES))
+    reserved = cfg.openshift_reserved and cfg.platform in OPENSHIFT_FAMILY
+    return reserved and (ns in OPENSHIFT_NAMESPACES or ns.startswith(OPENSHIFT_PREFIXES))
 
 
 def _controllers_child(request: dict[str, Any], obj: dict[str, Any]) -> bool:

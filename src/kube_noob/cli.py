@@ -1872,6 +1872,7 @@ def _admission_cmd(a: argparse.Namespace, s: Settings, fmt: str) -> int:
             # the same configuration file and must give the same verdict (R3c, G243).
             allowed_registries=tuple(s.audit.allowed_registries),
             timeout_seconds=ad.timeout_seconds,
+            openshift_reserved=ad.openshift_namespaces_reserved,
         )
     except (admission.AdmissionConfigError, OSError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc

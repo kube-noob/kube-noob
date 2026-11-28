@@ -218,10 +218,10 @@ def test_an_openshift_namespace_is_reserved_only_on_openshift() -> None:
     for ns in ("openshift", "openshift-", "openshift-monitoring", "openshift-x"):
         assert _answer(_review(pod, ns=ns), kubernetes)["allowed"] is False, ns
         for platform in ("openshift", "rosa-classic", "rosa-hcp"):
-            cfg = adm.Config.build(enforce=ENFORCE, platform=platform)
+            cfg = adm.Config.build(enforce=ENFORCE, platform=platform, openshift_reserved=True)
             assert _answer(_review(pod, ns=ns), cfg) == SKIPPED, (platform, ns)
     for platform in ("kubernetes", "openshift"):
-        cfg = adm.Config.build(enforce=ENFORCE, platform=platform)
+        cfg = adm.Config.build(enforce=ENFORCE, platform=platform, openshift_reserved=True)
         for ns in ("kube-system", "kube-public", "kube-node-lease"):
             assert _answer(_review(pod, ns=ns), cfg) == SKIPPED, (platform, ns)
         # exact names and a real prefix, not a substring: none of these is a system namespace anywhere
@@ -229,6 +229,44 @@ def test_an_openshift_namespace_is_reserved_only_on_openshift() -> None:
             assert _answer(_review(pod, ns=ns), cfg)["allowed"] is False, (platform, ns)
     mine = adm.Config.build(enforce=ENFORCE, platform="kubernetes", excluded=["openshift-x"])
     assert _answer(_review(pod, ns="openshift-x"), mine) == SKIPPED, "the operator may still exclude it by name"
+
+
+def test_a_platform_that_was_only_declared_reserves_nothing(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    """`platform: openshift` is a value, and the chart's default one: a default install on plain Kubernetes
+    declared it without anyone choosing it, so the first form of this fix still skipped `openshift-x` there.
+    The server cannot find out what it runs on -- it is offline and holds no credential -- so its default is to
+    judge, and it skips only when it is TOLD the cluster serves the OpenShift APIs, which the chart reads from
+    the cluster at install. Both, or nothing: evidence without the platform is not a reservation either."""
+    made_up = _request("r_kubesystem.json")
+    pod = _child("Pod", "v1", None)
+    for platform in ("openshift", "rosa-classic", "rosa-hcp", "kubernetes"):
+        declared = adm.Config.build(enforce=ENFORCE, platform=platform)
+        assert declared.openshift_reserved is False, "the default is to judge"
+        assert adm.Config(platform=platform).openshift_reserved is False, "however the configuration is built"
+        assert _answer(made_up, adm.Config(enforce=frozenset(ENFORCE), platform=platform))["allowed"] is False
+        out = _answer(made_up, declared)
+        assert out["allowed"] is False and out["warnings"], platform
+        for ns in ("openshift", "openshift-x", "openshift-monitoring"):
+            assert _answer(_review(pod, ns=ns), declared)["allowed"] is False, (platform, ns)
+    evidence_only = adm.Config.build(enforce=ENFORCE, platform="kubernetes", openshift_reserved=True)
+    assert _answer(made_up, evidence_only)["allowed"] is False
+    both = adm.Config.build(enforce=ENFORCE, platform="openshift", openshift_reserved=True)
+    assert _answer(made_up, both) == SKIPPED
+    # the command, with the red team's file, under both platform settings and with the chart's statement
+    request = str(REQUESTS / "r_kubesystem.json")
+    for body, code in (
+        ("defaultPlatform: kubernetes\n", 1),
+        ("defaultPlatform: openshift\n", 1),
+        ("defaultPlatform: openshift\nadmission:\n  openshiftNamespacesReserved: false\n", 1),
+        ("defaultPlatform: kubernetes\nadmission:\n  openshiftNamespacesReserved: true\n", 1),
+        ("defaultPlatform: openshift\nadmission:\n  openshiftNamespacesReserved: true\n", 0),
+    ):
+        config = tmp_path / "config.yaml"
+        config.write_text(body)
+        assert main(["--config", str(config), "admission", "review", "-f", request, "--enforce", "KN-S001"]) == code, (
+            body
+        )
+        assert json.loads(capsys.readouterr().out)["response"]["allowed"] is (code == 0), body
 
 
 def test_a_deletion_timestamp_on_a_create_does_not_skip() -> None:
@@ -326,7 +364,17 @@ def test_the_charts_match_condition_skips_exactly_what_the_server_skips() -> Non
 
 def test_the_chart_reserves_openshift_namespaces_only_where_the_platform_does() -> None:
     text = (CHART / "templates" / "admission.yaml").read_text()
-    assert '$ocp := has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp")' in text
+    # Two facts, both required: what the operator declared, and what the cluster being installed into serves.
+    # The declaration alone is the chart's default value, so it is evidence of nothing (a default install on
+    # Kubernetes declared `openshift`); `.Capabilities` is read from the cluster by `helm install` and `upgrade`.
+    assert '$declared := has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp")' in text
+    assert '$served := .Capabilities.APIVersions.Has "config.openshift.io/v1"' in text
+    assert "{{- $ocp := and $declared $served }}" in text
+    assert text.count("$ocp :=") == 1 and text.count("$served :=") == 1 and text.count("$declared :=") == 1
+    assert "      openshiftNamespacesReserved: {{ $ocp }}\n" in text, "the server is told, in its config.yaml"
+    notes = (CHART / "templates" / "NOTES.txt").read_text()
+    assert 'not (.Capabilities.APIVersions.Has "config.openshift.io/v1")' in notes
+    assert "config.defaultPlatform" in notes and "openshift-*" in notes
     from kube_noob.catalog import OPENSHIFT_FAMILY
 
     assert {"openshift", "rosa-classic", "rosa-hcp"} == OPENSHIFT_FAMILY

@@ -1618,8 +1618,10 @@ blocks creates and updates of the kinds it matches. Use `Ignore` in warn mode; i
 than advice, set `Fail`. It
 never mutates, stores nothing but counters, and fetches nothing. `kube-system`, `kube-public`, `kube-node-lease`,
 its own namespace, `admission.excludedNamespaces` and namespaces labelled `kube-noob.io/admission=disabled` are
-skipped; `openshift` and `openshift-*` are skipped only when `config.defaultPlatform` is in the OpenShift family,
-where the platform reserves them (on Kubernetes set `config.defaultPlatform: kubernetes`). So are the Pods,
+skipped; `openshift` and `openshift-*` are skipped only when `config.defaultPlatform` is in the OpenShift family
+and the cluster serves `config.openshift.io/v1`, which the chart reads from the cluster at install (with
+`helm template`, pass `--api-versions config.openshift.io/v1`). The platform value by itself reserves nothing,
+because it is the chart's default and on Kubernetes anyone who may create a namespace may name it `openshift-x`. So are the Pods,
 ReplicaSets and Jobs that kube-controller-manager's own controllers make from a Deployment, StatefulSet, DaemonSet,
 CronJob, ReplicaSet or Job, because that owner was checked. Who sent the request decides that, never the object's
 `ownerReferences`: the requester writes those, so a Pod that merely names an owner is judged like any other, and

@@ -202,7 +202,7 @@ def test_enforce_denies_only_the_listed_rule(rule: str) -> None:
 def test_update_denies_only_new_findings_and_skips(tmp_path: Path) -> None:
     data = yaml.safe_load((RULES / "KN-S001.yaml").read_text())
     good, bad = yaml.safe_load(data["good"]), yaml.safe_load(data["bad"])
-    cfg = adm.Config.build(enforce=["KN-S001"], platform="openshift", version="4.20")
+    cfg = adm.Config.build(enforce=["KN-S001"], platform="openshift", version="4.20", openshift_reserved=True)
     assert adm.review(_review(bad, "UPDATE", old=good), cfg)["response"]["allowed"] is False
     kept = adm.review(_review(bad, "UPDATE", old=bad), cfg)["response"]
     assert kept["allowed"] is True and any(w.startswith("[KN-S001]") for w in kept["warnings"]), "warned, not frozen"

@@ -239,6 +239,7 @@ Defaults of `kube_noob.config.Settings`, evaluated with no configuration file an
 | `llm.allowInsecureBaseUrl` | `false` | off | model |
 | `llm.provider` | `none` | off | model |
 | `admission.lookups` | `false` | off | opt-in feature |
+| `admission.openshiftNamespacesReserved` | `false` | off | opt-in feature |
 | `ci.githubEnabled` | `false` | off | opt-in feature |
 | `jira.syncEnabled` | `false` | off | opt-in feature |
 | `memory.paths` | `[]` | off | opt-in feature |

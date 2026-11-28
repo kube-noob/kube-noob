@@ -251,9 +251,11 @@ admission:
   # Tier A: kube-noob-admission, a validating webhook. Every kube-noob finding of a created or updated object becomes
   # an admission warning (kubectl prints them); a request is denied only for a rule listed in enforce, and on UPDATE
   # only for a finding the old object did not have. Skipped: kube-system, kube-public, kube-node-lease, the release namespace,
-  # excludedNamespaces, any namespace labelled kube-noob.io/admission=disabled, and -- only when
-  # config.defaultPlatform is openshift, rosa-classic or rosa-hcp, where the platform reserves them -- openshift and
-  # openshift-*. Also skipped: the Pods, ReplicaSets and Jobs that kube-controller-manager's own controllers make
+  # excludedNamespaces, any namespace labelled kube-noob.io/admission=disabled, and openshift and openshift-* --
+  # only when config.defaultPlatform is openshift, rosa-classic or rosa-hcp AND the cluster serves
+  # config.openshift.io/v1 (read from the cluster at install; with helm template pass
+  # --api-versions config.openshift.io/v1). The platform value alone reserves nothing: it is this chart's default,
+  # and on Kubernetes anyone who can create a namespace can name it openshift-x. Also skipped: the Pods, ReplicaSets and Jobs that kube-controller-manager's own controllers make
   # from a workload this webhook was sent (the owner was checked). That is decided by who sent the request
   # (request.userInfo, written by the API server), never by ownerReferences, which the requester writes: the same
   # object from anyone else is judged. Whoever may label a namespace kube-noob.io/admission=disabled, or holds a

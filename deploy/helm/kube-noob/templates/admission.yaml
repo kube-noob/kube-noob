@@ -34,9 +34,15 @@ timeoutSeconds runs out (it is told the value below), so a large object is a den
 The namespaces the webhook is never sent, equal to what the server skips (kube_noob.admission). `openshift` and
 `openshift-*` are reserved by the platform on the OpenShift family only: a plain Kubernetes cluster lets whoever may
 create a namespace name it `openshift-x`, and skipping it there put that namespace outside every enforced rule
-(G440). The platform is the one the server is told, config.defaultPlatform, so the two cannot disagree.
+(G440). Two facts are required, and the second is the one that is evidence: config.defaultPlatform says OpenShift
+(the chart's default value, so a default install on Kubernetes says it too) AND the cluster being installed into
+serves config.openshift.io/v1, which helm reads from the cluster on install and upgrade. With `helm template` and no
+cluster, pass --api-versions config.openshift.io/v1 or those namespaces are sent to the webhook and judged. The
+server is told the result (openshiftNamespacesReserved below), so the two cannot disagree.
 */ -}}
-{{- $ocp := has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp") }}
+{{- $declared := has .Values.config.defaultPlatform (list "openshift" "rosa-classic" "rosa-hcp") }}
+{{- $served := .Capabilities.APIVersions.Has "config.openshift.io/v1" }}
+{{- $ocp := and $declared $served }}
 {{- $always := list "kube-system" "kube-public" "kube-node-lease" }}
 {{- $platformNs := ternary (list "openshift") (list) $ocp }}
 {{- $excluded := concat $always $platformNs (list $ns) ($a.excludedNamespaces | default list) | uniq }}
@@ -68,6 +74,7 @@ data:
       lookups: {{ $a.lookups }}
       maxWarnings: {{ $a.maxWarnings }}
       timeoutSeconds: {{ $a.timeoutSeconds }}
+      openshiftNamespacesReserved: {{ $ocp }}
       {{- with $a.platformVersion }}
       version: {{ . | quote }}
       {{- end }}

@@ -335,6 +335,10 @@ class AdmissionSettings(_Base):
     #: The webhook configuration's `timeoutSeconds`, which the chart writes here too: the server answers "not
     #: evaluated" at three fifths of it rather than after the API server has stopped waiting (G441).
     timeout_seconds: int = Field(default=3, ge=1, le=30)
+    #: Written by the chart from what the cluster serves (`config.openshift.io/v1`), never a default to rely on:
+    #: with false, `openshift` and `openshift-*` namespaces are judged like any other, whatever `defaultPlatform`
+    #: says. The server has no way to see the cluster for itself (G440).
+    openshift_namespaces_reserved: bool = False
     version: str | None = Field(default=None, pattern=r"^\d+\.\d+(\.\d+)?$")
 
 
