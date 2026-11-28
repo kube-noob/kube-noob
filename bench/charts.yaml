@@ -1,0 +1,278 @@
+# The charts of the Helm-charts-on-OpenShift benchmark (G438), read by scripts/helm_benchmark.py.
+#
+# Twenty-five widely used public charts from different publishers, each PINNED to one exact version so that a run
+# next month audits the same bytes as a run today. Bumping a version is a change to this file, in review.
+#
+# Every version below was read on 2026-11-28 from the place `versionSource` names, never from memory:
+#   repository index   the chart repository's own index.yaml, read from the git branch that serves it
+#                      (raw.githubusercontent.com/<owner>/<repo>/<branch>/index.yaml): highest version that is
+#                      not a pre-release and not marked deprecated
+#   Artifact Hub       https://artifacthub.io/api/v1/packages/helm/<repo>/<chart>, for repositories that are not
+#                      served from a git branch this could read
+# The repository URLs themselves were not reachable from the machine that wrote this file, so no pull has been
+# tried from here. That is what the benchmark run is for: a chart that does not pull is a row saying so, with
+# helm's exit code and its first line of stderr. It is never dropped.
+#
+# values: `defaults` means `helm template` with no `--set` and no values file. `fallback` is used only when the
+# default render exits non-zero: the harness records the failed default attempt, then renders with these `--set`
+# values and says in the report that it did. None of the fallbacks has been run from here either; `reason` says
+# why the chart is expected to need one.
+#
+# Left out on purpose:
+#   bitnami/redis, bitnami/postgresql, bitnami/keycloak   Bitnami moved its free images to `bitnamilegacy` in
+#     2025 and publishes charts as OCI artefacts only. github.com/bitnami/charts still carries redis 23.1.3,
+#     postgresql 17.1.2 and keycloak 25.4.0, but whether registry-1.docker.io/bitnamicharts still serves them
+#     could not be checked from here, so no version is pinned on a guess. Their slots go to charts whose
+#     repository index could be read: redis-ha (DandyDeveloper), cloudnative-pg and keycloakx (codecentric).
+#   hashicorp/vault 0.35.0   tagged in github.com/hashicorp/vault-helm, but Artifact Hub's newest is 0.34.1, so
+#     0.34.1 is pinned.
+#   grafana/grafana   marked deprecated in grafana.github.io/helm-charts (last 10.5.15); the chart moved to
+#     grafana-community.github.io/helm-charts, which is what is pinned.
+
+platform: openshift
+platformVersion: "4.22"
+# The Kubernetes version OpenShift 4.22 carries (what `kube-noob audit --platform openshift --version 4.22`
+# prints as kubernetesVersion). Passed to `helm template --kube-version`, so a chart's kubeVersion constraint
+# and its `.Capabilities.KubeVersion` branches are decided by this file and not by the helm binary's default.
+kubeVersion: "1.35.0"
+release: bench
+namespace: bench
+
+charts:
+  - id: ingress-nginx
+    category: ingress
+    repo: https://kubernetes.github.io/ingress-nginx
+    chart: ingress-nginx
+    version: "4.15.1"
+    appVersion: "1.15.1"
+    versionSource: "repository index (kubernetes/ingress-nginx, branch gh-pages), entry created 2026-03-19"
+    values: defaults
+
+  - id: traefik
+    category: ingress
+    repo: https://traefik.github.io/charts
+    chart: traefik
+    version: "43.0.0"
+    appVersion: "v3.8.0"
+    versionSource: "Artifact Hub (traefik/traefik); Chart.yaml at tag v43.0.0 of traefik/traefik-helm-chart agrees"
+    values: defaults
+
+  - id: cert-manager
+    category: certificates
+    repo: https://charts.jetstack.io
+    chart: cert-manager
+    version: "v1.21.3"
+    appVersion: "v1.21.3"
+    versionSource: "Artifact Hub (cert-manager/cert-manager) lists 1.21.3; tag v1.21.3 exists in cert-manager/cert-manager"
+    values: defaults
+
+  - id: external-dns
+    category: dns
+    repo: https://kubernetes-sigs.github.io/external-dns/
+    chart: external-dns
+    version: "1.24.0"
+    appVersion: "0.24.0"
+    versionSource: "repository index (kubernetes-sigs/external-dns, branch gh-pages), entry created 2026-11-19"
+    values: defaults
+
+  - id: kube-prometheus-stack
+    category: monitoring
+    repo: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    version: "94.2.0"
+    appVersion: "v0.95.2"
+    versionSource: "repository index (prometheus-community/helm-charts, branch gh-pages), entry created 2026-11-27"
+    values: defaults
+
+  - id: grafana
+    category: monitoring
+    repo: https://grafana-community.github.io/helm-charts
+    chart: grafana
+    version: "14.6.1"
+    appVersion: "13.3.2"
+    versionSource: "repository index (grafana-community/helm-charts, branch gh-pages), entry created 2026-11-26"
+    values: defaults
+
+  - id: metrics-server
+    category: monitoring
+    repo: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    version: "3.14.0"
+    appVersion: "0.9.0"
+    versionSource: "repository index (kubernetes-sigs/metrics-server, branch gh-pages), entry created 2026-08-19"
+    values: defaults
+
+  - id: loki
+    category: logging
+    repo: https://grafana.github.io/helm-charts
+    chart: loki
+    version: "7.7.0"
+    appVersion: "3.6.20"
+    versionSource: "repository index (grafana/helm-charts, branch gh-pages), entry created 2026-11-19"
+    values: defaults
+    fallback:
+      reason: "the loki chart has refused to render without a schema config since 6.0; useTestSchema is the switch its own error message names"
+      set:
+        - loki.useTestSchema=true
+
+  - id: fluent-bit
+    category: logging
+    repo: https://fluent.github.io/helm-charts
+    chart: fluent-bit
+    version: "0.58.3"
+    appVersion: "5.1.3"
+    versionSource: "repository index (fluent/helm-charts, branch gh-pages), entry created 2026-10-01"
+    values: defaults
+
+  - id: opentelemetry-collector
+    category: observability
+    repo: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    version: "0.183.2"
+    appVersion: "0.165.0"
+    versionSource: "repository index (open-telemetry/opentelemetry-helm-charts, branch gh-pages), entry created 2026-11-24"
+    values: defaults
+    fallback:
+      reason: "the chart has no default for `mode` or `image.repository` and fails until both are set"
+      set:
+        - mode=deployment
+        - image.repository=otel/opentelemetry-collector-k8s
+
+  - id: argo-cd
+    category: gitops
+    repo: https://argoproj.github.io/argo-helm
+    chart: argo-cd
+    version: "10.20.0"
+    appVersion: "v3.6.3"
+    versionSource: "repository index (argoproj/argo-helm, branch gh-pages), entry created 2026-11-25"
+    values: defaults
+
+  - id: jenkins
+    category: ci
+    repo: https://charts.jenkins.io
+    chart: jenkins
+    version: "5.14.0"
+    appVersion: "2.580.3"
+    versionSource: "repository index (jenkinsci/helm-charts, branch gh-pages), entry created 2026-11-27"
+    values: defaults
+
+  - id: gitlab-runner
+    category: ci
+    repo: https://charts.gitlab.io
+    chart: gitlab-runner
+    version: "0.95.1"
+    appVersion: "19.6.1"
+    versionSource: "Artifact Hub (gitlab/gitlab-runner), version dated 2026-11-25"
+    values: defaults
+    fallback:
+      reason: "a runner has no default GitLab to register with; the URL is a reserved example name and no token is set"
+      set:
+        - gitlabUrl=https://gitlab.example.com/
+
+  - id: redis-ha
+    category: database
+    repo: https://dandydeveloper.github.io/charts
+    chart: redis-ha
+    version: "4.39.0"
+    appVersion: "8.8.0"
+    versionSource: "repository index (DandyDeveloper/charts, branch gh-pages), entry created 2026-06-15"
+    values: defaults
+
+  - id: cloudnative-pg
+    category: database
+    repo: https://cloudnative-pg.github.io/charts
+    chart: cloudnative-pg
+    version: "0.29.2"
+    appVersion: "1.30.2"
+    versionSource: "repository index (cloudnative-pg/charts, branch gh-pages), entry created 2026-11-17"
+    values: defaults
+
+  - id: eck-operator
+    category: database
+    repo: https://helm.elastic.co
+    chart: eck-operator
+    version: "3.5.0"
+    appVersion: "3.5.0"
+    versionSource: "Artifact Hub (elastic/eck-operator); Chart.yaml at tag v3.5.0 of elastic/cloud-on-k8s agrees"
+    values: defaults
+
+  - id: strimzi-kafka-operator
+    category: messaging
+    repo: https://strimzi.io/charts/
+    chart: strimzi-kafka-operator
+    version: "1.3.1"
+    appVersion: "1.3.1"
+    versionSource: "repository index (strimzi/strimzi.github.io, branch main, charts/index.yaml), entry created 2026-11-04"
+    values: defaults
+
+  - id: minio
+    category: storage
+    repo: https://charts.min.io/
+    chart: minio
+    version: "5.4.0"
+    appVersion: "RELEASE.2024-12-18T13-15-44Z"
+    versionSource: "Artifact Hub (minio-official/minio); index.yaml on branch master of minio/minio agrees, entry created 2025-01-02"
+    values: defaults
+
+  - id: harbor
+    category: registry
+    repo: https://helm.goharbor.io
+    chart: harbor
+    version: "1.19.4"
+    appVersion: "2.15.4"
+    versionSource: "Artifact Hub (harbor/harbor); Chart.yaml at tag v1.19.4 of goharbor/harbor-helm agrees"
+    values: defaults
+
+  - id: keycloakx
+    category: identity
+    repo: https://codecentric.github.io/helm-charts
+    chart: keycloakx
+    version: "7.4.0"
+    appVersion: "26.8.1"
+    versionSource: "repository index (codecentric/helm-charts, branch gh-pages), entry created 2026-10-14"
+    values: defaults
+
+  - id: vault
+    category: secrets
+    repo: https://helm.releases.hashicorp.com
+    chart: vault
+    version: "0.34.1"
+    appVersion: "2.0.4"
+    versionSource: "Artifact Hub (hashicorp/vault), its newest; tag v0.34.1 exists in hashicorp/vault-helm"
+    values: defaults
+
+  - id: external-secrets
+    category: secrets
+    repo: https://charts.external-secrets.io
+    chart: external-secrets
+    version: "2.15.0"
+    appVersion: "v2.15.0"
+    versionSource: "repository index (external-secrets/external-secrets, branch gh-pages), entry created 2026-11-10"
+    values: defaults
+
+  - id: sealed-secrets
+    category: secrets
+    repo: https://bitnami-labs.github.io/sealed-secrets
+    chart: sealed-secrets
+    version: "2.22.0"
+    appVersion: "0.41.2"
+    versionSource: "repository index (bitnami-labs/sealed-secrets, branch gh-pages), entry created 2026-10-26"
+    values: defaults
+
+  - id: kyverno
+    category: policy
+    repo: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    version: "3.10.0"
+    appVersion: "v1.20.0"
+    versionSource: "repository index (kyverno/kyverno, branch gh-pages), entry created 2026-11-11"
+    values: defaults
+
+  - id: velero
+    category: backup
+    repo: https://vmware-tanzu.github.io/helm-charts
+    chart: velero
+    version: "12.2.5"
+    appVersion: "1.18.2"
+    versionSource: "repository index (vmware-tanzu/helm-charts, branch gh-pages), entry created 2026-11-12"
+    values: defaults

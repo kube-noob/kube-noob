@@ -1,0 +1,37 @@
+---
+# Source: web/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-web
+  namespace: bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      hostNetwork: true
+      containers:
+        - name: web
+          image: docker.io/library/nginx:latest
+          securityContext:
+            privileged: true
+            runAsUser: 0
+---
+# Source: web/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-web
+  namespace: bench
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 8080
